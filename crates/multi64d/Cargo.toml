@@ -26,7 +26,7 @@ serde_json = "1"
 serialport = "4"
 tokio = { version = "1", features = ["full"] }
 toml = "0.8"
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -35,4 +35,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = { version = "0.7", features = ["ws"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
