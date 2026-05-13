@@ -23,7 +23,7 @@ serialport = "4"
 dirs = "5"
 auto-launch = "0.5"
 parking_lot = "0.12"
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 anyhow = "1"
 
 [target.'cfg(windows)'.dependencies]
