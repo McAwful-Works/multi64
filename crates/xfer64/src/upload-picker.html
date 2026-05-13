@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <title>Xfer64 — Quick upload</title>
+    <link rel="stylesheet" href="explorer.css" />
+    <link rel="stylesheet" href="upload-picker.css" />
+  </head>
+  <body class="upload-picker-root upload-picker-booting">
+    <div
+      id="upload-picker-boot"
+      class="upload-picker-boot"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <div class="upload-picker-boot-inner">
+        <span class="explorer-loading-spinner explorer-loading-spinner--lg" aria-hidden="true"></span>
+        <p class="upload-picker-boot-text">Loading Xfer64 quick upload…</p>
+      </div>
+    </div>
+
+    <header class="explorer-appbar upload-picker-appbar">
+      <div class="explorer-appbar-title">
+        <div class="explorer-appbar-heading">
+          <h1>Xfer64</h1>
+          <span class="explorer-appbar-productline">by Multi64</span>
+        </div>
+        <p class="upload-picker-tagline">
+          Open a <strong>subfolder</strong> to upload there, or stay here to use the folder below.
+        </p>
+      </div>
+    </header>
+
+    <main class="upload-picker-main">
+      <section class="upload-picker-sd-pane" aria-label="SD card folder">
+        <div class="explorer-pane-head upload-picker-pane-head">
+          <div class="upload-picker-pane-head-titles">
+            <span class="explorer-pane-head-title">SD card</span>
+            <span class="explorer-pane-head-hint">Choose folder</span>
+          </div>
+          <label
+            class="check upload-picker-overwrite-inline"
+            title="Replace a file on the SD card when it has the same name as one you are uploading."
+          >
+            <input type="checkbox" id="upload-picker-overwrite" />
+            <span>Overwrite existing</span>
+          </label>
+        </div>
+
+        <div class="upload-picker-sd-body">
+          <div class="explorer-toolbar">
+            <button type="button" class="btn" id="upload-picker-btn-up" title="Up to parent folder">↑</button>
+            <div class="explorer-address-wrap">
+              <div
+                id="upload-picker-path"
+                class="upload-picker-path-readonly"
+                aria-live="polite"
+                title="Current folder on the SD card"
+              >
+                /
+              </div>
+            </div>
+          </div>
+
+          <div class="upload-picker-table-host">
+            <div
+              id="upload-picker-shade"
+              class="explorer-table-shade upload-picker-shade"
+              hidden
+              aria-hidden="true"
+            >
+              <div class="explorer-table-shade-inner" role="status" aria-live="polite">
+                <span class="explorer-loading-spinner explorer-loading-spinner--lg" aria-hidden="true"></span>
+                <span class="explorer-table-shade-text">Loading folder…</span>
+              </div>
+            </div>
+            <div id="upload-picker-table-wrap" class="explorer-table-wrap upload-picker-table-wrap" tabindex="0">
+              <table class="explorer-table" aria-label="Folders on SD card">
+                <thead>
+                  <tr>
+                    <th class="col-name">Name</th>
+                  </tr>
+                </thead>
+                <tbody id="upload-picker-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <p id="upload-picker-selection" class="upload-picker-selection" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <p id="upload-picker-error" class="upload-picker-error" hidden role="alert"></p>
+
+      <footer class="upload-picker-footer">
+        <div class="explorer-modal-actions upload-picker-actions">
+          <button type="button" class="btn" id="upload-picker-btn-close">Cancel</button>
+          <button type="button" class="btn primary" id="upload-picker-btn-upload">Upload here</button>
+        </div>
+        <div
+          id="upload-picker-status-bar"
+          class="upload-picker-status-bar"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="upload-picker-status-bar-main">
+            <span id="upload-picker-status-text" class="upload-picker-status-text"></span>
+            <button
+              type="button"
+              class="btn btn-icon upload-picker-auto-cancel"
+              id="upload-picker-btn-cancel-auto"
+              hidden
+              title="Cancel automatic upload"
+              aria-label="Cancel automatic upload"
+            >
+              <svg
+                class="btn-icon-svg"
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </svg>
+            </button>
+          </div>
+          <div
+            id="upload-picker-status-track"
+            class="upload-picker-status-track explorer-operation-track upload-picker-status-track--inactive"
+            aria-hidden="true"
+          >
+            <div id="upload-picker-status-fill" class="explorer-operation-fill"></div>
+          </div>
+        </div>
+      </footer>
+    </main>
+    <script type="module" src="/upload-picker.js"></script>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+[package]
+name = "multi64-sc64-l2"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "SummerCart64 L2 pipe: L3 byte stream over USB_WRITE / PKT U"
+
+[dependencies]
+multi64-sc64-link = { path = "../sc64-link" }
+serialport = "4.3"
+tracing = "0.1"

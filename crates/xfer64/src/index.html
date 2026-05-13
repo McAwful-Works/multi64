@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Xfer64</title>
+    <link rel="stylesheet" href="explorer.css" />
+    <script type="module" src="/explorer.js" defer></script>
+  </head>
+  <body class="explorer-root">
+    <header class="explorer-appbar">
+      <div class="explorer-appbar-title">
+        <div class="explorer-appbar-heading">
+          <h1>Xfer64</h1>
+          <span class="explorer-appbar-productline">by Multi64</span>
+        </div>
+      </div>
+      <div class="explorer-usb-row" id="usb-row">
+        <label class="explorer-usb-label">
+          <span>COM port</span>
+          <select id="select-usb-com" aria-label="Serial port override"></select>
+        </label>
+        <span class="explorer-usb-loading" id="usb-loading" hidden aria-live="polite" aria-atomic="true">
+          <span class="explorer-loading-spinner explorer-loading-spinner--sm" aria-hidden="true"></span>
+          <span id="usb-loading-text">Scanning…</span>
+        </span>
+        <span class="explorer-usb-hint" id="usb-hint">Auto-detect</span>
+        <div class="explorer-appbar-actions" role="toolbar" aria-label="Xfer64">
+          <button
+            type="button"
+            class="btn btn-icon explorer-appbar-icon-btn"
+            id="btn-open-settings"
+            title="Settings"
+            aria-label="Settings"
+            aria-expanded="false"
+          >
+            <svg
+              class="btn-icon-svg"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+              />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="btn btn-icon explorer-appbar-icon-btn"
+            id="btn-explorer-help"
+            title="Help"
+            aria-label="Help"
+          >
+            <svg
+              class="btn-icon-svg"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="explorer-body">
+      <section class="explorer-pane" id="pane-cart" aria-label="SD card">
+        <div class="explorer-pane-head">
+          <span class="explorer-pane-head-title">SD card</span>
+          <span class="explorer-pane-head-hint" id="explorer-pane-cart-hint">Auto</span>
+        </div>
+        <div class="explorer-toolbar">
+          <button type="button" class="btn" data-action="back" data-pane="cart" title="Back">←</button>
+          <button type="button" class="btn" data-action="up" data-pane="cart" title="Up">↑</button>
+          <button type="button" class="btn" data-action="refresh" data-pane="cart" title="Refresh">↻</button>
+          <div class="explorer-address-wrap">
+            <select id="addr-cart-select" class="explorer-path-select" aria-label="Path on SD"></select>
+          </div>
+        </div>
+        <div class="explorer-toolbar-extras" aria-label="Cart actions">
+          <button type="button" class="btn btn-icon" id="btn-mkdir-cart" title="New folder" aria-label="New folder">
+            <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 10v6" />
+              <path d="M9 13h6" />
+              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            </svg>
+          </button>
+          <button type="button" class="btn btn-icon" id="btn-rename-cart" title="Rename (F2)" aria-label="Rename">
+            <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+            </svg>
+          </button>
+          <button type="button" class="btn btn-icon btn-icon-danger" id="btn-delete-cart" title="Delete selected" aria-label="Delete selected" disabled>
+            <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 6h18" />
+              <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+              <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+              <line x1="10" x2="10" y1="11" y2="17" />
+              <line x1="14" x2="14" y1="11" y2="17" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="btn btn-icon explorer-show-hidden-btn"
+            id="btn-show-hidden-cart"
+            aria-label="Show hidden files and folders"
+            aria-pressed="false"
+            title="Show hidden files and folders"
+          >
+            <svg
+              class="btn-icon-svg"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+        </div>
+        <div class="explorer-table-wrap" id="table-wrap-cart" data-drop-pane="cart">
+          <table class="explorer-table" id="table-cart" aria-label="Cart file list">
+            <thead>
+              <tr>
+                <th class="col-name" data-sort-key="name" aria-sort="ascending">Name</th>
+                <th class="col-size" data-sort-key="size" aria-sort="none">Size</th>
+                <th class="col-date" data-sort-key="modified" aria-sort="none">Modified</th>
+                <th class="col-type" data-sort-key="type" aria-sort="none">Type</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-cart"></tbody>
+          </table>
+          <div
+            class="explorer-table-shade"
+            id="table-shade-cart"
+            hidden
+            aria-hidden="true"
+          >
+            <div class="explorer-table-shade-inner" role="status" aria-live="polite">
+              <span class="explorer-loading-spinner explorer-loading-spinner--lg" aria-hidden="true"></span>
+              <span class="explorer-table-shade-text" id="table-shade-text-cart">Loading…</span>
+            </div>
+          </div>
+        </div>
+        <div class="explorer-status" id="status-cart">
+          <span class="explorer-status-meta" id="status-cart-meta"></span>
+          <div
+            class="explorer-operation explorer-operation-inline hidden"
+            id="explorer-operation-cart"
+            role="status"
+            aria-live="polite"
+            aria-hidden="true"
+          >
+            <div class="explorer-operation-main">
+              <div class="explorer-operation-track">
+                <div class="explorer-operation-fill" id="explorer-operation-fill-cart"></div>
+              </div>
+              <button
+                type="button"
+                class="btn btn-icon explorer-operation-cancel"
+                id="explorer-operation-cancel-cart"
+                title="Cancel"
+                aria-label="Cancel"
+              >
+                <svg
+                  class="btn-icon-svg"
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
+            </div>
+            <p class="explorer-operation-text" id="explorer-operation-text-cart"></p>
+          </div>
+        </div>
+      </section>
+
+      <aside class="explorer-actions" aria-label="Transfer between SD card and Windows">
+        <div class="explorer-actions-inner">
+          <button
+            type="button"
+            class="btn primary explorer-copy-btn"
+            id="btn-copy-to-pc"
+            title="Export selected items to the Windows folder"
+          >
+            <span class="explorer-copy-line1">Export</span>
+            <span class="explorer-copy-line2">to Windows</span>
+          </button>
+          <button
+            type="button"
+            class="btn primary explorer-copy-btn"
+            id="btn-copy-to-cart"
+            title="Import selected items into the current SD folder"
+          >
+            <span class="explorer-copy-line1">Import</span>
+            <span class="explorer-copy-line2">to SD card</span>
+          </button>
+        </div>
+      </aside>
+
+      <section class="explorer-pane" id="pane-pc" aria-label="Windows folder">
+        <div class="explorer-pane-head">
+          <span class="explorer-pane-head-title">Windows</span>
+          <span class="explorer-pane-head-hint">This PC</span>
+        </div>
+        <div class="explorer-toolbar">
+          <button type="button" class="btn" data-action="back" data-pane="pc" title="Back">←</button>
+          <button type="button" class="btn" data-action="up" data-pane="pc" title="Up">↑</button>
+          <button type="button" class="btn" data-action="refresh" data-pane="pc" title="Refresh">↻</button>
+          <div class="explorer-address-wrap">
+            <select id="addr-pc-select" class="explorer-path-select" aria-label="Windows folder"></select>
+            <button type="button" class="btn explorer-browse-btn" data-action="pick" data-pane="pc" title="Browse folder">…</button>
+          </div>
+        </div>
+        <div class="explorer-toolbar-extras" aria-label="Windows folder actions">
+          <button type="button" class="btn btn-icon" id="btn-mkdir-pc" title="New folder" aria-label="New folder">
+            <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 10v6" />
+              <path d="M9 13h6" />
+              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            </svg>
+          </button>
+          <button type="button" class="btn btn-icon" id="btn-rename-pc" title="Rename (F2)" aria-label="Rename">
+            <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+            </svg>
+          </button>
+          <button type="button" class="btn btn-icon btn-icon-danger" id="btn-delete-pc" title="Delete selected" aria-label="Delete selected" disabled>
+            <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 6h18" />
+              <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+              <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+              <line x1="10" x2="10" y1="11" y2="17" />
+              <line x1="14" x2="14" y1="11" y2="17" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="btn btn-icon explorer-show-hidden-btn"
+            id="btn-show-hidden-pc"
+            aria-label="Show hidden files and folders"
+            aria-pressed="false"
+            title="Show hidden files and folders"
+          >
+            <svg
+              class="btn-icon-svg"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+        </div>
+        <div class="explorer-table-wrap" id="table-wrap-pc" data-drop-pane="pc">
+          <table class="explorer-table" id="table-pc" aria-label="Windows file list">
+            <thead>
+              <tr>
+                <th class="col-name" data-sort-key="name" aria-sort="ascending">Name</th>
+                <th class="col-size" data-sort-key="size" aria-sort="none">Size</th>
+                <th class="col-date" data-sort-key="modified" aria-sort="none">Modified</th>
+                <th class="col-type" data-sort-key="type" aria-sort="none">Type</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-pc"></tbody>
+          </table>
+          <div
+            class="explorer-table-shade"
+            id="table-shade-pc"
+            hidden
+            aria-hidden="true"
+          >
+            <div class="explorer-table-shade-inner" role="status" aria-live="polite">
+              <span class="explorer-loading-spinner explorer-loading-spinner--lg" aria-hidden="true"></span>
+              <span class="explorer-table-shade-text" id="table-shade-text-pc">Loading…</span>
+            </div>
+          </div>
+        </div>
+        <div class="explorer-status" id="status-pc">
+          <span class="explorer-status-meta" id="status-pc-meta"></span>
+          <div
+            class="explorer-operation explorer-operation-inline hidden"
+            id="explorer-operation-pc"
+            role="status"
+            aria-live="polite"
+            aria-hidden="true"
+          >
+            <div class="explorer-operation-main">
+              <div class="explorer-operation-track">
+                <div class="explorer-operation-fill" id="explorer-operation-fill-pc"></div>
+              </div>
+              <button
+                type="button"
+                class="btn btn-icon explorer-operation-cancel"
+                id="explorer-operation-cancel-pc"
+                title="Cancel"
+                aria-label="Cancel"
+              >
+                <svg
+                  class="btn-icon-svg"
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
+            </div>
+            <p class="explorer-operation-text" id="explorer-operation-text-pc"></p>
+          </div>
+        </div>
+      </section>
+    </div>
+    <div id="explorer-name-tooltip" class="explorer-name-tooltip" hidden role="tooltip"></div>
+
+    <div
+      id="explorer-context-menu"
+      class="explorer-context-menu hidden"
+      role="menu"
+      aria-hidden="true"
+      hidden
+    >
+      <div id="explorer-context-menu-group-file" class="explorer-context-menu-group">
+        <button type="button" class="explorer-context-item" role="menuitem" data-ctx="open">Open</button>
+        <button type="button" class="explorer-context-item" role="menuitem" data-ctx="copy">
+          Copy to the other pane
+        </button>
+        <button type="button" class="explorer-context-item" role="menuitem" data-ctx="delete">Delete</button>
+        <button type="button" class="explorer-context-item" role="menuitem" data-ctx="rename">Rename</button>
+        <hr class="explorer-context-sep" role="separator" />
+        <button type="button" class="explorer-context-item" role="menuitem" data-ctx="properties">
+          Properties
+        </button>
+      </div>
+      <div id="explorer-context-menu-group-blank" class="explorer-context-menu-group" hidden aria-hidden="true">
+        <button type="button" class="explorer-context-item" role="menuitem" data-ctx="new-folder">
+          New folder
+        </button>
+        <button type="button" class="explorer-context-item" role="menuitem" data-ctx="folder-properties">
+          Properties of current folder
+        </button>
+      </div>
+    </div>
+
+    <div id="explorer-properties-modal" class="explorer-modal-root hidden" aria-hidden="true">
+      <div class="explorer-modal-backdrop" aria-hidden="true"></div>
+      <div
+        class="explorer-modal-panel explorer-modal-panel--wide explorer-properties-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="explorer-properties-title"
+        tabindex="-1"
+      >
+        <h2 id="explorer-properties-title" class="explorer-modal-title">Properties</h2>
+        <dl class="explorer-properties-dl" id="explorer-properties-dl"></dl>
+        <div class="explorer-modal-actions explorer-modal-actions--alert">
+          <button type="button" class="btn primary" id="explorer-properties-close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="explorer-modal-root" class="explorer-modal-root hidden" aria-hidden="true">
+      <div class="explorer-modal-backdrop" aria-hidden="true"></div>
+      <div
+        class="explorer-modal-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="explorer-modal-title"
+        tabindex="-1"
+      >
+        <h2 id="explorer-modal-title" class="explorer-modal-title">Xfer64</h2>
+        <p id="explorer-modal-message" class="explorer-modal-message"></p>
+        <input
+          type="text"
+          id="explorer-modal-input"
+          class="explorer-modal-input hidden"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <div class="explorer-modal-actions" id="explorer-modal-actions">
+          <button type="button" class="btn" id="explorer-modal-cancel" title="Cancel (Esc)">Cancel</button>
+          <button type="button" class="btn primary" id="explorer-modal-ok" title="OK (Enter)">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="explorer-help-modal" class="explorer-modal-root hidden" aria-hidden="true">
+      <div class="explorer-modal-backdrop" aria-hidden="true"></div>
+      <div
+        class="explorer-modal-panel explorer-modal-panel--wide explorer-help-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="explorer-help-title"
+        tabindex="-1"
+      >
+        <h2 id="explorer-help-title" class="explorer-modal-title">Help</h2>
+        <div class="explorer-help-tablist" role="tablist" aria-label="Help sections">
+          <button
+            type="button"
+            class="explorer-help-tab"
+            role="tab"
+            id="explorer-help-tab-setup"
+            aria-selected="true"
+            aria-controls="explorer-help-panel-setup"
+            data-help-tab="setup"
+            tabindex="0"
+          >
+            Setup
+          </button>
+          <button
+            type="button"
+            class="explorer-help-tab"
+            role="tab"
+            id="explorer-help-tab-about"
+            aria-selected="false"
+            aria-controls="explorer-help-panel-about"
+            data-help-tab="about"
+            tabindex="-1"
+          >
+            About
+          </button>
+        </div>
+        <div class="explorer-help-panels">
+          <div
+            id="explorer-help-panel-setup"
+            class="explorer-help-panel"
+            role="tabpanel"
+            aria-labelledby="explorer-help-tab-setup"
+            data-help-panel="setup"
+          >
+            <div class="explorer-help-body explorer-help-setup">
+              <section class="explorer-help-section" aria-labelledby="help-h-sc64">
+                <h3 class="explorer-help-section-title" id="help-h-sc64">Flash cart &amp; USB</h3>
+                <p>
+                  <strong>SummerCart64</strong> and <strong>EverDrive 64 X7</strong> connect over <strong>USB</strong> using a <strong>COM port</strong>—not like a USB thumb drive (there is no new drive letter in Windows). Xfer64 opens that port only while it lists or copies files, then lets it go. If something else is using the same port (for example the Multi64 app talking to the cart), close it first or you may see “port busy” errors.
+                </p>
+              </section>
+              <section class="explorer-help-section" aria-labelledby="help-h-auto">
+                <h3 class="explorer-help-section-title" id="help-h-auto">Auto-detect</h3>
+                <p>
+                  In <strong>Settings</strong>, <strong>Auto-detect (recommended)</strong> tries to figure out which cart is plugged in. If it guesses wrong, pick <strong>SummerCart64</strong> or <strong>EverDrive-64 X7 (beta)</strong> yourself.
+                </p>
+              </section>
+              <section class="explorer-help-section explorer-help-section--note" aria-labelledby="help-h-ed64">
+                <h3 class="explorer-help-section-title" id="help-h-ed64">EverDrive (beta)</h3>
+                <p>
+                  EverDrive talks to the PC differently than SummerCart64. If you pick EverDrive in Settings and want to browse the SD card from this app, use <strong>EverDrive (advanced)</strong> there and enter the value your setup needs (or leave it blank if you only need the serial port for other tools).
+                  For the simplest “plug in and go” SD access from Windows here, choose <strong>SummerCart64</strong> or <strong>Auto-detect</strong> when a SummerCart64 is connected.
+                </p>
+                <details class="explorer-help-details">
+                  <summary>Technical details</summary>
+                  <p>
+                    Access uses the vendor serial protocol and an optional linear ROM base address; firmware-dependent, and some card operations may be read-only. Repository documentation under <code>docs/spec/</code> has the full picture for developers.
+                  </p>
+                </details>
+              </section>
+              <section class="explorer-help-section" aria-labelledby="help-h-tips">
+                <h3 class="explorer-help-section-title" id="help-h-tips">Tips</h3>
+                <p>
+                  If the SD card is write-protected, turn the N64 off before changing files on some carts. The right pane is a normal Windows folder.
+                </p>
+              </section>
+            </div>
+          </div>
+          <div
+            id="explorer-help-panel-about"
+            class="explorer-help-panel"
+            role="tabpanel"
+            aria-labelledby="explorer-help-tab-about"
+            data-help-panel="about"
+            hidden
+          >
+            <div class="explorer-help-body explorer-about-body">
+              <p class="explorer-about-name"><strong>Xfer64</strong></p>
+              <p class="explorer-about-productline">by Multi64</p>
+              <p class="explorer-about-version" id="explorer-about-version">—</p>
+              <p>
+                Copy and manage files between your flash cart’s SD card and a folder on Windows. USB is only used while listing or transferring.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="explorer-modal-actions explorer-modal-actions--alert explorer-help-actions">
+          <button type="button" class="btn primary" id="explorer-help-close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="explorer-settings-backdrop" class="explorer-settings-backdrop" hidden aria-hidden="true"></div>
+    <div
+      id="explorer-settings-panel"
+      class="explorer-settings-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="explorer-settings-title"
+      hidden
+    >
+      <div class="explorer-settings-panel-inner">
+        <div class="explorer-settings-header">
+          <h2 id="explorer-settings-title">Settings</h2>
+          <div class="explorer-settings-header-actions">
+            <button type="button" class="btn primary" id="btn-save-explorer-settings">Save settings</button>
+            <button type="button" class="btn btn-close-settings" id="btn-close-settings" title="Close (Esc)">×</button>
+          </div>
+        </div>
+        <div class="explorer-settings-body">
+        <section class="explorer-settings-section">
+          <h3 class="explorer-settings-section-title">Cart device</h3>
+          <label class="explorer-settings-field">
+            <span class="explorer-settings-label">USB flash cart</span>
+            <select id="explorer-cart-device" class="explorer-cart-device-select" aria-describedby="explorer-cart-device-hint">
+              <option value="auto">Auto-detect (recommended)</option>
+              <option value="sc64">SummerCart64</option>
+              <option value="ed64_beta">EverDrive-64 X7 (beta)</option>
+            </select>
+          </label>
+          <p class="explorer-settings-hint" id="explorer-cart-device-hint"></p>
+        </section>
+        <section
+          class="explorer-settings-section"
+          id="explorer-ed64-advanced-section"
+          hidden
+          aria-hidden="true"
+        >
+          <h3 class="explorer-settings-section-title">EverDrive (advanced)</h3>
+          <p class="explorer-settings-hint">
+            Optional. Needed only if you want to list and copy files on the SD card from this PC while <strong>EverDrive-64 X7 (beta)</strong> is selected above.
+          </p>
+          <label class="explorer-settings-field">
+            <span class="explorer-settings-label">Linear ROM address</span>
+            <input
+              type="text"
+              id="explorer-ed64-linear-base"
+              class="explorer-settings-text-input"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Leave blank to disable SD browsing here"
+              aria-describedby="explorer-ed64-linear-base-hint"
+            />
+          </label>
+          <p class="explorer-settings-hint" id="explorer-ed64-linear-base-hint">
+            For advanced users: firmware-specific address for SD access over USB. Wrong values will not work. Clear the field to turn off SD browsing from this app. Use <strong>Scan for SD base</strong> to guess a value from the card (takes a short while).
+          </p>
+          <div class="explorer-settings-row explorer-ed64-scan-row">
+            <button type="button" class="btn" id="btn-ed64-probe-linear-base">Scan for SD base</button>
+            <span id="explorer-ed64-probe-status" class="explorer-ed64-probe-status" aria-live="polite"></span>
+          </div>
+          <p class="explorer-settings-hint" id="explorer-ed64-hint-addresses"></p>
+        </section>
+        <section
+          class="explorer-settings-section"
+          id="explorer-settings-sendto-section"
+          hidden
+          aria-hidden="true"
+        >
+          <h3 class="explorer-settings-section-title">Windows integration</h3>
+          <p class="explorer-settings-hint">
+            Add <strong>Xfer64 upload</strong> to your user <strong>Send to</strong> menu (right-click a file → Send to). A small window opens so you can pick the SD folder before uploading—nothing runs in the background.
+          </p>
+          <div class="explorer-settings-row explorer-settings-sendto-row">
+            <button type="button" class="btn" id="btn-sendto-upload">Add to Send to</button>
+            <span
+              id="explorer-sendto-status"
+              class="explorer-sendto-status"
+              hidden
+              aria-hidden="true"
+              aria-live="polite"
+            >
+              <span class="explorer-loading-spinner explorer-loading-spinner--sm" aria-hidden="true"></span>
+              <span id="explorer-sendto-status-msg">Working…</span>
+            </span>
+          </div>
+        </section>
+        <section class="explorer-settings-section">
+          <h3 class="explorer-settings-section-title">Developer</h3>
+          <label class="check">
+            <input type="checkbox" id="explorer-developer-mode" />
+            <span>Developer mode (log USB / flash-cart SD sessions; separate log window)</span>
+          </label>
+          <p class="explorer-settings-hint">
+            When enabled, the backend records serial session open/close and cart operations. Use the log window to watch in real time (similar to Multi64 GUI developer mode).
+          </p>
+          <div class="explorer-settings-row" id="explorer-dev-shell-row" hidden aria-hidden="true">
+            <button type="button" class="btn primary" id="btn-open-dev-shell" disabled>
+              Open developer log window
+            </button>
+          </div>
+        </section>
+        </div>
+      </div>
+    </div>
+
+    <div id="explorer-overwrite-modal" class="explorer-modal-root hidden" aria-hidden="true">
+      <div class="explorer-modal-backdrop" aria-hidden="true"></div>
+      <div
+        class="explorer-modal-panel explorer-modal-panel--wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="explorer-overwrite-title"
+        tabindex="-1"
+      >
+        <h2 id="explorer-overwrite-title" class="explorer-modal-title">File already exists</h2>
+        <p id="explorer-overwrite-message" class="explorer-modal-message"></p>
+        <div class="explorer-modal-actions explorer-modal-actions--overwrite">
+          <button type="button" class="btn" id="explorer-overwrite-cancel">Cancel</button>
+          <button type="button" class="btn" id="explorer-overwrite-skip">Skip</button>
+          <button type="button" class="btn" id="explorer-overwrite-yes">Yes</button>
+          <button type="button" class="btn" id="explorer-overwrite-skip-all">Skip all</button>
+          <button type="button" class="btn primary" id="explorer-overwrite-yes-all">Yes to all</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

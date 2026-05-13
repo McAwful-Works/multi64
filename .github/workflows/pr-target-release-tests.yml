@@ -1,0 +1,45 @@
+# Runs the full Rust unit test suite when a pull request targets `release`.
+# Also runnable from the Actions tab (workflow_dispatch): pick a branch, or set
+# `git_ref` to e.g. `refs/pull/123/merge` to test a specific PR’s merge commit.
+
+name: Unit tests (PR → release)
+
+on:
+  pull_request:
+    branches: [release]
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Git ref to checkout (e.g. refs/pull/42/merge). Leave empty to use the branch SHA you select when clicking Run workflow."
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: pr-release-tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ (github.event_name == 'workflow_dispatch' && (inputs.git_ref != '' && inputs.git_ref || github.sha)) || '' }}
+
+      - name: Install Tauri / WebView deps (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test (workspace)
+        run: cargo test --workspace

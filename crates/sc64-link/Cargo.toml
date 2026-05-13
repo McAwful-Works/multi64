@@ -1,0 +1,9 @@
+[package]
+name = "multi64-sc64-link"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "SummerCart64 host wire protocol (CMD/CMP/PKT helpers)"
+
+[dependencies]

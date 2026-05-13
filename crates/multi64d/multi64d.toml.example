@@ -1,0 +1,11 @@
+# Copy to `multi64d.toml` in the working directory, or to:
+#   Linux:   ~/.config/multi64d/config.toml
+#   macOS:   ~/Library/Application Support/multi64d/config.toml
+#   Windows: %APPDATA%\multi64d\config.toml
+#
+# CLI and environment variables override these values.
+
+serial = "COM3"
+listen = "127.0.0.1:38765"
+baud = 115200
+clear_serial = false

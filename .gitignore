@@ -1,0 +1,25 @@
+/target
+**/*.rs.bk
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+
+# Local tooling checkouts (optional; not part of this tree)
+_ap_clone/
+
+# Python (scripts + venv)
+scripts/venv/
+**/__pycache__/
+*.pyc
+
+# Secrets / local env (never commit)
+.env
+.env.*
+
+# Tauri frontends: npm + bundled daemon during dev/build
+crates/multi64/node_modules/
+crates/multi64/src-tauri/resources/multi64d.exe
+crates/xfer64/node_modules/
+crates/multi64-test-connector-gui/node_modules/

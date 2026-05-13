@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi64</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="/main.js" defer></script>
+  </head>
+  <body>
+    <header class="header">
+      <div class="header-top">
+        <div class="header-titles">
+          <h1>Multi64</h1>
+          <p class="tagline">
+            Bridge for USB flash carts — <code>multi64d</code> runs while this window is open.
+            Game integrations (e.g. Archipelago) connect to the same WebSocket as other tools.
+          </p>
+        </div>
+        <button type="button" id="btn-open-settings" class="btn btn-settings" aria-expanded="false" aria-controls="settings-panel">
+          Settings
+        </button>
+      </div>
+    </header>
+
+    <section class="card" id="status-card">
+      <h2>Status</h2>
+      <dl class="status-grid">
+        <dt>Daemon</dt>
+        <dd id="status-running">—</dd>
+        <dt>Health</dt>
+        <dd id="status-healthy">—</dd>
+        <dt>Listen</dt>
+        <dd id="status-listen">—</dd>
+        <dt>Note</dt>
+        <dd id="status-msg">—</dd>
+      </dl>
+      <div class="row">
+        <button type="button" id="btn-start" class="btn primary">Start daemon</button>
+        <button type="button" id="btn-stop" class="btn">Stop daemon</button>
+        <button type="button" id="btn-refresh" class="btn">Refresh status</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Xfer64</h2>
+      <p class="hint">
+        A Multi64 product — separate app: two-pane file manager for SC64 SD (USB mass storage) ↔ Windows. The button runs the bundled
+        installer when Xfer64 is not installed, or opens it when it is.
+      </p>
+      <div class="row">
+        <button type="button" id="btn-open-explorer" class="btn primary">Xfer64</button>
+      </div>
+    </section>
+
+    <section class="card dev-only" id="dev-panel" hidden>
+      <h2>Developer</h2>
+      <p class="hint">
+        Raw <code>multi64d</code> stdout/stderr. Choose verbosity under <strong>Settings → Daemon logging</strong>
+        (shown when Developer mode is on). Integrations (Archipelago, etc.) should use the daemon WebSocket — same
+        contract as <code>docs/spec/daemon-api-v1.md</code> in the repo.
+      </p>
+      <pre id="daemon-log" class="log"></pre>
+      <div class="row">
+        <button type="button" id="btn-log-clear" class="btn">Clear log</button>
+        <button type="button" id="btn-log-refresh" class="btn">Refresh log</button>
+      </div>
+    </section>
+
+    <div id="settings-backdrop" class="settings-backdrop" hidden aria-hidden="true"></div>
+    <div id="settings-panel" class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+      <div class="settings-panel-inner">
+        <div class="settings-header">
+          <h2 id="settings-title">Settings</h2>
+          <div class="settings-header-actions">
+            <button type="button" id="btn-save" class="btn primary">Save settings</button>
+            <button type="button" id="btn-close-settings" class="btn btn-close" aria-label="Close settings">×</button>
+          </div>
+        </div>
+
+        <div class="settings-body">
+        <section class="settings-section">
+          <h3 class="settings-section-title">Serial &amp; network</h3>
+          <label class="field">
+            <span>COM port</span>
+            <select id="serial-port"></select>
+          </label>
+          <p class="hint" id="auto-hint"></p>
+          <div class="row">
+            <button type="button" id="btn-ports" class="btn">Refresh ports</button>
+          </div>
+          <label class="field">
+            <span>Baud</span>
+            <input type="number" id="baud" min="9600" step="1" value="115200" />
+          </label>
+          <label class="field">
+            <span>Listen (HTTP + WebSocket)</span>
+            <input type="text" id="listen" value="127.0.0.1:38765" spellcheck="false" />
+          </label>
+        </section>
+
+        <section class="settings-section">
+          <h3 class="settings-section-title">App behavior</h3>
+          <label class="check">
+            <input type="checkbox" id="auto-start-daemon" checked />
+            <span>Start <code>multi64d</code> automatically when this app opens</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="autostart-app" />
+            <span>Start this app when Windows logs in</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="tray-enabled" checked />
+            <span>Use notification area (system tray)</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="minimize-tray" checked />
+            <span>Minimize to tray when closing the window (instead of exiting)</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="start-minimized" />
+            <span>Start with the window hidden (open from the tray)</span>
+          </label>
+          <p class="hint" id="start-minimized-hint">
+            Off by default — the main window opens normally unless you turn this on. Requires the tray icon above.
+          </p>
+          <label class="check">
+            <input type="checkbox" id="developer-mode" />
+            <span>Developer mode (show daemon log)</span>
+          </label>
+          <label class="field dev-only-setting" id="multi64d-log-preset-wrap" hidden>
+            <span>Daemon logging</span>
+            <select id="multi64d-log-preset" aria-describedby="multi64d-log-hint">
+              <option value="default">Default (info)</option>
+              <option value="debug">Debug (SC64 + multi64d)</option>
+              <option value="serialTrace">Serial trace (each cart read)</option>
+              <option value="verbose">Verbose (debug + serial trace)</option>
+            </select>
+          </label>
+          <p class="hint dev-only-setting" id="multi64d-log-hint" hidden>
+            Applies when the GUI starts <code>multi64d</code>. Use <strong>Serial trace</strong> to mirror
+            <code>--serial-trace</code> / <code>MULTI64D_SERIAL_TRACE</code> (stderr). Restart the daemon after changing.
+          </p>
+        </section>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

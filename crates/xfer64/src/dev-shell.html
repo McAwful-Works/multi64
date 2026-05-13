@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Xfer64 — developer log</title>
+    <style>
+      /* Fallback if explorer.css fails to load (secondary webview must still be readable). */
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #1a1b1e;
+        color: #e8e8ea;
+        font-family: system-ui, sans-serif;
+      }
+    </style>
+    <link rel="stylesheet" href="./explorer.css" />
+  </head>
+  <body class="explorer-root dev-shell-root">
+    <header class="explorer-appbar dev-shell-appbar">
+      <div class="explorer-appbar-title">
+        <h1>Developer log</h1>
+        <p class="explorer-appbar-desc">
+          Flash cart SD / USB serial activity from the Xfer64 backend. For a full shell, use an external terminal.
+        </p>
+      </div>
+      <div class="dev-shell-actions">
+        <button type="button" class="btn" id="dev-shell-refresh" title="Reload buffer from app">Refresh</button>
+        <button type="button" class="btn" id="dev-shell-copy" title="Copy visible log text to the clipboard">Copy</button>
+        <button type="button" class="btn" id="dev-shell-clear" title="Clear buffer">Clear</button>
+        <button type="button" class="btn primary" id="dev-shell-close" title="Hide this window">Close window</button>
+      </div>
+    </header>
+    <main class="dev-shell-main">
+      <pre id="dev-shell-log" class="dev-shell-log" aria-live="polite"></pre>
+    </main>
+    <script defer src="./dev-shell.js"></script>
+  </body>
+</html>

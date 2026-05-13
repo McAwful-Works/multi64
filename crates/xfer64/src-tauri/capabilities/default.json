@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Xfer64 windows (main + developer log)",
+  "windows": ["main", "dev-shell", "upload-picker"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "opener:default"
+  ]
+}

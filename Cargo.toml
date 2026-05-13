@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/l3",
+    "crates/sc64-link",
+    "crates/sc64-l2",
+    "crates/ed64-l2",
+    "crates/sc64-echo-test",
+    "crates/sc64-l3-framing-e2e",
+    "crates/sc64-smoke",
+    "crates/ed64-smoke",
+    "crates/ed64-echo-test",
+    "crates/ed64-l3-framing-e2e",
+    "crates/multi64d",
+    "crates/multi64-test-connector",
+    "crates/multi64/src-tauri",
+    "crates/xfer64/src-tauri",
+    "crates/multi64-sc64-sd",
+    "crates/multi64-ed64-link",
+    "crates/multi64-test-connector-gui/src-tauri",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.74"
+
+# crates.io hadris-fat 1.1.0 fails to compile with `--features exfat` (missing `as u64` on
+# `offset += size_of::<RawDirectoryEntry>()` in exfat/fs.rs). Upstream main has the fix.
+# Pin a rev so builds stay reproducible; bump when you want a newer hadris-fat.
+[patch.crates-io]
+hadris-fat = { git = "https://github.com/hxyulin/hadris.git", rev = "46bcf3356f30cd2fda8bcc79fe74183a0274a6a3" }

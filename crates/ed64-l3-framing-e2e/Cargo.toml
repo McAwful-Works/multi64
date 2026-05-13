@@ -1,0 +1,16 @@
+[package]
+name = "ed64-l3-framing-e2e"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "E2E: full L3 frames (M64B wire) over EverDrive L2 vs. multi64_test.z64 RAW_ECHO (requires ed64-l2)"
+
+[[bin]]
+name = "ed64-l3-framing-e2e"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+multi64-l3 = { path = "../l3" }
+multi64-ed64-l2 = { path = "../ed64-l2" }

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>multi64 — Test ROM connector</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="hdr">
+      <h1>Test ROM connector</h1>
+      <p class="sub">
+        Use <strong>M64T</strong> with <strong>multi64d</strong> running. <strong>Serial RAW_ECHO</strong> tools need the
+        USB port free — <strong>stop multi64d</strong> first. <strong>WS binary echo</strong> needs
+        <strong>multi64d</strong> again and the ROM in <strong>RAW_ECHO</strong>.
+      </p>
+    </header>
+
+    <div class="main-layout">
+    <div class="main-col">
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab-btn active" data-tab="m64t" role="tab" aria-selected="true">
+        M64T (multi64d)
+      </button>
+      <button type="button" class="tab-btn" data-tab="serial" role="tab" aria-selected="false">
+        Serial RAW_ECHO
+      </button>
+      <button type="button" class="tab-btn" data-tab="wsraw" role="tab" aria-selected="false">
+        WS binary echo
+      </button>
+    </nav>
+
+    <section id="panel-m64t" class="tab-panel" data-tab="m64t" role="tabpanel">
+      <section class="row">
+        <label>WebSocket URL</label>
+        <input type="text" id="url" value="ws://127.0.0.1:38765/ws" spellcheck="false" />
+        <label>Recv timeout (s)</label>
+        <input type="number" id="recv-timeout" value="5" min="0.1" step="0.1" />
+      </section>
+
+      <div class="row tight">
+        <label>Session open challenge (16 hex digits)</label>
+        <input type="text" id="session-challenge" value="0000000000000000" spellcheck="false" />
+      </div>
+
+      <div class="grid-actions">
+        <button type="button" data-cmd="ping">Ping</button>
+        <button type="button" data-cmd="version">Version</button>
+        <button type="button" data-cmd="req-controller">Req controller (one-shot)</button>
+        <button type="button" data-cmd="session-open">Session open</button>
+        <button type="button" data-cmd="session-close">Session close</button>
+        <button type="button" data-cmd="eeprom-info">EEPROM info</button>
+        <button type="button" data-cmd="sram-info">SRAM info</button>
+      </div>
+
+      <fieldset>
+        <legend>Echo</legend>
+        <div class="row">
+          <label><input type="radio" name="echo-mode" value="default" checked /> Default body (DEADBEEF)</label>
+          <label><input type="radio" name="echo-mode" value="text" /> Text</label>
+          <label><input type="radio" name="echo-mode" value="hex" /> Hex</label>
+        </div>
+        <input type="text" id="echo-payload" placeholder="Text or hex (even digits)" />
+        <button type="button" id="btn-echo">Echo</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>EEPROM read</legend>
+        <div class="row tight">
+          <label>offset <input type="number" id="eeprom-roff" value="0" min="0" /></label>
+          <label>len <input type="number" id="eeprom-rlen" value="16" min="1" /></label>
+          <button type="button" id="btn-eeprom-read">Read</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>EEPROM write</legend>
+        <div class="row tight">
+          <label>offset <input type="number" id="eeprom-woff" value="0" min="0" /></label>
+          <label>hex <input type="text" id="eeprom-whex" placeholder="e.g. aabbcc" /></label>
+          <button type="button" id="btn-eeprom-write">Write</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>SRAM read</legend>
+        <div class="row tight">
+          <label>offset <input type="number" id="sram-roff" value="0" min="0" /></label>
+          <label>len <input type="number" id="sram-rlen" value="16" min="1" /></label>
+          <button type="button" id="btn-sram-read">Read</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>SRAM write</legend>
+        <div class="row tight">
+          <label>offset <input type="number" id="sram-woff" value="0" min="0" /></label>
+          <label>hex <input type="text" id="sram-whex" placeholder="even length, 1..512 bytes" /></label>
+          <button type="button" id="btn-sram-write">Write</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Rumble</legend>
+        <div class="row tight">
+          <label>port <input type="number" id="rumble-port" value="0" min="0" max="3" /></label>
+          <label>frames <input type="number" id="rumble-frames" value="60" min="0" max="255" /></label>
+          <button type="button" id="btn-rumble">Rumble</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Display text</legend>
+        <input type="text" id="display-text" placeholder="UTF-8, max 120 bytes; empty clears" />
+        <button type="button" id="btn-display-text">Send</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>Controller poll (ROM mode CTRL_POLL)</legend>
+        <p class="hint">
+          Select <strong>CTRL_POLL</strong> from the ROM MODE MENU. Host sends REQ_CONTROLLER at the interval below; on
+          the N64 hold L+R ~5s to return to the MODE MENU (ROM sends M64T 0xF1).
+        </p>
+        <div class="row tight">
+          <label>interval (ms) <input type="number" id="controller-poll-interval" value="50" min="1" max="5000" step="1" /></label>
+          <button type="button" id="btn-controller-poll-start">Start</button>
+          <button type="button" id="btn-controller-poll-stop">Stop</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Listen (inbound L3 / M64T)</legend>
+        <div class="row tight">
+          <label>duration (s, 0 = until Stop)</label>
+          <input type="number" id="listen-duration" value="0" min="0" step="0.05" />
+          <button type="button" id="btn-listen-start">Start</button>
+          <button type="button" id="btn-listen-stop">Stop</button>
+        </div>
+      </fieldset>
+    </section>
+
+    <section id="panel-serial" class="tab-panel" data-tab="serial" role="tabpanel" hidden>
+      <p class="warn">
+        <strong>Stop multi64d</strong> (and any app using the cart serial port). These tools open the USB serial link
+        directly — they cannot run while multi64d holds the same port. ROM must be in <strong>RAW_ECHO</strong> (mode 0).
+      </p>
+      <p class="hint">
+        Binaries are loaded from the workspace <code>target/release</code> or <code>target/debug</code>:
+        <code>cargo build -p sc64-echo-test</code> and <code>cargo build -p sc64-l3-framing-e2e</code>.
+      </p>
+
+      <fieldset>
+        <legend>sc64-echo-test</legend>
+        <p class="hint">Raw L3 octet loopback (no M64B framing).</p>
+        <div class="row tight">
+          <label>port <input type="text" id="serial-port" value="COM3" spellcheck="false" /></label>
+          <label>baud <input type="number" id="serial-baud" value="115200" min="9600" step="1" /></label>
+          <label>timeout (s) <input type="number" id="serial-echo-timeout" value="10" min="1" /></label>
+        </div>
+        <div class="row tight">
+          <label class="grow">payload <input type="text" id="serial-echo-payload" value="multi64_test" spellcheck="false" /></label>
+        </div>
+        <button type="button" id="btn-sc64-echo-test">Run sc64-echo-test</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>sc64-l3-framing-e2e</legend>
+        <p class="hint">Full L3 wire frames echoed verbatim; optional large multi-chunk case.</p>
+        <div class="row tight">
+          <label>port <input type="text" id="l3fe-port" value="COM3" spellcheck="false" /></label>
+          <label>baud <input type="number" id="l3fe-baud" value="115200" min="9600" step="1" /></label>
+          <label>timeout (s) <input type="number" id="l3fe-timeout" value="10" min="1" /></label>
+        </div>
+        <label class="check-inline"><input type="checkbox" id="l3fe-large" /> Large DATA frame (multi-chunk USB)</label>
+        <div class="row tight">
+          <button type="button" id="btn-sc64-l3-framing-e2e">Run sc64-l3-framing-e2e</button>
+        </div>
+      </fieldset>
+    </section>
+
+    <section id="panel-wsraw" class="tab-panel" data-tab="wsraw" role="tabpanel" hidden>
+      <p class="hint">
+        <strong>multi64d</strong> must be running. Load <strong>multi64_test.z64</strong> and choose <strong>RAW_ECHO</strong> (mode 0) in the ROM menu. Sends WebSocket <strong>binary</strong> frames; the cart echoes raw L3 bytes (same as
+        <code>scripts/multi64_ws_test.py --skip-http --assert-echo</code> style check).
+      </p>
+      <div class="row">
+        <label>WebSocket URL</label>
+        <input type="text" id="ws-raw-url" value="ws://127.0.0.1:38765/ws" spellcheck="false" />
+        <label>Recv timeout (s)</label>
+        <input type="number" id="ws-raw-timeout" value="10" min="0.5" step="0.5" />
+      </div>
+      <div class="row tight">
+        <label class="grow">
+          UTF-8 payload
+          <input type="text" id="ws-raw-payload" value="multi64 gui ws raw echo" spellcheck="false" />
+        </label>
+      </div>
+      <label class="check-inline"><input type="checkbox" id="ws-raw-ping" checked /> JSON ping/pong after hello (recommended)</label>
+      <div class="row tight">
+        <button type="button" id="btn-ws-raw-echo">Run WS binary echo</button>
+      </div>
+    </section>
+    </div>
+
+    <aside class="log-column" aria-label="Output log">
+      <label class="log-label" for="log">Output</label>
+      <textarea id="log" readonly rows="12"></textarea>
+      <button type="button" id="btn-clear" class="secondary">Clear log</button>
+    </aside>
+    </div>
+
+    <script src="main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <!-- After Multi64 files are on disk, optionally launch the bundled Xfer64 installer (same PS1 as NSIS). -->
+    <CustomAction Id="Multi64Xfer64OptionalPrompt"
+      Directory="SystemFolder"
+      ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]resources\xfer64-installer-prompt.ps1&quot; -InstallDir &quot;[INSTALLDIR]&quot; -UiLevel [UILevel]"
+      Execute="immediate"
+      Impersonate="yes"
+      Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="Multi64Xfer64OptionalPrompt" After="InstallFinalize"><![CDATA[NOT REMOVE]]></Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

@@ -1,0 +1,14 @@
+[package]
+name = "multi64-ed64-l2"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "L3 byte stream over EverDrive 64 X7 USB (stub — see docs/spec/l3-over-everdrive-x7.md)"
+readme = "README.md"
+
+[lib]
+name = "multi64_ed64_l2"
+path = "src/lib.rs"
+
+[dependencies]

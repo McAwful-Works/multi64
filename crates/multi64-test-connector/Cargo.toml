@@ -1,0 +1,25 @@
+[package]
+name = "multi64-test-connector"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "PC connector for multi64_test.z64 M64T mode over multi64d WebSocket"
+
+[lib]
+name = "multi64_test_connector"
+path = "src/lib.rs"
+
+[[bin]]
+name = "multi64-test-connector"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+futures-util = "0.3"
+multi64-l3 = { path = "../l3" }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"

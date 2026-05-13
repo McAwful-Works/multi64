@@ -1,0 +1,6 @@
+# Smaller Docker build context when building from this repository root.
+.git
+**/target
+**/node_modules
+**/__pycache__
+*.pyc

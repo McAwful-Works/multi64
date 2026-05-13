@@ -1,0 +1,19 @@
+Windows Registry Editor Version 5.00
+;
+; Right-click a file in Explorer -> "Upload to SD card (Xfer64)".
+;
+; BEFORE MERGING: replace EVERY occurrence of C:\\Path\\To\\xfer64.exe with your real install path
+; (use doubled backslashes as shown). Example:
+;   "C:\\\\Program Files\\\\Multi64\\\\Xfer64\\\\xfer64.exe"
+;
+; Install: double-click this file and confirm, or: reg import upload-to-sd.reg
+; Uninstall: delete the Xfer64Upload keys under:
+;   HKEY_CURRENT_USER\Software\Classes\*\shell\Xfer64Upload
+;
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Xfer64Upload]
+@="Upload to SD card (Xfer64)"
+"Icon"="C:\\Path\\To\\xfer64.exe,0"
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Xfer64Upload\command]
+@="\"C:\\Path\\To\\xfer64.exe\" upload --picker \"%1\""

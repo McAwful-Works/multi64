@@ -1,0 +1,78 @@
+# Builds the Multi64 and Xfer64 Windows GUI executables when `main` advances
+# (typically after a PR merge). Artifacts are attached to the workflow run.
+# Run manually from Actions: choose a branch, or set `git_ref` to a specific ref.
+
+name: Windows apps (main)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Git ref to checkout (optional). Leave empty to use the branch SHA you select when clicking Run workflow."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-windows-apps-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-guis:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ (github.event_name == 'workflow_dispatch' && (inputs.git_ref != '' && inputs.git_ref || github.sha)) || '' }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            crates/multi64/package-lock.json
+            crates/xfer64/package-lock.json
+
+      - name: Build multi64d (bundled into Multi64)
+        run: cargo build -p multi64d --release
+
+      - name: Build xfer64 lib (Tauri links this crate)
+        run: cargo build -p xfer64 --release
+
+      - name: npm ci + tauri build (Xfer64)
+        working-directory: crates/xfer64
+        run: |
+          npm ci
+          npm run build
+
+      - name: npm ci + tauri build (Multi64)
+        working-directory: crates/multi64
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload GUI executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gui-exes-${{ github.run_number }}-${{ github.sha }}
+          path: |
+            target/release/multi64.exe
+            target/release/xfer64.exe
+          if-no-files-found: error
+
+      - name: Upload NSIS installers (if present)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis-installers-${{ github.run_number }}-${{ github.sha }}
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: warn
