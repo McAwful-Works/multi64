@@ -49,7 +49,7 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 | `multi64d` | Daemon on `127.0.0.1:38765` → L3 over **SC64 L2** today |
 | `multi64-test-connector` | CLI ↔ **`multi64_test.z64`** ([`docs/connectors/test-rom.md`](docs/connectors/test-rom.md)) |
 | `multi64-sc64-sd` | FAT/exFAT over SC64 USB; optional EverDrive linear `RomRead` — Xfer64 / tooling |
-| `multi64-ed64-link` | EverDrive serial: **edlink** (PRO/CORE) + legacy **`usb64`** (X-series) |
+| `multi64-ed64-link` | EverDrive X-series **`usb64`** serial (`RomRead` / `RamRead`) |
 | `multi64` (**Multi64**), `xfer64` (**Xfer64**) | Windows Tauri apps — READMEs under [`crates/multi64`](crates/multi64), [`crates/xfer64`](crates/xfer64) |
 | `multi64-test-connector-gui` | Optional GUI; same WebSocket contract as the CLI ([`test-rom.md`](docs/connectors/test-rom.md)) |
 

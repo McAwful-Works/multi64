@@ -6474,7 +6474,7 @@ dependencies = [
 
 [[package]]
 name = "xfer64"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "dirs 5.0.1",
  "multi64-ed64-link",

@@ -4,20 +4,7 @@
 
 This note describes how **Xfer64** talks to an **EverDrive 64 X-series** cart over **USB serial** for read-only access that mirrors the SummerCart64 **host FAT/exFAT** path. It is **not** Windows mass-storage.
 
-## Relationship to Krikzz **edlink** (PRO / CORE) vs **X-series `usb64`**
-
-Krikzz’s cross-platform host tool **[edlink](https://github.com/krikzz/edlink)** (C#, MIT) targets **EverDrive PRO and CORE** with a **`++`-prefixed command frame** (`TxCMD`: `+`, `+^0xff`, opcode, `opcode^0xff`, …), **921600** baud by default, and Gen1/Gen2/Gen3 status detection — see `edlink/Device/Link.cs` in that repository.
-
-**Xfer64** and **`multi64-ed64-link`** support **both** stacks:
-
-- **PRO/CORE** — **`EdlinkLink`** implements the **edlink** Gen3 wire (EPO/FCI reads for SD bring-up where applicable).
-- **X-series** — **`Ed64Link`** uses the legacy **`usb64`** **16-byte `cmd`** layout at **115200** baud ([ed64-x-pub](https://github.com/krikzz/ed64-x-pub) / UNFLoader) for **`RomRead`** / **`RamRead`** / test.
-
-**Auto-detect** tries **edlink** first, then falls back to **`usb64`** **`cmd`/`t`** (see [`probe_ed64_serial_cart`](../../crates/multi64-ed64-link/src/lib.rs)). The sections below focus on the **experimental X-series SD** path (**linear `RomRead`**); PRO/CORE SD behavior follows **`EdlinkLink`** / firmware, not the `RomRead` sector math in §“Experimental”.
-
-Treat **edlink**’s C# tree as the vendor reference for **PRO/CORE** byte rules; treat **ed64-x-pub** as the reference for **X7 `usb64`** opcodes.
-
-## Authoritative packet layout (Krikzz / UNFLoader — X-series `usb64`)
+## Authoritative packet layout (Krikzz / UNFLoader)
 
 The on-wire format matches Krikzz’s reference tooling:
 
@@ -26,7 +13,7 @@ The on-wire format matches Krikzz’s reference tooling:
 
 Outbound: 16-byte **`cmd`** packet: ASCII `cmd`, 1-byte opcode, then three **big-endian `u32`**: address, length as **byte count ÷ 512** (sectors), argument. For **RomRead** (`R`) and **RamRead** (`r`), the cart then streams **`length` bytes** of raw payload on the serial port (no extra 16-byte CMP wrapper before the data in the vendor path we follow).
 
-Implementation: Rust crate [`multi64-ed64-link`](../../crates/multi64-ed64-link/src/lib.rs) — **`Ed64Link`** for X-series **`usb64`** (`command_packet`, `rom_read`, `ram_read`, `test_connection`) and **`EdlinkLink`** for **edlink** Gen3 on **PRO/CORE** (see crate `//!` and [`edlink.rs`](../../crates/multi64-ed64-link/src/edlink.rs)). Xfer64 **Auto** detection uses both ([`probe_ed64_serial_cart`](../../crates/multi64-ed64-link/src/lib.rs)).
+Implementation: Rust crate [`multi64-ed64-link`](../../crates/multi64-ed64-link/src/lib.rs) (`Ed64Link::command_packet`, `rom_read`, `ram_read`, `test_connection`).
 
 ## N64-side context (community)
 

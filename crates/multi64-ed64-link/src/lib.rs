@@ -1,19 +1,12 @@
-//! EverDrive-64 host ↔ cart **USB serial** aligned with Krikzz sources:
-//! - **[edlink](https://github.com/krikzz/edlink)** Gen3 **`++`** link (default **921600** baud) and **EPO FCI** reads
-//!   for **EverDrive-64 PRO/CORE** — see [`edlink::EdlinkLink`] (`Device/Link.cs`, `Device/DeviceIO_V2.cs`,
-//!   `DEV_ED64/DeviceIO.cs`).
-//! - Legacy **X-series `usb64`** **`cmd`** packet** ([`krikzz/ed64-x-pub`](https://github.com/krikzz/ed64-x-pub)
-//!   `CommandProcessor.cs`; same packing as [UNFLoader](https://github.com/buu342/N64-UNFLoader)
-//!   `device_sendcmd_everdrive`): **RomRead** (`R`) / **RamRead** (`r`) + raw payload reads.
+//! EverDrive-64 host ↔ cart **USB serial** aligned with Krikzz **X-series `usb64`** sources
+//! ([`krikzz/ed64-x-pub`](https://github.com/krikzz/ed64-x-pub) `CommandProcessor.cs`; same packing as
+//! [UNFLoader](https://github.com/buu342/N64-UNFLoader) `device_sendcmd_everdrive`): **RomRead** (`R`) /
+//! **RamRead** (`r`) + raw payload reads.
 //!
-//! This is **not** SummerCart64’s `CMD`/`CMP` protocol. For `usb64`, outbound layout is **`cmd`** + 1-byte opcode +
+//! This is **not** SummerCart64’s `CMD`/`CMP` protocol. Outbound layout is **`cmd`** + 1-byte opcode +
 //! three **big-endian `u32`**: address, length in **512-byte sectors**, argument (see [`Ed64Link::command_packet`]).
-pub mod edlink;
 pub mod linear_probe;
 
-pub use edlink::{
-    ADDR_FCI_SYS, EDLINK_DEFAULT_BAUD, EdlinkLink, PROTOCOL_ID_ED64,
-};
 pub use linear_probe::{
     ed64_linear_base_probe_list, ed64_linear_base_probe_list_with_preferred,
     looks_like_disk_sector0, probe_ed64_sd_linear_bases, probe_ed64_sd_linear_bases_with_cancel,
@@ -23,7 +16,7 @@ pub use linear_probe::{
 use serialport::{ClearBuffer, SerialPort};
 use std::io;
 use std::io::{Read, Write};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 /// X-series ROM space base used by reference `usb64` for uploads (`CommandProcessor.ROM_BASE_ADDRESS`).
 pub const ROM_BASE_ADDRESS: u32 = 0x1000_0000;
 /// X-series RDRAM base for `RamRead` (`CommandProcessor.RAM_BASE_ADDRESS`).
@@ -181,66 +174,6 @@ impl Ed64Link {
     }
 }
 
-/// True if the port answers **edlink** as **EverDrive-64** ([`PROTOCOL_ID_ED64`] at [`EDLINK_DEFAULT_BAUD`]),
-/// or legacy **`usb64`** `cmd`+`t` at **115200** (X-series).
-pub fn probe_ed64_serial_cart(port: &str) -> bool {
-    match EdlinkLink::try_open(port) {
-        Ok(l) => l.protocol_id() == PROTOCOL_ID_ED64,
-        Err(_) => probe_usb64_cmd_t(port, 115_200),
-    }
-}
-
-fn probe_usb64_cmd_t(port: &str, baud: u32) -> bool {
-    let mut port_handle = match serialport::new(port, baud)
-        .timeout(Duration::from_millis(100))
-        .open()
-    {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    let _ = port_handle.clear(ClearBuffer::Input);
-    let mut pkt = [0u8; 16];
-    pkt[0..3].copy_from_slice(b"cmd");
-    pkt[3] = b't';
-    if port_handle.write_all(&pkt).is_err() {
-        return false;
-    }
-    let _ = port_handle.flush();
-    read_usb64_test_response(&mut *port_handle)
-        .map(|buf| buf.len() >= 4 && matches!(buf[3], b'k' | b'r'))
-        .unwrap_or(false)
-}
-
-fn read_usb64_test_response(port: &mut dyn SerialPort) -> io::Result<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut scratch = [0u8; 256];
-    let start = Instant::now();
-    let total_timeout = Duration::from_millis(2000);
-    while start.elapsed() < total_timeout && out.len() < 512 {
-        match port.read(&mut scratch) {
-            Ok(0) => std::thread::sleep(Duration::from_millis(1)),
-            Ok(n) => {
-                out.extend_from_slice(&scratch[..n]);
-                if out.len() >= 4 && matches!(out[3], b'k' | b'r') {
-                    let t0 = Instant::now();
-                    while t0.elapsed() < Duration::from_millis(80) && out.len() < 512 {
-                        match port.read(&mut scratch) {
-                            Ok(0) => break,
-                            Ok(n) => out.extend_from_slice(&scratch[..n]),
-                            Err(e) if e.kind() == io::ErrorKind::TimedOut => break,
-                            Err(e) => return Err(e),
-                        }
-                    }
-                    break;
-                }
-            }
-            Err(e) if e.kind() == io::ErrorKind::TimedOut => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,11 +189,5 @@ mod tests {
     fn packet_length_is_sectors() {
         let p = Ed64Link::command_packet(b'R', 0x1000_0000, 1024, 0);
         assert_eq!(u32::from_be_bytes([p[8], p[9], p[10], p[11]]), 2);
-    }
-
-    #[test]
-    fn edlink_tx_cmd_matches_vendor() {
-        // Link.TxCMD(0x10): '+', '+' ^ 0xff, cmd, cmd ^ 0xff
-        assert_eq!([b'+', 0xD4, 0x10, 0xEF], [b'+', b'+' ^ 0xff, 0x10, 0x10 ^ 0xff]);
     }
 }
