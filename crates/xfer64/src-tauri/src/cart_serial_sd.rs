@@ -12,7 +12,7 @@
 //! - **[`with_session`]** — resolves cart role, opens [`CartSession`](multi64_sc64_sd::CartSession), runs work, closes.
 //! - **Tauri commands** — `cart_serial_*` IPC (list, copy, mkdir, …).
 //!
-//! Maintainer map: workspace `docs/spec/xfer64-cart-serial-architecture.md`.
+//! Maintainer map: workspace `docs/spec/xfer64-cart-serial.md`.
 
 use crate::cancel::ExplorerCancelState;
 use crate::cart_probe::DetectedCartKind;

@@ -2,8 +2,9 @@
 //! selects **Auto** in Settings. See [`docs/spec/l3-over-everdrive-x7.md`](../../../docs/spec/l3-over-everdrive-x7.md) §8.
 
 use multi64_sc64_sd::Sc64Link;
+use serialport::{ClearBuffer, SerialPort};
 use std::io;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -50,7 +51,7 @@ fn probe_ed64_test_connection(port: &str) -> bool {
         Ok(p) => p,
         Err(_) => return false,
     };
-    let _ = port_handle.clear(serialport::ClearBuffer::Input);
+    let _ = port_handle.clear(ClearBuffer::Input);
     let mut pkt = [0u8; 16];
     pkt[0..3].copy_from_slice(b"cmd");
     pkt[3] = b't';
@@ -64,7 +65,7 @@ fn probe_ed64_test_connection(port: &str) -> bool {
     }
 }
 
-fn read_ed64_response(port: &mut dyn serialport::SerialPort) -> io::Result<Vec<u8>> {
+fn read_ed64_response(port: &mut dyn SerialPort) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut scratch = [0u8; 256];
     let start = Instant::now();
