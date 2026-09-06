@@ -1,6 +1,6 @@
 //! Multi64 — manages `multi64d`, tray, settings (Windows-first).
 
-use auto_launch::AutoLaunch;
+use auto_launch::{AutoLaunch, AutoLaunchBuilder};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
@@ -371,9 +371,23 @@ fn set_settings(state: tauri::State<'_, AppState>, settings: Settings) -> Result
     Ok(())
 }
 
-fn set_autostart_windows_impl(enabled: bool) -> Result<(), String> {
+/// Build the Multi64 auto-launch handle.
+///
+/// auto-launch 0.6 made `AutoLaunch::new` platform-divergent (Linux gained a
+/// `LinuxLaunchMode` argument), so both call sites go through the builder, which
+/// keeps one signature across platforms.
+fn multi64_auto_launch() -> Result<AutoLaunch, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let auto = AutoLaunch::new("Multi64", &exe.to_string_lossy(), &[] as &[&str]);
+    AutoLaunchBuilder::new()
+        .set_app_name("Multi64")
+        .set_app_path(&exe.to_string_lossy())
+        .set_args(&[] as &[&str])
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn set_autostart_windows_impl(enabled: bool) -> Result<(), String> {
+    let auto = multi64_auto_launch()?;
     if enabled {
         auto.enable().map_err(|e| e.to_string())?;
     } else {
@@ -441,11 +455,9 @@ fn set_autostart_windows(enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 fn get_autostart_windows() -> bool {
-    if let Ok(exe) = std::env::current_exe() {
-        let auto = AutoLaunch::new("Multi64", &exe.to_string_lossy(), &[] as &[&str]);
-        return auto.is_enabled().unwrap_or(false);
-    }
-    false
+    multi64_auto_launch()
+        .map(|auto| auto.is_enabled().unwrap_or(false))
+        .unwrap_or(false)
 }
 
 /// Basenames we search for (NSIS / MSI / legacy installs).
