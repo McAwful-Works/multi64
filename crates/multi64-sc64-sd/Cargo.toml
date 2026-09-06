@@ -21,4 +21,4 @@ default = []
 ed64 = ["dep:multi64-ed64-link"]
 
 [dev-dependencies]
-sha2 = "0.10"
+sha2 = "0.11"
