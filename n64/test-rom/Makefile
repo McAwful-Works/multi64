@@ -35,4 +35,10 @@ clean:
 	rm -rf $(BUILD_DIR) *.z64
 .PHONY: clean
 
+# Verify the installed toolchain against ../toolchain.lock. Opt-in: CI does not
+# build this ROM, so drift is only ever caught by a human running it.
+check-toolchain:
+	@sh ../check-toolchain.sh "$(N64_INST)"
+.PHONY: check-toolchain
+
 -include $(wildcard $(BUILD_DIR)/*.d)

@@ -1,0 +1,24 @@
+# Pinned N64 toolchain for reproducible multi64_test.z64 builds.
+#
+# Read by setup-toolchain.sh; verified by `make check-toolchain` in test-rom/.
+# These are the exact versions the committed multi64_test.z64 was built with.
+#
+# WHY THE ASSET ID AND CHECKSUM, NOT THE TAG:
+# libdragon's toolchain release tag `toolchain-continuous-prerelease` is ROLLING.
+# It was created 2023-01-26, but its assets are replaced in place -- the one
+# pinned here was uploaded 2026-08-29. Downloading "the latest asset from that
+# tag" therefore gives a DIFFERENT compiler over time, which is not a pin at all.
+# GitHub asset ids are immutable, so we fetch by id and verify the checksum.
+
+# --- libdragon (library, headers, n64.mk) ---
+# Nothing in libdragon records its own version at install time, so there is no
+# way to detect drift from the installed tree alone. setup-toolchain.sh writes a
+# stamp file instead, and check-toolchain compares it against this lock.
+LIBDRAGON_REPO=https://github.com/DragonMinded/libdragon.git
+LIBDRAGON_COMMIT=c4a7e119eff1cfad07adcfa892a2910c40d8bdb8
+
+# --- mips64-elf GCC toolchain (prebuilt by the libdragon project) ---
+TOOLCHAIN_ASSET_ID=534541635
+TOOLCHAIN_ASSET_NAME=gcc-toolchain-mips64-x86_64.deb
+TOOLCHAIN_SHA256=1d624e3bd991087301aa3163e0c7084f699d7f40ab7269adb5231df08359810b
+TOOLCHAIN_GCC_VERSION=16.2.0
