@@ -249,7 +249,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
         "version": env!("CARGO_PKG_VERSION"),
         "docs": "docs/spec/daemon-api-v1.md",
     });
-    if socket.send(Message::Text(hello.to_string())).await.is_err() {
+    if socket.send(Message::text(hello.to_string())).await.is_err() {
         return;
     }
 
@@ -279,7 +279,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) {
                             if v.get("type").and_then(|x| x.as_str()) == Some("ping") {
                                 let _ = socket
-                                    .send(Message::Text(r#"{"type":"pong"}"#.to_string()))
+                                    .send(Message::text(r#"{"type":"pong"}"#))
                                     .await;
                             }
                         }
@@ -303,7 +303,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
             recv = rx.recv() => {
                 match recv {
                     Ok(data) => {
-                        if socket.send(Message::Binary(data)).await.is_err() {
+                        if socket.send(Message::binary(data)).await.is_err() {
                             break;
                         }
                     }
