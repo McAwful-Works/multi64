@@ -92,11 +92,33 @@ async function withCartDaemonYield(fn, opts = {}) {
     if (!ok) return true;
   }
   await invoke("explorer_daemon_release", { listen });
+  // Released and resumed separately so a resume failure can be reported without masking
+  // the operation's own error. If resume fails, multi64d keeps ignoring WebSocket writes
+  // and the bridge is silently dead -- the user has to be told.
+  let fnError = null;
   try {
     await fn();
-  } finally {
-    await invoke("explorer_daemon_resume", { listen }).catch(() => {});
+  } catch (e) {
+    fnError = e;
   }
+  let resumeError = null;
+  try {
+    await invoke("explorer_daemon_resume", { listen });
+  } catch (e) {
+    resumeError = e;
+  }
+  if (resumeError) {
+    await showExplorerAlert(
+      `The Multi64 bridge was paused for this operation and could not be resumed:
+
+${String(
+        resumeError
+      )}
+
+multi64d is not using the cart until it resumes — restart it, or reconnect from Multi64.`
+    );
+  }
+  if (fnError) throw fnError;
   return false;
 }
 
@@ -200,6 +222,20 @@ function requestProgressCancel() {
 
 function isCancelledBackendError(e) {
   return String(e).includes("Cancelled");
+}
+
+/**
+ * Message to show for a backend-reported cancellation.
+ *
+ * Cancellation is detected by substring, so the error often carries more than the bare word --
+ * an interrupted overwrite reports that the file on the card is now incomplete. Replacing every
+ * such message with a flat "Cancelled." hid exactly the part the user needed to see.
+ */
+function cancelMessageFor(e) {
+  const raw = String(e && e.message ? e.message : e).trim();
+  const stripped = raw.replace(/^Error:\s*/i, "").trim();
+  if (!stripped || /^cancelled[.]?$/i.test(stripped)) return "Cancelled.";
+  return stripped;
 }
 
 /** @type {ReturnType<typeof setTimeout> | null} */
@@ -485,8 +521,26 @@ function endUsbLoading() {
  * @param {"cart" | "pc"} pane
  * @param {() => Promise<unknown>} fn
  */
+/** Pane reloads requested by progress events, deferred until the operation releases the port. */
+const pendingPaneRefresh = { cart: false, pc: false };
+
+async function flushPendingPaneRefresh() {
+  const wantCart = pendingPaneRefresh.cart;
+  const wantPc = pendingPaneRefresh.pc;
+  pendingPaneRefresh.cart = false;
+  pendingPaneRefresh.pc = false;
+  try {
+    if (wantCart) await loadCartPane({ preserveSelection: true, forceRefresh: true });
+    if (wantPc) await loadPcPane({ preserveSelection: true, forceRefresh: true });
+  } catch {
+    /* the caller reports the operation's own error; a refresh failure must not mask it */
+  }
+}
+
 async function runWithProgress(pane, message, fn) {
   resetProgressCancel();
+  pendingPaneRefresh.cart = false;
+  pendingPaneRefresh.pc = false;
   showOperationProgress(message, pane, true);
   const fill = document.getElementById(`explorer-operation-fill-${pane}`);
   let unlisten = null;
@@ -508,12 +562,11 @@ async function runWithProgress(pane, message, fn) {
           const textEl = document.getElementById(`explorer-operation-text-${pane}`);
           if (textEl) textEl.textContent = msg;
         }
-        if (payload.refreshCart) {
-          void loadCartPane({ preserveSelection: true, forceRefresh: true });
-        }
-        if (payload.refreshPc) {
-          void loadPcPane({ preserveSelection: true, forceRefresh: true });
-        }
+        // Do NOT reload here. These events arrive while the backend still holds the cart's
+        // SD session, so a reload would try to open the same exclusive COM port and fail,
+        // blanking the pane. Record the request and run it once, after the session closes.
+        if (payload.refreshCart) pendingPaneRefresh.cart = true;
+        if (payload.refreshPc) pendingPaneRefresh.pc = true;
       });
     }
     await fn();
@@ -526,6 +579,8 @@ async function runWithProgress(pane, message, fn) {
       fill.classList.remove("indeterminate");
       fill.style.width = cancelled ? "0%" : "100%";
     }
+    // The backend session is closed by now, so the port is free for a reload.
+    await flushPendingPaneRefresh();
   }
 }
 
@@ -2440,8 +2495,12 @@ async function copyCartToPcPaths(paths, destOverride = null) {
     }
     if (isCancelledBackendError(e)) {
       await loadBothPanes({ forceRefresh: true });
-      finishOperationProgress("Cancelled.", false, "cart");
-    } else finishOperationProgress(userFacingErrorMessage(e, { context: "cart" }), true, "cart");
+      finishOperationProgress(cancelMessageFor(e), false, "cart");
+    } else {
+      // A failure partway through still copied earlier files; refresh so the panes match disk.
+      await loadBothPanes({ forceRefresh: true }).catch(() => {});
+      finishOperationProgress(userFacingErrorMessage(e, { context: "cart" }), true, "cart");
+    }
   } finally {
     endPaneActionLoading("cart");
   }
@@ -2502,8 +2561,11 @@ async function copyPcToCartPaths(paths, cartParentOverride = null) {
     }
     if (isCancelledBackendError(e)) {
       await loadBothPanes({ forceRefresh: true });
-      finishOperationProgress("Cancelled.", false, "pc");
-    } else finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
+      finishOperationProgress(cancelMessageFor(e), false, "pc");
+    } else {
+      await loadBothPanes({ forceRefresh: true }).catch(() => {});
+      finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
+    }
   } finally {
     endPaneActionLoading("pc");
   }
@@ -2818,8 +2880,13 @@ async function deleteSelectedCart(alertIfEmpty) {
     if (isCancelledBackendError(e)) {
       state.cart.selected.clear();
       await loadCartPane();
-      finishOperationProgress("Cancelled.", false, "cart");
-    } else finishOperationProgress(userFacingErrorMessage(e, { context: "cart" }), true, "cart");
+      finishOperationProgress(cancelMessageFor(e), false, "cart");
+    } else {
+      // Deletes run one at a time, so a failure partway through still removed earlier items.
+      state.cart.selected.clear();
+      await loadCartPane({ forceRefresh: true }).catch(() => {});
+      finishOperationProgress(userFacingErrorMessage(e, { context: "cart" }), true, "cart");
+    }
   } finally {
     endPaneActionLoading("cart");
   }
@@ -2886,6 +2953,9 @@ async function deleteSelectedPc(alertIfEmpty) {
       "pc"
     );
   } catch (e) {
+    // Files deleted before the failure are gone; refresh so they stop being listed.
+    state.pc.selected.clear();
+    await loadPcPane({ forceRefresh: true }).catch(() => {});
     finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
   } finally {
     endPaneActionLoading("pc");
