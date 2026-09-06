@@ -1361,14 +1361,10 @@ pub async fn cart_serial_remove_cart(
                 } else {
                     format!("Deleting from SD card — \"{label}\" ({done} of {n}, {rem} left)")
                 };
-                emit_explorer_progress_full(
-                    &app,
-                    done as u64,
-                    total as u64,
-                    Some(msg),
-                    Some(true),
-                    None,
-                );
+                // No refresh_cart here: this runs inside with_session, so the SD session still
+                // holds the COM port. A reload would try to open it a second time and fail,
+                // blanking the pane mid-delete. The caller reloads once the session is closed.
+                emit_explorer_progress_full(&app, done as u64, total as u64, Some(msg), None, None);
             }
             Ok(())
         })
