@@ -414,7 +414,7 @@ async fn ws_hello<F: FnMut(String) + Send>(
     log_line!(log, "hello: {}", hello_s.trim());
 
     write
-        .send(Message::Text(r#"{"type":"ping"}"#.to_string()))
+        .send(Message::text(r#"{"type":"ping"}"#))
         .await
         .context("send json ping")?;
     let pong = read
@@ -513,7 +513,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
         ConnectorCommand::Ping => {
             let wire = l3_data_application(build_m64t_payload(M64tMsg::Ping as u8, &[]))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send PING")?;
             log_line!(log, "sent M64T PING");
@@ -535,7 +535,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
             };
             let wire = l3_data_application(build_m64t_payload(M64tMsg::Echo as u8, &body))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send ECHO")?;
             log_line!(log, "sent M64T ECHO ({} body bytes)", body.len());
@@ -558,7 +558,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
         ConnectorCommand::Version => {
             let wire = l3_data_application(build_m64t_payload(M64tMsg::ReqVersion as u8, &[]))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send REQ_VERSION")?;
             log_line!(log, "sent M64T REQ_VERSION");
@@ -581,7 +581,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
         ConnectorCommand::ReqController => {
             let wire = l3_data_application(build_m64t_payload(M64tMsg::ReqController as u8, &[]))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send REQ_CONTROLLER")?;
             log_line!(log, "sent M64T REQ_CONTROLLER");
@@ -605,7 +605,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
             let ch = parse_hex_fixed8(&hex_challenge)?;
             let wire = l3_data_application(build_m64t_payload(M64tMsg::SessionOpen as u8, &ch))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send SESSION_OPEN")?;
             log_line!(log, "sent M64T SESSION_OPEN");
@@ -628,7 +628,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
         ConnectorCommand::SessionClose => {
             let wire = l3_data_application(build_m64t_payload(M64tMsg::SessionClose as u8, &[]))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send SESSION_CLOSE")?;
             log_line!(log, "sent M64T SESSION_CLOSE");
@@ -651,7 +651,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
         ConnectorCommand::EepromInfo => {
             let wire = l3_data_application(build_m64t_payload(M64tMsg::ReqEepromInfo as u8, &[]))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send REQ_EEPROM_INFO")?;
             log_line!(log, "sent M64T REQ_EEPROM_INFO");
@@ -676,7 +676,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
             let wire =
                 l3_data_application(build_m64t_payload(M64tMsg::ReqEepromRead as u8, &body))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send REQ_EEPROM_READ")?;
             log_line!(log, "sent M64T REQ_EEPROM_READ");
@@ -708,7 +708,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
             let wire =
                 l3_data_application(build_m64t_payload(M64tMsg::ReqEepromWrite as u8, &body))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send REQ_EEPROM_WRITE")?;
             log_line!(log, "sent M64T REQ_EEPROM_WRITE");
@@ -731,7 +731,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
         ConnectorCommand::SramInfo => {
             let wire = l3_data_application(build_m64t_payload(M64tMsg::ReqSramInfo as u8, &[]))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send REQ_SRAM_INFO")?;
             log_line!(log, "sent M64T REQ_SRAM_INFO");
@@ -755,7 +755,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
             let body = body_sram_read(offset, len);
             let wire = l3_data_application(build_m64t_payload(M64tMsg::ReqSramRead as u8, &body))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send REQ_SRAM_READ")?;
             log_line!(log, "sent M64T REQ_SRAM_READ");
@@ -786,7 +786,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
             body.extend_from_slice(&data);
             let wire = l3_data_application(build_m64t_payload(M64tMsg::ReqSramWrite as u8, &body))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send REQ_SRAM_WRITE")?;
             log_line!(log, "sent M64T REQ_SRAM_WRITE");
@@ -813,7 +813,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
             let body = vec![port, frames];
             let wire = l3_data_application(build_m64t_payload(M64tMsg::ReqRumble as u8, &body))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send REQ_RUMBLE")?;
             log_line!(log, "sent M64T REQ_RUMBLE port={} frames={}", port, frames);
@@ -840,7 +840,7 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
             }
             let wire = l3_data_application(build_m64t_payload(M64tMsg::ReqDisplayText as u8, b))?;
             write
-                .send(Message::Binary(wire))
+                .send(Message::binary(wire))
                 .await
                 .context("send REQ_DISPLAY_TEXT")?;
             log_line!(log, "sent M64T REQ_DISPLAY_TEXT ({} bytes)", b.len());
@@ -900,7 +900,7 @@ pub async fn run_controller_poll<F: FnMut(String) + Send>(
         }
 
         write
-            .send(Message::Binary(wire_req.clone()))
+            .send(Message::binary(wire_req.clone()))
             .await
             .context("send REQ_CONTROLLER")?;
 
@@ -1079,7 +1079,7 @@ pub async fn run_ws_raw_echo<F: FnMut(String) + Send>(
 
     if json_ping {
         write
-            .send(Message::Text(r#"{"type":"ping"}"#.to_string()))
+            .send(Message::text(r#"{"type":"ping"}"#))
             .await
             .context("send json ping")?;
         let pong = tokio::time::timeout(deadline, read.next())
@@ -1101,7 +1101,7 @@ pub async fn run_ws_raw_echo<F: FnMut(String) + Send>(
     }
 
     write
-        .send(Message::Binary(payload.to_vec()))
+        .send(Message::binary(payload.to_vec()))
         .await
         .context("send binary payload")?;
     log_line!(log, "sent binary: {} bytes", payload.len());
