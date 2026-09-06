@@ -29,7 +29,7 @@ Tests live in `crates/{l3,sc64-link,sc64-l2,ed64-l2,multi64-sc64-sd,multi64-ed64
 
 `npm install` inside `crates/<app>/` first — it supplies the Tauri CLI. `npm run build` maps to `tauri build`. `frontendDist` points at `../src`, so the frontend is plain JS served as-is; there is no bundler output step to run.
 
-Build `multi64d` **before** packaging Multi64 and with the **same** profile: `crates/multi64/src-tauri/build.rs` copies `target/<profile>/multi64d.exe` into `resources/` at build time and only emits a `cargo:warning` when it is missing — a Multi64 bundle will build fine and ship without a daemon.
+Build `multi64d` **before** anything that compiles the Multi64 Tauri crate, and with the **same** profile. `crates/multi64/src-tauri/build.rs` copies the daemon into `resources/`, and `tauri.conf.json` declares `resources/multi64d.exe` under `bundle.resources`. A declared resource that is missing is a **hard error** in `tauri-build`: the `cargo:warning` from `build.rs` is not the whole story — the build then fails anyway. `resources/` is gitignored, so this bites a clean checkout running `cargo clippy --workspace` or `cargo build --workspace`, not just packaging.
 
 ### Hardware paths (never in CI)
 
