@@ -313,10 +313,18 @@ int main(void)
         }
     }
 
-    if (usb_getcart() != CART_SC64) {
-        printf("Need SummerCart64\n");
+    /* SC64 is the proven backend. EverDrive is accepted so the host-side ED64 L2 mapping can be
+       validated at all -- it has never been exercised against a cart, so say so on screen rather
+       than let a silent boot imply it works. See docs/spec/l3-over-everdrive-x7.md 4.0 / 4.5. */
+    const char cart = usb_getcart();
+    if (cart != CART_SC64 && cart != CART_EVERDRIVE) {
+        printf("Need SummerCart64 or EverDrive 64\n");
         while (1) {
         }
+    }
+    if (cart == CART_EVERDRIVE) {
+        printf("EverDrive: UNVALIDATED host mapping\n");
+        printf("  expect failures; see l3-over-everdrive-x7.md\n");
     }
 
     printf("ready (menu open)\n");
