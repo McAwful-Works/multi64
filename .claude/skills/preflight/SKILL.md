@@ -9,10 +9,14 @@ description: Run the four checks CI enforces (cargo fmt, clippy with -D warnings
 
 ```sh
 cargo fmt --all -- --check
+cargo build -p multi64d                                    # required, see below
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo build -p multi64d --release
 cargo build --workspace --release
 ```
+
+The `multi64d` builds are not packaging steps. `crates/multi64` declares `resources/multi64d.exe` in `bundle.resources`, and `tauri-build` treats a missing declared resource as a hard error — so on a clean clone `cargo clippy --workspace` fails before it lints anything. Build the daemon once per profile first, as CI does.
 
 Run them in order and stop at the first failure — a fmt failure usually makes the clippy output noise, and a clippy failure often means the test run is compiling the same broken code twice.
 

@@ -8,10 +8,14 @@ The four checks CI runs (`.github/workflows/ci.yml`, on Ubuntu and Windows) — 
 
 ```sh
 cargo fmt --all -- --check
+cargo build -p multi64d                                    # see below: not optional
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo build -p multi64d --release
 cargo build --workspace --release
 ```
+
+The `multi64d` builds are not optional and are not a packaging step — anything that compiles `crates/multi64` needs `resources/multi64d.exe` to exist, so on a clean clone `cargo clippy --workspace` fails without them. Build it once per profile, which is what CI does.
 
 Clippy runs with `-D warnings`, so an unused import or a stray `mut` fails CI the same as a type error.
 
