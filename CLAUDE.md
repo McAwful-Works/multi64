@@ -69,3 +69,12 @@ A cart exposes one serial device, so the two stacks contend. `multi64d` resolves
 - `hadris-fat` is pinned to a git rev in the workspace `[patch.crates-io]` because the 1.1.0 release fails to build with `--features exfat`. Do not unpin it to resolve a dependency conflict.
 - MSRV is 1.74 and edition 2021, set once in `[workspace.package]`.
 - Licensing is `MIT OR Apache-2.0`; new crates should inherit `license.workspace = true`.
+
+## Repo tooling
+
+Committed under `.claude/`, so they apply for anyone working on this repo:
+
+- **`/preflight`** — runs the four CI checks in order and reports the first failure. Not every machine holding this repo has a Rust toolchain; when `cargo` is absent, say the change is unverified rather than implying otherwise.
+- **`/check-docs`** — validates markdown links, heading anchors, backtick-wrapped links, and `docs/spec/` paths cited from Rust/JS. Run after any spec rename or file move; nothing in CI covers this.
+- **`/implement-ed64-l2`** — the ED64 L2 backend walkthrough. The blocker is `l3-over-everdrive-x7.md` §4, not the code.
+- **`spec-reviewer`** subagent — reviews a diff against `docs/spec/` as normative. Worth running on changes to `crates/l3`, any `*-l2` or `*-link` crate, `multi64d`'s WebSocket path, or the specs themselves.
