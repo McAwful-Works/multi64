@@ -19,7 +19,13 @@ Optionally pass specific markdown files to limit checks 1-3; check 4 always swee
 
 1. **Relative link targets that do not exist.** Most often a wrong `../` depth. `crates/xfer64/README.md` is two levels down, so workspace docs are `../../docs/spec/...`; a single `../` silently resolves to `crates/docs/spec/...` and 404s on GitHub.
 2. **Anchors with no matching heading**, using GitHub's slug rules (lowercase, punctuation stripped, spaces to hyphens). Catches `docs/README.md#flash-carts-l2-backends` drifting when a heading is reworded.
-3. **Links wrapped in backticks** — `` `[text](url)` `` renders as literal code, not a link. Easy to introduce when converting a table cell to code style, and invisible unless you look at the rendered page.
+3. **Links wrapped in backticks**, which render as literal code rather than a link:
+
+   ```
+   `[text](url)`
+   ```
+
+   Easy to introduce when converting a table cell to code style, and invisible unless you look at the rendered page. Examples inside fenced code blocks are masked before checking, so a doc may show the pattern without tripping the check.
 4. **`docs/spec/*.md` paths cited from `.rs` or `.js`** that no longer exist, e.g. a module doc pointing at a spec that was renamed.
 
 ## Fixing what it reports

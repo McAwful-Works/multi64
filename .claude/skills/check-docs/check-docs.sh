@@ -15,11 +15,17 @@ slugify() { # GitHub-style heading anchor
     | sed -e 's/^#*[[:space:]]*//' -e 's/[^a-z0-9 -]//g' -e 's/[[:space:]]\{1,\}/-/g'
 }
 
+# Blank out lines inside ``` fences so example markdown in docs is not link-checked.
+# Line numbers are preserved (fenced lines become empty), so reported positions stay correct.
+mask_fences() {
+  awk '/^[[:space:]]*```/ { infence = !infence; print ""; next } infence { print ""; next } { print }' "$1"
+}
+
 # 1. Relative markdown link targets must exist.
 echo "== 1. markdown link targets =="
 for f in $(md_files "$@"); do
   d=$(dirname "$f")
-  grep -n '](' "$f" | while IFS= read -r hit; do
+  mask_fences "$f" | grep -n '](' | while IFS= read -r hit; do
     ln=${hit%%:*}
     printf '%s\n' "$hit" | grep -o '](\([^)]*\))' | sed 's/^](//;s/)$//' | while IFS= read -r link; do
       case "$link" in http*|mailto:*|'#'*|'') continue ;; esac
@@ -37,7 +43,7 @@ done
 echo "== 2. link anchors =="
 for f in $(md_files "$@"); do
   d=$(dirname "$f")
-  grep -n '](' "$f" | while IFS= read -r hit; do
+  mask_fences "$f" | grep -n '](' | while IFS= read -r hit; do
     ln=${hit%%:*}
     printf '%s\n' "$hit" | grep -o '](\([^)]*\))' | sed 's/^](//;s/)$//' | while IFS= read -r link; do
       case "$link" in http*|mailto:*) continue ;; esac
@@ -65,7 +71,7 @@ done
 # 3. Links wrapped in backticks render as literal text, not links.
 echo "== 3. backtick-wrapped links =="
 for f in $(md_files "$@"); do
-  grep -n '`\[[^]]*\]([^)]*)`' "$f" | while IFS= read -r hit; do
+  mask_fences "$f" | grep -n '`\[[^]]*\]([^)]*)`' | while IFS= read -r hit; do
     echo "  NOT A LINK  $f:${hit%%:*}  (remove the surrounding backticks)"
     echo x >> "$TMPFAIL"
   done
