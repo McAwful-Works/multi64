@@ -27,6 +27,8 @@ Normative wire rules live in **`spec/`**. Each spec file carries its own **Spec-
 
 L3 is cart-agnostic; **L2** is per device. **SC64** is the reference implementation here; **EverDrive X7** is draft / partial.
 
+Krikzz's N64 line is **X5 and X7 only** — X5 has no USB, and the **PRO / CORE** series are other consoles, so [edlink](https://github.com/krikzz/edlink) does not apply to the N64. See [l3-over-everdrive-x7.md §1.1](spec/l3-over-everdrive-x7.md) before starting any EverDrive work.
+
 | | **SummerCart64** | **EverDrive-64 X7** |
 |---|------------------|---------------------|
 | **L2 spec** | [l3-over-sc64.md](spec/l3-over-sc64.md) | [l3-over-everdrive-x7.md](spec/l3-over-everdrive-x7.md) |
