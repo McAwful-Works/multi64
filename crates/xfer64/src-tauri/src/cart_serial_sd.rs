@@ -181,32 +181,45 @@ fn probe_with_cache(
     Ok(k)
 }
 
-fn effective_sd_role(
+/// Decide the SD role, and return the port when deciding required resolving one.
+///
+/// Auto mode has to resolve a port to probe it, and `detect_best_auto_port` force-probes every
+/// serial device in turn. Handing that port back lets [`with_session`] reuse it instead of
+/// repeating the whole scan, which previously happened on every cart operation.
+fn effective_sd_role_and_port(
     settings: &ExplorerSettingsSnapshot,
     st: &ExplorerCartSerialState,
-) -> Result<CartSdRole, String> {
+) -> Result<(CartSdRole, Option<String>), String> {
     let base = settings.ed64_rom_linear_base;
     match cart_mode(settings) {
-        "ed64_beta" => Ok(if base.is_some() {
-            CartSdRole::Ed64Linear
-        } else {
-            CartSdRole::Ed64NoLinear
-        }),
-        "sc64" => Ok(CartSdRole::Sc64),
+        // Explicit modes decide without touching a port, so resolving is left to the caller:
+        // an EverDrive with no linear base must report ED64_BETA_SD_MSG even with no cart plugged in.
+        "ed64_beta" => Ok((
+            if base.is_some() {
+                CartSdRole::Ed64Linear
+            } else {
+                CartSdRole::Ed64NoLinear
+            },
+            None,
+        )),
+        "sc64" => Ok((CartSdRole::Sc64, None)),
         m if m.is_empty() || m == "auto" => {
             let port = resolve_port(st, settings)?;
             let k = probe_with_cache(st, &port, false)?;
-            match k {
-                DetectedCartKind::Sc64 => Ok(CartSdRole::Sc64),
-                DetectedCartKind::Ed64Beta => Ok(if base.is_some() {
-                    CartSdRole::Ed64Linear
-                } else {
-                    CartSdRole::Ed64NoLinear
-                }),
-                DetectedCartKind::Unknown => Err(AUTO_DETECT_FAIL.to_string()),
-            }
+            let role = match k {
+                DetectedCartKind::Sc64 => CartSdRole::Sc64,
+                DetectedCartKind::Ed64Beta => {
+                    if base.is_some() {
+                        CartSdRole::Ed64Linear
+                    } else {
+                        CartSdRole::Ed64NoLinear
+                    }
+                }
+                DetectedCartKind::Unknown => return Err(AUTO_DETECT_FAIL.to_string()),
+            };
+            Ok((role, Some(port)))
         }
-        _ => Ok(CartSdRole::Sc64),
+        _ => Ok((CartSdRole::Sc64, None)),
     }
 }
 
@@ -384,6 +397,32 @@ fn export_cart_file_to_pc_in_session(
         .map_err(|e| map_usb_io_cart(cart_path, e))
 }
 
+/// Clean up after an import that stopped part-way (cancel, or a serial failure mid-write).
+///
+/// The write loop in `multi64-sc64-sd` returns without removing what it already wrote, so the card
+/// is left holding a truncated file that looks like an ordinary, slightly smaller one. If the
+/// destination did not exist beforehand, the partial is ours and is removed. If it did exist we
+/// overwrote it, so the original is already gone and there is nothing to restore -- say so plainly
+/// rather than reporting a clean "Cancelled".
+fn cleanup_partial_import(
+    session: &CartSession,
+    cart_dest_path: &str,
+    existed_before: bool,
+    err: String,
+) -> String {
+    if existed_before {
+        return format!(
+            "{err} — \"{cart_dest_path}\" on the card was being overwritten and is now incomplete; copy it again to restore it."
+        );
+    }
+    match session.remove_cart_path(cart_dest_path) {
+        Ok(()) => err,
+        Err(e) => format!(
+            "{err} — could not remove the incomplete \"{cart_dest_path}\" from the card ({e}); delete it manually before using it."
+        ),
+    }
+}
+
 /// One PC file → cart path (used by import copy one + batch + CLI upload with progress).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn import_pc_file_to_cart_in_session(
@@ -400,10 +439,10 @@ pub(crate) fn import_pc_file_to_cart_in_session(
         return Err("Source is not a file.".into());
     }
     let (parent, name) = cart_path_parts(cart_dest_path);
-    match session
+    let kind = session
         .cart_path_entry_kind(cart_dest_path)
-        .map_err(|e| e.to_string())?
-    {
+        .map_err(|e| e.to_string())?;
+    match kind {
         Some(true) => {
             return Err("Cannot copy file over an existing folder on the cart.".into());
         }
@@ -412,14 +451,24 @@ pub(crate) fn import_pc_file_to_cart_in_session(
         }
         _ => {}
     }
+    let existed_before = kind == Some(false);
     let mut acc = 0u64;
+    let mut wrote_any = false;
     session
         .import_from_pc_with_progress(src, &parent, &name, !overwrite, |d| {
             acc += d;
+            wrote_any = true;
             emit_explorer_progress(app, progress_done_base + acc, progress_total);
             !cancel.is_cancelled()
         })
-        .map_err(|e| map_usb_io_path(src, e))
+        .map_err(|e| {
+            let msg = map_usb_io_path(src, e);
+            if wrote_any {
+                cleanup_partial_import(session, cart_dest_path, existed_before, msg)
+            } else {
+                msg
+            }
+        })
 }
 
 /// PC → cart import without Tauri progress events (CLI / shell upload).
@@ -434,10 +483,10 @@ pub(crate) fn import_pc_file_to_cart_in_session_silent(
         return Err("Source is not a file.".into());
     }
     let (parent, name) = cart_path_parts(cart_dest_path);
-    match session
+    let kind = session
         .cart_path_entry_kind(cart_dest_path)
-        .map_err(|e| e.to_string())?
-    {
+        .map_err(|e| e.to_string())?;
+    match kind {
         Some(true) => {
             return Err("Cannot copy file over an existing folder on the cart.".into());
         }
@@ -446,13 +495,23 @@ pub(crate) fn import_pc_file_to_cart_in_session_silent(
         }
         _ => {}
     }
+    let existed_before = kind == Some(false);
     let mut acc = 0u64;
+    let mut wrote_any = false;
     session
         .import_from_pc_with_progress(src, &parent, &name, !overwrite, |d| {
             acc += d;
+            wrote_any = true;
             !cancel.is_cancelled()
         })
-        .map_err(|e| map_usb_io_path(src, e))
+        .map_err(|e| {
+            let msg = map_usb_io_path(src, e);
+            if wrote_any {
+                cleanup_partial_import(session, cart_dest_path, existed_before, msg)
+            } else {
+                msg
+            }
+        })
 }
 
 fn resolve_port(
@@ -493,14 +552,18 @@ pub(crate) fn with_session<T, F>(
 where
     F: FnOnce(&CartSession) -> Result<T, String>,
 {
-    let role = effective_sd_role(settings, st)?;
+    let (role, resolved_port) = effective_sd_role_and_port(settings, st)?;
     if matches!(role, CartSdRole::Ed64NoLinear) {
         dev.log(format!(
             "{context}: skipped (EverDrive — no linear ROM base configured)"
         ));
         return Err(ED64_BETA_SD_MSG.to_string());
     }
-    let port = resolve_port(st, settings)?;
+    // Reuse the port auto mode already resolved; only explicit modes still need to resolve.
+    let port = match resolved_port {
+        Some(p) => p,
+        None => resolve_port(st, settings)?,
+    };
     let session = match role {
         CartSdRole::Sc64 => {
             dev.log(format!("{context}: open SC64 SD session (port={port})"));
@@ -913,10 +976,9 @@ pub async fn cart_serial_export_copy_one(
     })
     .await
     .map_err(|e| format!("export task: {e}"))?;
-    if res.is_ok() {
-        if let Some(cache) = app.try_state::<ExplorerPathCache>() {
-            cache.invalidate_pc();
-        }
+    // Invalidate unconditionally: a mid-batch failure still wrote earlier files to the PC.
+    if let Some(cache) = app.try_state::<ExplorerPathCache>() {
+        cache.invalidate_pc();
     }
     res
 }
@@ -970,9 +1032,10 @@ pub async fn cart_serial_import_copy_one(
     })
     .await
     .map_err(|e| format!("import task: {e}"))?;
-    if res.is_ok() {
-        st.invalidate_cart_list_cache();
-    }
+    // Invalidate unconditionally. A failed or cancelled run may still have changed the
+    // card, and with_session also reports Err when the work succeeded but the SD session
+    // close failed. Keeping the cache would leave the pane showing a stale listing.
+    st.invalidate_cart_list_cache();
     res
 }
 
@@ -985,6 +1048,10 @@ pub struct ExportCopyBatchItem {
     pub progress_done_base: u64,
     pub progress_message: String,
     pub bytes: u64,
+    /// Create the destination directory instead of copying a file (empty folders).
+    /// Defaults to false so older front-end payloads keep working.
+    #[serde(default)]
+    pub is_dir: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -996,6 +1063,10 @@ pub struct ImportCopyBatchItem {
     pub progress_done_base: u64,
     pub progress_message: String,
     pub bytes: u64,
+    /// Create the destination directory instead of copying a file (empty folders).
+    /// Defaults to false so older front-end payloads keep working.
+    #[serde(default)]
+    pub is_dir: bool,
 }
 
 /// Multi-file cart → PC copy in **one** SD session (open/close once). Progress matches per-file `cart_serial_export_copy_one` behavior.
@@ -1045,6 +1116,11 @@ pub async fn cart_serial_export_copy_batch(
                         None,
                         None,
                     );
+                    if item.is_dir {
+                        std::fs::create_dir_all(&dest)
+                            .map_err(|e| format!("{}: {e}", dest.display()))?;
+                        continue;
+                    }
                     export_cart_file_to_pc_in_session(
                         session,
                         &cart_path,
@@ -1070,10 +1146,9 @@ pub async fn cart_serial_export_copy_batch(
     })
     .await
     .map_err(|e| format!("export batch task: {e}"))?;
-    if res.is_ok() {
-        if let Some(cache) = app.try_state::<ExplorerPathCache>() {
-            cache.invalidate_pc();
-        }
+    // Invalidate unconditionally: a mid-batch failure still wrote earlier files to the PC.
+    if let Some(cache) = app.try_state::<ExplorerPathCache>() {
+        cache.invalidate_pc();
     }
     res
 }
@@ -1116,7 +1191,8 @@ pub async fn cart_serial_import_copy_batch(
                     if cart_dest_path.is_empty() {
                         continue;
                     }
-                    if !src.is_file() {
+                    // Directory steps carry no file, so this guard must not see them.
+                    if !item.is_dir && !src.is_file() {
                         return Err("Source is not a file.".into());
                     }
                     let base = item.progress_done_base;
@@ -1128,6 +1204,12 @@ pub async fn cart_serial_import_copy_batch(
                         None,
                         None,
                     );
+                    if item.is_dir {
+                        session
+                            .mkdir_cart(&cart_dest_path)
+                            .map_err(|e| format!("{cart_dest_path}: {e}"))?;
+                        continue;
+                    }
                     import_pc_file_to_cart_in_session(
                         session,
                         &src,
@@ -1153,9 +1235,10 @@ pub async fn cart_serial_import_copy_batch(
     })
     .await
     .map_err(|e| format!("import batch task: {e}"))?;
-    if res.is_ok() {
-        st.invalidate_cart_list_cache();
-    }
+    // Invalidate unconditionally. A failed or cancelled run may still have changed the
+    // card, and with_session also reports Err when the work succeeded but the SD session
+    // close failed. Keeping the cache would leave the pane showing a stale listing.
+    st.invalidate_cart_list_cache();
     res
 }
 
@@ -1176,6 +1259,39 @@ mod batch_item_serde_tests {
         let j = r#"{"srcPcPath":"C:\\s.bin","cartDestPath":"/b.bin","overwrite":true,"progressDoneBase":1,"progressMessage":"m","bytes":2}"#;
         let v: ImportCopyBatchItem = serde_json::from_str(j).unwrap();
         assert_eq!(v.cart_dest_path, "/b.bin");
+    }
+
+    /// `isDir` is new; payloads written before it must still deserialize as file steps.
+    #[test]
+    fn batch_items_default_is_dir_false_when_absent() {
+        let ex = r#"{"cartPath":"/a.bin","destPcPath":"D:/x/a.bin","overwrite":false,"progressDoneBase":0,"progressMessage":"m","bytes":99}"#;
+        assert!(
+            !serde_json::from_str::<ExportCopyBatchItem>(ex)
+                .unwrap()
+                .is_dir
+        );
+        let im = r#"{"srcPcPath":"D:/s.bin","cartDestPath":"/b.bin","overwrite":true,"progressDoneBase":1,"progressMessage":"m","bytes":2}"#;
+        assert!(
+            !serde_json::from_str::<ImportCopyBatchItem>(im)
+                .unwrap()
+                .is_dir
+        );
+    }
+
+    #[test]
+    fn batch_items_accept_is_dir_true() {
+        let ex = r#"{"cartPath":"/d","destPcPath":"D:/x/d","overwrite":false,"progressDoneBase":0,"progressMessage":"m","bytes":0,"isDir":true}"#;
+        assert!(
+            serde_json::from_str::<ExportCopyBatchItem>(ex)
+                .unwrap()
+                .is_dir
+        );
+        let im = r#"{"srcPcPath":"D:/s","cartDestPath":"/d","overwrite":true,"progressDoneBase":0,"progressMessage":"m","bytes":0,"isDir":true}"#;
+        assert!(
+            serde_json::from_str::<ImportCopyBatchItem>(im)
+                .unwrap()
+                .is_dir
+        );
     }
 }
 
@@ -1259,9 +1375,10 @@ pub async fn cart_serial_remove_cart(
     })
     .await
     .map_err(|e| format!("delete task: {e}"))?;
-    if res.is_ok() {
-        st.invalidate_cart_list_cache();
-    }
+    // Invalidate unconditionally. A failed or cancelled run may still have changed the
+    // card, and with_session also reports Err when the work succeeded but the SD session
+    // close failed. Keeping the cache would leave the pane showing a stale listing.
+    st.invalidate_cart_list_cache();
     res
 }
 

@@ -1587,7 +1587,8 @@ async function runInteractiveCopyPlan(plan, mode) {
     const base = doneBytes;
     const msg = formatCopyProgressMessage(step, mode, i, n);
     const bytes = Number(step.bytes) || 0;
-    const common = { overwrite: ow, progressDoneBase: base, progressMessage: msg, bytes };
+    // isDir marks a directory-creation step (empty folders); the backend mkdirs instead of copying.
+    const common = { overwrite: ow, progressDoneBase: base, progressMessage: msg, bytes, isDir: step.isDir === true };
     batchPayload.push(
       mode === "export"
         ? { ...common, cartPath: step.cartPath, destPcPath: step.destPc }
