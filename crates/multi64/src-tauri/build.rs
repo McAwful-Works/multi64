@@ -7,21 +7,22 @@ fn main() {
     let resources_dir = manifest_dir.join("resources");
     let _ = std::fs::create_dir_all(&resources_dir);
 
-    // Bundle multi64d.exe when it exists (run `cargo build -p multi64d` first).
+    // Bundle the daemon when it exists (run `cargo build -p multi64d` first). The binary carries the
+    // host's extension (`multi64d` on Unix, `multi64d.exe` on Windows) but `bundle.resources` in
+    // tauri.conf.json always names `multi64d.exe`, so copy to that fixed name. Without this file
+    // tauri-build fails outright — a missing declared resource is a hard error, not a warning.
+    let daemon_name = format!("multi64d{}", std::env::consts::EXE_SUFFIX);
     let daemon = workspace_root
         .join("target")
         .join(&profile)
-        .join("multi64d.exe");
+        .join(&daemon_name);
     let dest_daemon = resources_dir.join("multi64d.exe");
     if daemon.is_file() {
         let _ = std::fs::copy(&daemon, &dest_daemon);
-        println!(
-            "cargo:warning=bundled multi64d.exe from {}",
-            daemon.display()
-        );
+        println!("cargo:warning=bundled {daemon_name} from {}", daemon.display());
     } else {
         println!(
-            "cargo:warning=multi64d.exe not found at {} — build multi64d before packaging",
+            "cargo:warning={daemon_name} not found at {} — run `cargo build -p multi64d` with this profile first",
             daemon.display()
         );
     }
