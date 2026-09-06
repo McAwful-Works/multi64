@@ -23,3 +23,6 @@ crates/multi64/node_modules/
 crates/multi64/src-tauri/resources/multi64d.exe
 crates/xfer64/node_modules/
 crates/multi64-test-connector-gui/node_modules/
+
+# Claude Code: per-developer permission grants (CLAUDE.md itself is tracked)
+.claude/settings.local.json
