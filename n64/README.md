@@ -6,7 +6,9 @@ This folder builds **libdragon** ROMs for on-cart testing. The in-tree **L2** re
 
 ## `test-rom/` — all-in-one hardware test ROM
 
-**Single** build output: **`multi64_test.z64`** — the official **Multi64** e2e ROM for **SummerCart64** + L3 (and the same binary for **EverDrive X7** once `multi64-ed64-l2` is functional). Uses libdragon (`N64_INST`).
+**Single** build output: **`multi64_test.z64`** — the official **Multi64** e2e ROM for **SummerCart64** + L3, and the same binary for **EverDrive X7**. Uses libdragon (`N64_INST`).
+
+> **The committed `multi64_test.z64` is stale.** `main.c` now accepts `CART_EVERDRIVE`, but the binary in this repository predates that change and still refuses to boot on an EverDrive. Rebuilding needs `N64_INST`, which was not available when the change was made. **Run `make` before flashing** if you intend to test EverDrive; the committed binary is still correct for SummerCart64.
 
 **Modes** (press **L** to cycle):
 
@@ -34,7 +36,7 @@ cargo run -p sc64-l3-framing-e2e --release -- --port COM3
 cargo run -p sc64-echo-test -- --port COM3
 ```
 
-**EverDrive X7:** same ROM; use **`ed64-l3-framing-e2e`** / **`ed64-echo-test`** when [`multi64-ed64-l2`](../crates/ed64-l2/README.md) implements **`Ed64L2Pipe`** (currently **`open`** returns unsupported).
+**EverDrive X7:** same ROM (rebuild first — see the note above); use **`ed64-l3-framing-e2e`** / **`ed64-echo-test`**. [`multi64-ed64-l2`](../crates/ed64-l2/README.md) implements **`Ed64L2Pipe`**, but the mapping is **unvalidated on hardware** — these are the tools that would validate it. Start with **`ed64-smoke`** to confirm the port, then see [`l3-over-everdrive-x7.md`](../docs/spec/l3-over-everdrive-x7.md) §4.5.
 
 ### `multi64d` + M64T / BENCH
 
