@@ -19,7 +19,10 @@ fn main() {
     let dest_daemon = resources_dir.join("multi64d.exe");
     if daemon.is_file() {
         let _ = std::fs::copy(&daemon, &dest_daemon);
-        println!("cargo:warning=bundled {daemon_name} from {}", daemon.display());
+        println!(
+            "cargo:warning=bundled {daemon_name} from {}",
+            daemon.display()
+        );
     } else {
         println!(
             "cargo:warning={daemon_name} not found at {} — run `cargo build -p multi64d` with this profile first",
