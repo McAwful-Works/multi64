@@ -273,10 +273,14 @@ fn daemon_health_url(listen: &str) -> String {
 
 fn check_health(listen: &str) -> bool {
     let url = daemon_health_url(listen);
-    ureq::get(&url)
-        .timeout(std::time::Duration::from_secs(1))
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(1)))
+        .build()
+        .into();
+    agent
+        .get(&url)
         .call()
-        .map(|r| r.status() == 200)
+        .map(|r| r.status().as_u16() == 200)
         .unwrap_or(false)
 }
 
