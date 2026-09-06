@@ -4,7 +4,7 @@
 
 Rust CLI: **`multi64_test.z64`** ([`n64/test-rom`](../../n64/README.md)) ↔ **`multi64d`** WebSocket. Payloads follow **[M64T](../spec/test-l3-application-v0.md)** inside L3 **`DATA` / `APPLICATION`**. Use ROM **M64T_PROTO** or **BENCH** (not **RAW_ECHO**).
 
-**L2 today:** **`multi64d`** uses **SC64** ([`l3-over-sc64.md`](../spec/l3-over-sc64.md)). **EverDrive X7:** [`l3-over-everdrive-x7.md`](../spec/l3-over-everdrive-x7.md) / **`ed64-l2`** stub.
+**L2 today:** **`multi64d`** uses **SC64** ([`l3-over-sc64.md`](../spec/l3-over-sc64.md)). **EverDrive X7:** [`l3-over-everdrive-x7.md`](../spec/l3-over-everdrive-x7.md) / **`ed64-l2`** implements §4 but is **unvalidated on hardware**.
 
 ## Optional GUI
 

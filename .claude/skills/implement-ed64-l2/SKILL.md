@@ -1,41 +1,47 @@
 ---
 name: implement-ed64-l2
-description: Guide for turning Ed64L2Pipe from an Unsupported stub into a working EverDrive 64 X7 L2 backend - what the draft spec still leaves undefined, which surface to mirror from Sc64L2Pipe, and what unblocks downstream. Use when asked to implement, design, or estimate ED64 L2 or L3-over-EverDrive support.
+description: Guide for finishing EverDrive 64 X7 support - the DMA@ framing is implemented in Ed64L2Pipe but has never touched hardware, so this covers what to validate first, the ROM-side cart gate, and what would make the spec normative. Use when asked to implement, validate, debug, or estimate ED64 L2 or L3-over-EverDrive support.
 ---
 
-# Implementing `multi64-ed64-l2`
+# Finishing `multi64-ed64-l2`
 
-`Ed64L2Pipe` (`crates/ed64-l2/src/lib.rs`) is a deliberate stub: every method returns `io::ErrorKind::Unsupported` with a pointer to the spec. It is not broken code, and it should not be made to "work" by loosening those errors.
+`Ed64L2Pipe` (`crates/ed64-l2/src/lib.rs`) implements the framing in `docs/spec/l3-over-everdrive-x7.md` §4: a symmetric `DMA@` header carrying `(datatype << 24) | size`, payload padded to 2 bytes, `CMPH` trailer. Its unit tests cover encode/decode, resync, the datatype filter, and trailer errors.
 
-## The blocker is the spec, not the code
+**None of it has touched a cart.** The framing is transcribed from UNFLoader and libdragon's `usb.c` — a working reference, not observation. Everything below assumes that distinction matters, because the previous EverDrive attempt in this repo failed precisely by trusting a plausible vendor source that did not apply to the hardware (spec §1.1).
 
-`docs/spec/l3-over-everdrive-x7.md` is **Draft**, and §4 is explicit that four things MUST be specified before the host mapping is normative:
+## Do not claim support
 
-1. **Device discovery** — COM / `/dev/tty*` / USB IDs per platform.
-2. **Wire format** — whether raw L3 octets are wrapped, and whether a datatype byte (`0x01` = `MULTI64_L3`, as SC64 uses) prefixes each chunk.
-3. **Fragmentation** — how L3 frames larger than one USB transaction split and reassemble on both sides.
-4. **Errors** — stall / timeout / flush mapped onto `std::io::Error` and L3 session behavior.
+Until someone runs this against an X7:
 
-**Write the spec first.** §4 exists precisely so the crate has something normative to match, and §6 says the crate MUST follow it once written. Implementing against guessed framing and backfilling the spec inverts the project's contract. If you cannot answer all four from vendor sources or measured traces, say what is still unknown rather than picking a plausible-looking layout.
+- Do not describe EverDrive as supported anywhere user-facing.
+- A successful `Ed64L2Pipe::open` means **the serial port opened**. There is no identity handshake in the data path. Use `ed64-smoke` (spec §8) to confirm a port is really an EverDrive.
+- Keep spec §4 non-normative and the document **Draft**.
 
-Useful inputs: `ed64-smoke` is a working `usb64` `cmd`/`t` probe (spec §8, explicitly non-normative and **not** L3), `multi64-ed64-link` holds the X-series `usb64` serial plumbing, and N64brew documents the cart side (`REG_USB_CFG`, `REG_USB_DATA`).
+## What to check first, in order
 
-## Constraints that will shape the design
+1. **`ed64-smoke` against the cart.** Confirms the port, driver and baud before any L2 work. If this fails, nothing downstream is meaningful — try another `--baud`, `--flush`, and confirm the EverDrive OS has USB active.
+2. **Alignment.** §4.5 records this as resolved from libdragon source (`USBPROTOCOL_VERSION 2`, 2-byte alignment) and `SEND_ALIGN` matches. Confirm the cart's firmware agrees; a mismatch mis-frames *every* message, so it will look like total failure rather than corruption.
+3. **VCP vs D2XX.** UNFLoader uses FTDI D2XX and purges its queues directly; this crate uses `serialport` (VCP). Whether `clear_serial_buffers` gives equivalent behaviour under load is unverified, and is the most likely source of *intermittent* rather than total failure.
+4. **Chunk size.** `DEFAULT_ED64_CHUNK` is 512 — one `REG_USB_DATA` window, deliberately conservative. The ROM's own cap is `TEST_USB_WRITE_MAX` (8192). Raise via `write_l3_stream_with_max` only after the link is proven.
 
-§3 records that EverDrive USB paths move data through `REG_USB_DATA` in **512-byte** chunks, and some flows need **at least 16 bytes** per read. The host adapter may buffer, pad, or split — but padding **MUST NOT** appear inside L3 payloads. The codec above must still see one continuous octet stream, exactly as `l2-link-adapter.md` requires of every backend.
+## The N64 side
 
-## Mirror the SC64 surface
+`n64/test-rom` already links libdragon's `<usb.h>`, which abstracts both carts, and already emits `usb_write(MULTI64_L3, ...)`. The only thing blocking EverDrive is an explicit gate in `main.c`:
 
-`Sc64L2Pipe` (`crates/sc64-l2/src/lib.rs`) is the reference shape. Match it where the carts genuinely agree:
+```c
+if (usb_getcart() != CART_SC64) { printf("Need SummerCart64\n"); while (1) { } }
+```
 
-`open(port_name, baud)`, `set_timeout`, `clear_serial_buffers` (which must also reset internal parse state, not just the port), `write_l3_stream`, `write_l3_stream_with_max`, `read_l3_bytes` (returns `0` on timeout with an empty queue), `read_l3_bytes_exact`.
+Relax it to accept `CART_EVERDRIVE` **together with** hardware validation, not before. A ROM that advertises support it has never demonstrated is worse than one that refuses to boot.
 
-Note how SC64 separates the wire buffer from the decoded L3 queue (`WireBuffer` + `VecDeque<u8>`) and drains events in `process_wire_events`. An ED64 implementation needs the same split if its framing carries anything besides payload — do not decode L3 inside the L2 crate.
+## Then
 
-## What this unblocks
+`ed64-echo-test` and `ed64-l3-framing-e2e` already link `Ed64L2Pipe` and need no changes — they start working when the link does. Both want the ROM in **RAW_ECHO** and real X7 hardware; X5 has no USB.
 
-`ed64-echo-test` and `ed64-l3-framing-e2e` already compile and are written against `Ed64L2Pipe`; they start working once `open` succeeds. Both need the test ROM in **RAW_ECHO** and real X7 hardware — X5 has no USB. Wiring `multi64d` to select an ED64 backend is a later, optional step (`crates/ed64-l2/README.md` step 5), not part of making the pipe work.
+Wiring `multi64d` to select an ED64 backend is a later, optional step, not part of proving the pipe.
 
-## Finishing
+## When it actually works
 
-Update `docs/spec/l3-over-everdrive-x7.md` §9 and drop the Draft status only when §4 is genuinely answered. Bump L3 Protocol-Major/Minor only if the L3 byte contract itself changed — adding a backend normally does not change it. Leave **Spec-Revision** alone; that is maintainer-controlled. `docs/README.md` and `crates/ed64-l2/README.md` both describe the crate as a stub and will need updating in the same change.
+Drop **Draft** from `docs/spec/l3-over-everdrive-x7.md` and make §4 normative only once §4.5 is answered by observation. Record what was tested and on which OS version. Bump L3 Protocol-Major/Minor only if the L3 byte contract changed — adding a backend does not. Leave **Spec-Revision** alone; maintainer-controlled.
+
+Several files still describe the crate as unvalidated — `README.md`, `CONTRIBUTING.md`, `docs/README.md`, `docs/spec/README.md`, `docs/connectors/test-rom.md`, `crates/ed64-l2/README.md`, and CLAUDE.md. Update them in the same change, and run `/check-docs`.

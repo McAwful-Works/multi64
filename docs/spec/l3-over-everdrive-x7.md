@@ -1,7 +1,7 @@
 # L3 over EverDrive 64 X7 (draft mapping)
 
 **Spec-Revision:** 1  
-**Status:** **Draft** — §4 is now **derived from a working reference implementation** but has **not been validated against hardware in this repository**. **`multi64-ed64-l2`** (`Ed64L2Pipe`) remains a **stub**. In-tree EverDrive tooling: **`ed64-smoke`** (§8), **`ed64-echo-test`**, **`ed64-l3-framing-e2e`** (blocked on L2).
+**Status:** **Draft** — §4 is now **derived from a working reference implementation** but has **not been validated against hardware in this repository**. **`multi64-ed64-l2`** (`Ed64L2Pipe`) now implements §4, but has never been run against a cart. In-tree EverDrive tooling: **`ed64-smoke`** (§8), **`ed64-echo-test`**, **`ed64-l3-framing-e2e`** (blocked on L2).
 
 This document will define how **L3** octets ([l3-bridge-protocol-v1.md](./l3-bridge-protocol-v1.md)) are carried over the **EverDrive-64 X7** USB path. It does **not** redefine L3.
 
@@ -121,7 +121,7 @@ The framing is **symmetric**. Both directions send:
 
 ### 4.5 Open questions — resolve on hardware before dropping Draft
 
-1. **Protocol version.** Which alignment does libdragon's `usb.c` use on EverDrive, 2-byte or 512-byte? UNFLoader negotiates this; a host that assumes the wrong one mis-parses every message. **This is the single most likely thing to be wrong below.**
+1. ~~**Protocol version.**~~ **Resolved from source.** libdragon's `usb.c` declares `USBPROTOCOL_VERSION 2` and aligns payloads to **2 bytes**; `ed64-l2` matches. Still worth confirming on hardware that the cart's firmware agrees, but this is no longer an open guess.
 2. **VCP vs D2XX.** UNFLoader uses D2XX and purges the FTDI queues directly. Whether a `serialport` VCP handle gives equivalent behaviour under load — particularly for the purge in §4.4 — is unverified.
 3. **Baud.** `usb64` framing uses 115200 for the `cmd` path; whether the FIFO data path is baud-sensitive at all over VCP is unconfirmed.
 4. **EverDrive 3.0.** Whether the framing is identical on 3.0, and where the OS 3.07 incompatibility bites (§1.1).
@@ -153,7 +153,7 @@ Relaxing that to accept `CART_EVERDRIVE` is expected to be the whole N64-side ch
 | Component | Role |
 |-----------|------|
 | [`crates/multi64-ed64-link`](../../crates/multi64-ed64-link) | Rust **`multi64-ed64-link`**: X7 **`usb64`** **`cmd`** framing, `RomRead` — **not** the L3 stream adapter (**`ed64-l2`**). |
-| [`crates/ed64-l2`](../../crates/ed64-l2/README.md) | Stub crate; will provide an L2 handle similar to `multi64-sc64-l2::Sc64L2Pipe` when implemented. |
+| [`crates/ed64-l2`](../../crates/ed64-l2/README.md) | `Ed64L2Pipe` — implements §4 framing, mirroring `multi64-sc64-l2::Sc64L2Pipe`. Unit-tested for framing; **unvalidated on hardware**. |
 | [`crates/ed64-smoke`](../../crates/ed64-smoke) | **`ed64-smoke`** binary: host **`cmd`/`t`** smoke test (§8, `usb64`-style), not L3. |
 | [`crates/ed64-echo-test`](../../crates/ed64-echo-test) | **`ed64-echo-test`**: same role as `sc64-echo-test` over **`Ed64L2Pipe`** (blocked until L2). |
 | [`crates/ed64-l3-framing-e2e`](../../crates/ed64-l3-framing-e2e) | **`ed64-l3-framing-e2e`**: same role as `sc64-l3-framing-e2e` over **`Ed64L2Pipe`** (blocked until L2). |

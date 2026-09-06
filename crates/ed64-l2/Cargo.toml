@@ -4,7 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "L3 byte stream over EverDrive 64 X7 USB (stub — see docs/spec/l3-over-everdrive-x7.md)"
+description = "L3 byte stream over EverDrive 64 X7 USB (DMA@ framing; unvalidated on hardware — see docs/spec/l3-over-everdrive-x7.md)"
 readme = "README.md"
 
 [lib]
@@ -12,3 +12,8 @@ name = "multi64_ed64_l2"
 path = "src/lib.rs"
 
 [dependencies]
+serialport = "4"
+tracing = "0.1"
+
+[dev-dependencies]
+multi64-sc64-link = { path = "../sc64-link" }

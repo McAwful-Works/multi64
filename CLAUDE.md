@@ -58,7 +58,7 @@ A cart exposes one serial device, so the two stacks contend. `multi64d` resolves
 
 `multi64-l3` owns the `M64B` wire format, `StreamDecoder`, sessions and channels — no serial code. Each cart gets an L2 crate exposing the same conceptual handle (`open`, `write_l3_stream`, `read_l3_bytes`, `set_timeout`, `clear_serial_buffers`). Adding a cart means writing that handle, not touching L3.
 
-**SC64 is the only real backend.** `Ed64L2Pipe` is a deliberate stub: every method returns `io::ErrorKind::Unsupported` until `docs/spec/l3-over-everdrive-x7.md` is implemented. `ed64-echo-test` and `ed64-l3-framing-e2e` compile but cannot run. Treat `Unsupported` from an ED64 L2 call as designed, not as a bug to fix in passing.
+**SC64 is the only backend proven on hardware.** `Ed64L2Pipe` now implements the EverDrive `DMA@` framing from `docs/spec/l3-over-everdrive-x7.md` §4, but **it has never been run against a cart** — it is derived from UNFLoader and libdragon's `usb.c`, not from observation. Its unit tests cover the framing only. Do not describe EverDrive as supported, and do not treat a successful `open` as evidence: the data path has no identity handshake, so `open` only means the serial port opened. §4.5 lists what must be checked on hardware first.
 
 `multi64-ed64-link` is *not* part of the L3 stack despite the name — it is EverDrive USB serial plumbing for the SD path, plus cart detection.
 
