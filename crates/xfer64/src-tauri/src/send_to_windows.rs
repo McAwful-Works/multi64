@@ -1,10 +1,13 @@
 //! User **Send to** folder shortcut for quick upload (`xfer64 upload --picker`).
 
+#[cfg(windows)]
 use std::path::PathBuf;
 
 /// Send-to shortcut name; keep in sync with `windows/installer-hooks.nsh` and `windows/wix-sendto-uninstall.ps1`.
+#[cfg(windows)]
 const SHORTCUT_NAME: &str = "Xfer64 upload.lnk";
 
+#[cfg(windows)]
 fn ps_single_quote_escape(s: &str) -> String {
     s.replace('\'', "''")
 }

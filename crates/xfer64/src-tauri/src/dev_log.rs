@@ -15,7 +15,7 @@ fn default_cart_device() -> String {
     "auto".to_string()
 }
 
-/// `auto` — probe serial (SC64 identify, then EverDrive: edlink Gen3 ED64 or legacy `usb64` test). `sc64` — SummerCart64. `ed64_beta` — EverDrive; [`ed64_rom_linear_base`] overrides SD base when set (optional for edlink ED64 — default FCI `0x10000000`).
+/// `auto` — probe serial (SC64 identify, then EverDrive `usb64` test). `sc64` — SummerCart64. `ed64_beta` — EverDrive; [`ed64_rom_linear_base`] required for SD via experimental linear `RomRead`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplorerSettingsSnapshot {
@@ -32,7 +32,7 @@ pub struct ExplorerSettingsSnapshot {
     /// Default for upload picker / Send to: replace files that already exist on the cart.
     #[serde(default)]
     pub quick_upload_overwrite: bool,
-    /// EverDrive SD linear base for LBA 0 (`base + LBA·512` on usb64; same numeric base for edlink FCI when set). Optional when the cart speaks edlink Gen3 ED64.
+    /// EverDrive SD linear base for LBA 0 (`base + LBA·512` on usb64 `RomRead`).
     #[serde(default)]
     pub ed64_rom_linear_base: Option<u32>,
 }

@@ -33,7 +33,7 @@ Only one process can hold the cart serial device. **`multi64d`** exposes `POST /
 | Piece | Role |
 |-------|------|
 | [`cart_serial_sd.rs`](../../crates/xfer64/src-tauri/src/cart_serial_sd.rs) | COM port, cart mode (`auto` / `sc64` / `ed64_beta`), `CartSdRole` (`Sc64` / `Ed64Linear` / `Ed64NoLinear`), `with_session` → [`CartSession`](../../crates/multi64-sc64-sd/src/cart_session.rs), Tauri IPC (`cart_serial_*`). |
-| [`cart_probe.rs`](../../crates/xfer64/src-tauri/src/cart_probe.rs) | Auto-detect: SC64 `IDENTIFIER_GET`, then EverDrive via [`probe_ed64_serial_cart`](../../crates/multi64-ed64-link/src/lib.rs) (**edlink** @ **921600** or **`usb64`** `cmd`/`t` @ **115200**). |
+| [`cart_probe.rs`](../../crates/xfer64/src-tauri/src/cart_probe.rs) | Auto-detect: SC64 `IDENTIFIER_GET`, then EverDrive **`usb64`** `cmd`/`t` at **115200**. |
 | [`copy_plan.rs`](../../crates/xfer64/src-tauri/src/copy_plan.rs) | Interactive copy plans; takes `&CartSession` for cart-side walks. |
 | [`daemon.rs`](../../crates/xfer64/src-tauri/src/daemon.rs) | `resolve_com_port` / multi64d yield around cart work. |
 | [`dev_log.rs`](../../crates/xfer64/src-tauri/src/dev_log.rs) | `xfer64-settings.json`: `cartDevice`, `ed64RomLinearBase`, `preferredCom`, … |
@@ -49,10 +49,9 @@ Only one process can hold the cart serial device. **`multi64d`** exposes `POST /
 
 ### Wire layer (`crates/multi64-ed64-link`)
 
-- **[edlink](https://github.com/krikzz/edlink)** Gen3 **`++`** framing, **EPO / FCI** reads (**PRO/CORE**) — [`EdlinkLink`](../../crates/multi64-ed64-link/src/edlink.rs).
 - Legacy **X-series `usb64`** 16-byte **`cmd`**, **`RomRead`** / **`RamRead`** — [`Ed64Link`](../../crates/multi64-ed64-link/src/lib.rs) ([ed64-x-pub](https://github.com/krikzz/ed64-x-pub) / UNFLoader).
 
-`multi64-sc64-sd` enables linear **`RomRead`** SD with its **`ed64`** feature; detection tries **edlink** first, then **`usb64`** (`probe_ed64_serial_cart`).
+`multi64-sc64-sd` enables linear **`RomRead`** SD with its **`ed64`** feature.
 
 ### Settings (JSON)
 

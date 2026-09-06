@@ -3,8 +3,8 @@
 //! # Protocols
 //!
 //! - **SummerCart64** — `SD_READ` / `MEMORY_READ` via `multi64-sc64-link`.
-//! - **EverDrive** — Krikzz **edlink** Gen3 ED64 (**EPO / FCI** at 921600; default FCI base from vendor `ADDR_FCI_SYS`) when available;
-//!   otherwise legacy **`usb64` `RomRead`** with optional `ed64RomLinearBase`. Not Windows mass storage.
+//! - **EverDrive X-series** — experimental **`RomRead`** linear map when `ed64RomLinearBase` is set
+//!   (`docs/spec/ed64-sd-usb-host.md`). Not Windows mass storage.
 //!
 //! # Layout
 //!
@@ -12,7 +12,7 @@
 //! - **[`with_session`]** — resolves cart role, opens [`CartSession`](multi64_sc64_sd::CartSession), runs work, closes.
 //! - **Tauri commands** — `cart_serial_*` IPC (list, copy, mkdir, …).
 //!
-//! Maintainer map: `docs/spec/xfer64-cart-serial.md`.
+//! Maintainer map: workspace `docs/spec/xfer64-cart-serial.md`.
 
 use crate::cancel::ExplorerCancelState;
 use crate::cart_probe::DetectedCartKind;
@@ -130,6 +130,10 @@ impl ExplorerCartSerialState {
     }
 }
 
+/// Shown when EverDrive is selected but no linear ROM address is configured for SD access.
+const ED64_BETA_SD_MSG: &str = "EverDrive needs a linear ROM address for SD access. Open Settings → EverDrive (advanced), then Scan for SD base or enter an address. \
+Until then, only USB cart detection works—the SD card is not available here.";
+
 const AUTO_DETECT_FAIL: &str = "Could not auto-detect the cart on this serial port. \
 Choose SummerCart64 or EverDrive (beta) in Settings, or select another COM port.";
 
@@ -137,8 +141,10 @@ Choose SummerCart64 or EverDrive (beta) in Settings, or select another COM port.
 enum CartSdRole {
     /// SummerCart64 — full USB SD session.
     Sc64,
-    /// EverDrive: **edlink** Gen3 ED64 (default FCI base) and/or legacy **`usb64` `RomRead`** with optional `ed64_rom_linear_base`.
+    /// EverDrive with `ed64_rom_linear_base` set (experimental `RomRead` sector mapping).
     Ed64Linear,
+    /// EverDrive without a configured linear base.
+    Ed64NoLinear,
 }
 
 fn cart_mode(settings: &ExplorerSettingsSnapshot) -> &str {
@@ -179,15 +185,24 @@ fn effective_sd_role(
     settings: &ExplorerSettingsSnapshot,
     st: &ExplorerCartSerialState,
 ) -> Result<CartSdRole, String> {
+    let base = settings.ed64_rom_linear_base;
     match cart_mode(settings) {
-        "ed64_beta" => Ok(CartSdRole::Ed64Linear),
+        "ed64_beta" => Ok(if base.is_some() {
+            CartSdRole::Ed64Linear
+        } else {
+            CartSdRole::Ed64NoLinear
+        }),
         "sc64" => Ok(CartSdRole::Sc64),
         m if m.is_empty() || m == "auto" => {
             let port = resolve_port(st, settings)?;
             let k = probe_with_cache(st, &port, false)?;
             match k {
                 DetectedCartKind::Sc64 => Ok(CartSdRole::Sc64),
-                DetectedCartKind::Ed64Beta => Ok(CartSdRole::Ed64Linear),
+                DetectedCartKind::Ed64Beta => Ok(if base.is_some() {
+                    CartSdRole::Ed64Linear
+                } else {
+                    CartSdRole::Ed64NoLinear
+                }),
                 DetectedCartKind::Unknown => Err(AUTO_DETECT_FAIL.to_string()),
             }
         }
@@ -479,6 +494,12 @@ where
     F: FnOnce(&CartSession) -> Result<T, String>,
 {
     let role = effective_sd_role(settings, st)?;
+    if matches!(role, CartSdRole::Ed64NoLinear) {
+        dev.log(format!(
+            "{context}: skipped (EverDrive — no linear ROM base configured)"
+        ));
+        return Err(ED64_BETA_SD_MSG.to_string());
+    }
     let port = resolve_port(st, settings)?;
     let session = match role {
         CartSdRole::Sc64 => {
@@ -490,14 +511,11 @@ where
             })?)
         }
         CartSdRole::Ed64Linear => {
-            let base = settings.ed64_rom_linear_base;
-            let base_note = base
-                .map(|b| format!("0x{b:08x}"))
-                .unwrap_or_else(|| {
-                    format!("None (edlink default FCI 0x{:08x})", ed64_link::ADDR_FCI_SYS)
-                });
+            let base = settings.ed64_rom_linear_base.ok_or_else(|| {
+                "internal: Ed64Linear role without ed64_rom_linear_base".to_string()
+            })?;
             dev.log(format!(
-                "{context}: open EverDrive SD session (port={port}, rom_linear_base={base_note})"
+                "{context}: open EverDrive SD session (port={port}, rom_linear_base=0x{base:08x})"
             ));
             CartSession::Ed64(Ed64SdSession::open(&port, 115200, base).map_err(|e| {
                 let msg = e.to_string();
@@ -507,6 +525,7 @@ where
                 msg
             })?)
         }
+        CartSdRole::Ed64NoLinear => unreachable!(),
     };
     let guard = SdSessionCloseGuard::new(session, dev.clone(), context);
     let out = f(guard.session());
