@@ -100,8 +100,17 @@ fn read_pc_dir_sorted(p: &Path) -> Result<Vec<FsEntry>, String> {
     let rd = std::fs::read_dir(p).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for e in rd {
-        let e = e.map_err(|e| e.to_string())?;
-        let meta = e.metadata().map_err(|e| e.to_string())?;
+        // A single unreadable entry must not fail the whole listing. metadata() follows links,
+        // so a shortcut whose target is gone errors here; fall back to describing the link
+        // itself, and skip only entries we cannot stat at all.
+        let Ok(e) = e else { continue };
+        let meta = match e.metadata() {
+            Ok(m) => m,
+            Err(_) => match std::fs::symlink_metadata(e.path()) {
+                Ok(m) => m,
+                Err(_) => continue,
+            },
+        };
         let name = e.file_name().to_string_lossy().into_owned();
         let path = e.path().to_string_lossy().into_owned();
         let hidden = is_hidden_fs(&meta, &name);
@@ -351,8 +360,15 @@ pub fn explorer_emit_progress(app: AppHandle, done: u64, total: u64, message: Op
 #[tauri::command]
 pub fn fs_remove(path: String, cache: State<'_, ExplorerPathCache>) -> Result<(), String> {
     let p = PathBuf::from(path.trim());
-    let meta = std::fs::metadata(&p).map_err(|e| e.to_string())?;
-    if meta.is_dir() {
+    // symlink_metadata, not metadata: a shortcut whose target is missing would otherwise fail
+    // here and could never be deleted, and following a link risks acting on the wrong thing.
+    let meta = std::fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
+    if meta.file_type().is_symlink() {
+        // Remove the link itself. Windows needs remove_dir for a directory link/junction.
+        std::fs::remove_file(&p)
+            .or_else(|_| std::fs::remove_dir(&p))
+            .map_err(|e| e.to_string())?;
+    } else if meta.is_dir() {
         std::fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
     } else {
         std::fs::remove_file(&p).map_err(|e| e.to_string())?;
