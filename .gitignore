@@ -26,3 +26,8 @@ crates/multi64-test-connector-gui/node_modules/
 
 # Claude Code: per-developer permission grants (CLAUDE.md itself is tracked)
 .claude/settings.local.json
+
+# N64 ROM intermediates. These embed the builder absolute paths, so they churn
+# for every person who rebuilds. The shipped multi64_test.z64 stays tracked: it
+# is built from the stripped elf and is byte-reproducible from n64/toolchain.lock.
+n64/test-rom/build/
