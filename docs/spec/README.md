@@ -29,7 +29,7 @@ Normative **Multi64** wire and behavior. Each spec file carries its own **Spec-R
 | L3 framing / decode | `multi64-l3` (`crates/l3`) |
 | SC64 wire (`CMD` / `CMP` / `PKT`) | `multi64-sc64-link` (`crates/sc64-link`) |
 | L3 stream over SC64 | `multi64-sc64-l2` (`crates/sc64-l2`) |
-| L3 stream over EverDrive X7 | `multi64-ed64-l2` (`crates/ed64-l2`) — **stub** |
+| L3 stream over EverDrive X7 | `multi64-ed64-l2` (`crates/ed64-l2`) — implemented, **unvalidated on hardware** |
 | Daemon API | `multi64d` (`crates/multi64d`) |
 | SC64 SD / FAT host (`SD_CARD_OP`, …) | `multi64-sc64-sd` (`crates/multi64-sc64-sd`) — see [`sc64-sd-usb-host.md`](sc64-sd-usb-host.md) |
 | EverDrive **`usb64`** serial helpers | `multi64-ed64-link` (`crates/multi64-ed64-link`) — see [`ed64-sd-usb-host.md`](ed64-sd-usb-host.md) |

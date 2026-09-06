@@ -49,7 +49,7 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [crates/l3](crates/l3) | **`multi64-l3`** — L3 framing, `StreamDecoder`, session helpers |
 | [crates/sc64-link](crates/sc64-link) | **`multi64-sc64-link`** — SC64 `CMD` / `CMP` / `PKT` wire |
 | [crates/sc64-l2](crates/sc64-l2) | **`multi64-sc64-l2`** — L3 byte stream over SC64 serial |
-| [crates/ed64-l2](crates/ed64-l2) | **`multi64-ed64-l2`** — EverDrive X7 L2 (**stub**; see spec) |
+| [crates/ed64-l2](crates/ed64-l2) | **`multi64-ed64-l2`** — EverDrive X7 L2 (implemented; **unvalidated on hardware**, see spec §4.0) |
 | [crates/multi64d](crates/multi64d) | Reference daemon (`multi64d`) + library API |
 | [crates/multi64-test-connector](crates/multi64-test-connector) | CLI for test ROM / M64T |
 | [crates/multi64-test-connector-gui](crates/multi64-test-connector-gui) | Optional GUI; same WebSocket contract as the CLI |

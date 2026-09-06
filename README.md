@@ -66,7 +66,7 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 
 | Crate | Role |
 |-------|------|
-| `multi64-ed64-l2` | L3 over ED USB — **stub** |
+| `multi64-ed64-l2` | L3 over ED USB — implemented, **unvalidated on hardware** |
 | `ed64-smoke` | **`usb64`** `cmd`/`t` smoke ([spec §8](docs/spec/l3-over-everdrive-x7.md)); not L3 |
 | `ed64-echo-test`, `ed64-l3-framing-e2e` | Same roles as SC64 e2e tools; need **`Ed64L2Pipe`** (blocked until `ed64-l2` is real) |
 

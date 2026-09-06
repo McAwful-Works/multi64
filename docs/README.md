@@ -32,7 +32,7 @@ Krikzz's N64 line is **X5 and X7 only** — X5 has no USB, and the **PRO / CORE*
 | | **SummerCart64** | **EverDrive-64 X7** |
 |---|------------------|---------------------|
 | **L2 spec** | [l3-over-sc64.md](spec/l3-over-sc64.md) | [l3-over-everdrive-x7.md](spec/l3-over-everdrive-x7.md) |
-| **Rust L2** | `multi64-sc64-l2` | `multi64-ed64-l2` (**stub**) |
+| **Rust L2** | `multi64-sc64-l2` | `multi64-ed64-l2` (implemented, **unvalidated on hardware**) |
 | **USB smoke** (not L3) | `sc64-smoke` | `ed64-smoke` ([§8](spec/l3-over-everdrive-x7.md)) |
 | **Serial e2e** | `sc64-echo-test`, `sc64-l3-framing-e2e` | `ed64-echo-test`, `ed64-l3-framing-e2e` (needs **`Ed64L2Pipe`**) |
 | **`multi64d`** | SC64 L2 | Not wired |
