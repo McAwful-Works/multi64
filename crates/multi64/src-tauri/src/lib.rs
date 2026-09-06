@@ -1,6 +1,6 @@
 //! Multi64 — manages `multi64d`, tray, settings (Windows-first).
 
-use auto_launch::AutoLaunch;
+use auto_launch::{AutoLaunch, AutoLaunchBuilder};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
@@ -273,10 +273,14 @@ fn daemon_health_url(listen: &str) -> String {
 
 fn check_health(listen: &str) -> bool {
     let url = daemon_health_url(listen);
-    ureq::get(&url)
-        .timeout(std::time::Duration::from_secs(1))
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(1)))
+        .build()
+        .into();
+    agent
+        .get(&url)
         .call()
-        .map(|r| r.status() == 200)
+        .map(|r| r.status().as_u16() == 200)
         .unwrap_or(false)
 }
 
@@ -371,9 +375,23 @@ fn set_settings(state: tauri::State<'_, AppState>, settings: Settings) -> Result
     Ok(())
 }
 
-fn set_autostart_windows_impl(enabled: bool) -> Result<(), String> {
+/// Build the Multi64 auto-launch handle.
+///
+/// auto-launch 0.6 made `AutoLaunch::new` platform-divergent (Linux gained a
+/// `LinuxLaunchMode` argument), so both call sites go through the builder, which
+/// keeps one signature across platforms.
+fn multi64_auto_launch() -> Result<AutoLaunch, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let auto = AutoLaunch::new("Multi64", &exe.to_string_lossy(), &[] as &[&str]);
+    AutoLaunchBuilder::new()
+        .set_app_name("Multi64")
+        .set_app_path(&exe.to_string_lossy())
+        .set_args(&[] as &[&str])
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn set_autostart_windows_impl(enabled: bool) -> Result<(), String> {
+    let auto = multi64_auto_launch()?;
     if enabled {
         auto.enable().map_err(|e| e.to_string())?;
     } else {
@@ -441,11 +459,9 @@ fn set_autostart_windows(enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 fn get_autostart_windows() -> bool {
-    if let Ok(exe) = std::env::current_exe() {
-        let auto = AutoLaunch::new("Multi64", &exe.to_string_lossy(), &[] as &[&str]);
-        return auto.is_enabled().unwrap_or(false);
-    }
-    false
+    multi64_auto_launch()
+        .map(|auto| auto.is_enabled().unwrap_or(false))
+        .unwrap_or(false)
 }
 
 /// Basenames we search for (NSIS / MSI / legacy installs).

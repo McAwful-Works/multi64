@@ -14,7 +14,7 @@ Normative **Multi64** wire and behavior. Each spec file carries its own **Spec-R
 | [**l2-link-adapter.md**](l2-link-adapter.md) | **L2**: responsibilities of a host-side link and constraints for backends |
 | [**l3-over-sc64.md**](l3-over-sc64.md) | **SC64**: L3 octets over `USB_WRITE` / `PKT` `U` |
 | [**sc64-sd-usb-host.md**](sc64-sd-usb-host.md) | **SC64**: host SD / FAT over USB (`SD_CARD_OP`); normative for `multi64-sc64-sd` |
-| [**ed64-sd-usb-host.md**](ed64-sd-usb-host.md) | **EverDrive**: experimental X-series SD via **`RomRead`**; **`usb64`** vs **edlink** notes |
+| [**ed64-sd-usb-host.md**](ed64-sd-usb-host.md) | **EverDrive**: experimental X-series SD via **`RomRead`** |
 | [**l3-over-everdrive-x7.md**](l3-over-everdrive-x7.md) | **EverDrive X7** (draft): L3 over ED64 USB — host mapping TBD |
 | [**daemon-api-v1.md**](daemon-api-v1.md) | **`multi64d`**: HTTP + WebSocket bridge |
 | [**test-l3-application-v0.md**](test-l3-application-v0.md) | **M64T**: **`multi64_test.z64`** (`n64/test-rom`) host↔cart messages |
@@ -32,7 +32,7 @@ Normative **Multi64** wire and behavior. Each spec file carries its own **Spec-R
 | L3 stream over EverDrive X7 | `multi64-ed64-l2` (`crates/ed64-l2`) — **stub** |
 | Daemon API | `multi64d` (`crates/multi64d`) |
 | SC64 SD / FAT host (`SD_CARD_OP`, …) | `multi64-sc64-sd` (`crates/multi64-sc64-sd`) — see [`sc64-sd-usb-host.md`](sc64-sd-usb-host.md) |
-| EverDrive **`usb64`** + **edlink** serial helpers | `multi64-ed64-link` (`crates/multi64-ed64-link`) — see [`ed64-sd-usb-host.md`](ed64-sd-usb-host.md) |
+| EverDrive **`usb64`** serial helpers | `multi64-ed64-link` (`crates/multi64-ed64-link`) — see [`ed64-sd-usb-host.md`](ed64-sd-usb-host.md) |
 
 ### Host binaries (hardware / CLI)
 

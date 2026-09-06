@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "EverDrive-64 USB serial: Krikzz edlink Gen3 (EPO/FCI) + legacy usb64 RomRead"
+description = "EverDrive-64 USB serial: Krikzz usb64 RomRead/RamRead"
 
 [dependencies]
 serialport = "4"

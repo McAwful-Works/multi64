@@ -29,7 +29,6 @@ Implementors should start from vendor and community sources:
 | [krikzz/ed64-x-pub](https://github.com/krikzz/ed64-x-pub) (GitHub) | Reference code: **`usb64/usb64/`** (Windows `usb64` tool, C# `CommandProcessor`), **`ED64-XIO`** sample, **`docs/`** (TOC, hardware ID; some USB wire notes may be **WIP**) |
 | [N64brew — EverDrive-64 X7](https://n64brew.dev/wiki/EverDrive-64_X7) | **N64-side** registers (`REG_USB_CFG`, `REG_USB_DATA` 512-byte buffer), `bi_usb_rd` / `bi_usb_wr` behavior |
 | [jsdf/webserial-ed64log](https://github.com/jsdf/webserial-ed64log) | Example of host serial/WebUSB usage |
-| [krikzz/edlink](https://github.com/krikzz/edlink) | PC tool for **PRO / CORE** (and other carts). **`edlink/Device/Link.cs`** `TxCMD`: bytes `0x2B ('+')`, `0xD4 ('+' ^ 0xFF)`, `cmd_code`, `cmd_code ^ 0xFF`, optional **subcmd**; then length-prefixed payloads / `Tx32` / `Rx32` per **`DeviceIO_V2`**. Default **921600** baud in `OpenConnection`. This framing is **not** the X-series **`usb64`** ASCII **`cmd`** + 16-byte packet (§8); do not assume edlink bytes match **`Ed64Link::command_packet`**. |
 
 **Normative for Multi64:** once this spec defines the **PC-side** framing, the **`ed64-l2`** crate MUST match it; the N64 ROM MUST use compatible `bi_usb_*` (or equivalent) so L3 bytes round-trip.
 
@@ -71,7 +70,7 @@ Games using **libdragon** may integrate via the same L3 helpers as the SC64 path
 
 | Component | Role |
 |-----------|------|
-| [`crates/multi64-ed64-link`](../../crates/multi64-ed64-link) | Rust **`multi64-ed64-link`**: **edlink** Gen3 (**PRO/CORE**) + legacy X7 **`usb64`** **`cmd`** framing, `RomRead`, cart **`probe_ed64_serial_cart`** — **not** the L3 stream adapter (**`ed64-l2`**). |
+| [`crates/multi64-ed64-link`](../../crates/multi64-ed64-link) | Rust **`multi64-ed64-link`**: X7 **`usb64`** **`cmd`** framing, `RomRead` — **not** the L3 stream adapter (**`ed64-l2`**). |
 | [`crates/ed64-l2`](../../crates/ed64-l2/README.md) | Stub crate; will provide an L2 handle similar to `multi64-sc64-l2::Sc64L2Pipe` when implemented. |
 | [`crates/ed64-smoke`](../../crates/ed64-smoke) | **`ed64-smoke`** binary: host **`cmd`/`t`** smoke test (§8, `usb64`-style), not L3. |
 | [`crates/ed64-echo-test`](../../crates/ed64-echo-test) | **`ed64-echo-test`**: same role as `sc64-echo-test` over **`Ed64L2Pipe`** (blocked until L2). |

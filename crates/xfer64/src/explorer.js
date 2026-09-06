@@ -1793,8 +1793,8 @@ function setupNameTooltipForRow(tr, fullName) {
   td.addEventListener("pointercancel", hideNameTooltip);
 }
 
-/** Sniff test: error text that asks the user to configure / scan the EverDrive SD linear base (see `cart_serial_sd.rs`). */
-const ED64_SD_BASE_HELP_SNIPPET = "Scan for SD base";
+/** Substring of `ED64_BETA_SD_MSG` in `cart_serial_sd.rs` — sniff test for the long “configure linear base” footer text. */
+const ED64_NO_BASE_ERR_PREFIX = "EverDrive needs a linear ROM address";
 
 const ED64_SD_BASE_SCAN_LABEL = "Scanning for SD base";
 /** Cart footer + progress strip while `runEd64LinearBaseScan` runs. */
@@ -1853,7 +1853,7 @@ async function loadCartPane(opts = {}) {
         if (statusMeta) {
           const raw = userFacingErrorMessage(err, { context: "cart" });
           const longEd64NoBase =
-            typeof raw === "string" && raw.includes(ED64_SD_BASE_HELP_SNIPPET);
+            typeof raw === "string" && raw.includes(ED64_NO_BASE_ERR_PREFIX);
           if (
             ed64LinearScanRunning ||
             (longEd64NoBase && isCartSdBaseScanProgressBarActive())

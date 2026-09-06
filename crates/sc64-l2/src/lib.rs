@@ -18,10 +18,7 @@ use std::time::{Duration, Instant};
 
 /// Feed parsed wire events into an L3 byte queue (`PKT` `U` with multi64 datatype only).
 pub fn process_wire_events(wire: &mut WireBuffer, l3_rx: &mut VecDeque<u8>) -> io::Result<()> {
-    loop {
-        let Some(ev) = wire.next_event() else {
-            break;
-        };
+    while let Some(ev) = wire.next_event() {
         match ev {
             WireEvent::Cmp(_) => {}
             WireEvent::Pkt(p) if p.id == b'U' => {

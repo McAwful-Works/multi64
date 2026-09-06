@@ -8,11 +8,9 @@
 //! [`MEMORY_READ`](https://github.com/Polprzewodnikowy/SummerCart64/blob/main/docs/03_usb_interface.md)).
 //! For **`SD_CARD_OP` `arg1`**, match **`sc64deployer`** (`sw/deployer/src/sc64/types.rs` `SdCardOp → [arg0,arg1]`), not the row order in the markdown “Available SD card operations” table.
 //!
-//! # EverDrive-64 (optional `ed64` feature)
+//! # EverDrive X-series (optional `ed64` feature)
 //!
-//! Uses Krikzz **edlink** Gen3 **EPO / FCI** reads when the cart reports protocol `0x07`, else legacy **`usb64` `RomRead`**
-//! at `base + LBA·512` (optional base; edlink defaults to `0x10000000` per vendor `DEV_ED64/DeviceIO.cs`). See
-//! `Ed64RomLinear` / `Ed64SdSession` in this crate and workspace `docs/spec/ed64-sd-usb-host.md`.
+//! Uses Krikzz-style **`RomRead`** over USB serial at a configurable linear base (`base + LBA·512`); see workspace `docs/spec/ed64-sd-usb-host.md`. With **`ed64`**, see `Ed64RomLinear` and `Ed64SdSession` in this crate.
 //!
 //! # Unified API
 //!

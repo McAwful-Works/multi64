@@ -17,20 +17,27 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Tauri / WebView deps (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libudev-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
+      # crates/multi64 declares resources/multi64d.exe in bundle.resources, and its build.rs copies
+      # the daemon there. multi64d is a sibling binary, not a dependency, so cargo gives no ordering
+      # guarantee within one invocation — build it explicitly, once per profile.
+      - name: build multi64d (debug, bundled as a Multi64 resource)
+        run: cargo build -p multi64d
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace
+      - name: build multi64d (release, bundled as a Multi64 resource)
+        run: cargo build -p multi64d --release
       - name: cargo build release
         run: cargo build --workspace --release

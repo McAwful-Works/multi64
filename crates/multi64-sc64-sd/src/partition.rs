@@ -516,9 +516,8 @@ impl Sc64SdSession {
 
 #[cfg(feature = "ed64")]
 impl Ed64SdSession {
-    /// Open COM, EverDrive handshake, detect MBR/GPT + FAT/exFAT. **`rom_linear_base`**: `None` uses edlink
-    /// [`multi64_ed64_link::ADDR_FCI_SYS`] when the cart is Gen3 ED64; `Some` supplies the linear base for both stacks.
-    pub fn open(port_name: &str, baud: u32, rom_linear_base: Option<u32>) -> io::Result<Self> {
+    /// Open COM, EverDrive test handshake, detect MBR/GPT + FAT/exFAT using `RomRead` at `rom_linear_base + LBA·512`.
+    pub fn open(port_name: &str, baud: u32, rom_linear_base: u32) -> io::Result<Self> {
         let mut link = Ed64RomLinear::open(port_name, baud, rom_linear_base)?;
         let mut s0 = [0u8; 512];
         link.read_sd_sectors(0, &mut s0)?;

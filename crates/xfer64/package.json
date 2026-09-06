@@ -10,8 +10,8 @@
     "build": "tauri build"
   },
   "devDependencies": {
-    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/cli": "^2",
-    "esbuild": "^0.28.0"
+    "esbuild": "^0.28.2"
   }
 }

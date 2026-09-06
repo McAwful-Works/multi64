@@ -1,7 +1,7 @@
 //! Heuristic **linear base** discovery: first 512-byte block at each candidate address should look like **disk sector 0**
-//! (MBR / protective MBR, FAT/exFAT boot sector). Uses **edlink EPO / FCI** when the cart answers as ED64, else **`usb64` `RomRead`**.
+//! (MBR / protective MBR, FAT/exFAT boot sector). Uses **`usb64` `RomRead`**.
 
-use crate::{Ed64Link, EdlinkLink, PROTOCOL_ID_ED64, SECTOR_BYTES};
+use crate::{Ed64Link, SECTOR_BYTES};
 use std::collections::BTreeSet;
 use std::io;
 use std::time::Duration;
@@ -120,7 +120,7 @@ fn finalize_linear_probe_results(mut found: Vec<u32>, preferred_first: Option<u3
     found
 }
 
-/// Open serial, then probe each candidate base: **edlink `fci_read`** when Gen3 ED64 is detected, else **`usb64` `RomRead`**.
+/// Open serial, then probe each candidate base with **`usb64` `RomRead`**.
 /// Returns **all** bases whose first sector passes [`looks_like_disk_sector0`]. May be empty; may have false positives.
 ///
 /// `preferred_first`: saved address from settings — checked **first** so rediscovery prefers the
@@ -144,23 +144,6 @@ pub fn probe_ed64_sd_linear_bases_with_cancel(
     let list = ed64_linear_base_probe_list_with_preferred(preferred_first);
     let checked = list.len();
     let mut found = Vec::new();
-
-    if let Ok(mut el) = EdlinkLink::try_open(port) {
-        if el.protocol_id() == PROTOCOL_ID_ED64 {
-            el.set_timeout(Duration::from_millis(750))?;
-            for &base in &list {
-                if !should_continue() {
-                    return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
-                }
-                let _ = el.clear_buffers();
-                let mut sector = [0u8; SECTOR_BYTES];
-                if el.fci_read(base, &mut sector).is_ok() && looks_like_disk_sector0(&sector) {
-                    found.push(base);
-                }
-            }
-            return Ok((finalize_linear_probe_results(found, preferred_first), checked));
-        }
-    }
 
     let mut link = Ed64Link::open(port, baud)?;
     link.set_timeout(Duration::from_millis(750))?;
@@ -187,7 +170,10 @@ pub fn probe_ed64_sd_linear_bases_with_cancel(
         }
     }
 
-    Ok((finalize_linear_probe_results(found, preferred_first), checked))
+    Ok((
+        finalize_linear_probe_results(found, preferred_first),
+        checked,
+    ))
 }
 
 #[cfg(test)]
