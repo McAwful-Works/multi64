@@ -12,7 +12,7 @@ The committed binary is built from the current source and accepts both SummerCar
 
 > **Built with the versions pinned in [`toolchain.lock`](toolchain.lock)** — libdragon `c4a7e11`, mips64-elf GCC **16.2.0**. Use `./setup-toolchain.sh` to install exactly those; see *Toolchain* below.
 
-> Note the ROM is **compressed** (`N64_ROM_ELFCOMPRESS` defaults to 1 in `n64.mk`), so searching `multi64_test.z64` for strings will give misleading results. Inspect `build/multi64_test.elf` instead.
+> Note the ROM is **compressed** (`N64_ROM_ELFCOMPRESS` defaults to 1 in `n64.mk`), so searching `multi64_test.z64` for strings will give misleading results — LZ back-references replace repeated substrings. Inspect `build/multi64_test.elf` from your own `make` instead; `build/` is not tracked.
 
 **Modes** (press **L** to cycle):
 
