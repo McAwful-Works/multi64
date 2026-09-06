@@ -10,7 +10,7 @@ This folder builds **libdragon** ROMs for on-cart testing. The in-tree **L2** re
 
 The committed binary is built from the current source and accepts both SummerCart64 and EverDrive.
 
-> **Built with:** libdragon `trunk` @ `c4a7e11`, mips64-elf GCC **16.2.0** (libdragon's prebuilt `gcc-toolchain-mips64` release). Nothing pins the libdragon version, so a rebuild from a different revision may produce a different binary — record what you used when you commit one.
+> **Built with the versions pinned in [`toolchain.lock`](toolchain.lock)** — libdragon `c4a7e11`, mips64-elf GCC **16.2.0**. Use `./setup-toolchain.sh` to install exactly those; see *Toolchain* below.
 
 > Note the ROM is **compressed** (`N64_ROM_ELFCOMPRESS` defaults to 1 in `n64.mk`), so searching `multi64_test.z64` for strings will give misleading results. Inspect `build/multi64_test.elf` instead.
 
@@ -23,6 +23,28 @@ The committed binary is built from the current source and accepts both SummerCar
 | **BENCH** | Same RX as M64T + **periodic** cart→host `BENCH_TICK` + **A** sends controller snapshot. |
 
 **Controls** (modes **M64T_PROTO** / **BENCH**): **A** = `CONTROLLER` snapshot (active port). **B** = `STRESS_LARGE` (`0xE1`); hold **C-down** to force chunked USB writes. **C-left / C-right** = active port `0`–`3`. **C-up** = small L3 `DATA` on Log (non-`M64T`). **Start** = L3 `HEARTBEAT` on Control. **D-up / D-down** = bench interval ±15 frames (15–600, **BENCH** only). **Z** = rumble ~1 s on active port. **R** = reset RX buffer, M64T stats, diagnostics, and **session** state. **L** = cycle mode (also resets like **R**). The HUD shows **`ses`** (session id; `0` = none). **Save type** is set in the Makefile (`eeprom4k` by default; use `N64_ROM_SAVETYPE=sram256k` for SRAM M64T tests).
+
+### Toolchain
+
+Pinned in [`toolchain.lock`](toolchain.lock) so a rebuild reproduces the committed `multi64_test.z64`:
+
+```sh
+cd n64
+./setup-toolchain.sh              # installs into ~/n64inst; no sudo needed
+export N64_INST="$HOME/n64inst"
+export PATH="$N64_INST/bin:$PATH"
+```
+
+Two things the lock works around, both of which would otherwise defeat the pin:
+
+- **libdragon's toolchain release tag is rolling.** `toolchain-continuous-prerelease` dates from 2023, but its assets are replaced in place. Pinning the tag gives a different compiler over time, so the lock pins the immutable **asset id** and verifies a **SHA-256**; a mismatch aborts the install.
+- **libdragon records no version of its own** once installed, so drift cannot be detected from the tree. `setup-toolchain.sh` writes a stamp, and `make check-toolchain` compares it against the lock:
+
+```sh
+cd n64/test-rom && make check-toolchain
+```
+
+It reports `OK` (both verified), `PARTIAL` (gcc matches but libdragon came from elsewhere, so it cannot be proven), or a non-zero `MISMATCH`. Nothing runs this automatically — CI does not build the ROM, so drift is only ever caught by a human.
 
 ### Build
 
