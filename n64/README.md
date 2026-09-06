@@ -8,7 +8,11 @@ This folder builds **libdragon** ROMs for on-cart testing. The in-tree **L2** re
 
 **Single** build output: **`multi64_test.z64`** — the official **Multi64** e2e ROM for **SummerCart64** + L3, and the same binary for **EverDrive X7**. Uses libdragon (`N64_INST`).
 
-> **The committed `multi64_test.z64` is stale.** `main.c` now accepts `CART_EVERDRIVE`, but the binary in this repository predates that change and still refuses to boot on an EverDrive. Rebuilding needs `N64_INST`, which was not available when the change was made. **Run `make` before flashing** if you intend to test EverDrive; the committed binary is still correct for SummerCart64.
+The committed binary is built from the current source and accepts both SummerCart64 and EverDrive.
+
+> **Built with:** libdragon `trunk` @ `c4a7e11`, mips64-elf GCC **16.2.0** (libdragon's prebuilt `gcc-toolchain-mips64` release). Nothing pins the libdragon version, so a rebuild from a different revision may produce a different binary — record what you used when you commit one.
+
+> Note the ROM is **compressed** (`N64_ROM_ELFCOMPRESS` defaults to 1 in `n64.mk`), so searching `multi64_test.z64` for strings will give misleading results. Inspect `build/multi64_test.elf` instead.
 
 **Modes** (press **L** to cycle):
 
