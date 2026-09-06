@@ -68,6 +68,7 @@ A cart exposes one serial device, so the two stacks contend. `multi64d` resolves
 
 ## Conventions
 
+- **`main` and `release` are the only long-lived branches.** Everything else is a topic branch — delete it, local and remote, as soon as its PR merges. Dependabot deletes its own.
 - **`docs/spec/` is normative.** Wire behavior changes must land with the spec edit in the same change. Bump L3 **Protocol-Major**/**Protocol-Minor** only when the byte contract changes (`l3-bridge-protocol-v1.md` §12); **Spec-Revision** is maintainer-controlled — do not bump it on your own.
 - `docs/README.md` is the spec map and states the intended reading order for implementors.
 - `hadris-fat` is pinned to a git rev in the workspace `[patch.crates-io]` because the 1.1.0 release fails to build with `--features exfat`. Do not unpin it to resolve a dependency conflict.
