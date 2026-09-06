@@ -15,25 +15,38 @@ fn with_http_base(listen: &str, path: &str) -> String {
     }
 }
 
+/// ureq 3 moved timeouts from the request builder to agent config, so each call
+/// builds a one-shot agent carrying its own deadline.
+fn daemon_agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .build()
+        .into()
+}
+
 fn daemon_get_root(listen: &str) -> Result<serde_json::Value, String> {
     let url = with_http_base(listen, "/");
-    let resp = ureq::get(&url)
-        .timeout(Duration::from_secs(2))
+    let mut resp = daemon_agent(Duration::from_secs(2))
+        .get(&url)
         .call()
         .map_err(|e| format!("GET {url}: {e}"))?;
-    if resp.status() != 200 {
-        return Err(format!("GET {}: HTTP {}", url, resp.status()));
+    let status = resp.status().as_u16();
+    if status != 200 {
+        return Err(format!("GET {url}: HTTP {status}"));
     }
-    let body = resp.into_string().map_err(|e| format!("read body: {e}"))?;
+    let body = resp
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| format!("read body: {e}"))?;
     serde_json::from_str(&body).map_err(|e| format!("JSON: {e}"))
 }
 
 fn daemon_health_ok(listen: &str) -> bool {
     let url = with_http_base(listen, "/health");
-    ureq::get(&url)
-        .timeout(Duration::from_secs(1))
+    daemon_agent(Duration::from_secs(1))
+        .get(&url)
         .call()
-        .map(|r| r.status() == 200)
+        .map(|r| r.status().as_u16() == 200)
         .unwrap_or(false)
 }
 
@@ -113,12 +126,13 @@ pub fn explorer_daemon_probe(
 
 pub fn explorer_daemon_release_listen(listen: &str) -> Result<(), String> {
     let url = with_http_base(listen, "/v1/serial/release");
-    let resp = ureq::post(&url)
-        .timeout(Duration::from_secs(5))
-        .send_bytes(&[])
+    let resp = daemon_agent(Duration::from_secs(5))
+        .post(&url)
+        .send_empty()
         .map_err(|e| format!("POST {url}: {e}"))?;
-    if resp.status() != 200 {
-        return Err(format!("multi64d release failed: HTTP {}", resp.status()));
+    let status = resp.status().as_u16();
+    if status != 200 {
+        return Err(format!("multi64d release failed: HTTP {status}"));
     }
     Ok(())
 }
@@ -130,13 +144,13 @@ pub fn explorer_daemon_release(listen: String) -> Result<(), String> {
 
 pub fn explorer_daemon_resume_listen(listen: &str) -> Result<(), String> {
     let url = with_http_base(listen, "/v1/serial/resume");
-    let resp = ureq::post(&url)
-        .timeout(Duration::from_secs(10))
-        .send_bytes(&[])
+    let mut resp = daemon_agent(Duration::from_secs(10))
+        .post(&url)
+        .send_empty()
         .map_err(|e| format!("POST {url}: {e}"))?;
-    let status = resp.status();
+    let status = resp.status().as_u16();
     if status != 200 {
-        let hint = resp.into_string().unwrap_or_default();
+        let hint = resp.body_mut().read_to_string().unwrap_or_default();
         return Err(format!("multi64d resume failed: HTTP {status} {hint}"));
     }
     Ok(())
