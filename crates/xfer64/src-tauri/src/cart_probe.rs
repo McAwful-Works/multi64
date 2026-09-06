@@ -4,7 +4,7 @@
 use multi64_sc64_sd::Sc64Link;
 use serialport::{ClearBuffer, SerialPort};
 use std::io;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
