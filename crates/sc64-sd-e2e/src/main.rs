@@ -13,7 +13,18 @@
 //!
 //! Everything is created under one work directory (`--dir`, default `/xfer64-e2e`) and removed at
 //! the end unless `--keep` is passed. If `multi64d` holds the port, release it first
-//! (`POST /v1/serial/release`) — the two stacks cannot share the COM port.
+//! (`POST /v1/serial/release`) and resume it afterwards (`POST /v1/serial/resume`) — the two stacks
+//! cannot share the COM port.
+//!
+//! Three modes exit before that suite, so they can be pointed at a card holding real data.
+//! `--list` and `--verify` are read-only; `--upload` writes exactly the one file it is given:
+//!
+//! ```sh
+//! ROM=n64/test-rom/multi64_test.z64
+//! cargo run -p sc64-sd-e2e --release -- --port COM4 --upload $ROM --to /
+//! cargo run -p sc64-sd-e2e --release -- --port COM4 --list
+//! cargo run -p sc64-sd-e2e --release -- --port COM4 --verify /multi64_test.z64 --against $ROM
+//! ```
 
 use clap::Parser;
 use multi64_sc64_sd::{CartSession, Sc64SdSession};
@@ -51,13 +62,33 @@ struct Args {
     list: bool,
 
     /// Instead of running the test suite, read this cart path back and compare it byte-for-byte
-    /// against `--against`. Read-only. Use after an upload to confirm what actually landed.
+    /// against `--against`. Read-only. Use after an upload — including `--upload` — to confirm what
+    /// actually landed.
     #[arg(long, value_name = "CART_PATH")]
     verify: Option<String>,
 
     /// Host file that `--verify` compares against.
     #[arg(long, value_name = "HOST_PATH", requires = "verify")]
     against: Option<PathBuf>,
+
+    /// Instead of running the test suite, copy this host file onto the card and exit. Overwrites an
+    /// existing file of the same name, reporting what it replaced. Pairs with `--verify`, which
+    /// reads the bytes back off the card.
+    #[arg(
+        long,
+        value_name = "HOST_PATH",
+        requires = "to",
+        conflicts_with_all = ["list", "verify"]
+    )]
+    upload: Option<PathBuf>,
+
+    /// Cart directory `--upload` writes into, e.g. `/` or `/roms`. Must already exist.
+    #[arg(long, value_name = "CART_PARENT", requires = "upload")]
+    to: Option<String>,
+
+    /// Name to write as on the cart. Defaults to the host file's own name.
+    #[arg(long = "as", value_name = "DEST_NAME", requires = "upload")]
+    dest_name: Option<String>,
 }
 
 /// One check. `run` returns `Ok(detail)` for a pass; the detail is printed beside the name.
@@ -148,6 +179,12 @@ fn main() -> io::Result<()> {
             .as_deref()
             .expect("clap `requires` guarantees --against");
         return verify_only(&session, cart_path, host);
+    }
+    // Writes one file and nothing else — also safe on a card holding real data, and likewise exits
+    // before the suite.
+    if let Some(src) = args.upload.as_deref() {
+        let parent = args.to.as_deref().expect("clap `requires` guarantees --to");
+        return upload_only(&session, src, parent, args.dest_name.as_deref(), &args.port);
     }
 
     let mut h = Harness::new();
@@ -502,6 +539,98 @@ fn list_only(session: &CartSession) -> io::Result<()> {
     Ok(())
 }
 
+/// Join a cart parent directory and a leaf the way [`CartSession::import_from_pc_with_progress`]
+/// does (`partition.rs`, `cart_parent_trimmed`), so what is printed is the path actually written.
+fn cart_join(parent: &str, name: &str) -> String {
+    let base = parent.replace('\\', "/");
+    let base = base.trim().trim_matches('/');
+    if base.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("/{base}/{name}")
+    }
+}
+
+/// `--upload`: copy one host file onto the card and exit, without running the suite.
+///
+/// Writes exactly this one file. `skip_existing` is `false`, so a same-named file is replaced —
+/// what it replaced is printed first, because this can be pointed at a card holding real data.
+fn upload_only(
+    session: &CartSession,
+    src: &Path,
+    parent: &str,
+    dest_name: Option<&str>,
+    port: &str,
+) -> io::Result<()> {
+    let meta = std::fs::metadata(src)?;
+    if !meta.is_file() {
+        // `import_from_pc_with_progress` also takes directories, but the overwrite report and the
+        // byte accounting below only describe a single file, so do not pretend to handle a tree.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a file", src.display()),
+        ));
+    }
+    let total = meta.len();
+    let name = match dest_name {
+        Some(n) => n.to_string(),
+        None => src
+            .file_name()
+            .ok_or_else(|| err(format!("{} has no file name", src.display())))?
+            .to_string_lossy()
+            .into_owned(),
+    };
+    let cart_path = cart_join(parent, &name);
+
+    println!("uploading {} ({total} bytes)", src.display());
+    println!("       to {cart_path}");
+
+    // Say what is about to be destroyed before destroying it.
+    match session.cart_path_entry_kind(&cart_path)? {
+        Some(true) => {
+            // The import would fail with AlreadyExists; failing here says why in one line.
+            return Err(err(format!("{cart_path} exists and is a directory")));
+        }
+        Some(false) => {
+            let existing = session.total_bytes_for_cart_entry(&cart_path)?;
+            println!("  OVERWRITING existing {cart_path} ({existing} bytes)");
+        }
+        None => println!("  no existing {cart_path}; creating"),
+    }
+
+    // `progress` reports a delta per chunk, not a running total (partition.rs:291); returning false
+    // would abort the transfer.
+    let t = Instant::now();
+    let mut done = 0u64;
+    let mut last_print = 0u64;
+    session.import_from_pc_with_progress(src, parent, &name, false, |n| {
+        done += n;
+        if done - last_print >= 64 * 1024 || done == total {
+            last_print = done;
+            let pct = (done * 100).checked_div(total).unwrap_or(100);
+            print!("\r  {done}/{total} bytes ({pct}%)");
+            let _ = io::stdout().flush();
+        }
+        true
+    })?;
+    if last_print > 0 {
+        println!();
+    }
+
+    let ms = t.elapsed().as_millis();
+    if done != total {
+        return Err(err(format!("short write: {done} of {total} bytes")));
+    }
+    println!("wrote {done} bytes in {ms}ms");
+
+    // A successful write only means the write path returned Ok; `--verify` reads the bytes back.
+    println!(
+        "verify with: sc64-sd-e2e --port {port} --verify {cart_path} --against {}",
+        src.display()
+    );
+    Ok(())
+}
+
 /// `--verify`: read a cart file back and compare it to a host file. Read-only.
 ///
 /// An upload reporting success only means the write path returned `Ok`; this reads the bytes back
@@ -547,4 +676,30 @@ fn verify_only(session: &CartSession, cart_path: &str, host: &Path) -> io::Resul
     }
     println!("  OK: {} bytes identical", expect.len());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cart_join;
+
+    /// The path printed for the overwrite report and the `--verify` hint has to be the same path
+    /// `import_from_pc_with_progress` writes to, whatever shape `--to` was given in.
+    #[test]
+    fn cart_join_matches_cart_parent_trimmed() {
+        for parent in ["/", "", "  ", "///"] {
+            assert_eq!(
+                cart_join(parent, "rom.z64"),
+                "/rom.z64",
+                "parent {parent:?}"
+            );
+        }
+        for parent in ["/roms", "roms", "/roms/", "roms/", " /roms/ ", "\\roms"] {
+            assert_eq!(
+                cart_join(parent, "rom.z64"),
+                "/roms/rom.z64",
+                "parent {parent:?}"
+            );
+        }
+        assert_eq!(cart_join("/a/b", "c.bin"), "/a/b/c.bin");
+    }
 }
