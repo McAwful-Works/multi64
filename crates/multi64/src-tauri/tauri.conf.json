@@ -14,7 +14,8 @@
         "title": "Multi64",
         "width": 560,
         "height": 640,
-        "resizable": true,
+        "resizable": false,
+        "maximizable": false,
         "visible": true
       }
     ],
