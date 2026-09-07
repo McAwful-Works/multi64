@@ -26,7 +26,7 @@ Default listen address: **`127.0.0.1:38765`** (configurable via `--listen` / `MU
 | `version` | string | Daemon binary version. |
 | `websocket_path` | string | Path for the WebSocket upgrade (e.g. `"/ws"`). |
 | `serial` | string | Configured serial device path (e.g. `COM3`); empty in the metadata-only test router. |
-| `serialActive` | boolean | `true` when the daemon holds an open serial link; `false` after **`POST /v1/serial/release`** until **`POST /v1/serial/resume`**. |
+| `serialActive` | boolean | `true` **only** while the daemon holds an open serial link. `false` after **`POST /v1/serial/release`** until **`POST /v1/serial/resume`**, and also `false` while the link is **faulted** (§1.3). |
 
 ### 1.2 Serial yield (Xfer64)
 
@@ -37,9 +37,32 @@ Only one process can open the cart’s COM port at a time. Tools such as **Xfer6
 | `POST /v1/serial/release` | `{"released":true}` |
 | `POST /v1/serial/resume` | `{"resumed":true}` |
 
-`POST /v1/serial/resume` is **idempotent**: if the link is already active (e.g. nested release/resume from Xfer64), the handler succeeds without opening a second serial handle.
+`POST /v1/serial/resume` is **idempotent**: if the link is already active (e.g. nested release/resume from Xfer64), the handler succeeds without opening a second serial handle. This short-circuit applies to a **live** link only — a link that failed on I/O is *faulted*, not active, so resume always reopens it (§1.3).
 
 While released, WebSocket binary writes to the cart are ignored; clients should tolerate brief disconnect-like behavior until resume.
+
+### 1.3 Link faults and recovery
+
+A serial read that fails with a real I/O error — the cart unplugged, the USB-CDC device reset — puts the link in a **faulted** state, distinct from released:
+
+- The dead handle is **dropped**, so the COM port is free for another process.
+- `serialActive` in **`GET /`** becomes `false`. Clients MUST NOT read `serialActive: true` as proof the link works; they only ever learn otherwise from this field.
+- WebSocket binary writes are ignored, exactly as while released.
+- The daemon retries `open` about **once per second** until the device returns, and **`POST /v1/serial/resume`** reopens it immediately.
+
+A release always wins over a fault: if `POST /v1/serial/release` arrives while the link is faulted, the state becomes *released* and the daemon stops retrying, so it never takes the port back from a tool that asked for it.
+
+The recovered link is a **fresh** L2 pipe, so the L3 octet stream is discontinuous across a fault in the same way it is across release/resume. Clients resynchronise on the next frame boundary; see [`l3-bridge-protocol-v1.md`](./l3-bridge-protocol-v1.md).
+
+### 1.4 Origin policy
+
+The daemon writes directly to flash-cart hardware and binds loopback, which puts it in reach of any page the user happens to have open in a browser. A WebSocket upgrade is **not** subject to the CORS response gate, and `POST /v1/serial/release` is a CORS *simple* request that needs no preflight, so neither is protected by CORS headers alone. Every route is therefore gated on the `Origin` header:
+
+- A request with **no** `Origin` header is allowed. Native clients — Xfer64 (`ureq`), Multi64, `multi64-test-connector` (`tokio-tungstenite`) — send none; a browser always does.
+- A request **with** an `Origin` header is allowed only if that exact origin was configured via `--allow-origin` / `MULTI64D_ALLOW_ORIGIN` / `allow_origin` (§5). Otherwise the daemon answers **`403 Forbidden`** before routing, `/ws` included.
+- The allow-list is **empty by default**, and CORS response headers are emitted for allow-listed origins only.
+
+This is not authentication: any *native* process on the host can still reach the daemon, just as it could open the COM port directly.
 
 ---
 
@@ -101,11 +124,12 @@ Server responds with:
 | `--serial` | (required†) | Serial device (e.g. `COM3`, `/dev/ttyACM0`); env: `MULTI64D_SERIAL` |
 | `--baud` | `115200` | Baud (often ignored on USB-CDC cart adapters); env: `MULTI64D_BAUD` |
 | `--listen` | `127.0.0.1:38765` | TCP bind address; env: `MULTI64D_LISTEN` |
-| `--clear-serial` | off | Clear host serial buffers after open; env: `MULTI64D_CLEAR_SERIAL` (`true` / `false`) |
+| `--clear-serial [BOOL]` | off | Clear host serial buffers after open. Bare `--clear-serial` means `true`; `--clear-serial=false` (or `MULTI64D_CLEAR_SERIAL=false`) **overrides** `clear_serial = true` in a config file. Env: `MULTI64D_CLEAR_SERIAL` (`true` / `false`) |
+| `--allow-origin <ORIGIN>` | (none) | Browser origin permitted to call the daemon (§1.4); repeatable. Env: `MULTI64D_ALLOW_ORIGIN` (comma-separated) |
 | `--no-print-ports` | off | If set, do not log available serial ports at startup (default is to log them at info) |
 | `--list-ports` | off | Print serial port names to stdout and exit (for scripts) |
 
-† Serial may come from **`--serial`**, **`MULTI64D_SERIAL`**, or **`serial = "..."`** in a config file (see §5.2). CLI and environment override file values.
+† Serial may come from **`--serial`**, **`MULTI64D_SERIAL`**, or **`serial = "..."`** in a config file (see §5.2). CLI and environment **override** file values — they never combine with them, so an explicit `false` or an explicit `--allow-origin` list replaces whatever the file said.
 
 Example config: [`crates/multi64d/multi64d.toml.example`](../../crates/multi64d/multi64d.toml.example).
 

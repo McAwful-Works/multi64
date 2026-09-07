@@ -3,9 +3,15 @@
 #   macOS:   ~/Library/Application Support/multi64d/config.toml
 #   Windows: %APPDATA%\multi64d\config.toml
 #
-# CLI and environment variables override these values.
+# CLI and environment variables override these values (they replace, never combine — e.g.
+# `MULTI64D_CLEAR_SERIAL=false` turns off a `clear_serial = true` set here).
 
 serial = "COM3"
 listen = "127.0.0.1:38765"
 baud = 115200
 clear_serial = false
+
+# Browser origins allowed to reach the daemon (see docs/spec/daemon-api-v1.md 1.4).
+# Empty by default: native clients (Xfer64, Multi64, multi64-test-connector) send no `Origin`
+# header and are always allowed, while any page in a browser sends one and is rejected with 403.
+# allow_origin = ["https://my-web-frontend.example"]
