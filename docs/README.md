@@ -10,6 +10,7 @@ Normative wire rules live in **`spec/`**. Each spec file carries its own **Spec-
 |--------------|------|
 | Repo overview | [Root README](../README.md) |
 | **L3** | [l3-bridge-protocol-v1.md](spec/l3-bridge-protocol-v1.md) |
+| **RDRAM peek/poke** | [memory-l3-application-v0.md](spec/memory-l3-application-v0.md) |
 | **L2** (any cart) | [l2-link-adapter.md](spec/l2-link-adapter.md) |
 | **SC64** L3 over USB | [l3-over-sc64.md](spec/l3-over-sc64.md) |
 | **SC64** SD / FAT host | [sc64-sd-usb-host.md](spec/sc64-sd-usb-host.md) |
@@ -54,6 +55,7 @@ Bump L3 **Protocol-Major** / **Protocol-Minor** only when the **byte** contract 
 | [xfer64-cart-serial.md](spec/xfer64-cart-serial.md) | Xfer64: SD sessions, `multi64d` COM yield, Rust module map |
 | [daemon-api-v1.md](spec/daemon-api-v1.md) | `multi64d` HTTP + WebSocket |
 | [test-l3-application-v0.md](spec/test-l3-application-v0.md) | M64T / `multi64_test.z64` |
+| [memory-l3-application-v0.md](spec/memory-l3-application-v0.md) | M64P: RDRAM peek/poke over L3 |
 
 **Index:** [spec/README.md](spec/README.md)
 
@@ -64,7 +66,8 @@ Bump L3 **Protocol-Major** / **Protocol-Minor** only when the **byte** contract 
 3. [l3-over-everdrive-x7.md](spec/l3-over-everdrive-x7.md) (optional)  
 4. [daemon-api-v1.md](spec/daemon-api-v1.md)  
 5. [test-l3-application-v0.md](spec/test-l3-application-v0.md)  
-6. [sc64-sd-usb-host.md](spec/sc64-sd-usb-host.md), [ed64-sd-usb-host.md](spec/ed64-sd-usb-host.md), [xfer64-cart-serial.md](spec/xfer64-cart-serial.md) — SD / Xfer64 internals
+6. [memory-l3-application-v0.md](spec/memory-l3-application-v0.md) (optional — RDRAM peek/poke)  
+7. [sc64-sd-usb-host.md](spec/sc64-sd-usb-host.md), [ed64-sd-usb-host.md](spec/ed64-sd-usb-host.md), [xfer64-cart-serial.md](spec/xfer64-cart-serial.md) — SD / Xfer64 internals
 
 ---
 

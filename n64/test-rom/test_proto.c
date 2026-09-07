@@ -1,10 +1,13 @@
 /**
- * L3 stream reassembly + M64T APPLICATION handling (test-l3-application-v0.md).
+ * L3 stream reassembly + APPLICATION handling: M64T (test-l3-application-v0.md)
+ * and M64P (memory-l3-application-v0.md), dispatched on the payload magic.
  */
 #include "test_proto.h"
+#include "mem_proto.h"
 #include "save_hw.h"
 
 #include <joypad.h>
+#include <n64sys.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -188,6 +191,27 @@ static void send_l3_app(const uint8_t *app, int app_len)
         return;
     }
     send_l3_wire_once(out, nw);
+}
+
+/*
+ * Hooks mem_proto.c declares. Keeping them here is what lets that file stay free
+ * of libdragon, so the same source can move into a game-resident agent.
+ */
+void m64p_transport_send(const uint8_t *app, int app_len)
+{
+    send_l3_app(app, app_len);
+}
+
+uint32_t m64p_rdram_size(void)
+{
+    return (uint32_t)get_memory_size();
+}
+
+volatile uint8_t *m64p_rdram_base(void)
+{
+    /* Cached KSEG0: the game touches these structures with the CPU, so cached
+       access is what stays coherent. See memory-l3-application-v0.md 4.1. */
+    return (volatile uint8_t *)0x80000000U;
 }
 
 static void m64t_send(uint8_t msg, const uint8_t *body, size_t blen)
@@ -640,6 +664,7 @@ void test_proto_reset_all(void)
     s_total_m64t_handled = 0;
     s_session_id = 0U;
     memset(s_session_challenge, 0, sizeof(s_session_challenge));
+    m64p_reset_stats();
     test_proto_reset_diag();
 }
 
@@ -716,6 +741,9 @@ unsigned test_proto_drain_stream(void)
         if (payload_len >= 5U && payload[0] == M64T_MAGIC0 && payload[1] == M64T_MAGIC1 && payload[2] == M64T_MAGIC2 &&
             payload[3] == M64T_MAGIC3) {
             handle_m64t(payload, (size_t)payload_len);
+            handled++;
+            s_total_m64t_handled++;
+        } else if (m64p_handle(payload, (size_t)payload_len)) {
             handled++;
             s_total_m64t_handled++;
         }

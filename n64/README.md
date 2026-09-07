@@ -21,6 +21,7 @@ The committed binary is built from the current source and accepts both SummerCar
 | **RAW_ECHO** (default) | Verbatim `MULTI64_L3` loopback — use with **`sc64-l3-framing-e2e`**, **`sc64-echo-test`** (serial L2, not WebSocket). |
 | **M64T_PROTO** | L3 `DATA` / `APPLICATION` with magic **`M64T`** — `PING`→`PONG`, `ECHO`, `REQ_VERSION`, `REQ_CONTROLLER`, **`SESSION_*`**, EEPROM/SRAM test messages ([`docs/spec/test-l3-application-v0.md`](../docs/spec/test-l3-application-v0.md)). |
 | **BENCH** | Same RX as M64T + **periodic** cart→host `BENCH_TICK` + **A** sends controller snapshot. |
+| **MEM_AGENT** | **M64P** RDRAM peek/poke ([`docs/spec/memory-l3-application-v0.md`](../docs/spec/memory-l3-application-v0.md)) — `HELLO`, `PEEKV`, `POKEV`. Host-driven; no buttons beyond **L** / **R**. |
 
 **Controls** (modes **M64T_PROTO** / **BENCH**): **A** = `CONTROLLER` snapshot (active port). **B** = `STRESS_LARGE` (`0xE1`); hold **C-down** to force chunked USB writes. **C-left / C-right** = active port `0`–`3`. **C-up** = small L3 `DATA` on Log (non-`M64T`). **Start** = L3 `HEARTBEAT` on Control. **D-up / D-down** = bench interval ±15 frames (15–600, **BENCH** only). **Z** = rumble ~1 s on active port. **R** = reset RX buffer, M64T stats, diagnostics, and **session** state. **L** = cycle mode (also resets like **R**). The HUD shows **`ses`** (session id; `0` = none). **Save type** is set in the Makefile (`eeprom4k` by default; use `N64_ROM_SAVETYPE=sram256k` for SRAM M64T tests).
 
