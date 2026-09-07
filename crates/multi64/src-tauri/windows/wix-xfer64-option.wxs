@@ -1,6 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
+    <!--
+      Stop `multi64d.exe` before MSI inspects or replaces files. The daemon is a bundled resource,
+      not the main binary, so nothing in the default sequence closes it; while it runs it holds
+      `resources\multi64d.exe` open and the install (or uninstall) hits a file-in-use error. Mirrors
+      NSIS_HOOK_PREINSTALL in windows/installer-hooks.nsh.
+
+      `util:CloseApplication` would be the idiomatic tool, but the WiX util extension is not linked
+      into this build, so declaring its namespace here would fail candle. A CustomAction needs no
+      extension and matches the prompt action below.
+
+      Sequenced before InstallValidate (the point at which MSI detects files in use) and left
+      unconditioned so it runs on uninstall too. Return="ignore" because taskkill exits 128 when no
+      such process is running, which is the common case and not an error.
+    -->
+    <CustomAction Id="Multi64StopDaemon"
+      Directory="SystemFolder"
+      ExeCommand="taskkill.exe /F /IM multi64d.exe"
+      Execute="immediate"
+      Impersonate="yes"
+      Return="ignore" />
     <!-- After Multi64 files are on disk, optionally launch the bundled Xfer64 installer (same PS1 as NSIS). -->
     <CustomAction Id="Multi64Xfer64OptionalPrompt"
       Directory="SystemFolder"
@@ -9,6 +29,7 @@
       Impersonate="yes"
       Return="ignore" />
     <InstallExecuteSequence>
+      <Custom Action="Multi64StopDaemon" Before="InstallValidate" />
       <Custom Action="Multi64Xfer64OptionalPrompt" After="InstallFinalize"><![CDATA[NOT REMOVE]]></Custom>
     </InstallExecuteSequence>
   </Fragment>
