@@ -23,6 +23,9 @@ let sdReady = false;
 /** Picker has files to upload (main init path); drives reconnect polling when SD is missing. */
 let pickerSessionActive = false;
 
+/** True while an upload is running: the close button acts as Cancel. */
+let uploadInFlight = false;
+
 const STATUS_READY =
   "Ready — use Upload here, or wait for the automatic upload.";
 const STATUS_NO_CART =
@@ -532,6 +535,15 @@ document.getElementById("upload-picker-btn-up")?.addEventListener("click", () =>
 });
 
 document.getElementById("upload-picker-btn-close")?.addEventListener("click", () => {
+  if (uploadInFlight) {
+    // Mid-transfer this button is "Cancel"; closing the window here would leave the upload
+    // running with nothing to report to.
+    void invoke("explorer_cancel_operation").catch(() => {});
+    const closeBtn = document.getElementById("upload-picker-btn-close");
+    if (closeBtn) closeBtn.disabled = true;
+    setUploadStatus("uploading", "Cancelling…");
+    return;
+  }
   clearAutoUploadTimer();
   stopSdReconnectPolling();
   void invoke("upload_picker_close");
@@ -558,11 +570,14 @@ async function runUpload() {
   const ow = document.getElementById("upload-picker-overwrite")?.checked === true;
   clearAutoUploadTimer();
   setError("");
+  if (btn) btn.disabled = true;
+  // The close button becomes a working Cancel for the duration of the transfer. It stays
+  // enabled: upload_picker_run now shares the app's cancel state, so this actually stops it.
   if (closeBtn) {
     closeBtn.textContent = "Cancel";
+    closeBtn.disabled = false;
   }
-  if (btn) btn.disabled = true;
-  if (closeBtn) closeBtn.disabled = true;
+  uploadInFlight = true;
   setUploadingUi(true);
   setUploadStatus("uploading", "Uploading to the SD card…");
   const fill = document.getElementById("upload-picker-status-fill");
@@ -612,14 +627,23 @@ async function runUpload() {
       doneMsg = "Upload finished.";
     }
     setUploadStatus(doneMode, doneMsg);
-    if (closeBtn) closeBtn.textContent = "Close";
   } catch (e) {
-    setError(userFacingErrorMessage(e, { context: "general" }));
-    setUploadStatus("idle");
+    if (String(e).includes("Cancelled")) {
+      setUploadStatus("warning", "Upload cancelled.");
+    } else {
+      setError(userFacingErrorMessage(e, { context: "general" }));
+      setUploadStatus("idle");
+    }
   } finally {
+    uploadInFlight = false;
     if (typeof unlisten === "function") unlisten();
     if (btn) btn.disabled = !sdReady;
-    if (closeBtn) closeBtn.disabled = false;
+    // Restore the label here, not only on success: a failed or cancelled upload used to leave
+    // an enabled button still reading "Cancel".
+    if (closeBtn) {
+      closeBtn.textContent = "Close";
+      closeBtn.disabled = false;
+    }
     setUploadingUi(false);
   }
 }

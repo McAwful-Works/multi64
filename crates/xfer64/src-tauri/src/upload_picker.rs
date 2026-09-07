@@ -1,5 +1,6 @@
 //! Minimal window: choose cart folder, then run the same import as headless `upload`.
 
+use crate::cancel::ExplorerCancelState;
 use crate::cli_upload::{run_headless_import_upload, UploadImportSummary};
 use std::path::PathBuf;
 use tauri::{AppHandle, State};
@@ -24,13 +25,26 @@ pub async fn upload_picker_run(
     cart_parent: String,
     overwrite: bool,
     state: State<'_, UploadPickerState>,
+    cancel: State<'_, ExplorerCancelState>,
 ) -> Result<UploadImportSummary, String> {
     let paths = state.pc_paths.clone();
     if paths.is_empty() {
         return Err("No files to upload.".into());
     }
+    // Clear any flag left by an earlier operation, then share this token with the transfer so
+    // explorer_cancel_operation can actually stop it.
+    let cancel = ExplorerCancelState::clone(&cancel);
+    cancel.reset();
     let inner = tauri::async_runtime::spawn_blocking(move || {
-        run_headless_import_upload(paths, cart_parent, overwrite, false, None, Some(app))
+        run_headless_import_upload(
+            paths,
+            cart_parent,
+            overwrite,
+            false,
+            None,
+            Some(app),
+            cancel,
+        )
     })
     .await
     .map_err(|e| format!("upload task: {e}"))?;
