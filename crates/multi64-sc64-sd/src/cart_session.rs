@@ -8,6 +8,9 @@ use std::io;
 use std::path::Path;
 
 /// Active USB SD session: SC64 or EverDrive experimental linear mapping.
+///
+/// Dropping the session releases it (see [`Sc64SdSession`]'s `Drop`), so no path can strand the
+/// cart's SD card locked to the PC side. Call [`close`](Self::close) where the error matters.
 pub enum CartSession {
     Sc64(Sc64SdSession),
     #[cfg(feature = "ed64")]
@@ -15,6 +18,7 @@ pub enum CartSession {
 }
 
 impl CartSession {
+    /// Release the USB SD session, reporting failure. Idempotent, and also done on drop.
     pub fn close(&self) -> io::Result<()> {
         match self {
             Self::Sc64(s) => s.close(),

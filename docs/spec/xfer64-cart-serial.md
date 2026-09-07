@@ -10,7 +10,14 @@ How **Xfer64** uses the **COM** port for **SD** (FAT/exFAT over each cart’s pr
 
 Each logical SD operation runs inside [`with_session`](../../crates/xfer64/src-tauri/src/cart_serial_sd.rs): open serial → identify cart → init SD / session → work → teardown + host flush → close. The port is not held between Tauri commands so other tools can open COM when idle.
 
-**Panic safety:** `SdSessionCloseGuard` ensures [`CartSession`](../../crates/multi64-sc64-sd/src/cart_session.rs)::`close` runs if the work closure unwinds, so the cart is less likely to stay SD-locked without host cleanup.
+**Releasing the SD lock is an invariant of the session, not of the caller.** While a PC-side SD session is open the SC64 holds the card away from the console, which then refuses to boot (`SD card is locked by the PC side`). [`Sc64SdSession`](../../crates/multi64-sc64-sd/src/partition.rs) and `Ed64SdSession` therefore release on **`Drop`**, covering early returns, `?`, and panics in **any** consumer of [`CartSession`](../../crates/multi64-sc64-sd/src/cart_session.rs) — Xfer64, `sc64-sd-e2e`, and anything added later. `close` stays the way to release **and see the error**; it is idempotent, so an explicit `close` followed by the drop deinits once.
+
+Two things `Drop` cannot cover, so callers must still get them right:
+
+- **`std::process::exit` runs no destructors.** A tool must return an exit code up to `main` and let the session close first (`sc64-sd-e2e`'s `run`).
+- **A failure inside `Sc64SdSession::open` after `SD_CARD_OP` init** has no `Self` to drop; `open` deinits before propagating.
+
+**Panic safety (Xfer64):** `SdSessionCloseGuard` in `cart_serial_sd.rs` still wraps the work closure, so a close **error** is logged and surfaced to the UI rather than swallowed by a drop.
 
 ### Multi-file copy
 

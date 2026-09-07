@@ -29,6 +29,7 @@ use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::SeekFrom;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Buffer size for streaming cart ↔ host file I/O (FAT/exFAT read/write loops).
@@ -56,20 +57,32 @@ pub struct SessionEntry {
 }
 
 /// Connected SC64 with SD initialized and FAT/exFAT partition bounds detected.
+///
+/// The cart holds the SD card for the PC side for as long as this session lives: until the USB
+/// session is released the console refuses to boot with `SD card is locked by the PC side`.
+/// [`Drop`] releases it, so a caller that never reaches [`close`](Self::close) — an early return,
+/// a `?`, a panic — does not strand the card.
 pub struct Sc64SdSession {
     link: Arc<Mutex<Sc64Link>>,
     pub partition_start_sector: u64,
     pub partition_bytes: u64,
     exfat: bool,
+    /// Set once the USB SD session has been released, so `close()` and `Drop` together deinit once.
+    released: AtomicBool,
 }
 
 /// EverDrive X-series: FAT/exFAT over **experimental** `RomRead` linear LBA mapping (`rom_linear_base + LBA·512`).
+///
+/// Released on [`Drop`] like [`Sc64SdSession`]; here that is a serial flush rather than an SD
+/// deinit (the linear mapping takes no PC-side SD lock), but the ownership rule is the same one.
 #[cfg(feature = "ed64")]
 pub struct Ed64SdSession {
     link: Arc<Mutex<Ed64RomLinear>>,
     pub partition_start_sector: u64,
     pub partition_bytes: u64,
     exfat: bool,
+    /// See [`Sc64SdSession::released`].
+    released: AtomicBool,
 }
 
 impl Sc64SdSession {
@@ -85,33 +98,68 @@ impl Sc64SdSession {
         link.sd_deinit_try();
         link.sd_init()?;
 
-        let mut s0 = [0u8; 512];
-        link.read_sd_sectors(0, &mut s0)?;
-        let part_start = {
-            let link_ref = &mut link;
-            detect_partition_start(&s0, |lba, buf| link_ref.read_sd_sectors(lba, buf))?
-        };
+        // From here on the cart holds the SD card for the PC side. No `Self` exists yet, so a `?`
+        // in the probing below would drop `link` with the lock still held and the console would
+        // refuse to boot from the card. Probe in a closure and deinit before propagating.
+        let probe = (|link: &mut Sc64Link| -> io::Result<(u64, bool, u64)> {
+            let mut s0 = [0u8; 512];
+            link.read_sd_sectors(0, &mut s0)?;
+            let part_start = {
+                let link_ref = &mut *link;
+                detect_partition_start(&s0, |lba, buf| link_ref.read_sd_sectors(lba, buf))?
+            };
 
-        let mut bpb = [0u8; 512];
-        link.read_sd_sectors(part_start, &mut bpb)?;
-        let exfat = is_exfat_boot_sector(&bpb);
-        let part_bytes = partition_volume_bytes(&bpb)?;
+            let mut bpb = [0u8; 512];
+            link.read_sd_sectors(part_start, &mut bpb)?;
+            let exfat = is_exfat_boot_sector(&bpb);
+            let part_bytes = partition_volume_bytes(&bpb)?;
+            Ok((part_start, exfat, part_bytes))
+        })(&mut link);
+        let (part_start, exfat, part_bytes) = match probe {
+            Ok(v) => v,
+            Err(e) => {
+                link.sd_deinit_try();
+                return Err(e);
+            }
+        };
 
         Ok(Self {
             link: Arc::new(Mutex::new(link)),
             partition_start_sector: part_start,
             partition_bytes: part_bytes,
             exfat,
+            released: AtomicBool::new(false),
         })
     }
 
     /// Release SD lock on the device (`SD_CARD_OP` deinit) and flush the USB serial link.
+    ///
+    /// Idempotent, and [`Drop`] calls it too: call it explicitly when the error matters (a failed
+    /// release leaves the card locked to the PC), and rely on the drop for every other path.
     pub fn close(&self) -> io::Result<()> {
-        let mut g = self
-            .link
-            .lock()
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        SdCardTransport::release_usb_session(&mut *g)
+        self.release_once()
+    }
+
+    /// Releases the USB SD session at most once.
+    ///
+    /// `SD_CARD_OP` deinit against a cart that holds no session answers ERR, so an explicit
+    /// `close()` followed by the drop must not send it twice. A failed release clears the flag
+    /// again: the card is still locked, so the drop should retry rather than treat it as done.
+    fn release_once(&self) -> io::Result<()> {
+        if self.released.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        let r = (|| {
+            let mut g = self
+                .link
+                .lock()
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            SdCardTransport::release_usb_session(&mut *g)
+        })();
+        if r.is_err() {
+            self.released.store(false, Ordering::SeqCst);
+        }
+        r
     }
 
     /// Flush host-side serial TX. Call after mutating SD operations so USB frames fully leave the pipe.
@@ -514,6 +562,17 @@ impl Sc64SdSession {
     }
 }
 
+impl Drop for Sc64SdSession {
+    /// Releases the cart's PC-side SD lock on every path that does not reach
+    /// [`close`](Self::close) — an early return, a `?`, a panic. Leaving it held is not a leak the
+    /// process can clean up later: the console refuses to boot from the card until some other
+    /// process opens and closes a session. Errors are unreportable here, so they are dropped;
+    /// callers that need to know release succeeded call `close()` and check it.
+    fn drop(&mut self) {
+        let _ = self.release_once();
+    }
+}
+
 #[cfg(feature = "ed64")]
 impl Ed64SdSession {
     /// Open COM, EverDrive test handshake, detect MBR/GPT + FAT/exFAT using `RomRead` at `rom_linear_base + LBA·512`.
@@ -531,15 +590,31 @@ impl Ed64SdSession {
             partition_start_sector: part_start,
             partition_bytes: part_bytes,
             exfat,
+            released: AtomicBool::new(false),
         })
     }
 
+    /// Release the USB session (serial flush). Idempotent; also runs on [`Drop`].
     pub fn close(&self) -> io::Result<()> {
-        let mut g = self
-            .link
-            .lock()
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        SdCardTransport::release_usb_session(&mut *g)
+        self.release_once()
+    }
+
+    /// See [`Sc64SdSession::release_once`].
+    fn release_once(&self) -> io::Result<()> {
+        if self.released.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        let r = (|| {
+            let mut g = self
+                .link
+                .lock()
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            SdCardTransport::release_usb_session(&mut *g)
+        })();
+        if r.is_err() {
+            self.released.store(false, Ordering::SeqCst);
+        }
+        r
     }
 
     pub fn flush_serial(&self) -> io::Result<()> {
@@ -760,6 +835,14 @@ impl Ed64SdSession {
             io::ErrorKind::Unsupported,
             "EverDrive linear ROM session is read-only from the PC in this build.",
         ))
+    }
+}
+
+/// See [`Sc64SdSession`]'s `Drop`.
+#[cfg(feature = "ed64")]
+impl Drop for Ed64SdSession {
+    fn drop(&mut self) {
+        let _ = self.release_once();
     }
 }
 

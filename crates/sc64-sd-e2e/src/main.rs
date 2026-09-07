@@ -168,23 +168,49 @@ fn main() -> io::Result<()> {
     );
     println!();
 
+    let outcome = run(&args, &session, &tmp);
+
+    // An open USB SD session keeps the card locked away from the N64: the console refuses to boot
+    // with "SD card is locked by the PC side" until it is released. `Sc64SdSession`'s `Drop`
+    // guarantees the release happens; closing here is what lets a failed release be reported.
+    if let Err(e) = session.close() {
+        eprintln!("warning: releasing the cart SD session failed: {e}");
+        eprintln!("         the console may not boot from the card until a session closes cleanly");
+    }
+    drop(session);
+
+    match outcome {
+        Ok(0) => Ok(()),
+        Ok(code) => std::process::exit(code),
+        Err(e) => Err(e),
+    }
+}
+
+/// Runs the selected mode and returns the process exit code.
+///
+/// Nothing below here may call [`std::process::exit`]: it runs no destructors, so it would skip
+/// both the explicit close and `Drop` and leave the card locked to the PC. Return a code instead —
+/// `main` exits only after the session has been released.
+fn run(args: &Args, session: &CartSession, tmp: &Path) -> io::Result<i32> {
     // Read-only modes: inspect the card without writing to it, so they are safe to point at a
     // cart holding real data. Both exit before the suite, which does write.
     if args.list {
-        return list_only(&session);
+        list_only(session)?;
+        return Ok(0);
     }
     if let Some(cart_path) = args.verify.as_deref() {
         let host = args
             .against
             .as_deref()
             .expect("clap `requires` guarantees --against");
-        return verify_only(&session, cart_path, host);
+        return verify_only(session, cart_path, host);
     }
     // Writes one file and nothing else — also safe on a card holding real data, and likewise exits
     // before the suite.
     if let Some(src) = args.upload.as_deref() {
         let parent = args.to.as_deref().expect("clap `requires` guarantees --to");
-        return upload_only(&session, src, parent, args.dest_name.as_deref(), &args.port);
+        upload_only(session, src, parent, args.dest_name.as_deref(), &args.port)?;
+        return Ok(0);
     }
 
     let mut h = Harness::new();
@@ -197,7 +223,7 @@ fn main() -> io::Result<()> {
     std::fs::write(&big_src, &big)?;
 
     run_checks(
-        &mut h, &session, &dir, &tmp, &small_src, &big_src, &small, &big,
+        &mut h, session, &dir, tmp, &small_src, &big_src, &small, &big,
     );
 
     // Cleanup runs regardless of earlier failures so a bad run does not litter the card.
@@ -216,12 +242,8 @@ fn main() -> io::Result<()> {
         });
     }
 
-    let _ = session.close();
     println!("\n{} passed, {} failed", h.passed, h.failed);
-    if h.failed > 0 {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(if h.failed > 0 { 1 } else { 0 })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -636,7 +658,10 @@ fn upload_only(
 /// An upload reporting success only means the write path returned `Ok`; this reads the bytes back
 /// through the cart's own filesystem and compares them, which is what "the file is really there"
 /// actually requires.
-fn verify_only(session: &CartSession, cart_path: &str, host: &Path) -> io::Result<()> {
+///
+/// Returns the exit code instead of calling [`std::process::exit`], so `main` can release the
+/// cart's SD session before the process ends — see [`run`].
+fn verify_only(session: &CartSession, cart_path: &str, host: &Path) -> io::Result<i32> {
     let expect = std::fs::read(host)?;
     println!("verifying {cart_path}");
     println!("  against {} ({} bytes)", host.display(), expect.len());
@@ -644,11 +669,11 @@ fn verify_only(session: &CartSession, cart_path: &str, host: &Path) -> io::Resul
     match session.cart_path_entry_kind(cart_path)? {
         None => {
             eprintln!("  FAIL: not present on the cart");
-            std::process::exit(1);
+            return Ok(1);
         }
         Some(true) => {
             eprintln!("  FAIL: cart path is a directory");
-            std::process::exit(1);
+            return Ok(1);
         }
         Some(false) => {}
     }
@@ -668,14 +693,14 @@ fn verify_only(session: &CartSession, cart_path: &str, host: &Path) -> io::Resul
             got.len(),
             expect.len()
         );
-        std::process::exit(1);
+        return Ok(1);
     }
     if let Some(i) = got.iter().zip(&expect).position(|(a, b)| a != b) {
         eprintln!("  FAIL: first byte difference at offset {i}");
-        std::process::exit(1);
+        return Ok(1);
     }
     println!("  OK: {} bytes identical", expect.len());
-    Ok(())
+    Ok(0)
 }
 
 #[cfg(test)]
