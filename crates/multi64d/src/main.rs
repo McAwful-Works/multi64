@@ -165,13 +165,34 @@ async fn main() -> anyhow::Result<()> {
         baud: resolved.baud,
         clear_serial: resolved.clear_serial,
     };
-    let pipe = open_pipe(&serial_cfg)?;
+    // A missing cart at startup is not fatal. `cart_reader_loop` already reopens a `Faulted` link
+    // once a second, so starting without one and waiting is strictly better than exiting: the
+    // daemon serves `GET /` and `/health` immediately, reports `serialActive: false` honestly, and
+    // picks the cart up on its own when it is plugged in.
+    //
+    // Exiting here made the daemon unstartable whenever the cart was absent -- which is exactly
+    // when a GUI trying to manage it (Multi64's "start daemon") gets stuck, since it has no port to
+    // offer and no way to recover once one appears.
+    let link = match open_pipe(&serial_cfg) {
+        Ok(pipe) => {
+            tracing::info!(serial = %serial_cfg.path, "serial link open");
+            LinkState::Active(pipe)
+        }
+        Err(e) => {
+            tracing::warn!(
+                serial = %serial_cfg.path,
+                error = %e,
+                "could not open the serial port; starting anyway and retrying once a second (`--list-ports` shows what is available)"
+            );
+            LinkState::Faulted
+        }
+    };
 
     let (from_cart, _) = broadcast::channel::<Vec<u8>>(256);
 
     let state = Arc::new(AppState::new(
         serial_cfg,
-        LinkState::Active(pipe),
+        link,
         from_cart.clone(),
         resolved.allow_origin.clone(),
     ));
