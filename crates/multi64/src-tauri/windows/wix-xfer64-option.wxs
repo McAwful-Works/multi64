@@ -2,6 +2,22 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
     <!--
+      Anchor for the fragment. WiX links a Fragment only when something references it, and Tauri
+      exposes no `customActionRefs`, so without a referencable element here `light` silently drops
+      this whole file: before this group existed, neither custom action below reached the MSI and
+      the optional-Xfer64 prompt never ran from an MSI install. Referenced from tauri.conf.json
+      via `bundle.windows.wix.componentGroupRefs`.
+    -->
+    <ComponentGroup Id="Multi64InstallerActions" />
+    <!--
+      `SystemFolder` is a standard MSI directory but is not among the ones Tauri emits into
+      main.wxs (TARGETDIR, INSTALLDIR, ProgramMenuFolder, DesktopFolder, ApplicationProgramsFolder),
+      so a Type 34 custom action naming it fails to link with LGHT0094. Declare it here.
+    -->
+    <DirectoryRef Id="TARGETDIR">
+      <Directory Id="SystemFolder" Name="System" />
+    </DirectoryRef>
+    <!--
       Stop `multi64d.exe` before MSI inspects or replaces files. The daemon is a bundled resource,
       not the main binary, so nothing in the default sequence closes it; while it runs it holds
       `resources\multi64d.exe` open and the install (or uninstall) hits a file-in-use error. Mirrors

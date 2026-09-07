@@ -45,7 +45,8 @@
         "installerHooks": "windows/installer-hooks.nsh"
       },
       "wix": {
-        "fragmentPaths": ["windows/wix-xfer64-option.wxs"]
+        "fragmentPaths": ["windows/wix-xfer64-option.wxs"],
+        "componentGroupRefs": ["Multi64InstallerActions"]
       }
     }
   }
