@@ -18,7 +18,7 @@
 use clap::Parser;
 use multi64_sc64_sd::{CartSession, Sc64SdSession};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -45,6 +45,19 @@ struct Args {
     /// Size of the large round-trip payload, in KiB. Chosen to span many SD sectors.
     #[arg(long, default_value_t = 512)]
     big_kib: usize,
+
+    /// Instead of running the test suite, list the cart's root directory and exit. Read-only.
+    #[arg(long, default_value_t = false)]
+    list: bool,
+
+    /// Instead of running the test suite, read this cart path back and compare it byte-for-byte
+    /// against `--against`. Read-only. Use after an upload to confirm what actually landed.
+    #[arg(long, value_name = "CART_PATH")]
+    verify: Option<String>,
+
+    /// Host file that `--verify` compares against.
+    #[arg(long, value_name = "HOST_PATH", requires = "verify")]
+    against: Option<PathBuf>,
 }
 
 /// One check. `run` returns `Ok(detail)` for a pass; the detail is printed beside the name.
@@ -123,6 +136,19 @@ fn main() -> io::Result<()> {
         if session.is_exfat() { "exFAT" } else { "FAT32" }
     );
     println!();
+
+    // Read-only modes: inspect the card without writing to it, so they are safe to point at a
+    // cart holding real data. Both exit before the suite, which does write.
+    if args.list {
+        return list_only(&session);
+    }
+    if let Some(cart_path) = args.verify.as_deref() {
+        let host = args
+            .against
+            .as_deref()
+            .expect("clap `requires` guarantees --against");
+        return verify_only(&session, cart_path, host);
+    }
 
     let mut h = Harness::new();
     let dir = args.dir.trim_end_matches('/').to_string();
@@ -449,4 +475,76 @@ fn run_checks(
         }
         Ok(((), "only big.bin remains".into()))
     });
+}
+
+/// `--list`: print the cart root. Read-only.
+fn list_only(session: &CartSession) -> io::Result<()> {
+    let entries = session.list_dir("/")?;
+    if entries.is_empty() {
+        println!("/ is empty");
+        return Ok(());
+    }
+    println!("{:<40} {:>12}  kind", "name", "size");
+    for e in &entries {
+        println!(
+            "{:<40} {:>12}  {}{}",
+            e.name,
+            if e.is_dir {
+                "-".to_string()
+            } else {
+                e.size.to_string()
+            },
+            if e.is_dir { "dir" } else { "file" },
+            if e.hidden { " (hidden)" } else { "" }
+        );
+    }
+    println!("\n{} entries", entries.len());
+    Ok(())
+}
+
+/// `--verify`: read a cart file back and compare it to a host file. Read-only.
+///
+/// An upload reporting success only means the write path returned `Ok`; this reads the bytes back
+/// through the cart's own filesystem and compares them, which is what "the file is really there"
+/// actually requires.
+fn verify_only(session: &CartSession, cart_path: &str, host: &Path) -> io::Result<()> {
+    let expect = std::fs::read(host)?;
+    println!("verifying {cart_path}");
+    println!("  against {} ({} bytes)", host.display(), expect.len());
+
+    match session.cart_path_entry_kind(cart_path)? {
+        None => {
+            eprintln!("  FAIL: not present on the cart");
+            std::process::exit(1);
+        }
+        Some(true) => {
+            eprintln!("  FAIL: cart path is a directory");
+            std::process::exit(1);
+        }
+        Some(false) => {}
+    }
+
+    let listed = session.total_bytes_for_cart_entry(cart_path)?;
+    println!("  cart reports {listed} bytes");
+
+    let dest = std::env::temp_dir().join("sc64-sd-e2e-verify.bin");
+    let _ = std::fs::remove_file(&dest);
+    session.copy_cart_entry_to_host_with_progress(cart_path, &dest, false, |_| true)?;
+    let got = std::fs::read(&dest)?;
+    let _ = std::fs::remove_file(&dest);
+
+    if got.len() != expect.len() {
+        eprintln!(
+            "  FAIL: read back {} bytes, expected {}",
+            got.len(),
+            expect.len()
+        );
+        std::process::exit(1);
+    }
+    if let Some(i) = got.iter().zip(&expect).position(|(a, b)| a != b) {
+        eprintln!("  FAIL: first byte difference at offset {i}");
+        std::process::exit(1);
+    }
+    println!("  OK: {} bytes identical", expect.len());
+    Ok(())
 }
