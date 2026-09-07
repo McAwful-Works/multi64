@@ -90,6 +90,10 @@ pub fn parse_upload_args() -> Result<UploadCliArgs, String> {
 
 /// Headless import used by CLI and by the upload-picker window.
 /// When `app` is set, emits [`crate::progress::EXPLORER_PROGRESS_EVENT`] (bytes done / total) like the main explorer.
+///
+/// `cancel` is supplied by the caller so a UI can actually stop the transfer. It used to be
+/// created here, which made it unshared and therefore inert: the picker window offered a Cancel
+/// button that nothing could act on. The CLI has no UI to cancel from and passes a fresh one.
 pub fn run_headless_import_upload(
     paths: Vec<PathBuf>,
     cart_parent: String,
@@ -97,6 +101,7 @@ pub fn run_headless_import_upload(
     notify_on_success: bool,
     com_override: Option<String>,
     app: Option<AppHandle>,
+    cancel: ExplorerCancelState,
 ) -> Result<UploadImportSummary, String> {
     let settings = ExplorerSettingsState::load();
     let snap = settings.snapshot();
@@ -131,7 +136,6 @@ pub fn run_headless_import_upload(
         daemon::explorer_daemon_release_listen(&listen)?;
     }
 
-    let cancel = ExplorerCancelState::default();
     let dev = ExplorerDevLog::new_without_app();
     let notify_env = std::env::var("MULTI64_XFER64_UPLOAD_NOTIFY").unwrap_or_default();
     let notify_ok =
@@ -164,6 +168,9 @@ pub fn run_headless_import_upload(
         let mut skipped = 0u32;
         let mut done_base = 0u64;
         for step in plan {
+            if cancel.is_cancelled() {
+                return Err("Cancelled".into());
+            }
             if step.mode != "import" {
                 continue;
             }
@@ -316,7 +323,15 @@ pub fn run_cli_upload_from_args(args: UploadCliArgs) -> Result<(), String> {
     }
 
     let com = args.com.clone();
-    run_headless_import_upload(paths, cart_parent, args.overwrite, args.notify, com, None)?;
+    run_headless_import_upload(
+        paths,
+        cart_parent,
+        args.overwrite,
+        args.notify,
+        com,
+        None,
+        ExplorerCancelState::default(),
+    )?;
     Ok(())
 }
 
