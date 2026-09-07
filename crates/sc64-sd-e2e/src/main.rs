@@ -576,9 +576,14 @@ fn cart_join(parent: &str, name: &str) -> String {
 /// Clean up after an upload that stopped part-way, and say what was done about it.
 ///
 /// The write loop in `multi64-sc64-sd` returns without removing what it already wrote, so a failed
-/// upload leaves a truncated file that lists like an ordinary, slightly smaller one — worse than no
-/// file at all, because nothing about it looks wrong. Mirrors `cleanup_partial_import` in
-/// `crates/xfer64/src-tauri/src/cart_serial_sd.rs`; only the destination of the message differs.
+/// upload leaves a file behind either way. What it looks like depends on where the write died: a
+/// cancel with the link still up leaves a genuinely partial size (what the suite's cancel check
+/// asserts), while a link that dies mid-write leaves the directory entry reading **0 bytes**,
+/// because the size is only written when the filesystem flushes — observed by pulling USB during
+/// a 16 MiB `--upload`. Neither is safe to leave sitting on the card.
+///
+/// Mirrors `cleanup_partial_import` in `crates/xfer64/src-tauri/src/cart_serial_sd.rs`; only the
+/// destination of the message differs.
 fn cleanup_partial_upload(
     session: &CartSession,
     cart_path: &str,
