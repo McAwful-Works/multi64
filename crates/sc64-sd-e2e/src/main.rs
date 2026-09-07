@@ -573,6 +573,40 @@ fn cart_join(parent: &str, name: &str) -> String {
     }
 }
 
+/// Clean up after an upload that stopped part-way, and say what was done about it.
+///
+/// The write loop in `multi64-sc64-sd` returns without removing what it already wrote, so a failed
+/// upload leaves a truncated file that lists like an ordinary, slightly smaller one — worse than no
+/// file at all, because nothing about it looks wrong. Mirrors `cleanup_partial_import` in
+/// `crates/xfer64/src-tauri/src/cart_serial_sd.rs`; only the destination of the message differs.
+fn cleanup_partial_upload(
+    session: &CartSession,
+    cart_path: &str,
+    existed_before: bool,
+    wrote_any: bool,
+    e: io::Error,
+) -> io::Error {
+    if !wrote_any {
+        // The failure came before any byte reached the card, so there is no partial file of ours.
+        return e;
+    }
+    if existed_before {
+        // We were overwriting: the original is already gone and this partial is all that is left,
+        // so removing it would destroy the only copy on the card. Say so instead.
+        return err(format!(
+            "{e} — {cart_path} was being overwritten and is now incomplete; upload it again to restore it"
+        ));
+    }
+    match session.remove_cart_path(cart_path) {
+        Ok(()) => err(format!(
+            "{e} — removed the incomplete {cart_path} from the card"
+        )),
+        Err(rm) => err(format!(
+            "{e} — could not remove the incomplete {cart_path} from the card ({rm}); delete it manually before using it"
+        )),
+    }
+}
+
 /// `--upload`: copy one host file onto the card and exit, without running the suite.
 ///
 /// Writes exactly this one file. `skip_existing` is `false`, so a same-named file is replaced —
@@ -608,7 +642,8 @@ fn upload_only(
     println!("       to {cart_path}");
 
     // Say what is about to be destroyed before destroying it.
-    match session.cart_path_entry_kind(&cart_path)? {
+    let kind = session.cart_path_entry_kind(&cart_path)?;
+    match kind {
         Some(true) => {
             // The import would fail with AlreadyExists; failing here says why in one line.
             return Err(err(format!("{cart_path} exists and is a directory")));
@@ -619,14 +654,19 @@ fn upload_only(
         }
         None => println!("  no existing {cart_path}; creating"),
     }
+    // Decides whether a partial file left by a failed write is ours to delete, or the remains of
+    // something that was already on the card.
+    let existed_before = kind == Some(false);
 
     // `progress` reports a delta per chunk, not a running total (partition.rs:291); returning false
     // would abort the transfer.
     let t = Instant::now();
     let mut done = 0u64;
     let mut last_print = 0u64;
-    session.import_from_pc_with_progress(src, parent, &name, false, |n| {
+    let mut wrote_any = false;
+    let written = session.import_from_pc_with_progress(src, parent, &name, false, |n| {
         done += n;
+        wrote_any = true;
         if done - last_print >= 64 * 1024 || done == total {
             last_print = done;
             let pct = (done * 100).checked_div(total).unwrap_or(100);
@@ -634,14 +674,28 @@ fn upload_only(
             let _ = io::stdout().flush();
         }
         true
-    })?;
+    });
     if last_print > 0 {
         println!();
+    }
+    if let Err(e) = written {
+        return Err(cleanup_partial_upload(
+            session,
+            &cart_path,
+            existed_before,
+            wrote_any,
+            e,
+        ));
     }
 
     let ms = t.elapsed().as_millis();
     if done != total {
-        return Err(err(format!("short write: {done} of {total} bytes")));
+        // The write reported success, so the file on the card is most likely complete and the
+        // deltas under-reported it (the suite checks exactly this accounting). Deleting here could
+        // destroy a good upload, so report the discrepancy and leave the file alone.
+        return Err(err(format!(
+            "progress deltas sum to {done} of {total} bytes; {cart_path} was written but may be incomplete — verify it before trusting it"
+        )));
     }
     println!("wrote {done} bytes in {ms}ms");
 
