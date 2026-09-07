@@ -16,14 +16,16 @@
 //! (`POST /v1/serial/release`) and resume it afterwards (`POST /v1/serial/resume`) — the two stacks
 //! cannot share the COM port.
 //!
-//! Three modes exit before that suite, so they can be pointed at a card holding real data.
-//! `--list` and `--verify` are read-only; `--upload` writes exactly the one file it is given:
+//! Four modes exit before that suite, so they can be pointed at a card holding real data.
+//! `--list` and `--verify` are read-only; `--upload` writes exactly the one file it is given, and
+//! `--rm` deletes exactly the files it is named:
 //!
 //! ```sh
 //! ROM=n64/test-rom/multi64_test.z64
 //! cargo run -p sc64-sd-e2e --release -- --port COM4 --upload $ROM --to /
 //! cargo run -p sc64-sd-e2e --release -- --port COM4 --list
 //! cargo run -p sc64-sd-e2e --release -- --port COM4 --verify /multi64_test.z64 --against $ROM
+//! cargo run -p sc64-sd-e2e --release -- --port COM4 --rm /multi64_test.z64
 //! ```
 
 use clap::Parser;
@@ -89,6 +91,15 @@ struct Args {
     /// Name to write as on the cart. Defaults to the host file's own name.
     #[arg(long = "as", value_name = "DEST_NAME", requires = "upload")]
     dest_name: Option<String>,
+
+    /// Instead of running the test suite, delete these cart files and exit. Repeatable. Refuses
+    /// directories — removing a tree off the card should not be one flag away in a test tool.
+    #[arg(
+        long,
+        value_name = "CART_PATH",
+        conflicts_with_all = ["list", "verify", "upload"]
+    )]
+    rm: Vec<String>,
 }
 
 /// One check. `run` returns `Ok(detail)` for a pass; the detail is printed beside the name.
@@ -211,6 +222,10 @@ fn run(args: &Args, session: &CartSession, tmp: &Path) -> io::Result<i32> {
         let parent = args.to.as_deref().expect("clap `requires` guarantees --to");
         upload_only(session, src, parent, args.dest_name.as_deref(), &args.port)?;
         return Ok(0);
+    }
+    // Deletes exactly what it is named and nothing else, and likewise exits before the suite.
+    if !args.rm.is_empty() {
+        return rm_only(session, &args.rm);
     }
 
     let mut h = Harness::new();
@@ -571,6 +586,49 @@ fn cart_join(parent: &str, name: &str) -> String {
     } else {
         format!("/{base}/{name}")
     }
+}
+
+/// `--rm`: delete the named cart files and exit, without running the suite.
+///
+/// Destructive on a card that may hold real data, so each path is described before it goes and
+/// confirmed absent afterwards — `remove_cart_path` returning `Ok` only means the call succeeded.
+/// Directories are refused: a recursive delete of a card directory is not something this tool
+/// should make one flag away. Carries on past a failure so one bad path does not strand the rest,
+/// and reports a non-zero exit if any failed.
+fn rm_only(session: &CartSession, paths: &[String]) -> io::Result<i32> {
+    let mut failed = 0u32;
+    let mut removed = 0u32;
+    for path in paths {
+        match session.cart_path_entry_kind(path)? {
+            None => println!("  {path}: not on the card, nothing to do"),
+            Some(true) => {
+                eprintln!("  {path}: FAIL, is a directory (remove it with Xfer64)");
+                failed += 1;
+            }
+            Some(false) => {
+                let size = session.total_bytes_for_cart_entry(path)?;
+                print!("  {path}: deleting {size} bytes ... ");
+                let _ = io::stdout().flush();
+                if let Err(e) = session.remove_cart_path(path) {
+                    println!("FAIL: {e}");
+                    failed += 1;
+                    continue;
+                }
+                match session.cart_path_entry_kind(path)? {
+                    None => {
+                        println!("gone");
+                        removed += 1;
+                    }
+                    Some(_) => {
+                        println!("FAIL: still listed after delete");
+                        failed += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("\n{removed} removed, {failed} failed");
+    Ok(if failed > 0 { 1 } else { 0 })
 }
 
 /// Clean up after an upload that stopped part-way, and say what was done about it.
