@@ -58,9 +58,19 @@ Addresses are **RDRAM physical offsets** — `0` is the start of RDRAM, not a KS
 | Limit | Value | Why |
 |-------|-------|-----|
 | `n` per request | **32** | Enough to gather scattered state in one round trip |
-| Bytes per `PEEKV` response | **4096** | Keeps the reply inside one L3 frame and one `usb_write` |
-| Bytes per `POKEV` request | **4096** | Symmetry; requests arrive reassembled |
-| `len` per region | **2048** | Bounds a single `memcpy` inside a frame |
+| Bytes per request or response | **7936** | Keeps the whole frame inside one 8192-byte L3 payload, and so one `usb_write` |
+| `len` per region | **4096** | Bounds a single copy inside a frame; also fits a whole save context in one region |
+
+The 7936 comes from the worst case, which is a `POKEV` **request**: its per-region
+header is 6 bytes against the 2 in a `PEEKV` response, so the wire cost is
+`8 + 6n + total`. At `n = 32` that is `200 + total`, leaving 7992 under an 8192-byte
+payload; 7936 takes the round number below it.
+
+Round-trip latency dominates transfer time by orders of magnitude — measured at ~67 ms
+per exchange on SC64 hardware, near-flat in payload size, because it is set by the
+ROM's per-frame polling rather than the link. Requests should therefore be packed as
+full as these limits allow; a caller that splits work across more exchanges than
+necessary pays ~67 ms for each one.
 
 A request that exceeds any limit is answered with `ERR`, not truncated. `addr + len` beyond RDRAM is `E_RANGE` — the cart must range-check rather than fault, since a bad address from the host would otherwise bus-error the console.
 
@@ -92,4 +102,4 @@ Access is through **cached KSEG0**. The game manipulates its own structures with
 
 | Spec-Revision | Change |
 |---------------|--------|
-| **1** | M64P v0: `HELLO`, `PEEKV`, `POKEV`. No change to the L3 byte contract — this is an APPLICATION payload, so **Protocol-Major/Minor are unaffected**. |
+| **1** | M64P v0: `HELLO`, `PEEKV`, `POKEV`. No change to the L3 byte contract — this is an APPLICATION payload, so **Protocol-Major/Minor are unaffected**. Per-request byte cap set to 7936 (§4) after hardware measurement showed latency is per-exchange, not per-byte. |

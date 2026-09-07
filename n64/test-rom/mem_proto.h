@@ -38,8 +38,11 @@
 
 /** Spec §4 limits. Exceeding any of them is an error, never a truncation. */
 #define M64P_MAX_REGIONS 32
-#define M64P_MAX_REGION_BYTES 2048
-#define M64P_MAX_TOTAL_BYTES 4096
+#define M64P_MAX_REGION_BYTES 4096
+/* Worst case on the wire is a POKEV *request* (6-byte region header vs 2 in a
+   PEEKV response): 8 + 6n + total. At n = 32 that leaves 7992 under an 8192-byte
+   L3 payload, so one usb_write still carries the whole frame. */
+#define M64P_MAX_TOTAL_BYTES 7936
 
 /** Largest M64P application payload this module will build (magic + msg + body). */
 #define M64P_APP_CAP (5 + 3 + (M64P_MAX_REGIONS * 2) + M64P_MAX_TOTAL_BYTES)
