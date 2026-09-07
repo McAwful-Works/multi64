@@ -40,6 +40,7 @@
     ],
     "windows": {
       "nsis": {
+        "installerIcon": "icons/icon.ico",
         "template": "windows/installer.nsi",
         "installerHooks": "windows/installer-hooks.nsh"
       },
