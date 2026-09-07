@@ -1,13 +1,11 @@
 //! Reference daemon binary — see `multi64d` library and `docs/spec/daemon-api-v1.md`.
 
 use clap::Parser;
-use multi64_sc64_l2::Sc64L2Pipe;
 use multi64d::config::{load_config_file, merge, resolve_config_path, FileConfig};
-use multi64d::{build_app, cart_reader_loop, AppState, SerialConfig};
+use multi64d::{build_app, cart_reader_loop, open_pipe, AppState, LinkState, SerialConfig};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::broadcast;
 
 /// Plain text when stderr is piped (e.g. multi64 GUI captures multi64d logs); colors in a real terminal.
@@ -42,9 +40,28 @@ struct Args {
     #[arg(long, env = "MULTI64D_LISTEN")]
     listen: Option<String>,
 
-    /// Clear host serial buffers after opening the port. Env: `MULTI64D_CLEAR_SERIAL` (true/false)
-    #[arg(long, default_value_t = false, env = "MULTI64D_CLEAR_SERIAL")]
-    clear_serial: bool,
+    /// Clear host serial buffers after opening the port. Env: `MULTI64D_CLEAR_SERIAL` (true/false).
+    /// `Option` so an explicit `false` can override `clear_serial = true` in a config file; a bare
+    /// `--clear-serial` still means `true`.
+    #[arg(
+        long,
+        env = "MULTI64D_CLEAR_SERIAL",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        value_name = "BOOL"
+    )]
+    clear_serial: Option<bool>,
+
+    /// Browser origin allowed to call the daemon (repeatable). Native clients send no `Origin`
+    /// header and are always allowed; a browser always sends one and is rejected unless listed
+    /// here. Env: `MULTI64D_ALLOW_ORIGIN` (comma-separated).
+    #[arg(
+        long,
+        env = "MULTI64D_ALLOW_ORIGIN",
+        value_delimiter = ',',
+        value_name = "ORIGIN"
+    )]
+    allow_origin: Vec<String>,
 
     /// Skip logging available serial ports at startup (default is to log them at info level).
     #[arg(long = "no-print-ports", default_value_t = false, action = clap::ArgAction::SetTrue)]
@@ -122,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
         args.baud,
         args.listen.clone(),
         args.clear_serial,
+        args.allow_origin.clone(),
         file_cfg,
         loaded_path,
     )?;
@@ -129,27 +147,36 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref p) = resolved.config_path {
         tracing::info!(path = %p.display(), "loaded config file");
     }
+    // Before opening the port, so a failed open still shows which settings were in effect.
+    tracing::debug!(
+        serial = %resolved.serial,
+        baud = resolved.baud,
+        listen = %resolved.listen,
+        clear_serial = resolved.clear_serial,
+        allow_origin = ?resolved.allow_origin,
+        "resolved configuration"
+    );
     if !args.no_print_ports {
         log_serial_ports_tracing()?;
     }
-
-    let mut pipe = Sc64L2Pipe::open(&resolved.serial, resolved.baud)?;
-    pipe.set_timeout(Duration::from_millis(50))?;
-    if resolved.clear_serial {
-        pipe.clear_serial_buffers()?;
-    }
-
-    let (from_cart, _) = broadcast::channel::<Vec<u8>>(256);
 
     let serial_cfg = SerialConfig {
         path: resolved.serial.clone(),
         baud: resolved.baud,
         clear_serial: resolved.clear_serial,
     };
+    let pipe = open_pipe(&serial_cfg)?;
 
-    let state = Arc::new(AppState::new(serial_cfg, pipe, from_cart.clone()));
+    let (from_cart, _) = broadcast::channel::<Vec<u8>>(256);
 
-    tokio::spawn(cart_reader_loop(state.link.clone(), from_cart.clone()));
+    let state = Arc::new(AppState::new(
+        serial_cfg,
+        LinkState::Active(pipe),
+        from_cart.clone(),
+        resolved.allow_origin.clone(),
+    ));
+
+    tokio::spawn(cart_reader_loop(state.clone()));
 
     let app = build_app(state);
 
@@ -159,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
         serial = %resolved.serial,
         baud = resolved.baud,
         clear_serial = resolved.clear_serial,
+        allow_origin = ?resolved.allow_origin,
         "multi64d started (cart reader runs always; WebSocket clients receive broadcast from cart)"
     );
     axum::serve(listener, app).await?;
