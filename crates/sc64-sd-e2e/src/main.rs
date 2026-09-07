@@ -16,14 +16,16 @@
 //! (`POST /v1/serial/release`) and resume it afterwards (`POST /v1/serial/resume`) — the two stacks
 //! cannot share the COM port.
 //!
-//! Three modes exit before that suite, so they can be pointed at a card holding real data.
-//! `--list` and `--verify` are read-only; `--upload` writes exactly the one file it is given:
+//! Four modes exit before that suite, so they can be pointed at a card holding real data.
+//! `--list` and `--verify` are read-only; `--upload` writes exactly the one file it is given, and
+//! `--rm` deletes exactly the files it is named:
 //!
 //! ```sh
 //! ROM=n64/test-rom/multi64_test.z64
 //! cargo run -p sc64-sd-e2e --release -- --port COM4 --upload $ROM --to /
 //! cargo run -p sc64-sd-e2e --release -- --port COM4 --list
 //! cargo run -p sc64-sd-e2e --release -- --port COM4 --verify /multi64_test.z64 --against $ROM
+//! cargo run -p sc64-sd-e2e --release -- --port COM4 --rm /multi64_test.z64
 //! ```
 
 use clap::Parser;
@@ -89,6 +91,15 @@ struct Args {
     /// Name to write as on the cart. Defaults to the host file's own name.
     #[arg(long = "as", value_name = "DEST_NAME", requires = "upload")]
     dest_name: Option<String>,
+
+    /// Instead of running the test suite, delete these cart files and exit. Repeatable. Refuses
+    /// directories — removing a tree off the card should not be one flag away in a test tool.
+    #[arg(
+        long,
+        value_name = "CART_PATH",
+        conflicts_with_all = ["list", "verify", "upload"]
+    )]
+    rm: Vec<String>,
 }
 
 /// One check. `run` returns `Ok(detail)` for a pass; the detail is printed beside the name.
@@ -168,23 +179,53 @@ fn main() -> io::Result<()> {
     );
     println!();
 
+    let outcome = run(&args, &session, &tmp);
+
+    // An open USB SD session keeps the card locked away from the N64: the console refuses to boot
+    // with "SD card is locked by the PC side" until it is released. `Sc64SdSession`'s `Drop`
+    // guarantees the release happens; closing here is what lets a failed release be reported.
+    if let Err(e) = session.close() {
+        eprintln!("warning: releasing the cart SD session failed: {e}");
+        eprintln!("         the console may not boot from the card until a session closes cleanly");
+    }
+    drop(session);
+
+    match outcome {
+        Ok(0) => Ok(()),
+        Ok(code) => std::process::exit(code),
+        Err(e) => Err(e),
+    }
+}
+
+/// Runs the selected mode and returns the process exit code.
+///
+/// Nothing below here may call [`std::process::exit`]: it runs no destructors, so it would skip
+/// both the explicit close and `Drop` and leave the card locked to the PC. Return a code instead —
+/// `main` exits only after the session has been released.
+fn run(args: &Args, session: &CartSession, tmp: &Path) -> io::Result<i32> {
     // Read-only modes: inspect the card without writing to it, so they are safe to point at a
     // cart holding real data. Both exit before the suite, which does write.
     if args.list {
-        return list_only(&session);
+        list_only(session)?;
+        return Ok(0);
     }
     if let Some(cart_path) = args.verify.as_deref() {
         let host = args
             .against
             .as_deref()
             .expect("clap `requires` guarantees --against");
-        return verify_only(&session, cart_path, host);
+        return verify_only(session, cart_path, host);
     }
     // Writes one file and nothing else — also safe on a card holding real data, and likewise exits
     // before the suite.
     if let Some(src) = args.upload.as_deref() {
         let parent = args.to.as_deref().expect("clap `requires` guarantees --to");
-        return upload_only(&session, src, parent, args.dest_name.as_deref(), &args.port);
+        upload_only(session, src, parent, args.dest_name.as_deref(), &args.port)?;
+        return Ok(0);
+    }
+    // Deletes exactly what it is named and nothing else, and likewise exits before the suite.
+    if !args.rm.is_empty() {
+        return rm_only(session, &args.rm);
     }
 
     let mut h = Harness::new();
@@ -197,7 +238,7 @@ fn main() -> io::Result<()> {
     std::fs::write(&big_src, &big)?;
 
     run_checks(
-        &mut h, &session, &dir, &tmp, &small_src, &big_src, &small, &big,
+        &mut h, session, &dir, tmp, &small_src, &big_src, &small, &big,
     );
 
     // Cleanup runs regardless of earlier failures so a bad run does not litter the card.
@@ -216,12 +257,8 @@ fn main() -> io::Result<()> {
         });
     }
 
-    let _ = session.close();
     println!("\n{} passed, {} failed", h.passed, h.failed);
-    if h.failed > 0 {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(if h.failed > 0 { 1 } else { 0 })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -551,6 +588,88 @@ fn cart_join(parent: &str, name: &str) -> String {
     }
 }
 
+/// `--rm`: delete the named cart files and exit, without running the suite.
+///
+/// Destructive on a card that may hold real data, so each path is described before it goes and
+/// confirmed absent afterwards — `remove_cart_path` returning `Ok` only means the call succeeded.
+/// Directories are refused: a recursive delete of a card directory is not something this tool
+/// should make one flag away. Carries on past a failure so one bad path does not strand the rest,
+/// and reports a non-zero exit if any failed.
+fn rm_only(session: &CartSession, paths: &[String]) -> io::Result<i32> {
+    let mut failed = 0u32;
+    let mut removed = 0u32;
+    for path in paths {
+        match session.cart_path_entry_kind(path)? {
+            None => println!("  {path}: not on the card, nothing to do"),
+            Some(true) => {
+                eprintln!("  {path}: FAIL, is a directory (remove it with Xfer64)");
+                failed += 1;
+            }
+            Some(false) => {
+                let size = session.total_bytes_for_cart_entry(path)?;
+                print!("  {path}: deleting {size} bytes ... ");
+                let _ = io::stdout().flush();
+                if let Err(e) = session.remove_cart_path(path) {
+                    println!("FAIL: {e}");
+                    failed += 1;
+                    continue;
+                }
+                match session.cart_path_entry_kind(path)? {
+                    None => {
+                        println!("gone");
+                        removed += 1;
+                    }
+                    Some(_) => {
+                        println!("FAIL: still listed after delete");
+                        failed += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("\n{removed} removed, {failed} failed");
+    Ok(if failed > 0 { 1 } else { 0 })
+}
+
+/// Clean up after an upload that stopped part-way, and say what was done about it.
+///
+/// The write loop in `multi64-sc64-sd` returns without removing what it already wrote, so a failed
+/// upload leaves a file behind either way. What it looks like depends on where the write died: a
+/// cancel with the link still up leaves a genuinely partial size (what the suite's cancel check
+/// asserts), while a link that dies mid-write leaves the directory entry reading **0 bytes**,
+/// because the size is only written when the filesystem flushes — observed by pulling USB during
+/// a 16 MiB `--upload`. Neither is safe to leave sitting on the card.
+///
+/// Mirrors `cleanup_partial_import` in `crates/xfer64/src-tauri/src/cart_serial_sd.rs`; only the
+/// destination of the message differs.
+fn cleanup_partial_upload(
+    session: &CartSession,
+    cart_path: &str,
+    existed_before: bool,
+    wrote_any: bool,
+    e: io::Error,
+) -> io::Error {
+    if !wrote_any {
+        // The failure came before any byte reached the card, so there is no partial file of ours.
+        return e;
+    }
+    if existed_before {
+        // We were overwriting: the original is already gone and this partial is all that is left,
+        // so removing it would destroy the only copy on the card. Say so instead.
+        return err(format!(
+            "{e} — {cart_path} was being overwritten and is now incomplete; upload it again to restore it"
+        ));
+    }
+    match session.remove_cart_path(cart_path) {
+        Ok(()) => err(format!(
+            "{e} — removed the incomplete {cart_path} from the card"
+        )),
+        Err(rm) => err(format!(
+            "{e} — could not remove the incomplete {cart_path} from the card ({rm}); delete it manually before using it"
+        )),
+    }
+}
+
 /// `--upload`: copy one host file onto the card and exit, without running the suite.
 ///
 /// Writes exactly this one file. `skip_existing` is `false`, so a same-named file is replaced —
@@ -586,7 +705,8 @@ fn upload_only(
     println!("       to {cart_path}");
 
     // Say what is about to be destroyed before destroying it.
-    match session.cart_path_entry_kind(&cart_path)? {
+    let kind = session.cart_path_entry_kind(&cart_path)?;
+    match kind {
         Some(true) => {
             // The import would fail with AlreadyExists; failing here says why in one line.
             return Err(err(format!("{cart_path} exists and is a directory")));
@@ -597,14 +717,19 @@ fn upload_only(
         }
         None => println!("  no existing {cart_path}; creating"),
     }
+    // Decides whether a partial file left by a failed write is ours to delete, or the remains of
+    // something that was already on the card.
+    let existed_before = kind == Some(false);
 
     // `progress` reports a delta per chunk, not a running total (partition.rs:291); returning false
     // would abort the transfer.
     let t = Instant::now();
     let mut done = 0u64;
     let mut last_print = 0u64;
-    session.import_from_pc_with_progress(src, parent, &name, false, |n| {
+    let mut wrote_any = false;
+    let written = session.import_from_pc_with_progress(src, parent, &name, false, |n| {
         done += n;
+        wrote_any = true;
         if done - last_print >= 64 * 1024 || done == total {
             last_print = done;
             let pct = (done * 100).checked_div(total).unwrap_or(100);
@@ -612,14 +737,28 @@ fn upload_only(
             let _ = io::stdout().flush();
         }
         true
-    })?;
+    });
     if last_print > 0 {
         println!();
+    }
+    if let Err(e) = written {
+        return Err(cleanup_partial_upload(
+            session,
+            &cart_path,
+            existed_before,
+            wrote_any,
+            e,
+        ));
     }
 
     let ms = t.elapsed().as_millis();
     if done != total {
-        return Err(err(format!("short write: {done} of {total} bytes")));
+        // The write reported success, so the file on the card is most likely complete and the
+        // deltas under-reported it (the suite checks exactly this accounting). Deleting here could
+        // destroy a good upload, so report the discrepancy and leave the file alone.
+        return Err(err(format!(
+            "progress deltas sum to {done} of {total} bytes; {cart_path} was written but may be incomplete — verify it before trusting it"
+        )));
     }
     println!("wrote {done} bytes in {ms}ms");
 
@@ -636,7 +775,10 @@ fn upload_only(
 /// An upload reporting success only means the write path returned `Ok`; this reads the bytes back
 /// through the cart's own filesystem and compares them, which is what "the file is really there"
 /// actually requires.
-fn verify_only(session: &CartSession, cart_path: &str, host: &Path) -> io::Result<()> {
+///
+/// Returns the exit code instead of calling [`std::process::exit`], so `main` can release the
+/// cart's SD session before the process ends — see [`run`].
+fn verify_only(session: &CartSession, cart_path: &str, host: &Path) -> io::Result<i32> {
     let expect = std::fs::read(host)?;
     println!("verifying {cart_path}");
     println!("  against {} ({} bytes)", host.display(), expect.len());
@@ -644,11 +786,11 @@ fn verify_only(session: &CartSession, cart_path: &str, host: &Path) -> io::Resul
     match session.cart_path_entry_kind(cart_path)? {
         None => {
             eprintln!("  FAIL: not present on the cart");
-            std::process::exit(1);
+            return Ok(1);
         }
         Some(true) => {
             eprintln!("  FAIL: cart path is a directory");
-            std::process::exit(1);
+            return Ok(1);
         }
         Some(false) => {}
     }
@@ -668,14 +810,14 @@ fn verify_only(session: &CartSession, cart_path: &str, host: &Path) -> io::Resul
             got.len(),
             expect.len()
         );
-        std::process::exit(1);
+        return Ok(1);
     }
     if let Some(i) = got.iter().zip(&expect).position(|(a, b)| a != b) {
         eprintln!("  FAIL: first byte difference at offset {i}");
-        std::process::exit(1);
+        return Ok(1);
     }
     println!("  OK: {} bytes identical", expect.len());
-    Ok(())
+    Ok(0)
 }
 
 #[cfg(test)]
