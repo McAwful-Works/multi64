@@ -99,6 +99,16 @@ fn read_settings_file() -> ExplorerSettingsSnapshot {
     if let Some(s) = from_file(&primary) {
         return s;
     }
+    // Present but unparseable: do not let the next save quietly overwrite it. Keep a copy so the
+    // settings can be recovered by hand, and say so, rather than resetting in silence.
+    if primary.is_file() {
+        let backup = primary.with_extension("json.corrupt");
+        let _ = std::fs::rename(&primary, &backup);
+        eprintln!(
+            "xfer64: settings file could not be parsed; kept a copy at {} and starting from defaults",
+            backup.display()
+        );
+    }
     if let Some(s) = from_file(&legacy) {
         if let Ok(json) = serde_json::to_string_pretty(&s) {
             let _ = std::fs::write(&primary, json);
@@ -108,10 +118,25 @@ fn read_settings_file() -> ExplorerSettingsSnapshot {
     ExplorerSettingsSnapshot::default()
 }
 
+/// Write the settings file atomically.
+///
+/// `fs::write` truncates before writing, so a crash or power loss mid-write leaves a
+/// half-written file. `read_settings_file` cannot parse that and falls back to defaults, which
+/// silently discards the COM port, cart device and `ed64_rom_linear_base` -- the last of which
+/// takes a minute-long scan to rediscover. Write beside the target and rename over it instead;
+/// rename is atomic on the same volume, and replaces the destination on Windows.
 fn write_settings_file(s: &ExplorerSettingsSnapshot) -> Result<(), String> {
     let path = settings_path()?;
     let json = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    match std::fs::rename(&tmp, &path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.to_string())
+        }
+    }
 }
 
 #[derive(Clone)]

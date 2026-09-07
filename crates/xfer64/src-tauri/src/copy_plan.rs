@@ -22,6 +22,12 @@ pub struct InteractiveCopyStep {
     /// Plans used to contain file steps only, so a directory with no files in it was never
     /// created at the destination and the copy still reported success. Directory steps are
     /// emitted only when the destination is missing, and always before their contents.
+    ///
+    /// **Every consumer must check this, not just `mode`.** A directory step carries the same
+    /// `mode` as a file step, so filtering on `mode` alone routes it into the file path and it
+    /// fails with "Source is not a file." The consumers are `cart_serial_import_copy_batch`,
+    /// `cart_serial_export_copy_batch` and `run_headless_import_upload` (CLI and Send-to
+    /// picker); the last of those was missed when this field was added and broke folder uploads.
     pub is_dir: bool,
 }
 

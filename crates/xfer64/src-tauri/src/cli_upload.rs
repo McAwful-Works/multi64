@@ -176,6 +176,23 @@ pub fn run_headless_import_upload(
                 .cart_path
                 .as_ref()
                 .ok_or("internal: import step missing cart_path")?;
+            // Directory steps carry mode "import" too, so they must be handled before the file
+            // path below -- otherwise import_pc_file_to_cart_in_session rejects them with
+            // "Source is not a file." and the whole upload aborts on the first subfolder.
+            if step.is_dir {
+                match session.cart_path_entry_kind(cart_path) {
+                    Ok(Some(true)) => {}
+                    Ok(Some(false)) => {
+                        return Err(
+                            "Cannot copy folder over an existing file on the cart.".to_string()
+                        )
+                    }
+                    _ => session
+                        .mkdir_cart(cart_path)
+                        .map_err(|e| format!("{cart_path}: {e}"))?,
+                }
+                continue;
+            }
             // Re-check on the live session: the plan is built once, so later steps can target the
             // same cart path as an earlier import (same basename from different PC paths) and
             // would still carry `conflict_if_exists: false` from plan time.
@@ -228,8 +245,24 @@ pub fn run_headless_import_upload(
         Ok(UploadImportSummary { uploaded, skipped })
     });
 
+    // Report a failed resume rather than discarding it: multi64d stays released and silently
+    // ignores WebSocket writes, so a live L3 session dies with no diagnostic.
     if released {
-        let _ = daemon::explorer_daemon_resume_listen(&listen);
+        if let Err(e) = daemon::explorer_daemon_resume_listen(&listen) {
+            eprintln!("warning: {e}");
+            if let Some(ref app) = app {
+                emit_explorer_progress_full(
+                    app,
+                    0,
+                    1,
+                    Some(format!(
+                        "Upload finished, but the Multi64 bridge could not be resumed: {e}"
+                    )),
+                    None,
+                    None,
+                );
+            }
+        }
     }
 
     let summary = result?;
