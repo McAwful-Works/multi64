@@ -8,6 +8,7 @@ members = [
     "crates/sc64-echo-test",
     "crates/sc64-l3-framing-e2e",
     "crates/sc64-smoke",
+    "crates/sc64-sd-e2e",
     "crates/ed64-smoke",
     "crates/ed64-echo-test",
     "crates/ed64-l3-framing-e2e",

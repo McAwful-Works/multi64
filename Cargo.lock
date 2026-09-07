@@ -4033,6 +4033,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc64-sd-e2e"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "multi64-sc64-sd",
+]
+
+[[package]]
 name = "sc64-smoke"
 version = "0.1.0"
 dependencies = [
