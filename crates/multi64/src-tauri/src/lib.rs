@@ -134,17 +134,43 @@ fn load_settings() -> Settings {
         Ok(p) => p,
         Err(_) => return normalize_settings(Settings::default()),
     };
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Settings>(&s).ok())
-        .map(normalize_settings)
-        .unwrap_or_else(|| normalize_settings(Settings::default()))
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return normalize_settings(Settings::default());
+    };
+    match serde_json::from_str::<Settings>(&raw) {
+        Ok(s) => normalize_settings(s),
+        Err(e) => {
+            // Keep the unparseable file instead of letting the next save overwrite it, so the
+            // settings can be recovered by hand rather than silently reset.
+            let backup = path.with_extension("json.corrupt");
+            let _ = std::fs::rename(&path, &backup);
+            eprintln!(
+                "multi64: settings file could not be parsed ({e}); kept a copy at {} and starting from defaults",
+                backup.display()
+            );
+            normalize_settings(Settings::default())
+        }
+    }
 }
 
+/// Write settings atomically.
+///
+/// `fs::write` truncates before writing, so a crash mid-write leaves a file `load_settings`
+/// cannot parse -- and that path silently falls back to defaults, losing the serial port,
+/// listen address and `autostart_app` (which reads as Windows no longer launching the app).
+/// Write beside the target and rename over it; rename replaces the destination on Windows.
 fn save_settings(settings: &Settings) -> Result<(), String> {
     let path = settings_path()?;
     let s = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    std::fs::write(&path, s).map_err(|e| e.to_string())
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, s).map_err(|e| e.to_string())?;
+    match std::fs::rename(&tmp, &path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.to_string())
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -284,6 +310,34 @@ fn check_health(listen: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the daemon is still running, clearing the handle if it has exited on its own.
+///
+/// Nothing else observes the child's exit, so without this a crashed `multi64d` is reported as
+/// running forever -- with a message claiming health is merely "not OK yet" -- while the UI
+/// polls a blocking health check against a dead process every two seconds.
+fn daemon_is_running(daemon: &Arc<Mutex<DaemonInner>>) -> bool {
+    let mut inner = daemon.lock();
+    let Some(child) = inner.child.as_mut() else {
+        return false;
+    };
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            inner.child = None;
+            // push_log would re-lock this same non-reentrant mutex, so append inline.
+            if inner.logs.len() >= MAX_LOG_LINES {
+                let drain = inner.logs.len() - MAX_LOG_LINES + 1;
+                inner.logs.drain(0..drain);
+            }
+            inner
+                .logs
+                .push(format!("multi64d exited on its own ({status})"));
+            false
+        }
+        // Still running, or the status could not be read -- treat as running either way.
+        Ok(None) | Err(_) => true,
+    }
+}
+
 fn kill_daemon(daemon: &Arc<Mutex<DaemonInner>>) {
     let mut inner = daemon.lock();
     if let Some(mut c) = inner.child.take() {
@@ -320,10 +374,16 @@ fn start_daemon(
 
     let daemon_path = resolve_multi64d_path(app)?;
     let mut cmd = Command::new(&daemon_path);
+    // baud is a spawn-time argument like the rest: multi64d takes --baud and feeds it to
+    // Sc64L2Pipe::open. It used to be collected and saved by the UI but never passed, so the
+    // setting did nothing and the daemon always ran at its own 115200 default.
+    let baud = settings.baud.to_string();
     cmd.env("NO_COLOR", "1")
         .args([
             "--serial",
             &serial,
+            "--baud",
+            &baud,
             "--listen",
             &settings.listen,
             "--no-print-ports",
@@ -364,13 +424,34 @@ fn get_settings(state: tauri::State<'_, AppState>) -> Settings {
 }
 
 #[tauri::command]
-fn set_settings(state: tauri::State<'_, AppState>, settings: Settings) -> Result<(), String> {
+fn set_settings(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    settings: Settings,
+) -> Result<(), String> {
     let settings = normalize_settings(settings);
-    let prev_autostart = { state.settings.lock().autostart_app };
+    let prev = { state.settings.lock().clone() };
     save_settings(&settings)?;
     *state.settings.lock() = settings.clone();
-    if settings.autostart_app != prev_autostart {
+    if settings.autostart_app != prev.autostart_app {
         set_autostart_windows_impl(settings.autostart_app)?;
+    }
+    // Serial port, baud, listen address and log preset are command-line arguments fixed at
+    // spawn, so a running daemon keeps using the old ones. Saving used to appear to apply them
+    // while the bridge quietly stayed on the previous port.
+    let spawn_args_changed = settings.serial_port != prev.serial_port
+        || settings.baud != prev.baud
+        || settings.listen != prev.listen
+        || settings.multi64d_log_preset != prev.multi64d_log_preset;
+    if spawn_args_changed && daemon_is_running(&state.daemon) {
+        push_log(
+            &state.daemon,
+            "Settings changed — restarting multi64d to apply them".to_string(),
+        );
+        if let Err(e) = start_daemon(&app, &state.daemon, &settings) {
+            push_log(&state.daemon, format!("Restart failed: {e}"));
+        }
+        let _ = app.emit("daemon-changed", ());
     }
     Ok(())
 }
@@ -404,7 +485,7 @@ fn set_autostart_windows_impl(enabled: bool) -> Result<(), String> {
 fn get_daemon_status(state: tauri::State<'_, AppState>) -> DaemonStatus {
     let settings = state.settings.lock().clone();
     let listen = settings.listen.clone();
-    let running = state.daemon.lock().child.is_some();
+    let running = daemon_is_running(&state.daemon);
     let healthy = running && check_health(&listen);
     let message = if !running {
         "Stopped".into()
@@ -840,4 +921,50 @@ pub fn run() {
                 kill_daemon(&daemon_arc);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A settings file written by an older build omits newer fields; they must fall back to
+    /// their serde defaults rather than failing the parse, which would silently reset everything.
+    #[test]
+    fn settings_from_older_file_keeps_known_fields() {
+        let json = r#"{"serialPort":"COM7","baud":57600,"listen":"127.0.0.1:38765"}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.serial_port.as_deref(), Some("COM7"));
+        assert_eq!(s.baud, 57600);
+        assert!(s.auto_start_daemon, "default_true");
+        assert!(s.tray_enabled, "default_true");
+        assert!(!s.autostart_app);
+        assert_eq!(s.multi64d_log_preset, Multi64dLogPreset::Default);
+    }
+
+    /// start_minimized is meaningless without a tray to restore from.
+    #[test]
+    fn normalize_clears_start_minimized_without_tray() {
+        let s = normalize_settings(Settings {
+            tray_enabled: false,
+            start_minimized: true,
+            ..Settings::default()
+        });
+        assert!(!s.start_minimized);
+        let s = normalize_settings(Settings {
+            tray_enabled: true,
+            start_minimized: true,
+            ..Settings::default()
+        });
+        assert!(s.start_minimized);
+    }
+
+    /// The baud the user picks must reach multi64d; it was collected and never passed.
+    #[test]
+    fn baud_is_serialised_for_the_daemon_argument() {
+        let s = Settings {
+            baud: 57600,
+            ..Settings::default()
+        };
+        assert_eq!(s.baud.to_string(), "57600");
+    }
 }
