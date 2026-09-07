@@ -277,18 +277,86 @@ def scene_m(a=3.53, s=1.0, h=3.25, t=None, zb=0.0, sloped=(RED, RED, BLUE, GREEN
 
 
 # --- SVG ------------------------------------------------------------------
-def svg_paths(polys, elev, ox, oy, scale):
-    out = []
+def signed_area(P2):
+    return sum(P2[i][0] * P2[(i + 1) % len(P2)][1] - P2[(i + 1) % len(P2)][0] * P2[i][1]
+               for i in range(len(P2))) / 2
+
+
+def overlaps(A, B):
+    """Do two convex screen polygons share area? Separating-axis test, with a
+    tolerance so that merely sharing an edge or a vertex does not count."""
+    for P, Q in ((A, B), (B, A)):
+        for i in range(len(P)):
+            ax, ay = P[i]
+            bx, by = P[(i + 1) % len(P)]
+            nx, ny = ay - by, bx - ax
+            lo = min(nx * x + ny * y for (x, y) in P)
+            hi = max(nx * x + ny * y for (x, y) in P)
+            qlo = min(nx * x + ny * y for (x, y) in Q)
+            qhi = max(nx * x + ny * y for (x, y) in Q)
+            span = max(hi - lo, qhi - qlo, 1e-12)
+            if qlo > hi - 1e-6 * span or lo > qhi - 1e-6 * span:
+                return False
+    return True
+
+
+def merge_runs(polys, elev):
+    """Group the painted polygons into runs that can share one <path> element.
+
+    Two faces that are coplanar and flush -- a post's outer face and the arm
+    face lying in the same plane, or two fragments the BSP cut out of one
+    face -- meet along a shared edge. Rasterised as separate shapes each one
+    covers only part of the pixels along that edge, so whatever was painted
+    behind them shows through as a hairline seam down the middle of what
+    should be one flat colour. The subpaths of a single <path> are rasterised
+    into one coverage mask, so the shared edge cancels and no seam appears.
+
+    Only polygons that cannot occlude each other are grouped: same colour,
+    same plane (coplanar faces never overlap on screen), and nothing painted
+    in between that could land on top of either. Returns
+    [(colour, [projected_polygon, ...]), ...] in paint order.
+    """
+    items = []
     for p in polys:
         P2 = [project(q, elev) for q in p.pts]
-        a2 = abs(sum(P2[i][0] * P2[(i + 1) % len(P2)][1] - P2[(i + 1) % len(P2)][0] * P2[i][1]
-                     for i in range(len(P2)))) / 2
-        if a2 < 1e-4:
+        a2 = signed_area(P2)
+        if abs(a2) < 1e-4:
             continue
-        pts = " ".join("%.4f,%.4f" % (ox + X * scale, oy + Y * scale)
-                       for (X, Y) in (project(q, elev) for q in p.pts))
-        out.append('<polygon fill="%s" stroke="%s" stroke-width="0.6" '
-                   'stroke-linejoin="round" points="%s"/>' % (p.color, p.color, pts))
+        if a2 < 0:
+            P2 = P2[::-1]  # fill-rule nonzero needs every subpath wound alike
+        plane = (round(p.n[0], 6), round(p.n[1], 6), round(p.n[2], 6), round(p.d, 6))
+        items.append((p.color, plane, P2))
+
+    taken = [False] * len(items)
+    runs = []
+    for i, (color, plane, P2) in enumerate(items):
+        if taken[i]:
+            continue
+        taken[i] = True
+        subs, between = [P2], []
+        for j in range(i + 1, len(items)):
+            if taken[j]:
+                continue
+            jcolor, jplane, jP2 = items[j]
+            if (jcolor, jplane) == (color, plane) and not any(overlaps(b, jP2)
+                                                              for b in between):
+                taken[j] = True
+                subs.append(jP2)
+            elif any(overlaps(b, jP2) for b in subs):
+                break  # j paints over the run, so nothing later may join it
+            else:
+                between.append(jP2)
+        runs.append((color, subs))
+    return runs
+
+
+def svg_paths(polys, elev, ox, oy, scale, stroke=0.6):
+    out = []
+    for color, subs in merge_runs(polys, elev):
+        d = ["M " + " L ".join("%.4f,%.4f" % (ox + X * scale, oy + Y * scale)
+                               for (X, Y) in P2) + " Z" for P2 in subs]
+        out.append('<path fill="%s" fill-rule="nonzero" stroke="%s" stroke-width="%s" '
+                   'stroke-linejoin="round" d="%s"/>' % (color, color, stroke, " ".join(d)))
     return "\n".join(out)
 
 
@@ -302,14 +370,14 @@ def bbox(polys, elev):
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def svg_single(polys, size=1024, pad=0.06, elev=ELEV, bg=None):
+def svg_single(polys, size=1024, pad=0.06, elev=ELEV, bg=None, stroke=0.6):
     order = render_order(polys, elev)
     x0, y0, x1, y1 = bbox(polys, elev)
     w, hh = x1 - x0, y1 - y0
     scale = size * (1 - 2 * pad) / max(w, hh)
     ox = size / 2 - (x0 + x1) / 2 * scale
     oy = size / 2 - (y0 + y1) / 2 * scale
-    body = svg_paths(order, elev, ox, oy, scale)
+    body = svg_paths(order, elev, ox, oy, scale, stroke)
     bgrect = '<rect width="%d" height="%d" fill="%s"/>\n' % (size, size, bg) if bg else ""
     return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d">\n'
             '%s%s\n</svg>\n' % (size, size, size, size, bgrect, body))
