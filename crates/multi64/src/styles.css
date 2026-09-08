@@ -324,3 +324,23 @@ body.settings-open {
   letter-spacing: 0.04em;
   color: var(--muted);
 }
+
+/* Brand mark beside the wordmark. `alt=""` on the image: the adjacent <h1> already names the
+   app, so a description here would make a screen reader announce "Multi64" twice. */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.35rem;
+}
+
+.brand h1 {
+  margin: 0;
+}
+
+.brand-mark {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: block;
+}

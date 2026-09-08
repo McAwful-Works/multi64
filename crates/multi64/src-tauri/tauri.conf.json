@@ -43,11 +43,19 @@
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "template": "windows/installer.nsi",
-        "installerHooks": "windows/installer-hooks.nsh"
+        "installerHooks": "windows/installer-hooks.nsh",
+        "headerImage": "windows/nsis-header.bmp",
+        "sidebarImage": "windows/nsis-sidebar.bmp"
       },
       "wix": {
-        "fragmentPaths": ["windows/wix-xfer64-option.wxs"],
-        "componentGroupRefs": ["Multi64InstallerActions"]
+        "fragmentPaths": [
+          "windows/wix-xfer64-option.wxs"
+        ],
+        "componentGroupRefs": [
+          "Multi64InstallerActions"
+        ],
+        "bannerPath": "windows/wix-banner.bmp",
+        "dialogImagePath": "windows/wix-dialog.bmp"
       }
     }
   }

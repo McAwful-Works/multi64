@@ -1,0 +1,46 @@
+<!doctype html><meta charset="utf-8"><title>bmpgen</title>
+<style>body{background:#222;color:#ddd;font:13px system-ui;padding:12px}
+canvas{margin:6px;border:1px solid #444;vertical-align:top}</style>
+<div id="log">working…</div><div id="out"></div>
+<script>
+// Backdrop matches the apps' dark UI so installer and app read as continuous.
+const BG = '#14161c';
+// name, svg, w, h, markFraction (of the shorter side), anchor
+const JOBS = [
+  // NSIS header: small strip, top-right of the wizard -> mark on the right.
+  ['multi64-nsis-header.bmp','multi64',150,57,0.82,'right'],
+  ['xfer64-nsis-header.bmp','xfer64',150,57,0.82,'right'],
+  // NSIS sidebar: left panel of welcome/finish -> centred.
+  ['multi64-nsis-sidebar.bmp','multi64',164,314,0.62,'center-upper'],
+  ['xfer64-nsis-sidebar.bmp','xfer64',164,314,0.62,'center-upper'],
+  // WiX banner: top strip -> mark on the right, clear of the dialog title text on the left.
+  ['multi64-wix-banner.bmp','multi64',493,58,0.80,'right'],
+  ['xfer64-wix-banner.bmp','xfer64',493,58,0.80,'right'],
+  // WiX dialog: full welcome background. WixUI draws its text over the RIGHT portion, so the
+  // mark sits in the left ~164px band to stay clear of it.
+  ['multi64-wix-dialog.bmp','multi64',493,312,0.52,'left-band'],
+  ['xfer64-wix-dialog.bmp','xfer64',493,312,0.52,'left-band'],
+];
+function load(src){return new Promise((ok,err)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=err;i.src=src;});}
+(async () => {
+  const log = [];
+  for (const [name, brand, w, h, frac, anchor] of JOBS) {
+    const img = await load('/branding/' + brand + '.svg');
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    g.fillStyle = BG; g.fillRect(0, 0, w, h);
+    const size = Math.round(Math.min(w, h) * frac);
+    let x, y;
+    if (anchor === 'right')        { x = w - size - Math.round(h * 0.12); y = Math.round((h - size) / 2); }
+    else if (anchor === 'left-band'){ x = Math.round((164 - size) / 2);   y = Math.round((h - size) / 2); }
+    else                            { x = Math.round((w - size) / 2);     y = Math.round(h * 0.16); }
+    g.drawImage(img, x, y, size, size);
+    document.getElementById('out').appendChild(c);
+    const d = g.getImageData(0, 0, w, h).data;
+    await fetch(`/bmp?name=${name}&w=${w}&h=${h}`, { method:'POST', body: d });
+    log.push(name);
+  }
+  document.getElementById('log').textContent = 'done: ' + log.length + ' files';
+})();
+</script>

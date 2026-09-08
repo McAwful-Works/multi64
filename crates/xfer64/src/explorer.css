@@ -1440,3 +1440,18 @@ body.dev-shell-root {
     width: auto;
   }
 }
+
+/* Brand mark in the app bar. `alt=""` on the image: the adjacent <h1> already names the app,
+   so a description here would make a screen reader announce "Xfer64" twice. */
+.explorer-appbar-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.explorer-appbar-mark {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: block;
+}

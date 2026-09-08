@@ -13,8 +13,15 @@ async function refreshStatus() {
         : "—";
     document.getElementById("status-listen").textContent = s.listen || "—";
     document.getElementById("status-msg").textContent = s.message || "—";
+    // Match the tray, which offers only the action that applies. Leaving both live means
+    // "Start daemon" on a running daemon, which reports a failure for a no-op.
+    document.getElementById("btn-start").disabled = s.running;
+    document.getElementById("btn-stop").disabled = !s.running;
   } catch (e) {
     document.getElementById("status-msg").textContent = String(e);
+    // Status is unknown, so neither action can be ruled out; leave both usable.
+    document.getElementById("btn-start").disabled = false;
+    document.getElementById("btn-stop").disabled = false;
   }
 }
 
