@@ -8,7 +8,7 @@
 | **L2** | [`docs/spec/l2-link-adapter.md`](docs/spec/l2-link-adapter.md) — how L3 maps to each cart |
 | **Daemon** | [`docs/spec/daemon-api-v1.md`](docs/spec/daemon-api-v1.md) — `multi64d` |
 
-**Status:** **`multi64d`** ships with **SummerCart64** L2 ([`l3-over-sc64.md`](docs/spec/l3-over-sc64.md)). **EverDrive-64 X7** L2 is still a **draft + stub** ([`l3-over-everdrive-x7.md`](docs/spec/l3-over-everdrive-x7.md), crate **`multi64-ed64-l2`**).
+**Status:** **`multi64d`** ships with **SummerCart64** L2 ([`l3-over-sc64.md`](docs/spec/l3-over-sc64.md)). **EverDrive-64 X7** L2 is **implemented but unvalidated on hardware** — crate **`multi64-ed64-l2`** speaks the mapping in [`l3-over-everdrive-x7.md`](docs/spec/l3-over-everdrive-x7.md) §4, which stays **Draft** until §4.5 is answered against a cart.
 
 **Windows:** [**Multi64**](crates/multi64/README.md) (start/stop daemon, COM port, tray). [**Xfer64**](crates/xfer64/README.md) (SD card over USB; no drive letter).  
 **Developers:** [`docs/README.md`](docs/README.md) (spec map, reading order). [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, layout).
@@ -61,6 +61,7 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 | `multi64-sc64-l2` | L3 stream over SC64 — [`l3-over-sc64.md`](docs/spec/l3-over-sc64.md) |
 | `sc64-smoke` | Vendor `IDENTIFIER` / `VERSION` |
 | `sc64-echo-test`, `sc64-l3-framing-e2e` | Serial e2e vs ROM **RAW_ECHO** |
+| `sc64-sd-e2e` | SD/FAT e2e over **`CartSession`** — writes to the card (`--list` / `--verify` do not) |
 
 ### EverDrive (X7)
 
@@ -68,7 +69,7 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 |-------|------|
 | `multi64-ed64-l2` | L3 over ED USB — implemented, **unvalidated on hardware** |
 | `ed64-smoke` | **`usb64`** `cmd`/`t` smoke ([spec §8](docs/spec/l3-over-everdrive-x7.md)); not L3 |
-| `ed64-echo-test`, `ed64-l3-framing-e2e` | Same roles as SC64 e2e tools; need **`Ed64L2Pipe`** (blocked until `ed64-l2` is real) |
+| `ed64-echo-test`, `ed64-l3-framing-e2e` | Same roles as SC64 e2e tools; runnable, but drive **unvalidated** framing at a cart |
 
 **Compare carts:** [`docs/README.md` — Flash carts (L2)](docs/README.md#flash-carts-l2-backends)
 

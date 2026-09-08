@@ -58,9 +58,10 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [crates/sc64-smoke](crates/sc64-smoke) | **`sc64-smoke`** — SC64 vendor `IDENTIFIER` / `VERSION` |
 | [crates/sc64-echo-test](crates/sc64-echo-test) | **`sc64-echo-test`** — raw L3 loopback e2e over **`Sc64L2Pipe`** (test ROM **RAW_ECHO**) |
 | [crates/sc64-l3-framing-e2e](crates/sc64-l3-framing-e2e) | **`sc64-l3-framing-e2e`** — L3 framing e2e over **`Sc64L2Pipe`** |
+| [crates/sc64-sd-e2e](crates/sc64-sd-e2e) | **`sc64-sd-e2e`** — SD/FAT e2e over **`CartSession`**: the only hardware coverage of the stack Xfer64 uses. Writes to the card; read-only `--list` / `--verify` modes do not |
 | [crates/ed64-smoke](crates/ed64-smoke) | **`ed64-smoke`** — EverDrive **`usb64`**-style `cmd`/`t` smoke (not L3; see `l3-over-everdrive-x7.md` §8) |
-| [crates/ed64-echo-test](crates/ed64-echo-test) | **`ed64-echo-test`** — raw L3 loopback e2e over **`Ed64L2Pipe`** (blocked until `ed64-l2`) |
-| [crates/ed64-l3-framing-e2e](crates/ed64-l3-framing-e2e) | **`ed64-l3-framing-e2e`** — L3 framing e2e over **`Ed64L2Pipe`** (blocked until `ed64-l2`) |
+| [crates/ed64-echo-test](crates/ed64-echo-test) | **`ed64-echo-test`** — raw L3 loopback e2e over **`Ed64L2Pipe`** (runs; framing **unvalidated on hardware**) |
+| [crates/ed64-l3-framing-e2e](crates/ed64-l3-framing-e2e) | **`ed64-l3-framing-e2e`** — L3 framing e2e over **`Ed64L2Pipe`** (runs; framing **unvalidated on hardware**) |
 
 ### Tauri apps
 

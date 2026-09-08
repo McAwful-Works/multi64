@@ -2,7 +2,8 @@
 //!
 //! Requires **`multi64_test.z64`** in **RAW_ECHO** mode (default) on hardware with **EverDrive X7** USB + L3 path active.
 //! **`multi64-ed64-l2`** must implement the wire mapping in **`docs/spec/l3-over-everdrive-x7.md`** — until then
-//! [`Ed64L2Pipe::open`] returns [`std::io::ErrorKind::Unsupported`].
+//! [`Ed64L2Pipe::open`] opens the port: the §4 framing is implemented but unvalidated on hardware, so a failure
+//! here may be the mapping rather than the ROM. See [spec §4.5](../../docs/spec/l3-over-everdrive-x7.md).
 //!
 //! Use **`--large`** to exercise a payload larger than one typical host chunk (see spec; SC64 uses ~8192-byte `USB_WRITE` chunks).
 
