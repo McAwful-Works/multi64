@@ -12,7 +12,7 @@ cargo test -p multi64-ed64-l2
 ## Implementation notes
 
 1. **Host wire is now written up** in [spec §4](../../docs/spec/l3-over-everdrive-x7.md), derived from UNFLoader — `DMA@` header + payload + `CMPH`, symmetric both ways. Unvalidated on hardware; check §4.5 first.
-2. Implement **`Ed64L2Pipe`** (`read` / `write`) aligned with **`Sc64L2Pipe`** where sensible.
+2. ~~Implement **`Ed64L2Pipe`**~~ — **done**; the surface mirrors **`Sc64L2Pipe`** where the carts agree.
 3. **`ed64-smoke`** — `usb64` `cmd`/`t` probe ([spec §8](../../docs/spec/l3-over-everdrive-x7.md)) — not L3.
 4. **`ed64-echo-test`** / **`ed64-l3-framing-e2e`** — same roles as SC64 e2e tools; ROM in **RAW_ECHO** today.
 5. Optional: **`multi64d`** backend switch once the pipe is stable.

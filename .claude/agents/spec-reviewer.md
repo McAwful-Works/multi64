@@ -27,7 +27,7 @@ Use `git diff main...HEAD`, or `git diff HEAD` when the work is uncommitted. If 
 
 6. **The two USB stacks are separate.** The L3 bridge stack (`multi64-l3` → an L2 pipe → `multi64d`) and the SD/FAT stack (`multi64-sc64-sd` → Xfer64) share a COM port but no framing. Flag changes that couple them, or that open the cart port without the `POST /v1/serial/release` / `resume` handshake in `crates/multi64d/src/lib.rs`.
 
-7. **`Ed64L2Pipe` returning `io::ErrorKind::Unsupported` is intentional** until `l3-over-everdrive-x7.md` §4 is answered. Flag an implementation that quietly replaces those errors without the spec moving out of Draft.
+7. **`Ed64L2Pipe` implements `l3-over-everdrive-x7.md` §4** but has never run against a cart, and the spec stays **Draft** until §4.5 is answered on hardware. Flag anything that presents the mapping as validated — dropping Draft, deleting §4.5, or describing the ED64 e2e tools as proven — without a hardware result to back it.
 
 8. **Renaming or deleting a spec** must update `docs/README.md` (the map), `docs/spec/README.md` (the index), and every citing README or Rust `//!` comment. The `check-docs` skill finds the stragglers.
 

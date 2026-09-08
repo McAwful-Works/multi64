@@ -43,7 +43,7 @@ While released, WebSocket binary writes to the cart are ignored; clients should 
 
 ### 1.3 Link faults and recovery
 
-A serial read that fails with a real I/O error — the cart unplugged, the USB-CDC device reset — puts the link in a **faulted** state, distinct from released:
+The link is **faulted** whenever the daemon wants the port but does not hold it. Two things put it there: a serial read failing with a real I/O error — the cart unplugged, the USB-CDC device reset — and a **failed open at startup** (§1.3.1). Faulted is distinct from released:
 
 - The dead handle is **dropped**, so the COM port is free for another process.
 - `serialActive` in **`GET /`** becomes `false`. Clients MUST NOT read `serialActive: true` as proof the link works; they only ever learn otherwise from this field.
@@ -53,6 +53,14 @@ A serial read that fails with a real I/O error — the cart unplugged, the USB-C
 A release always wins over a fault: if `POST /v1/serial/release` arrives while the link is faulted, the state becomes *released* and the daemon stops retrying, so it never takes the port back from a tool that asked for it.
 
 The recovered link is a **fresh** L2 pipe, so the L3 octet stream is discontinuous across a fault in the same way it is across release/resume. Clients resynchronise on the next frame boundary; see [`l3-bridge-protocol-v1.md`](./l3-bridge-protocol-v1.md).
+
+#### 1.3.1 A missing cart at startup is not fatal
+
+If the configured serial device cannot be opened when the daemon starts, it **logs a warning and starts anyway**, faulted. It does not exit. HTTP and the WebSocket come up immediately, `GET /` reports `serialActive: false`, and the retry in §1.3 acquires the cart whenever it appears — so plugging the cart in is sufficient, with no restart.
+
+This matters to anything supervising the process. A daemon that exited on a missing port could not be started at all while the cart was unplugged, which is exactly when a managing GUI most needs it running: there would be no process left to notice the cart arriving. Supervisors MUST NOT treat "started" as evidence that a cart is present — **`serialActive`** in `GET /` is the only signal for that (§1.1).
+
+The `--serial` requirement in §5.1 is about *configuration*: a device must be **named**, from the CLI, the environment or a config file. It does not have to be **present**.
 
 ### 1.4 Origin policy
 
