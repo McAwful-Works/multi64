@@ -20,6 +20,7 @@ Normative wire rules live in **`spec/`**. Each spec file carries its own **Spec-
 | **Xfer64** (SD / COM, maintainers) | [xfer64-cart-serial.md](spec/xfer64-cart-serial.md) |
 | **`multi64d`** | [daemon-api-v1.md](spec/daemon-api-v1.md), [run-as-service.md](run-as-service.md) |
 | Test ROM + connector | [connectors/test-rom.md](connectors/test-rom.md) |
+| Frontend themes / tokens (Multi64, Xfer64) | [frontend-appearance.md](frontend-appearance.md) |
 | Build **`multi64_test.z64`** | [n64/README](../n64/README.md) |
 
 ---

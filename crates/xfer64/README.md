@@ -9,6 +9,24 @@
 
 **Maintainer map:** [`docs/spec/xfer64-cart-serial.md`](../../docs/spec/xfer64-cart-serial.md).
 
+## Appearance
+
+Settings → **Appearance**, in both apps. Changes apply immediately; there is no Save step for them.
+
+| Option | Values |
+|--------|--------|
+| **Theme** | Dark · Light · **Match system** (default) · High contrast |
+| **Text size** | 90% · 100% · 115% · 130% |
+| **Motion** | Follow system setting · Reduce animation |
+
+**Match system** follows the OS via `prefers-color-scheme`. **High contrast** is a darker, higher-contrast variant with solid borders; all four themes meet WCAG AA for text contrast.
+
+**Text size** scales the whole UI, not just the glyphs — every dimension in these sheets is in `rem`, and the setting drives the root font size. At 130% Multi64's window (fixed at 560×640, see `tauri.conf.json`) needs about 220px of scrolling to reach the bottom; nothing is clipped.
+
+**Motion** honours the OS reduced-motion setting by default; **Reduce animation** forces it for systems that do not expose one. Animation collapses to 1ms rather than being removed, so `animationend` / `transitionend` still fire.
+
+These preferences live in **`localStorage`**, *not* in the settings file — they must be readable synchronously before the first paint to avoid a flash of the wrong theme, and they are per-machine display choices rather than device configuration. Do not look for them in `gui-settings.json` or `xfer64-settings.json`.
+
 ## Windows drivers
 
 **Xfer64 does not ship third‑party cart drivers in the installer.** For normal use it expects the cart to appear as a **USB serial (COM) port** using Windows’ inbox stack:
