@@ -58,10 +58,16 @@
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",
-        "installerHooks": "windows/installer-hooks.nsh"
+        "installerHooks": "windows/installer-hooks.nsh",
+        "headerImage": "windows/nsis-header.bmp",
+        "sidebarImage": "windows/nsis-sidebar.bmp"
       },
       "wix": {
-        "fragmentPaths": ["windows/wix-sendto-uninstall.wxs"]
+        "fragmentPaths": [
+          "windows/wix-sendto-uninstall.wxs"
+        ],
+        "bannerPath": "windows/wix-banner.bmp",
+        "dialogImagePath": "windows/wix-dialog.bmp"
       }
     }
   }
