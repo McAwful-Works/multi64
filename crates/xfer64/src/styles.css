@@ -6,6 +6,33 @@
   --muted: #9aa0a6;
   --accent: #8ab4f8;
   --border: #3c4043;
+  --surface-sunken: #0d0f12;
+  --text-dim: #c8d0d8;
+  --control-bg: #3c4043;
+  --control-bg-hover: #4a4f54;
+  --control-primary-bg: #394a6b;
+  --control-primary-bg-hover: #4a5f8a;
+  --control-primary-border: #5f7ab8;
+  /* Black as a triple so overlays and shadows can vary alpha without repeating the colour. */
+  --shadow-rgb: 0, 0, 0;
+  --accent-rgb: 138, 180, 248;
+  --danger: #f28b82;
+  --danger-rgb: 242, 139, 130;
+  --danger-text: #f5b4ae;
+  --success-rgb: 129, 201, 149;
+  --success-text: #b8e0c6;
+  --success-text-dim: #a8d4a8;
+  --warning-text: #e8c07a;
+  --warning-rgb: 232, 176, 96;
+  --warning-dim-rgb: 212, 168, 90;
+  --highlight-rgb: 255, 255, 255;
+  --surface-inset: #1e2026;
+  --surface-inset-rgb: 30, 32, 38;
+  --surface-deep: #1a1c22;
+  --surface-raised: #2d3139;
+  --control-surface: #2c2f33;
+  --control-surface-border: #3c4048;
+  --divider: #2a2d32;
   font-family:
     "Segoe UI",
     system-ui,
@@ -118,7 +145,7 @@ body.settings-open {
 }
 
 .btn {
-  background: #3c4043;
+  background: var(--control-bg);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -128,16 +155,16 @@ body.settings-open {
 }
 
 .btn:hover {
-  background: #4a4f54;
+  background: var(--control-bg-hover);
 }
 
 .btn.primary {
-  background: #394a6b;
-  border-color: #5f7ab8;
+  background: var(--control-primary-bg);
+  border-color: var(--control-primary-border);
 }
 
 .btn.primary:hover {
-  background: #4a5f8a;
+  background: var(--control-primary-bg-hover);
 }
 
 .field {
@@ -190,8 +217,8 @@ body.settings-open {
 }
 
 .log {
-  background: #0d0f12;
-  color: #c8d0d8;
+  background: var(--surface-sunken);
+  color: var(--text-dim);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.65rem 0.75rem;
@@ -224,7 +251,7 @@ body.settings-open {
   position: fixed;
   inset: 0;
   z-index: 100;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(var(--shadow-rgb), 0.6);
   backdrop-filter: blur(4px);
 }
 
@@ -251,7 +278,7 @@ body.settings-open {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 16px 48px rgba(var(--shadow-rgb), 0.45);
   padding: 1rem 1.1rem 1.25rem;
   display: flex;
   flex-direction: column;
