@@ -33,6 +33,8 @@ Tests live in `crates/{l3,sc64-link,sc64-l2,ed64-l2,multi64-sc64-sd,multi64-ed64
 
 `npm install` inside `crates/<app>/` first — it supplies the Tauri CLI. `npm run build` maps to `tauri build`. `frontendDist` points at `../src`, so the frontend is plain JS served as-is; there is no bundler output step to run.
 
+Styling is tokenised: `:root` in each app's `styles.css` holds the palette and **no rule outside it may contain a colour literal**, or the change survives unchanged into the Light and High-contrast themes. `appearance.js` is duplicated verbatim in both apps, must stay Tauri-free, and must load non-deferred in `<head>`. See [`docs/frontend-appearance.md`](docs/frontend-appearance.md) before editing any CSS or frontend JS.
+
 Build `multi64d` **before** anything that compiles the Multi64 Tauri crate, and with the **same** profile. `crates/multi64/src-tauri/build.rs` copies the daemon into `resources/`, and `tauri.conf.json` declares `resources/multi64d.exe` under `bundle.resources`. A declared resource that is missing is a **hard error** in `tauri-build`: the `cargo:warning` from `build.rs` is not the whole story — the build then fails anyway. `resources/` is gitignored, so this bites a clean checkout running `cargo clippy --workspace` or `cargo build --workspace`, not just packaging.
 
 ### Hardware paths (never in CI)
