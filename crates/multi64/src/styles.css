@@ -23,9 +23,9 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Themes. Dark is the default palette above, so an install with no stored
-   preference looks exactly as it always has. `data-theme` is set on <html> by the
-   app before first paint; "system" defers to the OS via prefers-color-scheme.
+   Themes. The palette above is the dark one and is also the fallback: any theme that does
+   not override a token inherits it. `data-theme` is set on <html> before first paint and
+   defaults to "system", which defers to the OS via prefers-color-scheme.
    Only the tokens change -- no rule below this point selects on the theme.
    --------------------------------------------------------------------------- */
 

@@ -16,7 +16,10 @@ export const THEMES = ["dark", "light", "system", "contrast"];
 export const MOTION = ["system", "reduced"];
 export const SCALES = [0.9, 1, 1.15, 1.3];
 
-const DEFAULTS = { theme: "dark", motion: "system", scale: 1 };
+// "system" by default: an accessibility feature should follow the OS unless told otherwise.
+// Existing installs are unaffected in practice -- a stored preference always wins, and a user
+// on a dark OS sees no change either way.
+const DEFAULTS = { theme: "system", motion: "system", scale: 1 };
 
 function coerce(raw) {
   const p = raw && typeof raw === "object" ? raw : {};
