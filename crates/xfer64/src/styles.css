@@ -13,6 +13,7 @@
   --control-primary-bg: #394a6b;
   --control-primary-bg-hover: #4a5f8a;
   --control-primary-border: #5f7ab8;
+  --control-primary-text: #e8eaed;
   /* Black as a triple so overlays and shadows can vary alpha without repeating the colour. */
   --shadow-rgb: 0, 0, 0;
   --accent-rgb: 138, 180, 248;
@@ -37,6 +38,180 @@
     "Segoe UI",
     system-ui,
     sans-serif;
+}
+
+/* ---------------------------------------------------------------------------
+   Themes. The palette above is the dark one and is also the fallback: any theme that does
+   not override a token inherits it. `data-theme` is set on <html> before first paint and
+   defaults to "system", which defers to the OS via prefers-color-scheme.
+   Only the tokens change -- no rule below this point selects on the theme.
+   --------------------------------------------------------------------------- */
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --text: #1f2126;
+  --muted: #5f6368;
+  --accent: #0b57d0;
+  --border: #d2d5da;
+  --surface-sunken: #eceef1;
+  --text-dim: #3c4043;
+  --control-bg: #e8eaed;
+  --control-bg-hover: #dadce0;
+  --control-primary-bg: #0b57d0;
+  --control-primary-bg-hover: #0842a0;
+  --control-primary-border: #0b57d0;
+  --control-primary-text: #ffffff;
+  --shadow-rgb: 60, 64, 67;
+  --accent-rgb: 11, 87, 208;
+  --danger: #c5221f;
+  --danger-rgb: 197, 34, 31;
+  --danger-text: #a50e0e;
+  --success-rgb: 24, 128, 56;
+  --success-text: #0d652d;
+  --success-text-dim: #137333;
+  --warning-text: #a15c00;
+  --warning-rgb: 234, 153, 0;
+  --warning-dim-rgb: 200, 130, 0;
+  /* In light the "highlight" hairline must darken, not lighten. */
+  --highlight-rgb: 0, 0, 0;
+  --surface-inset: #f1f3f4;
+  --surface-inset-rgb: 241, 243, 244;
+  --surface-deep: #e8eaed;
+  --surface-raised: #ffffff;
+  --control-surface: #f1f3f4;
+  --control-surface-border: #c9cdd3;
+  --divider: #e0e2e6;
+}
+
+/* "Match system": follow the OS, which for these tokens means the light palette
+   when the OS asks for light. Dark needs no block -- it is the default above. */
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    color-scheme: light;
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --text: #1f2126;
+    --muted: #5f6368;
+    --accent: #0b57d0;
+    --border: #d2d5da;
+    --surface-sunken: #eceef1;
+    --text-dim: #3c4043;
+    --control-bg: #e8eaed;
+    --control-bg-hover: #dadce0;
+    --control-primary-bg: #0b57d0;
+    --control-primary-bg-hover: #0842a0;
+    --control-primary-border: #0b57d0;
+    --shadow-rgb: 60, 64, 67;
+    --accent-rgb: 11, 87, 208;
+    --danger: #c5221f;
+    --danger-rgb: 197, 34, 31;
+    --danger-text: #a50e0e;
+    --success-rgb: 24, 128, 56;
+    --success-text: #0d652d;
+    --success-text-dim: #137333;
+    --warning-text: #a15c00;
+    --warning-rgb: 234, 153, 0;
+    --warning-dim-rgb: 200, 130, 0;
+    /* In light the "highlight" hairline must darken, not lighten. */
+    --highlight-rgb: 0, 0, 0;
+    --surface-inset: #f1f3f4;
+    --surface-inset-rgb: 241, 243, 244;
+    --surface-deep: #e8eaed;
+    --surface-raised: #ffffff;
+    --control-surface: #f1f3f4;
+    --control-surface-border: #c9cdd3;
+    --divider: #e0e2e6;
+  }
+}
+
+:root[data-theme="contrast"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --card: #000000;
+  --text: #ffffff;
+  --muted: #e6e6e6;
+  --accent: #9ecbff;
+  --border: #ffffff;
+  --surface-sunken: #000000;
+  --text-dim: #ffffff;
+  --control-bg: #1a1a1a;
+  --control-bg-hover: #333333;
+  --control-primary-bg: #10305c;
+  --control-primary-bg-hover: #1b4a8c;
+  --control-primary-border: #9ecbff;
+  --control-primary-text: #ffffff;
+  --shadow-rgb: 0, 0, 0;
+  --accent-rgb: 158, 203, 255;
+  --danger: #ff9a92;
+  --danger-rgb: 255, 154, 146;
+  --danger-text: #ffc4bf;
+  --success-rgb: 126, 230, 160;
+  --success-text: #b7f2cc;
+  --success-text-dim: #b7f2cc;
+  --warning-text: #ffd479;
+  --warning-rgb: 255, 200, 92;
+  --warning-dim-rgb: 255, 200, 92;
+  --highlight-rgb: 255, 255, 255;
+  --surface-inset: #000000;
+  --surface-inset-rgb: 0, 0, 0;
+  --surface-deep: #000000;
+  --surface-raised: #0d0d0d;
+  --control-surface: #1a1a1a;
+  --control-surface-border: #ffffff;
+  --divider: #ffffff;
+}
+
+/* ---------------------------------------------------------------------------
+   Text size. Every dimension in these sheets is in rem, so scaling the root
+   font size scales the whole UI proportionally rather than only the glyphs.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --ui-scale: 1;
+}
+
+html {
+  font-size: calc(100% * var(--ui-scale));
+}
+
+/* ---------------------------------------------------------------------------
+   Focus. A single visible ring for keyboard users, themed like everything else.
+   `:focus-visible` rather than `:focus` so a mouse click does not draw it.
+   --------------------------------------------------------------------------- */
+
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ---------------------------------------------------------------------------
+   Reduced motion. Honours the OS setting, and an explicit in-app override for
+   users whose OS does not expose one. Animation is not removed outright --
+   collapsing to 1ms keeps animation/transition end events firing, which some
+   UI code relies on to advance state.
+   --------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-motion="system"] *,
+  :root[data-motion="system"] *::before,
+  :root[data-motion="system"] *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 1ms !important;
+  scroll-behavior: auto !important;
 }
 
 * {
@@ -161,6 +336,7 @@ body.settings-open {
 .btn.primary {
   background: var(--control-primary-bg);
   border-color: var(--control-primary-border);
+  color: var(--control-primary-text);
 }
 
 .btn.primary:hover {

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Xfer64</title>
     <link rel="stylesheet" href="explorer.css" />
+    <script type="module" src="appearance.js"></script>
     <script type="module" src="/explorer.js" defer></script>
   </head>
   <body class="explorer-root">
@@ -548,6 +549,35 @@
           </div>
         </div>
         <div class="explorer-settings-body">
+        <section class="explorer-settings-section">
+          <h3 class="explorer-settings-section-title">Appearance</h3>
+          <label class="explorer-settings-field">
+            <span class="explorer-settings-label">Theme</span>
+            <select id="pref-theme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="system">Match system</option>
+              <option value="contrast">High contrast</option>
+            </select>
+          </label>
+          <label class="explorer-settings-field">
+            <span class="explorer-settings-label">Text size</span>
+            <select id="pref-scale">
+              <option value="0.9">Smaller (90%)</option>
+              <option value="1">Default (100%)</option>
+              <option value="1.15">Larger (115%)</option>
+              <option value="1.3">Largest (130%)</option>
+            </select>
+          </label>
+          <label class="explorer-settings-field">
+            <span class="explorer-settings-label">Motion</span>
+            <select id="pref-motion">
+              <option value="system">Follow system setting</option>
+              <option value="reduced">Reduce animation</option>
+            </select>
+          </label>
+          <p class="explorer-settings-hint">Applies immediately and is remembered on this PC. Not part of Save settings.</p>
+        </section>
         <section class="explorer-settings-section">
           <h3 class="explorer-settings-section-title">Cart device</h3>
           <label class="explorer-settings-field">
