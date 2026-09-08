@@ -202,7 +202,7 @@ body.upload-picker-booting {
 }
 
 .upload-picker-table-wrap .explorer-table tbody tr:hover td {
-  background: rgba(138, 180, 248, 0.08);
+  background: rgba(var(--accent-rgb), 0.08);
 }
 
 .upload-picker-table-wrap .explorer-table tbody tr:focus-visible {
@@ -210,7 +210,7 @@ body.upload-picker-booting {
 }
 
 .upload-picker-table-wrap .explorer-table tbody tr:focus-visible td {
-  box-shadow: inset 0 0 0 2px rgba(138, 180, 248, 0.45);
+  box-shadow: inset 0 0 0 2px rgba(var(--accent-rgb), 0.45);
 }
 
 .upload-picker-empty td {
@@ -243,9 +243,9 @@ body.upload-picker-booting {
   padding: 0.38rem 0.5rem;
   font-size: 0.8rem;
   line-height: 1.4;
-  color: #f5b4ae;
-  background: rgba(242, 139, 130, 0.08);
-  border: 1px solid rgba(242, 139, 130, 0.25);
+  color: var(--danger-text);
+  background: rgba(var(--danger-rgb), 0.08);
+  border: 1px solid rgba(var(--danger-rgb), 0.25);
   border-radius: 6px;
   min-width: 0;
 }
@@ -290,7 +290,7 @@ body.upload-picker-booting {
   line-height: 1.35;
   color: var(--muted);
   border-top: 1px solid var(--border);
-  background: #1e2026;
+  background: var(--surface-inset);
   border-radius: 0 0 6px 6px;
   box-sizing: border-box;
   /* Fixed height: text row (2 lines max) + gap + progress track (6px, matches explorer-operation-track) */
@@ -342,12 +342,12 @@ body.upload-picker-booting {
 }
 
 .upload-picker-status-bar.upload-picker-status-bar--success .upload-picker-status-text {
-  color: #a8d4a8;
+  color: var(--success-text-dim);
   font-weight: 500;
 }
 
 .upload-picker-status-bar.upload-picker-status-bar--warning .upload-picker-status-text {
-  color: #e8c07a;
+  color: var(--warning-text);
   font-weight: 500;
 }
 
@@ -376,11 +376,11 @@ body.upload-picker-booting {
 }
 
 .upload-picker-status-bar.upload-picker-status-bar--success .explorer-operation-fill {
-  background: linear-gradient(90deg, rgba(129, 201, 149, 0.7), rgba(129, 201, 149, 1));
+  background: linear-gradient(90deg, rgba(var(--success-rgb), 0.7), rgba(var(--success-rgb), 1));
 }
 
 .upload-picker-status-bar.upload-picker-status-bar--warning .explorer-operation-fill {
-  background: linear-gradient(90deg, rgba(212, 168, 90, 0.75), rgba(232, 176, 96, 1));
+  background: linear-gradient(90deg, rgba(var(--warning-dim-rgb), 0.75), rgba(var(--warning-rgb), 1));
 }
 
 body.upload-picker-uploading .upload-picker-pane-head,
@@ -390,7 +390,7 @@ body.upload-picker-uploading .upload-picker-sd-body {
 }
 
 .upload-picker-root .btn:focus-visible {
-  outline: 2px solid rgba(138, 180, 248, 0.55);
+  outline: 2px solid rgba(var(--accent-rgb), 0.55);
   outline-offset: 2px;
 }
 
@@ -429,6 +429,6 @@ body.upload-picker-uploading .upload-picker-sd-body {
 @media (prefers-reduced-motion: reduce) {
   .explorer-loading-spinner {
     animation: none;
-    border-top-color: rgba(138, 180, 248, 0.55);
+    border-top-color: rgba(var(--accent-rgb), 0.55);
   }
 }

@@ -10,7 +10,7 @@ body.explorer-root {
 }
 
 body.explorer-root .btn:focus-visible {
-  outline: 2px solid rgba(138, 180, 248, 0.55);
+  outline: 2px solid rgba(var(--accent-rgb), 0.55);
   outline-offset: 2px;
 }
 
@@ -35,7 +35,7 @@ body.explorer-modal-open {
 .explorer-modal-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(var(--shadow-rgb), 0.55);
   backdrop-filter: blur(3px);
 }
 
@@ -52,7 +52,7 @@ body.explorer-modal-open {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 12px 40px rgba(var(--shadow-rgb), 0.45);
 }
 
 .explorer-modal-title {
@@ -83,7 +83,7 @@ body.explorer-modal-open {
 }
 
 .explorer-modal-input:focus {
-  outline: 2px solid rgba(138, 180, 248, 0.45);
+  outline: 2px solid rgba(var(--accent-rgb), 0.45);
   outline-offset: 1px;
 }
 
@@ -115,8 +115,8 @@ body.explorer-modal-open {
   pointer-events: none;
   user-select: none;
   -webkit-user-select: none;
-  background: #2c2f33;
-  border-color: #3c4048;
+  background: var(--control-surface);
+  border-color: var(--control-surface-border);
   color: var(--muted, #9aa0a6);
   box-shadow: none;
 }
@@ -125,8 +125,8 @@ body.explorer-modal-open {
 #explorer-modal-ok:disabled:focus,
 #explorer-modal-ok:disabled:focus-visible,
 #explorer-modal-ok:disabled:active {
-  background: #2c2f33;
-  border-color: #3c4048;
+  background: var(--control-surface);
+  border-color: var(--control-surface-border);
   color: var(--muted, #9aa0a6);
   outline: none;
 }
@@ -140,7 +140,7 @@ body.explorer-modal-open {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 28px rgba(var(--shadow-rgb), 0.4);
 }
 
 .explorer-context-menu.hidden {
@@ -167,7 +167,7 @@ body.explorer-modal-open {
 
 .explorer-context-item:hover:not(:disabled),
 .explorer-context-item:focus-visible:not(:disabled) {
-  background: rgba(138, 180, 248, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
   outline: none;
 }
 
@@ -288,17 +288,17 @@ body.explorer-modal-open {
 .explorer-help-section {
   margin: 0;
   padding: 0.7rem 0.85rem 0.75rem;
-  background: rgba(138, 180, 248, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(var(--accent-rgb), 0.05);
+  border: 1px solid rgba(var(--highlight-rgb), 0.07);
   border-radius: 8px;
-  border-left: 3px solid rgba(138, 180, 248, 0.5);
+  border-left: 3px solid rgba(var(--accent-rgb), 0.5);
   box-sizing: border-box;
 }
 
 .explorer-help-section--note {
-  background: rgba(242, 139, 130, 0.06);
-  border-color: rgba(255, 255, 255, 0.06);
-  border-left-color: rgba(242, 139, 130, 0.55);
+  background: rgba(var(--danger-rgb), 0.06);
+  border-color: rgba(var(--highlight-rgb), 0.06);
+  border-left-color: rgba(var(--danger-rgb), 0.55);
 }
 
 .explorer-help-section-title {
@@ -379,17 +379,17 @@ body.explorer-modal-open {
 
 .explorer-help-tab:hover {
   color: var(--text);
-  background: rgba(138, 180, 248, 0.06);
+  background: rgba(var(--accent-rgb), 0.06);
 }
 
 .explorer-help-tab[aria-selected="true"] {
   color: var(--accent);
   border-bottom-color: var(--accent);
-  background: rgba(138, 180, 248, 0.08);
+  background: rgba(var(--accent-rgb), 0.08);
 }
 
 .explorer-help-tab:focus-visible {
-  outline: 2px solid rgba(138, 180, 248, 0.55);
+  outline: 2px solid rgba(var(--accent-rgb), 0.55);
   outline-offset: 2px;
 }
 
@@ -502,7 +502,7 @@ body.explorer-modal-open {
   justify-content: center;
   padding: 1rem;
   box-sizing: border-box;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(var(--shadow-rgb), 0.5);
   backdrop-filter: blur(2px);
   pointer-events: auto;
   cursor: wait;
@@ -520,9 +520,9 @@ body.explorer-modal-open {
   max-width: 18rem;
   padding: 1rem 1.25rem;
   border-radius: 10px;
-  background: rgba(30, 32, 38, 0.94);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.55);
+  background: rgba(var(--surface-inset-rgb), 0.94);
+  border: 1px solid rgba(var(--highlight-rgb), 0.08);
+  box-shadow: 0 10px 36px rgba(var(--shadow-rgb), 0.55);
   pointer-events: none;
 }
 
@@ -548,7 +548,7 @@ body.explorer-modal-open {
   flex-shrink: 0;
   width: 7.75rem;
   min-height: 0;
-  background: #1a1c22;
+  background: var(--surface-deep);
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
   display: flex;
@@ -595,12 +595,12 @@ body.explorer-modal-open {
 }
 
 .btn.danger {
-  border-color: rgba(242, 139, 130, 0.45);
-  color: #f28b82;
+  border-color: rgba(var(--danger-rgb), 0.45);
+  color: var(--danger);
 }
 
 .btn.danger:hover {
-  background: rgba(242, 139, 130, 0.12);
+  background: rgba(var(--danger-rgb), 0.12);
 }
 
 .explorer-pane-head {
@@ -609,7 +609,7 @@ body.explorer-modal-open {
   justify-content: space-between;
   gap: 0.5rem;
   padding: 0.45rem 0.65rem;
-  background: #1e2026;
+  background: var(--surface-inset);
   border-bottom: 1px solid var(--border);
 }
 
@@ -697,12 +697,12 @@ body.explorer-modal-open {
 }
 
 .btn-icon-danger {
-  color: #f28b82;
-  border-color: rgba(242, 139, 130, 0.45);
+  color: var(--danger);
+  border-color: rgba(var(--danger-rgb), 0.45);
 }
 
 .btn-icon-danger:hover {
-  background: rgba(242, 139, 130, 0.12);
+  background: rgba(var(--danger-rgb), 0.12);
 }
 
 .btn-icon-danger:disabled,
@@ -758,24 +758,24 @@ body.explorer-modal-open {
 }
 
 .explorer-table-wrap:focus-visible {
-  outline: 2px solid rgba(138, 180, 248, 0.45);
+  outline: 2px solid rgba(var(--accent-rgb), 0.45);
   outline-offset: -2px;
 }
 
 .explorer-table-wrap.drag-over-target {
-  box-shadow: inset 0 0 0 2px rgba(138, 180, 248, 0.45);
-  background: rgba(138, 180, 248, 0.06);
+  box-shadow: inset 0 0 0 2px rgba(var(--accent-rgb), 0.45);
+  background: rgba(var(--accent-rgb), 0.06);
 }
 
 .explorer-table tbody tr.drag-over-drop-target {
-  box-shadow: inset 0 0 0 2px rgba(138, 180, 248, 0.55);
-  background: rgba(138, 180, 248, 0.1);
+  box-shadow: inset 0 0 0 2px rgba(var(--accent-rgb), 0.55);
+  background: rgba(var(--accent-rgb), 0.1);
 }
 
 .explorer-marquee {
   position: absolute;
   border: 1px dashed var(--accent);
-  background: rgba(138, 180, 248, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
   pointer-events: none;
   z-index: 2;
   box-sizing: border-box;
@@ -811,7 +811,7 @@ body.explorer-modal-open {
 .explorer-table th {
   text-align: left;
   padding: 0.35rem 0.6rem;
-  background: #1e2026;
+  background: var(--surface-inset);
   color: var(--muted);
   font-weight: 600;
   position: sticky;
@@ -850,7 +850,7 @@ body.explorer-modal-open {
 
 .explorer-table td {
   padding: 0.28rem 0.6rem;
-  border-bottom: 1px solid #2a2d32;
+  border-bottom: 1px solid var(--divider);
   cursor: default;
   user-select: none;
   overflow: hidden;
@@ -873,11 +873,11 @@ body.explorer-modal-open {
 }
 
 .explorer-table tr:hover td {
-  background: rgba(138, 180, 248, 0.08);
+  background: rgba(var(--accent-rgb), 0.08);
 }
 
 .explorer-table tr.selected td {
-  background: rgba(138, 180, 248, 0.18);
+  background: rgba(var(--accent-rgb), 0.18);
 }
 
 .explorer-empty-hint .explorer-empty-hint-cell {
@@ -931,7 +931,7 @@ body.explorer-modal-open {
 }
 
 .explorer-name-input:focus {
-  outline: 2px solid rgba(138, 180, 248, 0.45);
+  outline: 2px solid rgba(var(--accent-rgb), 0.45);
   outline-offset: 1px;
 }
 
@@ -969,7 +969,7 @@ body.explorer-modal-open {
   font-size: 0.78rem;
   color: var(--muted);
   border-top: 1px solid var(--border);
-  background: #1e2026;
+  background: var(--surface-inset);
   /* Match height when `.explorer-operation-inline` is visible (track row + caption + gap) so the bar does not grow when a copy/delete runs. */
   min-height: 3.35rem;
   box-sizing: border-box;
@@ -985,7 +985,7 @@ body.explorer-modal-open {
   flex-shrink: 0;
   width: 0.85rem;
   height: 0.85rem;
-  border: 2px solid rgba(138, 180, 248, 0.22);
+  border: 2px solid rgba(var(--accent-rgb), 0.22);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: explorer-spin 0.65s linear infinite;
@@ -1016,10 +1016,10 @@ body.explorer-modal-open {
   font-size: 0.82rem;
   line-height: 1.4;
   color: var(--text);
-  background: #2d3139;
+  background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: 4px;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 18px rgba(var(--shadow-rgb), 0.5);
   pointer-events: none;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -1096,7 +1096,7 @@ body.explorer-modal-open {
 .explorer-operation-track {
   height: 6px;
   border-radius: 3px;
-  background: rgba(138, 180, 248, 0.1);
+  background: rgba(var(--accent-rgb), 0.1);
   overflow: hidden;
 }
 
@@ -1105,7 +1105,7 @@ body.explorer-modal-open {
   width: 0;
   min-width: 0;
   border-radius: 3px;
-  background: linear-gradient(90deg, rgba(138, 180, 248, 0.65), rgba(138, 180, 248, 1));
+  background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.65), rgba(var(--accent-rgb), 1));
   transition: width 0.18s ease-out;
   box-sizing: border-box;
 }
@@ -1116,11 +1116,11 @@ body.explorer-modal-open {
 }
 
 .explorer-operation--done .explorer-operation-fill {
-  background: linear-gradient(90deg, rgba(129, 201, 149, 0.7), rgba(129, 201, 149, 1));
+  background: linear-gradient(90deg, rgba(var(--success-rgb), 0.7), rgba(var(--success-rgb), 1));
 }
 
 .explorer-operation--error .explorer-operation-fill {
-  background: linear-gradient(90deg, rgba(242, 139, 130, 0.65), rgba(242, 139, 130, 1));
+  background: linear-gradient(90deg, rgba(var(--danger-rgb), 0.65), rgba(var(--danger-rgb), 1));
 }
 
 @keyframes explorer-progress-slide {
@@ -1141,11 +1141,11 @@ body.explorer-modal-open {
 }
 
 .explorer-operation--error .explorer-operation-text {
-  color: #f5b4ae;
+  color: var(--danger-text);
 }
 
 .explorer-operation--done .explorer-operation-text {
-  color: #b8e0c6;
+  color: var(--success-text);
 }
 
 /* Settings (multi64 GUI–style overlay) */
@@ -1158,7 +1158,7 @@ body.explorer-modal-open {
   position: fixed;
   inset: 0;
   z-index: 12000;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(var(--shadow-rgb), 0.6);
   backdrop-filter: blur(4px);
 }
 
@@ -1189,7 +1189,7 @@ body.explorer-modal-open {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 16px 48px rgba(var(--shadow-rgb), 0.45);
 }
 
 .explorer-settings-body {
