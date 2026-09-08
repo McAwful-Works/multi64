@@ -86,28 +86,28 @@
           <span class="explorer-pane-head-hint" id="explorer-pane-cart-hint">Auto</span>
         </div>
         <div class="explorer-toolbar">
-          <button type="button" class="btn" data-action="back" data-pane="cart" title="Back">←</button>
-          <button type="button" class="btn" data-action="up" data-pane="cart" title="Up">↑</button>
-          <button type="button" class="btn" data-action="refresh" data-pane="cart" title="Refresh">↻</button>
+          <button type="button" class="btn" data-action="back" data-pane="cart" title="Back" aria-label="Back (SD card)">←</button>
+          <button type="button" class="btn" data-action="up" data-pane="cart" title="Up" aria-label="Up (SD card)">↑</button>
+          <button type="button" class="btn" data-action="refresh" data-pane="cart" title="Refresh" aria-label="Refresh (SD card)">↻</button>
           <div class="explorer-address-wrap">
             <select id="addr-cart-select" class="explorer-path-select" aria-label="Path on SD"></select>
           </div>
         </div>
         <div class="explorer-toolbar-extras" aria-label="Cart actions">
-          <button type="button" class="btn btn-icon" id="btn-mkdir-cart" title="New folder" aria-label="New folder">
+          <button type="button" class="btn btn-icon" id="btn-mkdir-cart" title="New folder" aria-label="New folder (SD card)">
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 10v6" />
               <path d="M9 13h6" />
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
             </svg>
           </button>
-          <button type="button" class="btn btn-icon" id="btn-rename-cart" title="Rename (F2)" aria-label="Rename">
+          <button type="button" class="btn btn-icon" id="btn-rename-cart" title="Rename (F2)" aria-label="Rename (SD card)">
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 20h9" />
               <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
             </svg>
           </button>
-          <button type="button" class="btn btn-icon btn-icon-danger" id="btn-delete-cart" title="Delete selected" aria-label="Delete selected" disabled>
+          <button type="button" class="btn btn-icon btn-icon-danger" id="btn-delete-cart" title="Delete selected" aria-label="Delete selected (SD card)" disabled>
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M3 6h18" />
               <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
@@ -120,7 +120,7 @@
             type="button"
             class="btn btn-icon explorer-show-hidden-btn"
             id="btn-show-hidden-cart"
-            aria-label="Show hidden files and folders"
+            aria-label="Show hidden files and folders (SD card)"
             aria-pressed="false"
             title="Show hidden files and folders"
           >
@@ -182,7 +182,7 @@
                 class="btn btn-icon explorer-operation-cancel"
                 id="explorer-operation-cancel-cart"
                 title="Cancel"
-                aria-label="Cancel"
+                aria-label="Cancel (SD card)"
               >
                 <svg
                   class="btn-icon-svg"
@@ -234,29 +234,29 @@
           <span class="explorer-pane-head-hint">This PC</span>
         </div>
         <div class="explorer-toolbar">
-          <button type="button" class="btn" data-action="back" data-pane="pc" title="Back">←</button>
-          <button type="button" class="btn" data-action="up" data-pane="pc" title="Up">↑</button>
-          <button type="button" class="btn" data-action="refresh" data-pane="pc" title="Refresh">↻</button>
+          <button type="button" class="btn" data-action="back" data-pane="pc" title="Back" aria-label="Back (Windows)">←</button>
+          <button type="button" class="btn" data-action="up" data-pane="pc" title="Up" aria-label="Up (Windows)">↑</button>
+          <button type="button" class="btn" data-action="refresh" data-pane="pc" title="Refresh" aria-label="Refresh (Windows)">↻</button>
           <div class="explorer-address-wrap">
-            <select id="addr-pc-select" class="explorer-path-select" aria-label="Windows folder"></select>
+            <select id="addr-pc-select" class="explorer-path-select" aria-label="Path in Windows"></select>
             <button type="button" class="btn explorer-browse-btn" data-action="pick" data-pane="pc" title="Browse folder">…</button>
           </div>
         </div>
         <div class="explorer-toolbar-extras" aria-label="Windows folder actions">
-          <button type="button" class="btn btn-icon" id="btn-mkdir-pc" title="New folder" aria-label="New folder">
+          <button type="button" class="btn btn-icon" id="btn-mkdir-pc" title="New folder" aria-label="New folder (Windows)">
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 10v6" />
               <path d="M9 13h6" />
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
             </svg>
           </button>
-          <button type="button" class="btn btn-icon" id="btn-rename-pc" title="Rename (F2)" aria-label="Rename">
+          <button type="button" class="btn btn-icon" id="btn-rename-pc" title="Rename (F2)" aria-label="Rename (Windows)">
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 20h9" />
               <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
             </svg>
           </button>
-          <button type="button" class="btn btn-icon btn-icon-danger" id="btn-delete-pc" title="Delete selected" aria-label="Delete selected" disabled>
+          <button type="button" class="btn btn-icon btn-icon-danger" id="btn-delete-pc" title="Delete selected" aria-label="Delete selected (Windows)" disabled>
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M3 6h18" />
               <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
@@ -269,7 +269,7 @@
             type="button"
             class="btn btn-icon explorer-show-hidden-btn"
             id="btn-show-hidden-pc"
-            aria-label="Show hidden files and folders"
+            aria-label="Show hidden files and folders (Windows)"
             aria-pressed="false"
             title="Show hidden files and folders"
           >
@@ -331,7 +331,7 @@
                 class="btn btn-icon explorer-operation-cancel"
                 id="explorer-operation-cancel-pc"
                 title="Cancel"
-                aria-label="Cancel"
+                aria-label="Cancel (Windows)"
               >
                 <svg
                   class="btn-icon-svg"
