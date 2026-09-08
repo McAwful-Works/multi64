@@ -136,6 +136,7 @@ Server responds with:
 | `--allow-origin <ORIGIN>` | (none) | Browser origin permitted to call the daemon (§1.4); repeatable. Env: `MULTI64D_ALLOW_ORIGIN` (comma-separated) |
 | `--no-print-ports` | off | If set, do not log available serial ports at startup (default is to log them at info) |
 | `--list-ports` | off | Print serial port names to stdout and exit (for scripts) |
+| `--serial-trace` | off | Log every non-empty read from the cart at `trace!` on target `multi64_sc64_l2`. Merges with `RUST_LOG` when that is set. Env: `MULTI64D_SERIAL_TRACE` (`1` / `true` / `yes`) |
 
 † Serial may come from **`--serial`**, **`MULTI64D_SERIAL`**, or **`serial = "..."`** in a config file (see §5.2). CLI and environment **override** file values — they never combine with them, so an explicit `false` or an explicit `--allow-origin` list replaces whatever the file said.
 

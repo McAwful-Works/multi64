@@ -2,7 +2,7 @@
 
 Normative **Multi64** wire and behavior. Each spec file carries its own **Spec-Revision** until maintainers bump it.
 
-**SC64** L2 is complete in-tree; **EverDrive X7** L2 is **draft** / **stub** until the host mapping is finalized.
+**SC64** L2 is complete in-tree. **EverDrive X7** L2 is **implemented** but the spec stays **Draft**: §4 is derived from a reference implementation, not from hardware, and §4.5 lists what must be checked against a cart before it becomes normative.
 
 ---
 
@@ -15,7 +15,7 @@ Normative **Multi64** wire and behavior. Each spec file carries its own **Spec-R
 | [**l3-over-sc64.md**](l3-over-sc64.md) | **SC64**: L3 octets over `USB_WRITE` / `PKT` `U` |
 | [**sc64-sd-usb-host.md**](sc64-sd-usb-host.md) | **SC64**: host SD / FAT over USB (`SD_CARD_OP`); normative for `multi64-sc64-sd` |
 | [**ed64-sd-usb-host.md**](ed64-sd-usb-host.md) | **EverDrive**: experimental X-series SD via **`RomRead`** |
-| [**l3-over-everdrive-x7.md**](l3-over-everdrive-x7.md) | **EverDrive X7** (draft): L3 over ED64 USB — host mapping TBD |
+| [**l3-over-everdrive-x7.md**](l3-over-everdrive-x7.md) | **EverDrive X7** (Draft): L3 over ED64 USB — §4 host mapping written, unvalidated on hardware |
 | [**daemon-api-v1.md**](daemon-api-v1.md) | **`multi64d`**: HTTP + WebSocket bridge |
 | [**test-l3-application-v0.md**](test-l3-application-v0.md) | **M64T**: **`multi64_test.z64`** (`n64/test-rom`) host↔cart messages |
 | [**memory-l3-application-v0.md**](memory-l3-application-v0.md) | **M64P**: RDRAM peek/poke; game-agnostic, serviced from the ROM's per-frame hook |
@@ -42,8 +42,8 @@ These are **not** alternate L3 specs; they hit **USB serial** on a cart. **`mult
 | Role | SummerCart64 | EverDrive X7 |
 |------|----------------|--------------|
 | Vendor / link smoke (not L3) | `sc64-smoke` | `ed64-smoke` ([§8](l3-over-everdrive-x7.md)) |
-| Raw L3 vs ROM **RAW_ECHO** | `sc64-echo-test` | `ed64-echo-test` (needs `ed64-l2`) |
-| L3 framing vs **RAW_ECHO** | `sc64-l3-framing-e2e` | `ed64-l3-framing-e2e` (needs `ed64-l2`) |
+| Raw L3 vs ROM **RAW_ECHO** | `sc64-echo-test` | `ed64-echo-test` (runs; §4 framing unvalidated) |
+| L3 framing vs **RAW_ECHO** | `sc64-l3-framing-e2e` | `ed64-l3-framing-e2e` (runs; §4 framing unvalidated) |
 
 ---
 
