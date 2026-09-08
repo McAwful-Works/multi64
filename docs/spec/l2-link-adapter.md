@@ -61,7 +61,7 @@ Concrete mapping for this repository: **[l3-over-sc64.md](./l3-over-sc64.md)** (
 
 - **Scope:** USB-capable **X7-class** carts only; models without USB (e.g. X5) **cannot** implement this L2.
 - **Role:** Map `read`/`write` to the vendor USB model (host serial / usb64-style framing). **Normative mapping (draft):** [**l3-over-everdrive-x7.md**](./l3-over-everdrive-x7.md). References: **N64brew** wiki (EverDrive-64 X7), **[krikzz/ed64-x-pub](https://github.com/krikzz/ed64-x-pub)** (reference `usb64` + N64 samples), Krikzz dev pack.
-- **Implementation stub:** Rust crate **`multi64-ed64-l2`** (`crates/ed64-l2`) — compiles but does not perform I/O until the spec’s host wire rules are filled in.
+- **Implementation:** Rust crate **`multi64-ed64-l2`** (`crates/ed64-l2`) — implements the §4 host wire rules and performs real serial I/O. It has never been run against a cart, so treat a failure as possibly the mapping rather than the ROM (see [§4.5](./l3-over-everdrive-x7.md)).
 
 ### 5.1 Normative constraints for adapters (inform interoperability)
 

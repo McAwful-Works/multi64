@@ -37,6 +37,7 @@ Experimental payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATIO
 | `0x0B` | `REQ_SRAM_READ` | `uint32` BE offset, `uint16` BE length (max **512**; **offset** and **length** must be **even**; PI SRAM) |
 | `0x0C` | `REQ_SRAM_WRITE` | `uint32` BE offset, `uint16` BE length, then **length** bytes — **requires active session**; same alignment rules as read |
 | `0x0D` | `REQ_RUMBLE` | `uint8` port `0`–`3`, `uint8` duration in VI frames (**`0`** = default **60**; cart clamps to **600** frames) |
+| `0x0E` | `REQ_DISPLAY_TEXT` | UTF-8 text for the cart HUD, at most **120** bytes (`TEST_HOST_DISPLAY_MAX`); a longer body is rejected in `DISPLAY_TEXT_ACK`. An empty body clears the text |
 
 ---
 
@@ -60,6 +61,7 @@ Experimental payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATIO
 | `0x8E` | `DISPLAY_TEXT_ACK` | `uint8` **status** (see §5) |
 | `0xE1` | `STRESS_LARGE` | Pattern-filled body up to the maximum APPLICATION payload size (stress / fragmentation testing; cart-originated) |
 | `0xF0` | `BENCH_TICK` | Optional: `uint32_t` BE frame counter (stress mode) |
+| `0xF1` | `CONTROLLER_POLL_EXIT` | Empty. Cart-originated: the user held **L+R** to leave `CTRL_POLL` mode, so a host polling `REQ_CONTROLLER` should stop |
 
 ---
 

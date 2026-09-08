@@ -30,4 +30,13 @@ npm run build
 
 Installers and the app binary (e.g. `Xfer64.exe` on Windows) land under `target/release/` and `target/release/bundle/`.
 
-The **multi64** main GUI can launch this app if the executable sits next to `multi64.exe`, or if it was installed to `%LOCALAPPDATA%\\multi64\\` from a bundled resource.
+## How Multi64 finds this app
+
+The **Multi64** GUI resolves the Xfer64 executable in this order, taking the first that exists (`xfer64_exe_candidates` in `crates/multi64/src-tauri/src/lib.rs`):
+
+1. **The Windows registry** — App Paths and Uninstall entries, which is how a normally installed Xfer64 is found regardless of where it went. Both the NSIS and MSI installers register it.
+2. Next to `multi64.exe`.
+3. `%LOCALAPPDATA%\multi64\`.
+4. `%LOCALAPPDATA%\Programs\Xfer64\` and `%LOCALAPPDATA%\Xfer64\`.
+
+Each directory is tried with `Xfer64.exe`, `xfer64.exe` and the legacy `multi64-cart-explorer.exe`. If none matches, Multi64 offers to run the bundled installer instead.
