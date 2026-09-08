@@ -7,6 +7,8 @@
  *   2 Bench — M64T RX + BENCH_TICK every N frames (D-up/D-down) + extras below
  *   3 Controller poll — host sends REQ_CONTROLLER at its chosen rate; C-left/right = port 0–3.
  *      Hold L+R ~5s to quit to MODE MENU (host sees M64T 0xF1 CONTROLLER_POLL_EXIT).
+ *   4 Memory agent — M64P RDRAM peek/poke (memory-l3-application-v0.md). Host-driven;
+ *      no controls beyond L (menu) and R (reset). Proves the peek/poke path with no game.
  *
  * MODE MENU: D-up/down = move, A = enter mode (B and L ignored in menu).
  *   When running: L opens menu (except in CTRL_POLL). In CTRL_POLL, only L+R opens the menu (after hold).
@@ -26,6 +28,7 @@
 #include <timer.h>
 #include <usb.h>
 
+#include "mem_proto.h"
 #include "test_proto.h"
 
 #define MULTI64_L3 0x01
@@ -37,7 +40,8 @@ enum run_mode {
     MODE_TEST_PROTO = 1,
     MODE_BENCH = 2,
     MODE_CONTROLLER_POLL = 3,
-    MODE_COUNT = 4
+    MODE_MEM_AGENT = 4,
+    MODE_COUNT = 5
 };
 
 static uint8_t s_pkt[USB_READ_CHUNK];
@@ -75,6 +79,8 @@ static const char *mode_name(enum run_mode m)
         return "BENCH";
     case MODE_CONTROLLER_POLL:
         return "CTRL_POLL";
+    case MODE_MEM_AGENT:
+        return "MEM_AGENT";
     default:
         return "?";
     }
@@ -138,7 +144,14 @@ static void hud_redraw(uint32_t frame_ticks)
            (unsigned long)test_proto_get_rx_resync_bytes(), (unsigned long)test_proto_get_bad_header_drops());
     if (s_mode == MODE_RAW_ECHO) {
         printf("tx   %lu\n", (unsigned long)s_tx_bytes);
-        printf("     (other modes: M64T/BENCH/CTRL_POLL)\n");
+        printf("     (other modes: M64T/BENCH/CTRL_POLL/MEM_AGENT)\n");
+    } else if (s_mode == MODE_MEM_AGENT) {
+        printf("m64p req %lu\n", (unsigned long)m64p_get_requests());
+        printf("rd   %lu B\n", (unsigned long)m64p_get_bytes_read());
+        printf("wr   %lu B\n", (unsigned long)m64p_get_bytes_written());
+        printf("err  %lu (last %u)\n", (unsigned long)m64p_get_errors(), (unsigned)m64p_get_last_error());
+        printf("ram  %lu KiB\n", (unsigned long)(m64p_rdram_size() / 1024U));
+        printf("host-driven; no buttons\n");
     } else if (s_mode == MODE_CONTROLLER_POLL) {
         printf("m64t %lu\n", (unsigned long)test_proto_get_frames_handled());
         printf("ses  %lu\n", (unsigned long)test_proto_get_session_id());
@@ -397,6 +410,10 @@ int main(void)
             break;
         case MODE_CONTROLLER_POLL:
             run_controller_poll_mode();
+            break;
+        case MODE_MEM_AGENT:
+            /* Same RX path: drain_stream dispatches M64T and M64P on payload magic. */
+            run_m64t_usb_rx();
             break;
         default:
             break;

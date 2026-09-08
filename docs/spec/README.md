@@ -18,6 +18,7 @@ Normative **Multi64** wire and behavior. Each spec file carries its own **Spec-R
 | [**l3-over-everdrive-x7.md**](l3-over-everdrive-x7.md) | **EverDrive X7** (draft): L3 over ED64 USB — host mapping TBD |
 | [**daemon-api-v1.md**](daemon-api-v1.md) | **`multi64d`**: HTTP + WebSocket bridge |
 | [**test-l3-application-v0.md**](test-l3-application-v0.md) | **M64T**: **`multi64_test.z64`** (`n64/test-rom`) host↔cart messages |
+| [**memory-l3-application-v0.md**](memory-l3-application-v0.md) | **M64P**: RDRAM peek/poke; game-agnostic, serviced from the ROM's per-frame hook |
 | [**xfer64-cart-serial.md**](xfer64-cart-serial.md) | **Xfer64**: SD sessions, `multi64d` COM yield, Rust module map (maintainers) |
 
 ---

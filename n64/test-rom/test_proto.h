@@ -73,7 +73,7 @@
 /** Max bytes in `REQ_DISPLAY_TEXT` body (UTF-8); excludes M64T header. */
 #define TEST_HOST_DISPLAY_MAX 120
 
-#define TEST_ROM_VERSION_STR "multi64-test-rom 1.8"
+#define TEST_ROM_VERSION_STR "multi64-test-rom 1.9"
 
 /** Clears RX buffer, M64T total, and diag counters (R / mode change). */
 void test_proto_reset_all(void);
