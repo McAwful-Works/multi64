@@ -31,6 +31,9 @@ pub const SERIAL_READ_TIMEOUT: Duration = Duration::from_millis(50);
 /// How long to wait before retrying `open` after the link faulted (cart unplugged, device reset).
 const REOPEN_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Reader buffer size. One allocation for the life of the loop; see `cart_reader_loop`.
+const READ_BUF_BYTES: usize = 65536;
+
 /// Configuration needed to open — and later reopen — the serial port.
 #[derive(Clone)]
 pub struct SerialConfig {
@@ -285,40 +288,36 @@ enum ReadChunk {
 /// handle, so `GET /` stops claiming `serialActive` and the port becomes reopenable. The loop then
 /// retries `open` every [`REOPEN_RETRY_INTERVAL`] until the cart comes back.
 pub async fn cart_reader_loop(state: Arc<AppState>) {
+    // Allocated once and passed back and forth with the blocking task. Declaring it inside the
+    // loop cost a 64 KiB allocation *and* a 64 KiB zero-fill every iteration -- about 20 times a
+    // second while idle, for the whole life of a daemon that starts at login -- to produce bytes
+    // `read_l3_bytes` immediately overwrites.
+    let mut buf = vec![0u8; READ_BUF_BYTES];
+
     loop {
-        let chunk = tokio::task::spawn_blocking({
+        let handoff = tokio::task::spawn_blocking({
             let link = state.link.clone();
             let cfg = state.serial_cfg.clone();
-            move || -> io::Result<ReadChunk> {
-                let mut g = lock_link(&link);
-                match &mut *g {
-                    LinkState::Released => Ok(ReadChunk::Released),
-                    LinkState::Faulted => match open_pipe(&cfg) {
-                        Ok(p) => {
-                            tracing::info!(serial = %cfg.path, "serial link reopened after fault");
-                            *g = LinkState::Active(p);
-                            Ok(ReadChunk::Empty)
-                        }
-                        Err(e) => {
-                            // Expected while the cart is unplugged; `debug` keeps it out of the
-                            // default log at one line per second.
-                            tracing::debug!(error = %e, serial = %cfg.path, "reopen serial link");
-                            Ok(ReadChunk::RetryOpen)
-                        }
-                    },
-                    LinkState::Active(p) => {
-                        let mut buf = vec![0u8; 65536];
-                        let n = p.read_l3_bytes(&mut buf)?;
-                        if n == 0 {
-                            Ok(ReadChunk::Empty)
-                        } else {
-                            Ok(ReadChunk::Data(buf[..n].to_vec()))
-                        }
-                    }
-                }
+            move || {
+                let r = read_once(&link, &cfg, &mut buf);
+                // Hand the buffer back so the next iteration reuses this allocation.
+                (r, buf)
             }
         })
         .await;
+
+        let chunk = match handoff {
+            Ok((r, returned)) => {
+                buf = returned;
+                Ok(r)
+            }
+            // A panic in the blocking task takes the buffer with it; allocate a fresh one rather
+            // than ending the loop.
+            Err(e) => {
+                buf = vec![0u8; READ_BUF_BYTES];
+                Err(e)
+            }
+        };
 
         match chunk {
             Ok(Ok(ReadChunk::Data(data))) => {
@@ -345,8 +344,41 @@ pub async fn cart_reader_loop(state: Arc<AppState>) {
     }
 }
 
-/// Drop a dead pipe and mark the link faulted, unless it was released in the meantime — a
-/// concurrent `POST /v1/serial/release` must win, or the loop would reopen a port Xfer64 wants.
+/// One pass over the link: reopen it if faulted, otherwise read whatever is queued into `buf`.
+fn read_once(
+    link: &Arc<Mutex<LinkState>>,
+    cfg: &SerialConfig,
+    buf: &mut [u8],
+) -> io::Result<ReadChunk> {
+    let mut g = lock_link(link);
+    match &mut *g {
+        LinkState::Released => Ok(ReadChunk::Released),
+        LinkState::Faulted => match open_pipe(cfg) {
+            Ok(p) => {
+                tracing::info!(serial = %cfg.path, "serial link reopened after fault");
+                *g = LinkState::Active(p);
+                Ok(ReadChunk::Empty)
+            }
+            Err(e) => {
+                // Expected while the cart is unplugged; `debug` keeps it out of the default log
+                // at one line per second.
+                tracing::debug!(error = %e, serial = %cfg.path, "reopen serial link");
+                Ok(ReadChunk::RetryOpen)
+            }
+        },
+        LinkState::Active(p) => {
+            let n = p.read_l3_bytes(buf)?;
+            if n == 0 {
+                Ok(ReadChunk::Empty)
+            } else {
+                // Right-size before this enters the broadcast: a 256-slot channel holding
+                // full-capacity 64 KiB buffers would pin 16 MiB.
+                Ok(ReadChunk::Data(buf[..n].to_vec()))
+            }
+        }
+    }
+}
+
 async fn mark_faulted(link: &Arc<Mutex<LinkState>>) {
     let link = link.clone();
     let _ = tokio::task::spawn_blocking(move || {
