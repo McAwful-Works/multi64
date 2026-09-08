@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::thread;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager, RunEvent};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Listener, Manager, RunEvent};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:38765";
 const MAX_LOG_LINES: usize = 400;
@@ -804,6 +804,138 @@ fn launch_xfer64_bundled_installer(installer_path: &Path) -> Result<(), String> 
     Ok(())
 }
 
+/// Bring the main window up from the tray (or from a second launch attempt).
+fn show_main_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        // An unminimize is needed as well as a show: hiding to tray and minimizing are
+        // independent, so a window minimized before it was hidden stays minimized.
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// Text and enabled state for the daemon items. Pure, so the decisions are testable without a
+/// running Tauri app — the tray itself cannot be driven from a test.
+struct TrayLabels {
+    status: String,
+    toggle: &'static str,
+    toggle_enabled: bool,
+    restart_enabled: bool,
+}
+
+fn tray_labels(running: bool, serial: Option<&str>, listen: &str) -> TrayLabels {
+    TrayLabels {
+        status: if running {
+            match serial {
+                Some(port) => format!("Daemon: running on {port}"),
+                // No configured or auto-detected port, but a live process: report where it
+                // listens rather than claiming a port we cannot name.
+                None => format!("Daemon: running ({listen})"),
+            }
+        } else {
+            "Daemon: stopped".to_string()
+        },
+        toggle: if running {
+            "Stop daemon"
+        } else {
+            "Start daemon"
+        },
+        // Stopping always works; starting needs a port, and `start_daemon` fails without one.
+        toggle_enabled: running || serial.is_some(),
+        // Restarting a stopped daemon is just Start, which is the item above.
+        restart_enabled: running,
+    }
+}
+
+/// Text and enabled state for the Xfer64 item. `None` means the state could not be read.
+fn xfer64_label(state: Option<&Xfer64State>) -> (&'static str, bool) {
+    match state {
+        Some(s) if s.installed => ("Open Xfer64", true),
+        Some(s) if s.installer_available => ("Install Xfer64…", true),
+        // Neither installed nor bundled: show it greyed rather than hiding it, so the menu does
+        // not change shape depending on what happens to be on disk.
+        _ => ("Xfer64 (not available)", false),
+    }
+}
+
+/// Build the tray menu against current state.
+///
+/// The menu is rebuilt and swapped wholesale on every refresh rather than mutating individual
+/// items. Both work, but rebuilding keeps the labels, the enabled flags and the ordering described
+/// in exactly one place, so there is no way for a later edit to update the text of an item and
+/// forget its enabled state.
+///
+/// Deliberately does **not** call `check_health`: that issues a blocking HTTP request, and this
+/// runs on every `daemon-changed` event. "Running" here means the child process is alive; the
+/// window shows the finer-grained health.
+fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let (running, listen, serial) = match app.try_state::<AppState>() {
+        Some(state) => {
+            let settings = state.settings.lock().clone();
+            (
+                daemon_is_running(&state.daemon),
+                settings.listen.clone(),
+                effective_serial(&settings),
+            )
+        }
+        None => (false, DEFAULT_LISTEN.to_string(), None),
+    };
+
+    let labels = tray_labels(running, serial.as_deref(), &listen);
+    // Disabled: a status line, not an action.
+    let status = MenuItem::with_id(app, "status", &labels.status, false, None::<&str>)?;
+    let toggle = MenuItem::with_id(
+        app,
+        "toggle",
+        labels.toggle,
+        labels.toggle_enabled,
+        None::<&str>,
+    )?;
+    let restart = MenuItem::with_id(
+        app,
+        "restart",
+        "Restart daemon",
+        labels.restart_enabled,
+        None::<&str>,
+    )?;
+
+    let xfer_state = get_xfer64_state(app.clone()).ok();
+    let (xfer_text, xfer_enabled) = xfer64_label(xfer_state.as_ref());
+    let xfer = MenuItem::with_id(app, "xfer64", xfer_text, xfer_enabled, None::<&str>)?;
+
+    let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Exit Multi64", true, None::<&str>)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let sep3 = PredefinedMenuItem::separator(app)?;
+
+    Menu::with_items(
+        app,
+        &[
+            &status, &sep1, &toggle, &restart, &sep2, &xfer, &sep3, &show, &quit,
+        ],
+    )
+}
+
+/// Rebuild the tray menu so its labels match current state. No-op when the tray is disabled.
+fn refresh_tray_menu(app: &AppHandle) {
+    let Some(tray) = app.tray_by_id("tray") else {
+        return;
+    };
+    match build_tray_menu(app) {
+        Ok(menu) => {
+            let _ = tray.set_menu(Some(menu));
+        }
+        Err(e) => tracing_warn(&format!("tray menu rebuild failed: {e}")),
+    }
+}
+
+/// The crate has no tracing dependency; daemon diagnostics go to the in-app log instead.
+fn tracing_warn(msg: &str) {
+    eprintln!("multi64: {msg}");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let settings = load_settings();
@@ -843,10 +975,13 @@ pub fn run() {
             let st: tauri::State<'_, AppState> = app.state();
             let daemon_for_setup = Arc::clone(&st.daemon);
 
-            if st.settings.lock().tray_enabled {
-                let quit = MenuItem::with_id(app, "quit", "Exit Multi64", true, None::<&str>)?;
-                let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
-                let menu = Menu::with_items(app, &[&show, &quit])?;
+            // Read the flag into a local and drop the guard before the block: `build_tray_menu`
+            // locks `settings` itself, and `parking_lot::Mutex` is not reentrant. Rust drops an
+            // `if` condition's temporaries before the block, so holding it here would be fine
+            // today -- but changing this to `if let`/`match` later would deadlock at startup.
+            let tray_enabled = { st.settings.lock().tray_enabled };
+            if tray_enabled {
+                let menu = build_tray_menu(&handle)?;
                 let icon = app
                     .default_window_icon()
                     .cloned()
@@ -854,7 +989,19 @@ pub fn run() {
                 let _tray = TrayIconBuilder::with_id("tray")
                     .icon(icon)
                     .menu(&menu)
-                    .show_menu_on_left_click(true)
+                    // Right-click opens the menu; left-click is left free so double-click can
+                    // raise the window. With the menu on left-click the first click of a
+                    // double-click pops the menu, which makes the gesture unusable.
+                    .show_menu_on_left_click(false)
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::DoubleClick {
+                            button: MouseButton::Left,
+                            ..
+                        } = event
+                        {
+                            show_main_window(tray.app_handle());
+                        }
+                    })
                     .on_menu_event(move |app, event| match event.id.as_ref() {
                         "quit" => {
                             if let Some(s) = app.try_state::<AppState>() {
@@ -862,15 +1009,48 @@ pub fn run() {
                             }
                             app.exit(0);
                         }
-                        "show" => {
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
+                        "show" => show_main_window(app),
+                        "toggle" => {
+                            let Some(s) = app.try_state::<AppState>() else {
+                                return;
+                            };
+                            if daemon_is_running(&s.daemon) {
+                                kill_daemon(&s.daemon);
+                            } else {
+                                let settings = s.settings.lock().clone();
+                                if let Err(e) = start_daemon(app, &s.daemon, &settings) {
+                                    push_log(&s.daemon, format!("Start failed: {e}"));
+                                }
+                            }
+                            let _ = app.emit("daemon-changed", ());
+                        }
+                        "restart" => {
+                            let Some(s) = app.try_state::<AppState>() else {
+                                return;
+                            };
+                            kill_daemon(&s.daemon);
+                            let settings = s.settings.lock().clone();
+                            if let Err(e) = start_daemon(app, &s.daemon, &settings) {
+                                push_log(&s.daemon, format!("Restart failed: {e}"));
+                            }
+                            let _ = app.emit("daemon-changed", ());
+                        }
+                        "xfer64" => {
+                            if let Err(e) = launch_or_install_xfer64(app.clone()) {
+                                tracing_warn(&format!("Xfer64: {e}"));
                             }
                         }
+                        // "status" is disabled and cannot be clicked.
                         _ => {}
                     })
                     .build(app)?;
+
+                // The window emits `daemon-changed` too, so the tray tracks state regardless of
+                // which one started or stopped the daemon.
+                let tray_handle = handle.clone();
+                handle.listen("daemon-changed", move |_| {
+                    refresh_tray_menu(&tray_handle);
+                });
             }
 
             // Default: main window opens normally. Only hide on launch when the user opted in
@@ -966,5 +1146,82 @@ mod tests {
             ..Settings::default()
         };
         assert_eq!(s.baud.to_string(), "57600");
+    }
+}
+
+#[cfg(test)]
+mod tray_tests {
+    use super::*;
+
+    #[test]
+    fn status_names_the_port_when_running() {
+        let l = tray_labels(true, Some("COM4"), "127.0.0.1:38765");
+        assert_eq!(l.status, "Daemon: running on COM4");
+        assert_eq!(l.toggle, "Stop daemon");
+    }
+
+    #[test]
+    fn status_falls_back_to_listen_when_the_port_is_unknown() {
+        // A live daemon with no configured or auto-detected port: name where it listens rather
+        // than a port we cannot identify.
+        let l = tray_labels(true, None, "127.0.0.1:38765");
+        assert_eq!(l.status, "Daemon: running (127.0.0.1:38765)");
+    }
+
+    #[test]
+    fn stopped_shows_start_and_disables_restart() {
+        let l = tray_labels(false, Some("COM4"), "127.0.0.1:38765");
+        assert_eq!(l.status, "Daemon: stopped");
+        assert_eq!(l.toggle, "Start daemon");
+        assert!(l.toggle_enabled, "a port is configured, so Start is usable");
+        assert!(
+            !l.restart_enabled,
+            "restarting a stopped daemon is just Start"
+        );
+    }
+
+    #[test]
+    fn start_is_disabled_without_a_port() {
+        // `start_daemon` fails with no serial port, so the item must not invite the click.
+        let l = tray_labels(false, None, "127.0.0.1:38765");
+        assert!(!l.toggle_enabled);
+    }
+
+    #[test]
+    fn stop_stays_enabled_even_without_a_port() {
+        // The port can disappear while the daemon runs; stopping it must still be possible.
+        let l = tray_labels(true, None, "127.0.0.1:38765");
+        assert_eq!(l.toggle, "Stop daemon");
+        assert!(l.toggle_enabled);
+        assert!(l.restart_enabled);
+    }
+
+    #[test]
+    fn xfer64_label_tracks_availability() {
+        let installed = Xfer64State {
+            installed: true,
+            installer_available: true,
+        };
+        assert_eq!(xfer64_label(Some(&installed)), ("Open Xfer64", true));
+
+        let only_installer = Xfer64State {
+            installed: false,
+            installer_available: true,
+        };
+        assert_eq!(
+            xfer64_label(Some(&only_installer)),
+            ("Install Xfer64…", true)
+        );
+
+        let neither = Xfer64State {
+            installed: false,
+            installer_available: false,
+        };
+        assert_eq!(
+            xfer64_label(Some(&neither)),
+            ("Xfer64 (not available)", false)
+        );
+        // Unreadable state is treated as unavailable rather than offering a click that fails.
+        assert_eq!(xfer64_label(None), ("Xfer64 (not available)", false));
     }
 }
