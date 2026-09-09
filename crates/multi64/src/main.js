@@ -26,8 +26,9 @@ async function refreshStatus() {
 }
 
 async function refreshPorts() {
-  const ports = await invoke("get_serial_ports");
-  const auto = await invoke("get_auto_serial");
+  // One call, one port enumeration: asking for the list and the auto pick separately enumerated
+  // twice and could disagree if a cart was plugged in between the two.
+  const { ports, auto } = await invoke("get_serial_port_options");
   const sel = document.getElementById("serial-port");
   sel.innerHTML = "";
   const optAuto = document.createElement("option");
