@@ -264,20 +264,39 @@ fn resolve_multi64d_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     ))
 }
 
-fn list_ports() -> Vec<String> {
-    serialport::available_ports()
-        .map(|v| v.into_iter().map(|p| p.port_name).collect())
-        .unwrap_or_default()
-}
-
-fn auto_pick_port() -> Option<String> {
-    let ports = serialport::available_ports().ok()?;
-    for p in &ports {
+/// First USB serial device, else the first port of any kind.
+fn pick_auto(ports: &[serialport::SerialPortInfo]) -> Option<String> {
+    for p in ports {
         if let serialport::SerialPortType::UsbPort(_) = &p.port_type {
             return Some(p.port_name.clone());
         }
     }
     ports.first().map(|p| p.port_name.clone())
+}
+
+fn auto_pick_port() -> Option<String> {
+    pick_auto(&serialport::available_ports().ok()?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialPortOptions {
+    pub ports: Vec<String>,
+    pub auto: Option<String>,
+}
+
+/// Enumerate the ports once and derive both the list and the auto pick from it.
+///
+/// The port dropdown needs both, and asking for them separately meant two `available_ports()`
+/// enumerations per refresh — plus a window where a cart plugged in between the two calls could
+/// be picked as `auto` while being absent from the list the dropdown was built from.
+fn serial_port_options() -> SerialPortOptions {
+    let ports = serialport::available_ports().unwrap_or_default();
+    let auto = pick_auto(&ports);
+    SerialPortOptions {
+        ports: ports.into_iter().map(|p| p.port_name).collect(),
+        auto,
+    }
 }
 
 fn effective_serial(settings: &Settings) -> Option<String> {
@@ -349,7 +368,22 @@ fn daemon_is_running(daemon: &Arc<Mutex<DaemonInner>>) -> bool {
     }
 }
 
+/// Serialises daemon lifecycle work: spawn, and kill-then-wait.
+///
+/// The commands driving these used to be serialised for free by running on the main thread. They
+/// now run on the blocking pool so the window stays responsive, which leaves two overlapping
+/// starts each spawning a `multi64d` while only one child handle survives — orphaning a process
+/// that still holds the COM port. `DaemonInner`'s own mutex cannot cover this: it is released and
+/// retaken across the spawn.
+static DAEMON_OPS: Mutex<()> = Mutex::new(());
+
 fn kill_daemon(daemon: &Arc<Mutex<DaemonInner>>) {
+    let _ops = DAEMON_OPS.lock();
+    kill_daemon_locked(daemon);
+}
+
+/// [`kill_daemon`] for callers already holding [`DAEMON_OPS`].
+fn kill_daemon_locked(daemon: &Arc<Mutex<DaemonInner>>) {
     let mut inner = daemon.lock();
     if let Some(mut c) = inner.child.take() {
         let _ = c.kill();
@@ -362,7 +396,8 @@ fn start_daemon(
     daemon: &Arc<Mutex<DaemonInner>>,
     settings: &Settings,
 ) -> Result<(), String> {
-    kill_daemon(daemon);
+    let _ops = DAEMON_OPS.lock();
+    kill_daemon_locked(daemon);
     let serial = effective_serial(settings)
         .ok_or("No serial port (plug in the cart or pick a COM port).")?;
     {
@@ -419,27 +454,51 @@ fn start_daemon(
     Ok(())
 }
 
-#[tauri::command]
-fn get_serial_ports() -> Vec<String> {
-    list_ports()
+/// Run `f` on the blocking pool with the managed [`AppState`].
+///
+/// Tauri runs a sync `#[tauri::command]` on the main thread, which is also the window event loop.
+/// A command that blocks there freezes the window for its duration — and the health probe below
+/// blocks for up to a second on a poll that fires every two, so an unresponsive daemon made the
+/// whole app stutter. `State` cannot be captured by a `'static` closure, so the closure re-reads
+/// it from the `AppHandle` once it is on the worker.
+async fn on_blocking_pool<T, F>(app: &AppHandle, context: &'static str, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&AppHandle, &AppState) -> T + Send + 'static,
+{
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        f(&app, &state)
+    })
+    .await
+    .map_err(|e| format!("{context} task: {e}"))
 }
 
+/// Ports and the auto pick, from one enumeration (see [`serial_port_options`]).
 #[tauri::command]
-fn get_auto_serial() -> Option<String> {
-    auto_pick_port()
+async fn get_serial_port_options() -> Result<SerialPortOptions, String> {
+    tauri::async_runtime::spawn_blocking(serial_port_options)
+        .await
+        .map_err(|e| format!("serial port enumeration task: {e}"))
 }
 
+/// Stays sync: reads one in-memory mutex, so the hop would cost more than the work.
 #[tauri::command]
 fn get_settings(state: tauri::State<'_, AppState>) -> Settings {
     state.settings.lock().clone()
 }
 
+/// Writes the settings file, may touch the autostart registry entry, and may restart the daemon.
 #[tauri::command]
-fn set_settings(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    settings: Settings,
-) -> Result<(), String> {
+async fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), String> {
+    on_blocking_pool(&app, "set_settings", move |app, state| {
+        apply_settings(app, state, settings)
+    })
+    .await?
+}
+
+fn apply_settings(app: &AppHandle, state: &AppState, settings: Settings) -> Result<(), String> {
     let settings = normalize_settings(settings);
     let prev = { state.settings.lock().clone() };
     save_settings(&settings)?;
@@ -459,7 +518,7 @@ fn set_settings(
             &state.daemon,
             "Settings changed — restarting multi64d to apply them".to_string(),
         );
-        if let Err(e) = start_daemon(&app, &state.daemon, &settings) {
+        if let Err(e) = start_daemon(app, &state.daemon, &settings) {
             push_log(&state.daemon, format!("Restart failed: {e}"));
         }
         let _ = app.emit("daemon-changed", ());
@@ -492,8 +551,14 @@ fn set_autostart_windows_impl(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Blocking: `check_health` issues an HTTP request with a 1 s timeout, and the window polls
+/// this every 2 s.
 #[tauri::command]
-fn get_daemon_status(state: tauri::State<'_, AppState>) -> DaemonStatus {
+async fn get_daemon_status(app: tauri::AppHandle) -> Result<DaemonStatus, String> {
+    on_blocking_pool(&app, "get_daemon_status", |_, state| daemon_status(state)).await
+}
+
+fn daemon_status(state: &AppState) -> DaemonStatus {
     let settings = state.settings.lock().clone();
     let listen = settings.listen.clone();
     let running = daemon_is_running(&state.daemon);
@@ -524,36 +589,51 @@ fn clear_daemon_logs(app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
     let _ = app.emit("daemon-changed", ());
 }
 
+/// Blocking: spawns `multi64d`, after killing any previous child and waiting for it to exit.
 #[tauri::command]
-fn daemon_start(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let settings = state.settings.lock().clone();
-    match start_daemon(&app, &state.daemon, &settings) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            push_log(&state.daemon, format!("Start failed: {e}"));
-            let _ = app.emit("daemon-changed", ());
-            Err(e)
+async fn daemon_start(app: tauri::AppHandle) -> Result<(), String> {
+    on_blocking_pool(&app, "daemon_start", |app, state| {
+        let settings = state.settings.lock().clone();
+        match start_daemon(app, &state.daemon, &settings) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                push_log(&state.daemon, format!("Start failed: {e}"));
+                let _ = app.emit("daemon-changed", ());
+                Err(e)
+            }
         }
-    }
+    })
+    .await?
 }
 
+/// Blocking: `kill_daemon` waits for the child to actually exit.
 #[tauri::command]
-fn daemon_stop(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    kill_daemon(&state.daemon);
-    let _ = app.emit("daemon-changed", ());
-    Ok(())
+async fn daemon_stop(app: tauri::AppHandle) -> Result<(), String> {
+    on_blocking_pool(&app, "daemon_stop", |app, state| {
+        kill_daemon(&state.daemon);
+        let _ = app.emit("daemon-changed", ());
+    })
+    .await
 }
 
+/// Blocking: writes the autostart registry entry.
 #[tauri::command]
-fn set_autostart_windows(enabled: bool) -> Result<(), String> {
-    set_autostart_windows_impl(enabled)
+async fn set_autostart_windows(enabled: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || set_autostart_windows_impl(enabled))
+        .await
+        .map_err(|e| format!("set autostart task: {e}"))?
 }
 
+/// Blocking: reads the autostart registry entry.
 #[tauri::command]
-fn get_autostart_windows() -> bool {
-    multi64_auto_launch()
-        .map(|auto| auto.is_enabled().unwrap_or(false))
-        .unwrap_or(false)
+async fn get_autostart_windows() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        multi64_auto_launch()
+            .map(|auto| auto.is_enabled().unwrap_or(false))
+            .unwrap_or(false)
+    })
+    .await
+    .map_err(|e| format!("get autostart task: {e}"))
 }
 
 /// Basenames we search for (NSIS / MSI / legacy installs).
@@ -758,26 +838,37 @@ pub struct Xfer64State {
     pub installer_available: bool,
 }
 
+fn xfer64_state(app: &AppHandle) -> Xfer64State {
+    Xfer64State {
+        installed: is_xfer64_installed(),
+        installer_available: resolve_xfer64_installer_path(app).is_some(),
+    }
+}
+
+/// Blocking: reads the uninstall registry keys and stats every candidate install path.
 #[tauri::command]
-fn get_xfer64_state(app: tauri::AppHandle) -> Result<Xfer64State, String> {
-    let installed = is_xfer64_installed();
-    let installer_available = resolve_xfer64_installer_path(&app).is_some();
-    Ok(Xfer64State {
-        installed,
-        installer_available,
-    })
+async fn get_xfer64_state(app: tauri::AppHandle) -> Result<Xfer64State, String> {
+    on_blocking_pool(&app, "get_xfer64_state", |app, _| xfer64_state(app)).await
 }
 
 /// If Xfer64 is installed, launch it. Otherwise run the bundled installer (`xfer64-setup.exe` or `xfer64-setup.msi`).
+/// Blocking: the same registry and path search as [`get_xfer64_state`], then a process spawn.
 #[tauri::command]
-fn launch_or_install_xfer64(app: tauri::AppHandle) -> Result<(), String> {
+async fn launch_or_install_xfer64(app: tauri::AppHandle) -> Result<(), String> {
+    on_blocking_pool(&app, "launch_or_install_xfer64", |app, _| {
+        launch_or_install_xfer64_blocking(app)
+    })
+    .await?
+}
+
+fn launch_or_install_xfer64_blocking(app: &AppHandle) -> Result<(), String> {
     if let Some(exe) = first_xfer64_exe() {
         return Command::new(&exe)
             .spawn()
             .map_err(|e| e.to_string())
             .map(|_| ());
     }
-    let Some(installer_path) = resolve_xfer64_installer_path(&app) else {
+    let Some(installer_path) = resolve_xfer64_installer_path(app) else {
         return Err(
             "Xfer64 installer is not bundled. Build xfer64, then build Multi64 (see crates/multi64/README.md: NSIS vs MSI pairing)."
                 .into(),
@@ -909,8 +1000,8 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         None::<&str>,
     )?;
 
-    let xfer_state = get_xfer64_state(app.clone()).ok();
-    let (xfer_text, xfer_enabled) = xfer64_label(xfer_state.as_ref());
+    let xfer_state = xfer64_state(app);
+    let (xfer_text, xfer_enabled) = xfer64_label(Some(&xfer_state));
     let xfer = MenuItem::with_id(app, "xfer64", xfer_text, xfer_enabled, None::<&str>)?;
 
     let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
@@ -965,8 +1056,7 @@ pub fn run() {
         }))
         .manage(state)
         .invoke_handler(tauri::generate_handler![
-            get_serial_ports,
-            get_auto_serial,
+            get_serial_port_options,
             get_settings,
             set_settings,
             get_daemon_status,
@@ -1045,9 +1135,12 @@ pub fn run() {
                             let _ = app.emit("daemon-changed", ());
                         }
                         "xfer64" => {
-                            if let Err(e) = launch_or_install_xfer64(app.clone()) {
-                                tracing_warn(&format!("Xfer64: {e}"));
-                            }
+                            let app = app.clone();
+                            tauri::async_runtime::spawn_blocking(move || {
+                                if let Err(e) = launch_or_install_xfer64_blocking(&app) {
+                                    tracing_warn(&format!("Xfer64: {e}"));
+                                }
+                            });
                         }
                         // "status" is disabled and cannot be clicked.
                         _ => {}
