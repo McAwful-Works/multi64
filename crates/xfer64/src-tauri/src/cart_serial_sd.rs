@@ -106,6 +106,13 @@ pub struct ExplorerCartSerialState {
     pub probe_cache: Arc<Mutex<Option<(String, DetectedCartKind)>>>,
     /// Cached sorted listing for [`cart_serial_list_dir_page`] (same path + multiple chunks = one SD read per refresh).
     pub cart_list_cache: Arc<Mutex<CartDirListCache>>,
+    /// Held for the length of any cart port access — a wire probe or an open SD session.
+    ///
+    /// The cart exposes one serial device, so two overlapping operations would fight over it.
+    /// Sync commands used to be serialised for free by running on the main thread; now that they
+    /// run on the blocking pool (so the window stays responsive), this is what keeps them apart.
+    /// It guards no data, so a poisoned lock is recovered rather than propagated.
+    pub port_lock: Arc<Mutex<()>>,
 }
 
 impl ExplorerCartSerialState {
@@ -114,6 +121,7 @@ impl ExplorerCartSerialState {
             preferred_com: Mutex::new(None),
             probe_cache: Arc::new(Mutex::new(None)),
             cart_list_cache: Arc::new(Mutex::new(None)),
+            port_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -174,7 +182,10 @@ fn probe_with_cache(
             }
         }
     }
-    let k = crate::cart_probe::probe_serial_cart(&port);
+    let k = {
+        let _port = lock_port(st);
+        crate::cart_probe::probe_serial_cart(&port)
+    };
     if let Ok(mut g) = st.probe_cache.lock() {
         *g = Some((port, k));
     }
@@ -518,19 +529,34 @@ fn resolve_port(
     st: &ExplorerCartSerialState,
     settings: &ExplorerSettingsSnapshot,
 ) -> Result<String, String> {
+    Ok(resolve_port_probed(st, settings)?.0)
+}
+
+/// [`resolve_port`], plus whether resolving it already wire-probed that port.
+///
+/// Auto mode resolves by probing ([`detect_best_auto_port`]), which leaves a fresh entry in
+/// `probe_cache` for the port it returns. Callers that need the cart kind can then read the cache
+/// instead of force-probing the same port a second time — the probe costs up to 5 s (SC64) plus
+/// 2 s (ED64) of blocking serial reads, so the duplicate doubled every detection.
+fn resolve_port_probed(
+    st: &ExplorerCartSerialState,
+    settings: &ExplorerSettingsSnapshot,
+) -> Result<(String, bool), String> {
     let pref = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
     if let Some(p) = pref {
         let p = p.trim();
         if !p.is_empty() {
-            return Ok(p.to_string());
+            // A pinned COM port skips detection entirely, so nothing has probed it yet.
+            return Ok((p.to_string(), false));
         }
     }
-    let auto_port = if is_auto(settings) {
+    let auto = is_auto(settings);
+    let auto_port = if auto {
         detect_best_auto_port(st, settings)?
     } else {
         suggest_port(settings)
     };
-    auto_port.ok_or_else(|| {
+    let port = auto_port.ok_or_else(|| {
         if is_auto(settings) {
             "No matching cart port found: connect SC64/EverDrive or choose a COM port manually."
                 .to_string()
@@ -539,7 +565,8 @@ fn resolve_port(
         } else {
             "No serial port: plug in your flash cart (USB) or choose a COM port.".to_string()
         }
-    })
+    })?;
+    Ok((port, auto))
 }
 
 pub(crate) fn with_session<T, F>(
@@ -564,6 +591,8 @@ where
         Some(p) => p,
         None => resolve_port(st, settings)?,
     };
+    // Taken only now: resolving the port above may probe, and the probe takes this same lock.
+    let _port = lock_port(st);
     let session = match role {
         CartSdRole::Sc64 => {
             dev.log(format!("{context}: open SC64 SD session (port={port})"));
@@ -611,17 +640,60 @@ where
     out
 }
 
-/// Reconstruct managed state for use on the blocking pool (see long-running commands below).
+/// Run cart work on the blocking pool with a detached copy of [`ExplorerCartSerialState`].
+///
+/// Tauri runs a sync `#[tauri::command]` on the main thread, which is also the window event loop:
+/// a command that blocks on serial reads (seconds, in the auto-detect case) stops the window
+/// repainting and swallows the close button until it returns. `State` guards cannot be held across
+/// an await either, so the shared handles are cloned out before the hop — the caches stay shared,
+/// so the detached state sees and publishes the same entries as the main one.
+pub(crate) async fn spawn_with_cart_state<T, F>(
+    st: &ExplorerCartSerialState,
+    context: &'static str,
+    f: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&ExplorerCartSerialState) -> Result<T, String> + Send + 'static,
+{
+    let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
+    let probe_cache = Arc::clone(&st.probe_cache);
+    let cart_list_cache = Arc::clone(&st.cart_list_cache);
+    let port_lock = Arc::clone(&st.port_lock);
+    tauri::async_runtime::spawn_blocking(move || {
+        let st = cart_serial_state_from_preferred(
+            preferred_com,
+            probe_cache,
+            cart_list_cache,
+            port_lock,
+        );
+        f(&st)
+    })
+    .await
+    .map_err(|e| format!("{context} task: {e}"))?
+}
+
+/// Reconstruct managed state for use on the blocking pool.
 fn cart_serial_state_from_preferred(
     preferred_com: Option<String>,
     probe_cache: Arc<Mutex<Option<(String, DetectedCartKind)>>>,
     cart_list_cache: Arc<Mutex<CartDirListCache>>,
+    port_lock: Arc<Mutex<()>>,
 ) -> ExplorerCartSerialState {
     ExplorerCartSerialState {
         preferred_com: Mutex::new(preferred_com),
         probe_cache,
         cart_list_cache,
+        port_lock,
     }
+}
+
+/// Take [`ExplorerCartSerialState::port_lock`], recovering from poisoning.
+///
+/// Callers must not already hold it: acquire only once port resolution (which probes, and takes
+/// the lock itself) has finished.
+fn lock_port(st: &ExplorerCartSerialState) -> std::sync::MutexGuard<'_, ()> {
+    st.port_lock.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[derive(Serialize)]
@@ -634,19 +706,34 @@ pub struct UsbProbeStatus {
 }
 
 /// Serial probe result for the UI (COM row hint). Manual modes skip the wire probe.
+///
+/// `async` + `spawn_blocking` is deliberate: a plain sync `#[tauri::command]` runs on the main
+/// thread, and auto mode walks every serial port with up to 5 s (SC64 `IDENTIFIER_GET`) plus 2 s
+/// (ED64 test) of blocking reads per port. On the main thread that stalls the event loop, so the
+/// window stops repainting and ignores the close button until detection finishes.
 #[tauri::command]
-pub fn cart_serial_probe_status(
+pub async fn cart_serial_probe_status(
     st: State<'_, ExplorerCartSerialState>,
     settings: State<'_, ExplorerSettingsState>,
 ) -> Result<UsbProbeStatus, String> {
     let snap = settings.snapshot();
-    let mode_raw = cart_mode(&snap).to_string();
+    spawn_with_cart_state(&st, "cart_serial_probe_status", move |st| {
+        probe_status_blocking(st, &snap)
+    })
+    .await
+}
+
+fn probe_status_blocking(
+    st: &ExplorerCartSerialState,
+    snap: &ExplorerSettingsSnapshot,
+) -> Result<UsbProbeStatus, String> {
+    let mode_raw = cart_mode(snap).to_string();
     let mode = if mode_raw.is_empty() {
         "auto".to_string()
     } else {
         mode_raw.clone()
     };
-    let port = resolve_port(&st, &snap)?;
+    let (port, already_probed) = resolve_port_probed(st, snap)?;
 
     match mode.as_str() {
         "ed64_beta" => Ok(UsbProbeStatus {
@@ -662,7 +749,8 @@ pub fn cart_serial_probe_status(
             message: Some("Manual: SC64".to_string()),
         }),
         "auto" => {
-            let k = probe_with_cache(&st, &port, true)?;
+            // `resolve_port_probed` just probed this port; only a pinned COM port still needs one.
+            let k = probe_with_cache(st, &port, !already_probed)?;
             let msg = if k == DetectedCartKind::Unknown {
                 Some("Not detected — pick a manual cart type in Settings.".to_string())
             } else {
@@ -715,15 +803,27 @@ pub struct Ed64LinearProbeResult {
 /// Read sector 0 at many candidate ROM addresses over USB serial; returns bases that look like a boot sector.
 /// Requires an EverDrive on the resolved COM port and Settings set to Auto-detect (EverDrive found) or EverDrive (beta).
 #[tauri::command]
-pub fn cart_serial_probe_ed64_linear_base(
+pub async fn cart_serial_probe_ed64_linear_base(
     st: State<'_, ExplorerCartSerialState>,
     settings: State<'_, ExplorerSettingsState>,
     cancel: State<'_, ExplorerCancelState>,
 ) -> Result<Ed64LinearProbeResult, String> {
     let snap = settings.snapshot();
-    let port = resolve_port(&st, &snap)?;
-    let kind = probe_with_cache(&st, &port, true)?;
-    let mode = cart_mode(&snap);
+    let cancel = ExplorerCancelState::clone(&cancel);
+    spawn_with_cart_state(&st, "cart_serial_probe_ed64_linear_base", move |st| {
+        probe_ed64_linear_base_blocking(st, &snap, &cancel)
+    })
+    .await
+}
+
+fn probe_ed64_linear_base_blocking(
+    st: &ExplorerCartSerialState,
+    snap: &ExplorerSettingsSnapshot,
+    cancel: &ExplorerCancelState,
+) -> Result<Ed64LinearProbeResult, String> {
+    let (port, already_probed) = resolve_port_probed(st, snap)?;
+    let kind = probe_with_cache(st, &port, !already_probed)?;
+    let mode = cart_mode(snap);
     let allow = match mode {
         "ed64_beta" => true,
         "auto" => kind == DetectedCartKind::Ed64Beta,
@@ -736,17 +836,18 @@ pub fn cart_serial_probe_ed64_linear_base(
         );
     }
     cancel.reset();
-    let cancel = ExplorerCancelState::clone(&cancel);
     let hint_bases_hex = ed64_link::ED64_LINEAR_BASE_HINTS
         .iter()
         .map(|v| format!("0x{v:08x}"))
         .collect();
     let preferred = snap.ed64_rom_linear_base;
-    let (candidates, bases_checked) =
+    let (candidates, bases_checked) = {
+        let _port = lock_port(st);
         ed64_link::probe_ed64_sd_linear_bases_with_cancel(&port, 115200, preferred, || {
             !cancel.is_cancelled()
         })
-        .map_err(|e| map_cart_io_error("SD base scan", e))?;
+        .map_err(|e| map_cart_io_error("SD base scan", e))?
+    };
     Ok(Ed64LinearProbeResult {
         candidates,
         bases_checked,
@@ -778,7 +879,7 @@ pub fn cart_serial_set_preferred_com(
 
 /// Paged SD directory listing with in-Rust cache: subsequent pages for the same path reuse the sorted list (one SD read per refresh).
 #[tauri::command]
-pub fn cart_serial_list_dir_page(
+pub async fn cart_serial_list_dir_page(
     st: State<'_, ExplorerCartSerialState>,
     settings: State<'_, ExplorerSettingsState>,
     dev: State<'_, ExplorerDevLog>,
@@ -789,6 +890,22 @@ pub fn cart_serial_list_dir_page(
 ) -> Result<ListDirPageResult, String> {
     let snap = settings.snapshot();
     let dev = (*dev).clone();
+    spawn_with_cart_state(&st, "cart_serial_list_dir_page", move |st| {
+        list_dir_page_blocking(st, &snap, &dev, path, offset, limit, fresh)
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // mirrors the command's own parameter list
+fn list_dir_page_blocking(
+    st: &ExplorerCartSerialState,
+    snap: &ExplorerSettingsSnapshot,
+    dev: &ExplorerDevLog,
+    path: String,
+    offset: u32,
+    limit: u32,
+    fresh: bool,
+) -> Result<ListDirPageResult, String> {
     let path = path.trim().replace('\\', "/");
     let key = path.clone();
     let off = offset as usize;
@@ -813,7 +930,7 @@ pub fn cart_serial_list_dir_page(
         let path_for_closure = path.clone();
         let key_for_cache = key.clone();
         let (mapped, exfat) =
-            with_session(&dev, "cart_serial_list_dir_page", &st, &snap, |session| {
+            with_session(dev, "cart_serial_list_dir_page", st, snap, |session| {
                 let entries = session
                     .list_dir(&path_for_closure)
                     .map_err(|e| e.to_string())?;
@@ -852,7 +969,7 @@ pub fn cart_serial_list_dir_page(
 
 /// Metadata for one cart path (parent list + name match), for the properties dialog.
 #[tauri::command]
-pub fn cart_serial_path_info(
+pub async fn cart_serial_path_info(
     st: State<'_, ExplorerCartSerialState>,
     settings: State<'_, ExplorerSettingsState>,
     dev: State<'_, ExplorerDevLog>,
@@ -861,29 +978,32 @@ pub fn cart_serial_path_info(
     let snap = settings.snapshot();
     let dev = (*dev).clone();
     let path = path.trim().replace('\\', "/");
-    with_session(&dev, "cart_serial_path_info", &st, &snap, |session| {
-        let (parent, name) = cart_path_parts(&path);
-        if name.is_empty() {
-            return Err("Choose a file or folder.".into());
-        }
-        let entries = session.list_dir(&parent).map_err(|e| e.to_string())?;
-        let entry = entries
-            .into_iter()
-            .find(|e| e.name == name || e.name.eq_ignore_ascii_case(&name))
-            .ok_or_else(|| "Path not found.".to_string())?;
-        Ok(UsbFsEntry {
-            name: entry.name,
-            path: entry.path,
-            is_dir: entry.is_dir,
-            size: entry.size,
-            modified_ms: None,
-            hidden: entry.hidden,
+    spawn_with_cart_state(&st, "cart_serial_path_info", move |st| {
+        with_session(&dev, "cart_serial_path_info", st, &snap, |session| {
+            let (parent, name) = cart_path_parts(&path);
+            if name.is_empty() {
+                return Err("Choose a file or folder.".into());
+            }
+            let entries = session.list_dir(&parent).map_err(|e| e.to_string())?;
+            let entry = entries
+                .into_iter()
+                .find(|e| e.name == name || e.name.eq_ignore_ascii_case(&name))
+                .ok_or_else(|| "Path not found.".to_string())?;
+            Ok(UsbFsEntry {
+                name: entry.name,
+                path: entry.path,
+                is_dir: entry.is_dir,
+                size: entry.size,
+                modified_ms: None,
+                hidden: entry.hidden,
+            })
         })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn build_cart_export_plan(
+pub async fn build_cart_export_plan(
     st: State<'_, ExplorerCartSerialState>,
     settings: State<'_, ExplorerSettingsState>,
     dev: State<'_, ExplorerDevLog>,
@@ -901,13 +1021,16 @@ pub fn build_cart_export_plan(
     let to_pc = to_pc_parent.trim().to_string();
     let snap = settings.snapshot();
     let dev = (*dev).clone();
-    with_session(&dev, "build_cart_export_plan", &st, &snap, |session| {
-        copy_plan::build_cart_export_plan(session, &paths, Path::new(&to_pc))
+    spawn_with_cart_state(&st, "build_cart_export_plan", move |st| {
+        with_session(&dev, "build_cart_export_plan", st, &snap, |session| {
+            copy_plan::build_cart_export_plan(session, &paths, Path::new(&to_pc))
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn build_cart_import_plan(
+pub async fn build_cart_import_plan(
     st: State<'_, ExplorerCartSerialState>,
     settings: State<'_, ExplorerSettingsState>,
     dev: State<'_, ExplorerDevLog>,
@@ -925,9 +1048,12 @@ pub fn build_cart_import_plan(
     let cart_parent = cart_parent.trim().to_string();
     let snap = settings.snapshot();
     let dev = (*dev).clone();
-    with_session(&dev, "build_cart_import_plan", &st, &snap, |session| {
-        copy_plan::build_pc_import_plan(session, &paths, &cart_parent)
+    spawn_with_cart_state(&st, "build_cart_import_plan", move |st| {
+        with_session(&dev, "build_cart_import_plan", st, &snap, |session| {
+            copy_plan::build_pc_import_plan(session, &paths, &cart_parent)
+        })
     })
+    .await
 }
 
 #[allow(clippy::too_many_arguments)] // Tauri injects many State/handle parameters
@@ -953,11 +1079,17 @@ pub async fn cart_serial_export_copy_one(
     let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
     let probe_cache = Arc::clone(&st.probe_cache);
     let cart_list_cache = Arc::clone(&st.cart_list_cache);
+    let port_lock = Arc::clone(&st.port_lock);
     let snap = settings.snapshot();
     let app_block = app.clone();
     let dev = (*dev).clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        let st = cart_serial_state_from_preferred(preferred_com, probe_cache, cart_list_cache);
+        let st = cart_serial_state_from_preferred(
+            preferred_com,
+            probe_cache,
+            cart_list_cache,
+            port_lock,
+        );
         with_session(&dev, "cart_serial_export_copy_one", &st, &snap, |session| {
             if cancel.is_cancelled() {
                 return Err("Cancelled".into());
@@ -1009,11 +1141,17 @@ pub async fn cart_serial_import_copy_one(
     let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
     let probe_cache = Arc::clone(&st.probe_cache);
     let cart_list_cache = Arc::clone(&st.cart_list_cache);
+    let port_lock = Arc::clone(&st.port_lock);
     let snap = settings.snapshot();
     let app = app.clone();
     let dev = (*dev).clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        let st = cart_serial_state_from_preferred(preferred_com, probe_cache, cart_list_cache);
+        let st = cart_serial_state_from_preferred(
+            preferred_com,
+            probe_cache,
+            cart_list_cache,
+            port_lock,
+        );
         with_session(&dev, "cart_serial_import_copy_one", &st, &snap, |session| {
             if cancel.is_cancelled() {
                 return Err("Cancelled".into());
@@ -1087,11 +1225,17 @@ pub async fn cart_serial_export_copy_batch(
     let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
     let probe_cache = Arc::clone(&st.probe_cache);
     let cart_list_cache = Arc::clone(&st.cart_list_cache);
+    let port_lock = Arc::clone(&st.port_lock);
     let snap = settings.snapshot();
     let app_block = app.clone();
     let dev = (*dev).clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        let st = cart_serial_state_from_preferred(preferred_com, probe_cache, cart_list_cache);
+        let st = cart_serial_state_from_preferred(
+            preferred_com,
+            probe_cache,
+            cart_list_cache,
+            port_lock,
+        );
         with_session(
             &dev,
             "cart_serial_export_copy_batch",
@@ -1171,11 +1315,17 @@ pub async fn cart_serial_import_copy_batch(
     let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
     let probe_cache = Arc::clone(&st.probe_cache);
     let cart_list_cache = Arc::clone(&st.cart_list_cache);
+    let port_lock = Arc::clone(&st.port_lock);
     let snap = settings.snapshot();
     let app_block = app.clone();
     let dev = (*dev).clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        let st = cart_serial_state_from_preferred(preferred_com, probe_cache, cart_list_cache);
+        let st = cart_serial_state_from_preferred(
+            preferred_com,
+            probe_cache,
+            cart_list_cache,
+            port_lock,
+        );
         with_session(
             &dev,
             "cart_serial_import_copy_batch",
@@ -1323,6 +1473,7 @@ pub async fn cart_serial_remove_cart(
     let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
     let probe_cache = Arc::clone(&st.probe_cache);
     let cart_list_cache = Arc::clone(&st.cart_list_cache);
+    let port_lock = Arc::clone(&st.port_lock);
     let snap = settings.snapshot();
     let app = app.clone();
     let dev = (*dev).clone();
@@ -1337,7 +1488,12 @@ pub async fn cart_serial_remove_cart(
             format!("Deleting from SD card — {n} items…")
         };
         emit_explorer_progress_full(&app, 0, total as u64, Some(start_msg), None, None);
-        let st = cart_serial_state_from_preferred(preferred_com, probe_cache, cart_list_cache);
+        let st = cart_serial_state_from_preferred(
+            preferred_com,
+            probe_cache,
+            cart_list_cache,
+            port_lock,
+        );
         with_session(&dev, "cart_serial_remove_cart", &st, &snap, |session| {
             for (i, p) in paths.iter().enumerate() {
                 if cancel.is_cancelled() {
@@ -1379,7 +1535,7 @@ pub async fn cart_serial_remove_cart(
 }
 
 #[tauri::command]
-pub fn cart_serial_mkdir_cart(
+pub async fn cart_serial_mkdir_cart(
     st: State<'_, ExplorerCartSerialState>,
     settings: State<'_, ExplorerSettingsState>,
     dev: State<'_, ExplorerDevLog>,
@@ -1387,15 +1543,18 @@ pub fn cart_serial_mkdir_cart(
 ) -> Result<(), String> {
     let snap = settings.snapshot();
     let dev = (*dev).clone();
-    with_session(&dev, "cart_serial_mkdir_cart", &st, &snap, |session| {
-        session.mkdir_cart(&path).map_err(|e| e.to_string())
-    })?;
-    st.invalidate_cart_list_cache();
-    Ok(())
+    spawn_with_cart_state(&st, "cart_serial_mkdir_cart", move |st| {
+        let res = with_session(&dev, "cart_serial_mkdir_cart", st, &snap, |session| {
+            session.mkdir_cart(&path).map_err(|e| e.to_string())
+        });
+        st.invalidate_cart_list_cache();
+        res
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn cart_serial_rename_cart(
+pub async fn cart_serial_rename_cart(
     st: State<'_, ExplorerCartSerialState>,
     settings: State<'_, ExplorerSettingsState>,
     dev: State<'_, ExplorerDevLog>,
@@ -1404,9 +1563,12 @@ pub fn cart_serial_rename_cart(
 ) -> Result<(), String> {
     let snap = settings.snapshot();
     let dev = (*dev).clone();
-    with_session(&dev, "cart_serial_rename_cart", &st, &snap, |session| {
-        session.rename_cart(&from, &to).map_err(|e| e.to_string())
-    })?;
-    st.invalidate_cart_list_cache();
-    Ok(())
+    spawn_with_cart_state(&st, "cart_serial_rename_cart", move |st| {
+        let res = with_session(&dev, "cart_serial_rename_cart", st, &snap, |session| {
+            session.rename_cart(&from, &to).map_err(|e| e.to_string())
+        });
+        st.invalidate_cart_list_cache();
+        res
+    })
+    .await
 }

@@ -114,14 +114,20 @@ pub fn explorer_daemon_probe_snapshot(
 }
 
 /// Whether multi64d is up and using the same COM port as Xfer64 (conflict).
+///
+/// `async` because resolving the COM port can run a full serial auto-detect scan and the health
+/// and root probes each block on HTTP; a sync command would do all of that on the main thread.
 #[tauri::command]
-pub fn explorer_daemon_probe(
+pub async fn explorer_daemon_probe(
     st: State<'_, ExplorerCartSerialState>,
     settings: State<'_, ExplorerSettingsState>,
     listen: String,
 ) -> Result<DaemonProbe, String> {
     let snap = settings.snapshot();
-    explorer_daemon_probe_snapshot(&st, &snap, &listen)
+    cart_serial_sd::spawn_with_cart_state(&st, "explorer_daemon_probe", move |st| {
+        explorer_daemon_probe_snapshot(st, &snap, &listen)
+    })
+    .await
 }
 
 pub fn explorer_daemon_release_listen(listen: &str) -> Result<(), String> {
@@ -137,9 +143,12 @@ pub fn explorer_daemon_release_listen(listen: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `async` so the 5 s release timeout cannot stall the window event loop.
 #[tauri::command]
-pub fn explorer_daemon_release(listen: String) -> Result<(), String> {
-    explorer_daemon_release_listen(&listen)
+pub async fn explorer_daemon_release(listen: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || explorer_daemon_release_listen(&listen))
+        .await
+        .map_err(|e| format!("daemon release task: {e}"))?
 }
 
 pub fn explorer_daemon_resume_listen(listen: &str) -> Result<(), String> {
@@ -156,7 +165,10 @@ pub fn explorer_daemon_resume_listen(listen: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `async` so the 10 s resume timeout cannot stall the window event loop.
 #[tauri::command]
-pub fn explorer_daemon_resume(listen: String) -> Result<(), String> {
-    explorer_daemon_resume_listen(&listen)
+pub async fn explorer_daemon_resume(listen: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || explorer_daemon_resume_listen(&listen))
+        .await
+        .map_err(|e| format!("daemon resume task: {e}"))?
 }
