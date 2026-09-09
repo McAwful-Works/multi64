@@ -732,8 +732,6 @@ fn resolve_xfer64_installer_path(app: &tauri::AppHandle) -> Option<PathBuf> {
         "resources/xfer64-setup.msi",
         "xfer64-setup.exe",
         "resources/xfer64-setup.exe",
-        "cart-explorer-setup.exe",
-        "resources/cart-explorer-setup.exe",
     ];
     let try_dir = |base: &Path| {
         REL.iter()
