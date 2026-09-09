@@ -46,25 +46,7 @@
   --control-primary-border: #0b57d0;
   --control-primary-text: #ffffff;
   --shadow-rgb: 60, 64, 67;
-  --accent-rgb: 11, 87, 208;
-  --danger: #c5221f;
-  --danger-rgb: 197, 34, 31;
-  --danger-text: #a50e0e;
-  --success-rgb: 24, 128, 56;
-  --success-text: #0d652d;
-  --success-text-dim: #137333;
-  --warning-text: #a15c00;
-  --warning-rgb: 234, 153, 0;
-  --warning-dim-rgb: 200, 130, 0;
   /* In light the "highlight" hairline must darken, not lighten. */
-  --highlight-rgb: 0, 0, 0;
-  --surface-inset: #f1f3f4;
-  --surface-inset-rgb: 241, 243, 244;
-  --surface-deep: #e8eaed;
-  --surface-raised: #ffffff;
-  --control-surface: #f1f3f4;
-  --control-surface-border: #c9cdd3;
-  --divider: #e0e2e6;
 }
 
 /* "Match system": follow the OS, which for these tokens means the light palette
@@ -86,25 +68,7 @@
     --control-primary-bg-hover: #0842a0;
     --control-primary-border: #0b57d0;
     --shadow-rgb: 60, 64, 67;
-    --accent-rgb: 11, 87, 208;
-    --danger: #c5221f;
-    --danger-rgb: 197, 34, 31;
-    --danger-text: #a50e0e;
-    --success-rgb: 24, 128, 56;
-    --success-text: #0d652d;
-    --success-text-dim: #137333;
-    --warning-text: #a15c00;
-    --warning-rgb: 234, 153, 0;
-    --warning-dim-rgb: 200, 130, 0;
     /* In light the "highlight" hairline must darken, not lighten. */
-    --highlight-rgb: 0, 0, 0;
-    --surface-inset: #f1f3f4;
-    --surface-inset-rgb: 241, 243, 244;
-    --surface-deep: #e8eaed;
-    --surface-raised: #ffffff;
-    --control-surface: #f1f3f4;
-    --control-surface-border: #c9cdd3;
-    --divider: #e0e2e6;
   }
 }
 
@@ -125,24 +89,6 @@
   --control-primary-border: #9ecbff;
   --control-primary-text: #ffffff;
   --shadow-rgb: 0, 0, 0;
-  --accent-rgb: 158, 203, 255;
-  --danger: #ff9a92;
-  --danger-rgb: 255, 154, 146;
-  --danger-text: #ffc4bf;
-  --success-rgb: 126, 230, 160;
-  --success-text: #b7f2cc;
-  --success-text-dim: #b7f2cc;
-  --warning-text: #ffd479;
-  --warning-rgb: 255, 200, 92;
-  --warning-dim-rgb: 255, 200, 92;
-  --highlight-rgb: 255, 255, 255;
-  --surface-inset: #000000;
-  --surface-inset-rgb: 0, 0, 0;
-  --surface-deep: #000000;
-  --surface-raised: #0d0d0d;
-  --control-surface: #1a1a1a;
-  --control-surface-border: #ffffff;
-  --divider: #ffffff;
 }
 
 /* ---------------------------------------------------------------------------

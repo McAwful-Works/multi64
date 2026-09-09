@@ -269,12 +269,30 @@ window.addEventListener("DOMContentLoaded", async () => {
     refreshLog();
   });
 
-  setInterval(refreshStatus, 2000);
+  // Both timers skip work while the window is not visible. Closing the window hides it to the
+  // tray by default rather than exiting, so without this the app keeps issuing a blocking health
+  // check every two seconds -- tens of thousands a day -- for a window nobody is looking at.
+  // `statusInFlight` stops a slow check from queueing more of itself behind it.
+  let statusInFlight = false;
+  setInterval(async () => {
+    if (document.visibilityState !== "visible" || statusInFlight) return;
+    statusInFlight = true;
+    try {
+      await refreshStatus();
+    } finally {
+      statusInFlight = false;
+    }
+  }, 2000);
   setInterval(() => {
+    if (document.visibilityState !== "visible") return;
     if (!document.getElementById("dev-panel").hidden) {
       refreshLog();
     }
   }, 1500);
+  // Refresh on the way back so a hidden window is never showing stale status when it reappears.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void refreshStatus();
+  });
 
   if (window.__TAURI__?.event?.listen) {
     await window.__TAURI__.event.listen("daemon-changed", () => {

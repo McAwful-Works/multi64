@@ -297,13 +297,24 @@ fn daemon_health_url(listen: &str) -> String {
     }
 }
 
+/// One agent for the process, not one per call.
+///
+/// `check_health` runs on a 2s poll, and an `Agent` owns a connection pool whose whole purpose
+/// is reuse; rebuilding it each time threw that away and forced a fresh TCP connection every
+/// check. The timeout is identical on every call, so there is nothing per-call to vary.
+fn health_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(1)))
+            .build()
+            .into()
+    })
+}
+
 fn check_health(listen: &str) -> bool {
     let url = daemon_health_url(listen);
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(1)))
-        .build()
-        .into();
-    agent
+    health_agent()
         .get(&url)
         .call()
         .map(|r| r.status().as_u16() == 200)
@@ -1223,5 +1234,48 @@ mod tray_tests {
         );
         // Unreadable state is treated as unavailable rather than offering a click that fails.
         assert_eq!(xfer64_label(None), ("Xfer64 (not available)", false));
+    }
+}
+
+#[cfg(test)]
+mod frontend_tests {
+    /// `appearance.js` is duplicated verbatim in both apps because `frontendDist` is per-app and no
+    /// file can be shared across crates at runtime. Nothing else enforces that, so a fix applied to
+    /// one copy would silently leave the other stale — one app quietly ignoring a preference the
+    /// other honours. Documented in `docs/frontend-appearance.md`; checked here.
+    #[test]
+    fn appearance_js_is_identical_in_both_apps() {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = here
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .expect("crates/multi64/src-tauri -> repo root");
+        let multi64 = root.join("crates/multi64/src/appearance.js");
+        let xfer64 = root.join("crates/xfer64/src/appearance.js");
+
+        let a = std::fs::read_to_string(&multi64)
+            .unwrap_or_else(|e| panic!("read {}: {e}", multi64.display()));
+        let b = std::fs::read_to_string(&xfer64)
+            .unwrap_or_else(|e| panic!("read {}: {e}", xfer64.display()));
+
+        if a != b {
+            let first = a
+                .lines()
+                .zip(b.lines())
+                .position(|(x, y)| x != y)
+                .map(|i| format!("first differing line: {}", i + 1))
+                .unwrap_or_else(|| {
+                    format!(
+                        "same prefix, lengths differ: {} vs {} lines",
+                        a.lines().count(),
+                        b.lines().count()
+                    )
+                });
+            panic!(
+                "appearance.js has drifted between the apps ({first}).\n\
+                 Edit one and copy it to the other; they must stay byte-identical."
+            );
+        }
     }
 }
