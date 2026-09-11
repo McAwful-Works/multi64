@@ -18,6 +18,7 @@ use crate::cancel::ExplorerCancelState;
 use crate::cart_probe::DetectedCartKind;
 use crate::copy_plan::{self, InteractiveCopyStep};
 use crate::dev_log::{ExplorerDevLog, ExplorerSettingsSnapshot, ExplorerSettingsState};
+use crate::drag_promise;
 use crate::explorer::ExplorerPathCache;
 use crate::progress::{emit_explorer_progress, emit_explorer_progress_full};
 use multi64_ed64_link as ed64_link;
@@ -1054,6 +1055,101 @@ pub async fn build_cart_import_plan(
         })
     })
     .await
+}
+
+/// Serves cart bytes to a Windows drag-and-drop promise.
+///
+/// The shell asks for one file at a time, *after* the drop, so each call opens its own SD session
+/// on a worker thread and streams straight into the pipe the shell drains — nothing is written to
+/// disk on the way. `stream_lock` serialises those calls: the cart has one COM port, and the shell
+/// is free to ask for the next file before it has finished the last.
+#[cfg_attr(not(windows), allow(dead_code))] // only the Windows promise path reads these
+struct CartPromiseSource {
+    preferred_com: Option<String>,
+    probe_cache: Arc<Mutex<Option<(String, DetectedCartKind)>>>,
+    cart_list_cache: Arc<Mutex<CartDirListCache>>,
+    port_lock: Arc<Mutex<()>>,
+    settings: ExplorerSettingsSnapshot,
+    dev: ExplorerDevLog,
+    stream_lock: Arc<Mutex<()>>,
+}
+
+impl drag_promise::CartFileSource for CartPromiseSource {
+    fn open(&self, cart_path: &str) -> std::io::Result<drag_promise::PipeReader> {
+        let cart_path = cart_path.to_string();
+        let preferred_com = self.preferred_com.clone();
+        let probe_cache = Arc::clone(&self.probe_cache);
+        let cart_list_cache = Arc::clone(&self.cart_list_cache);
+        let port_lock = Arc::clone(&self.port_lock);
+        let snap = self.settings.clone();
+        let dev = self.dev.clone();
+        let stream_lock = Arc::clone(&self.stream_lock);
+        Ok(drag_promise::spawn_cart_reader(move |writer| {
+            let _one_at_a_time = stream_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let cancelled = writer.closed_probe();
+            let st = cart_serial_state_from_preferred(
+                preferred_com,
+                probe_cache,
+                cart_list_cache,
+                port_lock,
+            );
+            with_session(&dev, "drag_start_cart_promise", &st, &snap, |session| {
+                session
+                    .stream_cart_file_to_writer(&cart_path, writer, |_| !cancelled.is_closed())
+                    .map_err(|e| e.to_string())
+            })
+            .map_err(std::io::Error::other)
+        }))
+    }
+}
+
+/// Drag cart files out to another window as a **file promise**: the drag starts at once carrying
+/// only names and sizes, and the bytes are read off the cart when the shell asks for them, after
+/// the drop. Returns whether the drag ended in a drop.
+///
+/// Windows only — the promise is `IDataObject` + `IStream`, and there is no equivalent elsewhere.
+/// Callers fall back to staging an export when this fails.
+#[tauri::command]
+pub async fn drag_start_cart_promise(
+    app: AppHandle,
+    st: State<'_, ExplorerCartSerialState>,
+    settings: State<'_, ExplorerSettingsState>,
+    dev: State<'_, ExplorerDevLog>,
+    files: Vec<drag_promise::PromisedFile>,
+) -> Result<bool, String> {
+    if files.is_empty() {
+        return Ok(false);
+    }
+    let source = Arc::new(CartPromiseSource {
+        preferred_com: st.preferred_com.lock().map_err(|e| e.to_string())?.clone(),
+        probe_cache: Arc::clone(&st.probe_cache),
+        cart_list_cache: Arc::clone(&st.cart_list_cache),
+        port_lock: Arc::clone(&st.port_lock),
+        settings: settings.snapshot(),
+        dev: (*dev).clone(),
+        stream_lock: Arc::new(Mutex::new(())),
+    });
+
+    #[cfg(windows)]
+    {
+        // DoDragDrop is modal and belongs to the thread owning the message loop; it does not
+        // return until the drop is finished, which is also when the shell has drained our
+        // streams. Wait for it off the async runtime rather than on it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(drag_promise::win::run_promise_drag(files, source));
+        })
+        .map_err(|e| e.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || rx.recv())
+            .await
+            .map_err(|e| format!("drag task: {e}"))?
+            .map_err(|e| format!("drag ended without a result: {e}"))?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, files, source);
+        Err("File promises are a Windows feature.".to_string())
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // Tauri injects many State/handle parameters

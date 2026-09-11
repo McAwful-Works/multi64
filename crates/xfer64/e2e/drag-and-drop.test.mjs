@@ -63,6 +63,7 @@ function installTauriStub() {
   const calls = [];
   window.__TAURI_CALLS__ = calls;
   window.__TAURI_LISTENERS__ = {};
+  window.__PROMISE_MODE__ = "ok";
 
   const cartEntries = [
     { name: "roms", path: "/roms", isDir: true, size: 0, modifiedMs: 1, hidden: false },
@@ -97,6 +98,14 @@ function installTauriStub() {
     build_cart_export_plan: (a) => (a.cartPaths || []).map((p) =>
       step({ mode: "export", cartPath: p, destPc: `${a.toPcParent}\\${p.split("/").pop()}` })),
     drag_staging_begin: () => "C:\\Temp\\xfer64-drag\\42-1\\d0",
+    // The promise drag: window.__PROMISE_MODE__ lets a check make it fail, standing in for a
+    // platform without promises.
+    drag_start_cart_promise: () => {
+      if (window.__PROMISE_MODE__ === "unsupported") {
+        throw new Error("File promises are a Windows feature.");
+      }
+      return true;
+    },
   };
 
   window.__TAURI__ = {
@@ -253,24 +262,49 @@ await drag(CART_FILE, await center(CART_FILE), { x: -40, y: 300 }, { upOutside: 
 await page.waitForTimeout(600);
 {
   const seen = await cmds();
-  check("the first cart drag-out opens a staging directory", seen.includes("drag_staging_begin"), seen.join(","));
-  check("it exports into that staging directory",
-    (await callsOf("build_cart_export_plan"))[0]?.args?.toPcParent === "C:\\Temp\\xfer64-drag\\42-1\\d0");
-  check("it does not start an OS drag yet", !seen.includes("plugin:drag|start_drag"), seen.join(","));
-  const status = await page.locator("#explorer-operation-text-cart").textContent();
-  check("and the status line says to drag again", /drag .* again/i.test(status || ""), String(status));
+  const promises = await callsOf("drag_start_cart_promise");
+  check("a cart drag-out promises the file instead of staging it",
+    promises.length === 1, JSON.stringify(promises.map((p) => p.args)));
+  check("the promise carries the name and size the shell needs up front",
+    promises[0]?.args?.files?.[0]?.cartPath === "/sm64.z64" &&
+      promises[0]?.args?.files?.[0]?.name === "sm64.z64" &&
+      promises[0]?.args?.files?.[0]?.size === 8388608,
+    JSON.stringify(promises[0]?.args?.files));
+  check("nothing is exported to a staging directory",
+    !seen.includes("drag_staging_begin") && !seen.includes("build_cart_export_plan"), seen.join(","));
+  check("and there is no second gesture to wait for",
+    !/drag .* again/i.test((await page.locator("#explorer-operation-text-cart").textContent()) || ""),
+    String(await page.locator("#explorer-operation-text-cart").textContent()));
 }
 
+// --- a folder cannot be promised, so it stages ---------------------------
 await reset();
-await drag(CART_FILE, await center(CART_FILE), { x: -40, y: 300 }, { upOutside: true });
-await page.waitForTimeout(500);
+await page.evaluate(() => document.querySelectorAll("#tbody-cart tr.selected").forEach((r) => r.classList.remove("selected")));
+await drag(CART_FOLDER, await center(CART_FOLDER), { x: -40, y: 300 }, { upOutside: true });
+await page.waitForTimeout(600);
 {
-  const starts = await callsOf("plugin:drag|start_drag");
-  check("the second cart drag-out drags the staged copy",
-    starts.length === 1 && starts[0].args.item?.[0] === "C:\\Temp\\xfer64-drag\\42-1\\d0\\sm64.z64",
-    JSON.stringify(starts.map((s) => s.args?.item)));
-  check("and does not export again", !(await cmds()).includes("drag_staging_begin"), (await cmds()).join(","));
+  const seen = await cmds();
+  check("a cart folder falls back to staging", seen.includes("drag_staging_begin"), seen.join(","));
+  check("a folder is not offered as a promise",
+    !seen.includes("drag_start_cart_promise"), seen.join(","));
 }
+
+// --- and so does a platform without promises -----------------------------
+await reset();
+await page.evaluate(() => {
+  window.__PROMISE_MODE__ = "unsupported";
+  document.querySelectorAll("#tbody-cart tr.selected").forEach((r) => r.classList.remove("selected"));
+});
+await drag(CART_FILE_2, await center(CART_FILE_2), { x: -40, y: 300 }, { upOutside: true });
+await page.waitForTimeout(600);
+{
+  const seen = await cmds();
+  check("a failed promise falls back to staging",
+    seen.includes("drag_start_cart_promise") && seen.includes("drag_staging_begin"), seen.join(","));
+  const status = await page.locator("#explorer-operation-text-cart").textContent();
+  check("and the fallback still says to drag again", /drag .* again/i.test(status || ""), String(status));
+}
+await page.evaluate(() => { window.__PROMISE_MODE__ = "ok"; });
 
 // --- the ghost, and abandoning a drag ------------------------------------
 await reset();

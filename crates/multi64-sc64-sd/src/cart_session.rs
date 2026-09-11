@@ -67,6 +67,25 @@ impl CartSession {
         }
     }
 
+    /// Stream one cart **file** into `out` (no temp file). Used by the Windows drag-and-drop
+    /// promise, where the shell pulls the bytes as it copies.
+    pub fn stream_cart_file_to_writer<W, F>(
+        &self,
+        cart_path: &str,
+        out: &mut W,
+        progress: F,
+    ) -> io::Result<()>
+    where
+        W: io::Write,
+        F: FnMut(u64) -> bool,
+    {
+        match self {
+            Self::Sc64(s) => s.stream_cart_file_to_writer(cart_path, out, progress),
+            #[cfg(feature = "ed64")]
+            Self::Ed64(s) => s.stream_cart_file_to_writer(cart_path, out, progress),
+        }
+    }
+
     pub fn copy_cart_entry_to_host_with_progress<F>(
         &self,
         cart_path: &str,

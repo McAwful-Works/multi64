@@ -19,31 +19,43 @@ Files cross between Windows and Xfer64 by dragging, in both directions.
 | **Explorer → Windows pane** | An ordinary file copy into that folder. |
 | **Pane → pane** | Unchanged: cart ↔ Windows copy in the direction you dragged. |
 | **Windows pane → Explorer** | Hands the OS the real paths; the shell copies them. |
-| **SD card pane → Explorer** | Stages first, then drags — see below. |
+| **SD card pane → Explorer** | Promises the files; Windows pulls the bytes off the cart as it copies — see below. |
 
 A drop lands in the **folder row under the pointer**; with no row there, it lands in the pane's
 current folder. Dragging out starts when the pointer leaves the Xfer64 window, so a target window
 that sits *on top of* Xfer64 cannot be dropped on — drag to a part of it that is outside the
 Xfer64 window, or use **Export to Windows**.
 
-### Dragging cart files out takes two gestures
+### Dragging cart files out is a file promise
 
-Windows will not start a drag for a file that does not exist, and the cart's SD card is not a
-drive letter. So the first drag out of the SD card pane **exports the selection to a staging
-directory** (`%TEMP%\xfer64-drag\…`) with the usual progress bar and Cancel; a 64 MB ROM over
-serial takes as long as it takes. The pointer is long released by then, so the status line says
-*Ready — drag … out again*, and the second drag goes straight to the shell.
+Windows only copies bytes that already exist at drop time — it never asks for them afterwards —
+and the cart's SD card is not a drive letter. So dragging a cart file out is a **file promise**:
+the drag starts immediately carrying only names and sizes (`CFSTR_FILEDESCRIPTORW`), and Windows
+asks for the contents (`CFSTR_FILECONTENTS`) once you drop, which Xfer64 reads off the cart over
+serial straight into the shell's copy. One gesture, any size, no temp files, and Explorer's own
+progress dialog while it runs. Expect the window to sit still during the copy: the drag is modal,
+which is normal for a Windows drag source.
 
-Staged files are copies. They are deleted when Xfer64 exits, one left behind by a crash is pruned
-on a later start, and a selection is re-exported if the file changed on the cart meanwhile —
-or if the COM port or cart type changed, since the staged copies may be from another card.
+Two cases cannot be promised and **stage an export first**, then want a second drag — the status
+line says *Ready — drag … out again*:
+
+| Case | Why |
+|------|-----|
+| The selection contains a **folder** | A promise is a flat list of files; walking the tree would mean opening the cart before the drag could start. |
+| **multi64d holds the COM port** | Releasing the bridge needs a confirmation, and a dialog cannot be shown with the mouse button down. |
+
+Anything else that stops a promise starting falls back the same way. Staged files are copies under
+`%TEMP%\xfer64-drag\…`: deleted when Xfer64 exits, pruned on a later start if a crash leaves them,
+and re-exported if the file changed on the cart, or if the COM port or cart type changed.
 
 **The main window sets `dragDropEnabled: true`** (`tauri.conf.json`) — that is the only way Tauri
 reports the dropped paths, and WebView2's own HTML5 drop reports none. It also switches HTML5
 drag-and-drop off inside the webview on Windows, which is why the pane-to-pane drag is built on
 pointer events and the outbound drag on [`tauri-plugin-drag`](https://crates.io/crates/tauri-plugin-drag).
-See the drag-and-drop section comment at the top of [`src/explorer.js`](src/explorer.js) and
-[`src-tauri/src/drag_out.rs`](src-tauri/src/drag_out.rs). The gestures are checked headlessly in
+See the drag-and-drop section comment at the top of [`src/explorer.js`](src/explorer.js),
+[`src-tauri/src/drag_promise.rs`](src-tauri/src/drag_promise.rs) (the promise: `IDataObject`,
+`IStream`, and the pipe that feeds it) and [`src-tauri/src/drag_out.rs`](src-tauri/src/drag_out.rs)
+(the staging fallback). The gestures are checked headlessly in
 [`e2e/`](e2e/README.md) — that covers which backend command each drag reaches, not whether Windows
 accepts the drag.
 

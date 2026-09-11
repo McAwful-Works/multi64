@@ -249,6 +249,53 @@ impl Sc64SdSession {
         }
     }
 
+    /// Stream one file from the SD card into `out`, in card order, reporting bytes read (delta)
+    /// to `progress`. Return `false` from `progress` to abort (yields [`io::ErrorKind::Interrupted`]).
+    ///
+    /// [`Self::copy_cart_entry_to_host_with_progress`] with the destination left to the caller.
+    /// A Windows drag-and-drop *promise* hands the shell a stream and has nowhere to put the
+    /// bytes in between, so the file cannot go via a path. Files only: a directory is an error
+    /// here rather than a recursive walk, because a stream has no shape to put a tree into.
+    pub fn stream_cart_file_to_writer<W, F>(
+        &self,
+        cart_path: &str,
+        out: &mut W,
+        mut progress: F,
+    ) -> io::Result<()>
+    where
+        W: Write,
+        F: FnMut(u64) -> bool,
+    {
+        let (parent, name) = cart_path_parts(cart_path);
+        let list = self.list_dir(&parent)?;
+        let entry = list
+            .into_iter()
+            .find(|e| cart_entry_name_matches(&e.name, &name))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cart path not found"))?;
+        if entry.is_dir {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot stream a directory",
+            ));
+        }
+        let disk = Sc64PartitionDisk::new(
+            self.link.clone(),
+            self.partition_start_sector,
+            self.partition_bytes,
+        );
+        if self.exfat {
+            read_file_exfat_streaming(
+                PartitionDiskUnion::Sc64(disk),
+                &entry.path,
+                out,
+                &mut progress,
+                Some(entry.size),
+            )
+        } else {
+            read_file_fat_streaming(disk, &entry.path, out, &mut progress, Some(entry.size))
+        }
+    }
+
     /// Copy a file or directory from the SD to a host path (export).
     pub fn copy_cart_entry_to_host(&self, cart_path: &str, dest: &Path) -> io::Result<()> {
         self.copy_cart_entry_to_host_with_progress(cart_path, dest, false, |_| true)
@@ -695,6 +742,48 @@ impl Ed64SdSession {
             cart_dir_total_bytes_ed64(self, &entry.path)
         } else {
             Ok(entry.size)
+        }
+    }
+
+    /// Stream one file from the SD card into `out`. See
+    /// [`Sc64SdSession::stream_cart_file_to_writer`]; same contract, EverDrive session.
+    pub fn stream_cart_file_to_writer<W, F>(
+        &self,
+        cart_path: &str,
+        out: &mut W,
+        mut progress: F,
+    ) -> io::Result<()>
+    where
+        W: Write,
+        F: FnMut(u64) -> bool,
+    {
+        let (parent, name) = cart_path_parts(cart_path);
+        let list = self.list_dir(&parent)?;
+        let entry = list
+            .into_iter()
+            .find(|e| cart_entry_name_matches(&e.name, &name))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cart path not found"))?;
+        if entry.is_dir {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot stream a directory",
+            ));
+        }
+        let disk = SectorPartitionDisk::new(
+            self.link.clone(),
+            self.partition_start_sector,
+            self.partition_bytes,
+        );
+        if self.exfat {
+            read_file_exfat_streaming(
+                PartitionDiskUnion::Ed64(disk),
+                &entry.path,
+                out,
+                &mut progress,
+                Some(entry.size),
+            )
+        } else {
+            read_file_fat_streaming(disk, &entry.path, out, &mut progress, Some(entry.size))
         }
     }
 
@@ -3069,6 +3158,93 @@ mod fs_tests {
         )
         .expect("read");
         assert_eq!(bytes, b"roundtrip payload");
+    }
+
+    /// The drag-and-drop promise streams a cart file into a pipe the shell drains, so the sink
+    /// writes short and can refuse to continue. Both have to be safe: partial writes must not
+    /// drop bytes, and a sink that gives up must surface as `Interrupted`, not a truncated file.
+    #[test]
+    fn fat_streaming_read_survives_a_short_writing_sink() {
+        /// Accepts at most 7 bytes per call, and stops accepting after `limit` bytes in total.
+        struct ShortSink {
+            got: Vec<u8>,
+            limit: usize,
+        }
+        impl Write for ShortSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if self.got.len() >= self.limit {
+                    return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "full"));
+                }
+                let n = buf.len().min(7).min(self.limit - self.got.len());
+                self.got.extend_from_slice(&buf[..n]);
+                Ok(n)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let arc = Arc::new(std::sync::Mutex::new(vec![0u8; FAT32_IMAGE_BYTES]));
+        {
+            let mut d = RamPartitionDisk::new_writable(Arc::clone(&arc));
+            fatfs::format_volume(&mut d, FormatVolumeOptions::new()).expect("format FAT32");
+        }
+        // Larger than one write() so the short-write loop actually runs.
+        let payload: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
+        write_file_fat_streaming_impl(
+            RamPartitionDisk::new_writable(Arc::clone(&arc)),
+            "rom.z64",
+            &mut Cursor::new(&payload[..]),
+            &mut |_| true,
+        )
+        .expect("write");
+
+        let mut sink = ShortSink {
+            got: Vec::new(),
+            limit: usize::MAX,
+        };
+        super::read_file_fat_streaming(
+            RamPartitionDisk::new_readonly(Arc::clone(&arc)),
+            "rom.z64",
+            &mut sink,
+            &mut |_| true,
+            Some(payload.len() as u64),
+        )
+        .expect("stream");
+        assert_eq!(sink.got, payload, "short writes must not lose bytes");
+
+        // A sink that stops accepting is an error, not a silent truncation.
+        let mut stubborn = ShortSink {
+            got: Vec::new(),
+            limit: 100,
+        };
+        let err = super::read_file_fat_streaming(
+            RamPartitionDisk::new_readonly(Arc::clone(&arc)),
+            "rom.z64",
+            &mut stubborn,
+            &mut |_| true,
+            Some(payload.len() as u64),
+        )
+        .expect_err("a sink that refuses more bytes must fail the stream");
+        assert!(matches!(
+            err.kind(),
+            std::io::ErrorKind::WriteZero | std::io::ErrorKind::Interrupted
+        ));
+
+        // Cancelling from the progress callback is how a released stream aborts the reader.
+        let mut cancelled = ShortSink {
+            got: Vec::new(),
+            limit: usize::MAX,
+        };
+        let err = super::read_file_fat_streaming(
+            RamPartitionDisk::new_readonly(Arc::clone(&arc)),
+            "rom.z64",
+            &mut cancelled,
+            &mut |_| false,
+            Some(payload.len() as u64),
+        )
+        .expect_err("cancelling must not report success");
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
     }
 
     #[test]
