@@ -43,7 +43,9 @@ reports the dropped paths, and WebView2's own HTML5 drop reports none. It also s
 drag-and-drop off inside the webview on Windows, which is why the pane-to-pane drag is built on
 pointer events and the outbound drag on [`tauri-plugin-drag`](https://crates.io/crates/tauri-plugin-drag).
 See the drag-and-drop section comment at the top of [`src/explorer.js`](src/explorer.js) and
-[`src-tauri/src/drag_out.rs`](src-tauri/src/drag_out.rs).
+[`src-tauri/src/drag_out.rs`](src-tauri/src/drag_out.rs). The gestures are checked headlessly in
+[`e2e/`](e2e/README.md) — that covers which backend command each drag reaches, not whether Windows
+accepts the drag.
 
 ## Appearance
 

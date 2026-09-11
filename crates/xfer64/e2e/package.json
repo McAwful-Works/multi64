@@ -1,0 +1,14 @@
+{
+  "name": "xfer64-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "description": "Headless checks for the Xfer64 explorer frontend, run against a stubbed Tauri bridge.",
+  "scripts": {
+    "test": "node drag-and-drop.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}
