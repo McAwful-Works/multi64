@@ -47,9 +47,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
       # Drag and drop is frontend-only, so nothing in the Rust matrix above covers it. These drive
       # the real index.html in headless Chromium against a stubbed Tauri bridge; see
       # crates/xfer64/e2e/README.md for what that can and cannot prove.
