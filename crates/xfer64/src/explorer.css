@@ -772,6 +772,59 @@ body.explorer-modal-open {
   background: rgba(var(--accent-rgb), 0.1);
 }
 
+/* Pointer-driven drags draw their own ghost: with `dragDropEnabled` on, the webview no longer
+   makes one (see the drag-and-drop section in explorer.js). */
+.explorer-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 12000;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 20rem;
+  padding: 0.25rem 0.55rem 0.25rem 0.3rem;
+  border: 1px solid rgba(var(--accent-rgb), 0.7);
+  border-radius: 6px;
+  background: rgba(var(--surface-inset-rgb), 0.96);
+  color: var(--text);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 8px 20px rgba(var(--shadow-rgb), 0.45);
+}
+
+.explorer-drag-ghost-count {
+  flex: none;
+  min-width: 1.15rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.explorer-drag-ghost-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.explorer-drag-ghost-more {
+  flex: none;
+  color: var(--muted);
+}
+
+body.explorer-dragging {
+  cursor: copy;
+  user-select: none;
+}
+
+body.explorer-dragging .explorer-table tbody tr {
+  cursor: copy;
+}
+
 .explorer-marquee {
   position: absolute;
   border: 1px dashed var(--accent);

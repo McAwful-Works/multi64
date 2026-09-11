@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Xfer64 windows (main + developer log)","local":true,"windows":["main","dev-shell","upload-picker"],"permissions":["core:default","core:event:allow-listen","opener:default"]}}
+{"default":{"identifier":"default","description":"Xfer64 windows (main + developer log)","local":true,"windows":["main","dev-shell","upload-picker"],"permissions":["core:default","core:event:allow-listen","opener:default","drag:default"]}}

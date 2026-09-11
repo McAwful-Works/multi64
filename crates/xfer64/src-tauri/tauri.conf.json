@@ -16,7 +16,7 @@
         "height": 700,
         "resizable": true,
         "visible": false,
-        "dragDropEnabled": false
+        "dragDropEnabled": true
       },
       {
         "label": "dev-shell",
