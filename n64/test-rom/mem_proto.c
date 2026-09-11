@@ -7,7 +7,6 @@
  */
 #include "mem_proto.h"
 
-#include <string.h>
 
 static uint32_t s_requests;
 static uint32_t s_bytes_read;
@@ -72,10 +71,13 @@ static void send_err(uint16_t rid, uint8_t code)
 static void handle_hello(void)
 {
     uint8_t app[5 + 8];
-    int n = app_header(app, M64P_MSG_HELLO_ACK);
+    int n;
+    uint32_t sz;
+
+    n = app_header(app, M64P_MSG_HELLO_ACK);
     app[n] = (uint8_t)M64P_PROTO_VERSION;
     put_be16(app + n + 1, 0x0100U); /* agent_ver 1.0 */
-    uint32_t sz = m64p_rdram_size();
+    sz = m64p_rdram_size();
     app[n + 3] = (uint8_t)(sz >> 24);
     app[n + 4] = (uint8_t)(sz >> 16);
     app[n + 5] = (uint8_t)(sz >> 8);
@@ -97,17 +99,21 @@ static uint8_t validate_regions(const uint8_t *body, size_t body_len, uint8_t n,
     uint32_t total = 0;
     size_t off = 3; /* rid:u16 + n:u8 */
     uint32_t ram = m64p_rdram_size();
+    uint8_t i;
 
     if (n > (uint8_t)M64P_MAX_REGIONS) {
         return M64P_ERR_TOO_MANY;
     }
 
-    for (uint8_t i = 0; i < n; i++) {
+    for (i = 0; i < n; i++) {
+        uint32_t addr;
+        uint16_t len;
+
         if (off + 6U > body_len) {
             return M64P_ERR_MALFORMED;
         }
-        uint32_t addr = read_be32(body + off);
-        uint16_t len = read_be16(body + off + 4);
+        addr = read_be32(body + off);
+        len = read_be16(body + off + 4);
         off += 6U;
 
         if (len > (uint16_t)M64P_MAX_REGION_BYTES) {
@@ -136,36 +142,46 @@ static uint8_t validate_regions(const uint8_t *body, size_t body_len, uint8_t n,
 
 static void handle_peekv(const uint8_t *body, size_t body_len)
 {
+    uint16_t rid;
+    uint8_t n;
+    uint32_t total = 0;
+    uint8_t err;
+    int out;
+    size_t off;
+    uint8_t i;
+
     if (body_len < 3U) {
         send_err(0U, M64P_ERR_MALFORMED);
         return;
     }
-    uint16_t rid = read_be16(body);
-    uint8_t n = body[2];
+    rid = read_be16(body);
+    n = body[2];
 
-    uint32_t total = 0;
-    uint8_t err = validate_regions(body, body_len, n, 0, &total);
+    err = validate_regions(body, body_len, n, 0, &total);
     if (err != 0U) {
         send_err(rid, err);
         return;
     }
 
-    int out = app_header(s_out, M64P_MSG_PEEKV_RESP);
+    out = app_header(s_out, M64P_MSG_PEEKV_RESP);
     put_be16(s_out + out, rid);
     s_out[out + 2] = n;
     out += 3;
 
-    size_t off = 3;
-    for (uint8_t i = 0; i < n; i++) {
+    off = 3;
+    for (i = 0; i < n; i++) {
         uint32_t addr = read_be32(body + off);
         uint16_t len = read_be16(body + off + 4);
+        volatile uint8_t *src;
+        uint16_t j;
+
         off += 6U;
 
         put_be16(s_out + out, len);
         out += 2;
 
-        volatile uint8_t *src = rdram_at(addr);
-        for (uint16_t j = 0; j < len; j++) {
+        src = rdram_at(addr);
+        for (j = 0; j < len; j++) {
             s_out[out + j] = src[j];
         }
         out += (int)len;
@@ -178,15 +194,23 @@ static void handle_peekv(const uint8_t *body, size_t body_len)
 
 static void handle_pokev(const uint8_t *body, size_t body_len)
 {
+    uint16_t rid;
+    uint8_t n;
+    uint32_t total = 0;
+    uint8_t err;
+    size_t off;
+    uint8_t i;
+    uint8_t app[5 + 3];
+    int an;
+
     if (body_len < 3U) {
         send_err(0U, M64P_ERR_MALFORMED);
         return;
     }
-    uint16_t rid = read_be16(body);
-    uint8_t n = body[2];
+    rid = read_be16(body);
+    n = body[2];
 
-    uint32_t total = 0;
-    uint8_t err = validate_regions(body, body_len, n, 1, &total);
+    err = validate_regions(body, body_len, n, 1, &total);
     if (err != 0U) {
         send_err(rid, err);
         return;
@@ -194,21 +218,23 @@ static void handle_pokev(const uint8_t *body, size_t body_len)
 
     /* Validated in full before the first byte lands, so a malformed tail cannot
        leave RDRAM half-written. */
-    size_t off = 3;
-    for (uint8_t i = 0; i < n; i++) {
+    off = 3;
+    for (i = 0; i < n; i++) {
         uint32_t addr = read_be32(body + off);
         uint16_t len = read_be16(body + off + 4);
+        volatile uint8_t *dst;
+        uint16_t j;
+
         off += 6U;
 
-        volatile uint8_t *dst = rdram_at(addr);
-        for (uint16_t j = 0; j < len; j++) {
+        dst = rdram_at(addr);
+        for (j = 0; j < len; j++) {
             dst[j] = body[off + j];
         }
         off += (size_t)len;
     }
 
-    uint8_t app[5 + 3];
-    int an = app_header(app, M64P_MSG_POKE_ACK);
+    an = app_header(app, M64P_MSG_POKE_ACK);
     put_be16(app + an, rid);
     app[an + 2] = n;
 
@@ -219,6 +245,10 @@ static void handle_pokev(const uint8_t *body, size_t body_len)
 
 int m64p_handle(const uint8_t *p, size_t plen)
 {
+    uint8_t msg;
+    const uint8_t *body;
+    size_t body_len;
+
     if (plen < 5U) {
         return 0;
     }
@@ -226,9 +256,9 @@ int m64p_handle(const uint8_t *p, size_t plen)
         return 0;
     }
 
-    uint8_t msg = p[4];
-    const uint8_t *body = p + 5;
-    size_t body_len = plen - 5U;
+    msg = p[4];
+    body = p + 5;
+    body_len = plen - 5U;
 
     switch (msg) {
     case M64P_MSG_HELLO:
