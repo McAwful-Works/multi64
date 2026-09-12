@@ -3216,11 +3216,8 @@ async function startCartPromiseDrag(files) {
     // saying "Dropped" without checking it is what made a silent failure look like a success.
     const effect = Number(outcome?.effect) || 0;
     if (dropped && effect === 0) {
-      finishOperationProgress(
-        "Windows accepted the drop but copied nothing — try a folder in File Explorer.",
-        true,
-        "cart"
-      );
+      // Short enough not to be cut off by the status strip; the developer log has the detail.
+      finishOperationProgress("Windows copied nothing from the drop.", true, "cart");
     } else if (dropped) {
       finishOperationProgress(
         files.length === 1
