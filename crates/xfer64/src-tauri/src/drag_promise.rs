@@ -223,12 +223,17 @@ impl Drop for PipeReader {
 /// button is released over a target that accepted the drag, and the *effect* is what says whether
 /// that target did anything. Reporting success on `dropped` alone is how a silent failure looked
 /// like a success in the status line.
-#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromiseDragOutcome {
     pub dropped: bool,
     /// `DROPEFFECT_*`; zero means the target took nothing.
     pub effect: u32,
+    /// The first thing that went wrong while the shell was asking for data, if anything did.
+    ///
+    /// Without this a failed drag can only say "copied nothing", which is the symptom rather
+    /// than the cause — and the cause otherwise lives solely in the developer log.
+    pub error: Option<String>,
 }
 
 /// Where the promise writes its trace. The COM layer knows nothing about the app's dev log, so
@@ -704,6 +709,19 @@ pub mod win {
         log: PromiseLog,
         /// Set from `SetData` when the target reports what it did.
         performed_effect: Arc<Mutex<Option<u32>>>,
+        /// First failure seen while serving the shell, kept for the status line.
+        first_error: Arc<Mutex<Option<String>>>,
+    }
+
+    impl PromiseDataObject_Impl {
+        fn note_error(&self, message: String) {
+            (self.log)(format!("promise: {message}"));
+            if let Ok(mut g) = self.first_error.lock() {
+                if g.is_none() {
+                    *g = Some(message);
+                }
+            }
+        }
     }
 
     impl PromiseDataObject {
@@ -783,7 +801,10 @@ pub mod win {
                 });
             }
 
-            (self.log)(format!("promise: GetData refused {}", self.format_name(cf)));
+            self.note_error(format!(
+                "Windows asked for {}, which we do not offer",
+                self.format_name(cf)
+            ));
             Err(WinError::from(DV_E_FORMATETC))
         }
 
@@ -996,12 +1017,14 @@ pub mod win {
             formats.preferred_effect
         ));
         let performed_effect = Arc::new(Mutex::new(None));
+        let first_error = Arc::new(Mutex::new(None));
         let data: IDataObject = PromiseDataObject {
             files,
             source,
             formats,
             log: Arc::clone(&log),
             performed_effect: Arc::clone(&performed_effect),
+            first_error: Arc::clone(&first_error),
         }
         .into();
         let drop_source: IDropSource = PromiseDropSource.into();
@@ -1021,11 +1044,13 @@ pub mod win {
             Ok(super::PromiseDragOutcome {
                 dropped: true,
                 effect: reported.unwrap_or(effect.0),
+                error: first_error.lock().ok().and_then(|g| g.clone()),
             })
         } else if result == DRAGDROP_S_CANCEL {
             Ok(super::PromiseDragOutcome {
                 dropped: false,
                 effect: 0,
+                error: first_error.lock().ok().and_then(|g| g.clone()),
             })
         } else {
             Err(format!("DoDragDrop failed: 0x{:08x}", result.0))

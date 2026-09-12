@@ -1121,6 +1121,7 @@ pub async fn drag_start_cart_promise(
         return Ok(drag_promise::PromiseDragOutcome {
             dropped: false,
             effect: 0,
+            error: None,
         });
     }
     let source = Arc::new(CartPromiseSource {

@@ -108,6 +108,10 @@ function installTauriStub() {
       if (window.__PROMISE_MODE__ === "refused") {
         return { dropped: true, effect: 0 };
       }
+      // The shell asked, but the cart could not be read.
+      if (window.__PROMISE_MODE__ === "cartfailed") {
+        return { dropped: true, effect: 0, error: "could not read /sm64.z64 from the cart: port busy" };
+      }
       return { dropped: true, effect: 1 };
     },
   };
@@ -293,6 +297,21 @@ await page.waitForTimeout(500);
   const status = await page.locator("#explorer-operation-text-cart").textContent();
   check("a drop the shell took nothing from is reported, not called a success",
     /copied nothing/i.test(status || ""), String(status));
+}
+await page.evaluate(() => { window.__PROMISE_MODE__ = "ok"; });
+
+// --- a failure reason reaches the status strip ---------------------------
+await reset();
+await page.evaluate(() => {
+  window.__PROMISE_MODE__ = "cartfailed";
+  document.querySelectorAll("#tbody-cart tr.selected").forEach((r) => r.classList.remove("selected"));
+});
+await drag(CART_FILE, await center(CART_FILE), { x: -40, y: 300 }, { upOutside: true });
+await page.waitForTimeout(500);
+{
+  const status = await page.locator("#explorer-operation-text-cart").textContent();
+  check("a failed drag reports the cause, not just the symptom",
+    /port busy/.test(status || ""), String(status));
 }
 await page.evaluate(() => { window.__PROMISE_MODE__ = "ok"; });
 

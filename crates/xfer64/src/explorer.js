@@ -3216,8 +3216,12 @@ async function startCartPromiseDrag(files) {
     // saying "Dropped" without checking it is what made a silent failure look like a success.
     const effect = Number(outcome?.effect) || 0;
     if (dropped && effect === 0) {
-      // Short enough not to be cut off by the status strip; the developer log has the detail.
-      finishOperationProgress("Windows copied nothing from the drop.", true, "cart");
+      // Prefer what actually went wrong. "Copied nothing" is the symptom; `error` is the cause,
+      // and without it the only record of the cause is the developer log.
+      const reason = String(outcome?.error || "").trim();
+      finishOperationProgress(reason || "Windows copied nothing from the drop.", true, "cart");
+    } else if (!dropped && outcome?.error) {
+      finishOperationProgress(String(outcome.error), true, "cart");
     } else if (dropped) {
       finishOperationProgress(
         files.length === 1
