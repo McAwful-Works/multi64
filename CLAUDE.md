@@ -19,6 +19,17 @@ The `multi64d` builds are not optional and are not a packaging step — anything
 
 Clippy runs with `-D warnings`, so an unused import or a stray `mut` fails CI the same as a type error.
 
+CI runs one more job, on Ubuntu only — the Xfer64 frontend checks, which nothing above covers:
+
+```sh
+cd crates/xfer64/e2e && npm install && npx playwright install chromium && npm test
+```
+
+These drive `crates/xfer64/src/index.html` in headless Chromium with `window.__TAURI__` stubbed, and
+assert which backend command each drag gesture reaches. They prove the frontend wiring, not the
+feature: everything the OS owns (whether Windows accepts a drag, whether `tauri://drag-*` fires) is
+still Windows-and-a-cart territory. See [`crates/xfer64/e2e/README.md`](crates/xfer64/e2e/README.md).
+
 Targeted testing:
 
 ```sh

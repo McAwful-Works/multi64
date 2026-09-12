@@ -41,3 +41,24 @@ jobs:
         run: cargo build -p multi64d --release
       - name: cargo build release
         run: cargo build --workspace --release
+
+  explorer-frontend:
+    name: Xfer64 frontend checks (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # Drag and drop is frontend-only, so nothing in the Rust matrix above covers it. These drive
+      # the real index.html in headless Chromium against a stubbed Tauri bridge; see
+      # crates/xfer64/e2e/README.md for what that can and cannot prove.
+      - name: Install harness
+        working-directory: crates/xfer64/e2e
+        run: npm ci
+      - name: Install Chromium
+        working-directory: crates/xfer64/e2e
+        run: npx playwright install --with-deps chromium
+      - name: Run frontend checks
+        working-directory: crates/xfer64/e2e
+        run: npm test

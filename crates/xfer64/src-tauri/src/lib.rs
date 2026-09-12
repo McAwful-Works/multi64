@@ -10,6 +10,7 @@ mod cli_upload;
 mod copy_plan;
 mod daemon;
 mod dev_log;
+mod drag_out;
 mod explorer;
 mod progress;
 mod send_to_windows;
@@ -25,7 +26,9 @@ fn xfer64_app_version() -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_drag::init())
         .manage(cancel::ExplorerCancelState::default())
+        .manage(drag_out::DragStagingState::new())
         .manage(explorer::ExplorerPathCache::default())
         .manage(cart_serial_sd::ExplorerCartSerialState::new())
         // Must be registered before `.setup()` so windows that load immediately can invoke IPC
@@ -72,6 +75,13 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let label = window.label();
                 if label == "main" || label == "upload-picker" {
+                    // Staged drag-out copies are this run's alone; take them with us.
+                    if let Some(staging) = window
+                        .app_handle()
+                        .try_state::<drag_out::DragStagingState>()
+                    {
+                        staging.clear();
+                    }
                     window.app_handle().exit(0);
                 }
             }
@@ -82,6 +92,9 @@ pub fn run() {
             daemon::explorer_daemon_probe,
             daemon::explorer_daemon_release,
             daemon::explorer_daemon_resume,
+            drag_out::drag_staging_begin,
+            drag_out::drag_staging_release,
+            drag_out::drag_staging_clear,
             explorer::fs_list_dir,
             explorer::fs_list_dir_page,
             explorer::fs_path_info,

@@ -84,6 +84,24 @@ fn sort_session_entries_by_name_case_insensitive(entries: &mut Vec<SessionEntry>
     *entries = decorated.into_iter().map(|(_, e)| e).collect();
 }
 
+/// A directory-creation step for a PC → PC plan.
+///
+/// Without one, a folder holding no files at all copies as nothing: the file steps are what
+/// create directories on the way past, so an empty source folder leaves no trace at the
+/// destination. Emitted only when the destination is missing, and always before its contents —
+/// the same shape `build_cart_export_plan` uses.
+fn fs_dir_step(dest: &Path) -> InteractiveCopyStep {
+    InteractiveCopyStep {
+        mode: "fs".into(),
+        src_pc: None,
+        dest_pc: Some(dest.to_string_lossy().into_owned()),
+        cart_path: None,
+        bytes: 0,
+        conflict_if_exists: false,
+        is_dir: true,
+    }
+}
+
 /// PC → PC folder: one step per file (folders expanded depth-first).
 pub fn build_fs_copy_plan(
     src_paths: &[PathBuf],
@@ -121,6 +139,9 @@ pub fn build_fs_copy_plan(
             if target.exists() && target.is_file() {
                 return Err("Cannot copy folder over an existing file.".into());
             }
+            if !target.exists() {
+                out.push(fs_dir_step(&target));
+            }
             append_fs_dir_steps(src, &target, &mut out)?;
         }
     }
@@ -146,6 +167,9 @@ fn append_fs_dir_steps(
         if meta.is_dir() {
             if dest.exists() && dest.is_file() {
                 return Err("Cannot copy folder over an existing file.".into());
+            }
+            if !dest.exists() {
+                out.push(fs_dir_step(&dest));
             }
             append_fs_dir_steps(&path, &dest, out)?;
         } else {
@@ -448,6 +472,39 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert!(!plan[0].is_dir);
         assert_eq!(plan[0].bytes, 5);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// An empty source folder must still arrive at the destination — its own step is the only
+    /// thing that can create it, since there are no file steps to do it on the way past.
+    #[test]
+    fn fs_plan_creates_folders_with_no_files_in_them() {
+        let tmp = std::env::temp_dir().join(format!("xfer64_plan_dirs_{}", std::process::id()));
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        let empty = src.join("saves");
+        let nested = src.join("roms").join("hacks");
+        let _ = fs::create_dir_all(&empty);
+        let _ = fs::create_dir_all(&nested);
+        let _ = fs::create_dir_all(&dst);
+
+        let plan = build_fs_copy_plan(std::slice::from_ref(&src), &dst).unwrap();
+
+        let dirs: Vec<&str> = plan
+            .iter()
+            .filter(|s| s.is_dir)
+            .map(|s| s.dest_pc.as_deref().unwrap_or_default())
+            .collect();
+        assert!(dirs.iter().any(|d| d.ends_with("saves")), "{dirs:?}");
+        assert!(dirs.iter().any(|d| d.ends_with("hacks")), "{dirs:?}");
+        // A parent is always created before what goes inside it.
+        let roms = plan
+            .iter()
+            .position(|s| s.is_dir && s.dest_pc.as_deref().is_some_and(|d| d.ends_with("roms")));
+        let hacks = plan
+            .iter()
+            .position(|s| s.is_dir && s.dest_pc.as_deref().is_some_and(|d| d.ends_with("hacks")));
+        assert!(roms < hacks, "parent directory step must come first");
         let _ = fs::remove_dir_all(&tmp);
     }
 

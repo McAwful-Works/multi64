@@ -175,17 +175,60 @@ function getExplorerRowHeightPx() {
 /** Which file list last had interaction (keyboard shortcuts apply here). */
 let focusedPane = "cart";
 
-/** In-app pane-to-pane drag only (JSON in `text/plain`; WebView2 is picky about custom MIME types). Drops from Windows Explorer are ignored. */
-const DRAG_INTERNAL_PREFIX = "multi64-explorer:";
+/* ---------------------------------------------------------------------------
+   Drag and drop
+   ---------------------------------------------------------------------------
+   The main window sets `dragDropEnabled: true` (`tauri.conf.json`), so the OS hands us absolute
+   paths when files are dropped from Explorer — WebView2's own HTML5 drop reports no path at all,
+   and the copy planners need one. The price is that HTML5 drag-and-drop stops working inside the
+   webview on Windows, which is why nothing here uses it. Three directions, three mechanisms:
 
-/** OS / Explorer file drags — we only accept in-app drags. */
-function isExternalFileDrag(dt) {
-  if (!dt || !dt.types) return false;
-  const types = [...dt.types];
-  if (types.includes("Files")) return true;
-  if (types.includes("text/uri-list")) return true;
-  return false;
-}
+   - **In** (Explorer → Xfer64): `tauri://drag-*` events — `setupOsFileDrops`.
+   - **Between panes**: pointer events — `bindRowPointerDrag`.
+   - **Out** (Xfer64 → Explorer): `plugin:drag|start_drag`. Windows-pane rows carry real paths and
+     go straight out; cart rows do not exist on disk, so the selection is exported to a staging
+     directory first and the drag starts on the *next* gesture — `startCartDragOut`.
+
+   A drop lands in the folder row under the pointer, or in the pane's current folder when there is
+   no row there. Same rule in every direction.
+   --------------------------------------------------------------------------- */
+
+/** Pointer travel that turns a press into a drag rather than a click. */
+const DRAG_START_THRESHOLD_PX = 5;
+
+/**
+ * How far past the window edge the pointer must go before a drag is handed to the shell.
+ * Brushing the edge on the way between panes must not start a drag-out — from the cart pane that
+ * would kick off a staging export measured in tens of seconds.
+ */
+const DRAG_OUT_MARGIN_PX = 12;
+
+/** Band at a list's top/bottom edge where a drag scrolls it. */
+const DRAG_AUTOSCROLL_EDGE_PX = 28;
+const DRAG_AUTOSCROLL_STEP_PX = 20;
+const DRAG_AUTOSCROLL_INTERVAL_MS = 50;
+
+/** `plugin:drag|start_drag` requires a drag image: a 32×32 card in the accent colour. */
+const OS_DRAG_IMAGE_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAbUlEQVR42mNgGAVDAXRt+fGaHDwgllLFMTBNll7Z76iBSXIEtS0n2RG0sBzZEYPbAbQKfqKjYdA4QFnD4AUt8KgDRh0w6oBRB4w6YPA7AOYIWjqAqPbAgDuAFo4gq104IJYPimb5oOiYjAJ6AQCeK5lnXii7XgAAAABJRU5ErkJggg==";
+
+/** The plugin's own callback clears the in-flight flag; this only bounds a callback that never comes. */
+const OS_DRAG_WATCHDOG_MS = 60000;
+
+/** The live pane-to-pane drag, or null. */
+let pointerDrag = null;
+
+/** The highlighted drop target, so it can be cleared without sweeping the DOM. */
+let dropHighlight = null;
+
+/** True while a drag we started belongs to the OS: its events over our own window are not drops. */
+let osDragInFlight = false;
+let osDragWatchdogTimer = null;
+
+/** Swallows the click that ends a drag, which would otherwise reshuffle the selection. */
+let suppressNextRowClick = false;
+
+/** The cart selection most recently exported for a drag-out; staging a new one replaces it. */
+let cartDragStaged = null;
 
 /**
  * @type {{
@@ -2017,6 +2060,11 @@ async function applySavedCartFolderFromSettings() {
 function onRowClick(pane, path, ev) {
   focusedPane = pane;
   if (ev.target.closest(".explorer-name-input")) return;
+  // The click that ends a drag is not a selection click.
+  if (suppressNextRowClick) {
+    suppressNextRowClick = false;
+    return;
+  }
 
   const sel = state[pane].selected;
   const prevSel = new Set(sel);
@@ -2080,44 +2128,228 @@ function pathsForDrag(pane, path) {
   return [path];
 }
 
-function bindRowDrag(pane, tr, path) {
-  tr.addEventListener("dragstart", (ev) => {
-    const paths = pathsForDrag(pane, path);
-    const payload = JSON.stringify({ sourcePane: pane, paths });
-    ev.dataTransfer.setData("text/plain", `${DRAG_INTERNAL_PREFIX}${payload}`);
-    ev.dataTransfer.effectAllowed = "copy";
+/**
+ * Arm a pane-to-pane drag on a row press. The drag only begins once the pointer has travelled
+ * `DRAG_START_THRESHOLD_PX`, so a plain click still selects and a slow double-click still renames.
+ * @param {"cart" | "pc"} pane
+ * @param {HTMLTableRowElement} tr
+ * @param {string} path
+ */
+function bindRowPointerDrag(pane, tr, path) {
+  tr.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0 || ev.pointerType === "touch") return;
+    if (ev.target.closest(".explorer-name-input")) return;
+    if (isExplorerModalOpen()) return;
+    const wrap = document.getElementById(`table-wrap-${pane}`);
+    if (!wrap) return;
+    cancelPointerDrag();
+    // Any click from the previous gesture has already been delivered by now.
+    suppressNextRowClick = false;
+    pointerDrag = {
+      pane,
+      path,
+      wrap,
+      pointerId: ev.pointerId,
+      startX: ev.clientX,
+      startY: ev.clientY,
+      lastX: ev.clientX,
+      lastY: ev.clientY,
+      paths: [],
+      started: false,
+      ghost: null,
+      autoScrollTimer: null,
+    };
+    window.addEventListener("pointermove", onPointerDragMove, true);
+    window.addEventListener("pointerup", onPointerDragEnd, true);
+    window.addEventListener("pointercancel", onPointerDragCancel, true);
+    window.addEventListener("keydown", onPointerDragKeyDown, true);
   });
 }
 
-function bindRowDragOver(tr) {
-  tr.addEventListener("dragover", (ev) => {
-    if (isExternalFileDrag(ev.dataTransfer)) {
-      ev.dataTransfer.dropEffect = "none";
-      return;
-    }
-    ev.preventDefault();
-    ev.dataTransfer.dropEffect = "copy";
-  });
+/** Promote the armed press to a real drag: ghost, cursor, and pointer capture. */
+function beginPointerDrag() {
+  const d = pointerDrag;
+  if (!d || d.started) return;
+  d.paths = pathsForDrag(d.pane, d.path);
+  if (!d.paths.length) {
+    cancelPointerDrag();
+    return;
+  }
+  d.started = true;
+  suppressNextRowClick = true;
+  hideNameTooltip();
+  hideExplorerContextMenu();
+  cancelRenameNameClickArm();
+  document.body.classList.add("explorer-dragging");
+  d.ghost = createDragGhost(d.paths);
+  // Capture keeps the drag alive past the window edge — which is exactly where a drag-out starts.
+  try {
+    d.wrap.setPointerCapture(d.pointerId);
+  } catch {
+    // Capture is a nicety; without it the drag still works inside the window.
+  }
 }
 
-/** Highlight a folder row when dragging over it so drops can target that path (not only the current directory). */
-function bindDirectoryDropTargetRow(tr) {
-  tr.addEventListener("dragenter", (ev) => {
-    if (isExternalFileDrag(ev.dataTransfer)) return;
-    ev.preventDefault();
-    tr.classList.add("drag-over-drop-target");
-  });
-  tr.addEventListener("dragover", (ev) => {
-    if (isExternalFileDrag(ev.dataTransfer)) {
-      ev.dataTransfer.dropEffect = "none";
-      return;
-    }
-    ev.preventDefault();
-    ev.dataTransfer.dropEffect = "copy";
-  });
-  tr.addEventListener("dragleave", (ev) => {
-    if (!tr.contains(ev.relatedTarget)) tr.classList.remove("drag-over-drop-target");
-  });
+function onPointerDragMove(ev) {
+  const d = pointerDrag;
+  if (!d || ev.pointerId !== d.pointerId) return;
+  d.lastX = ev.clientX;
+  d.lastY = ev.clientY;
+  if (!d.started) {
+    if (Math.hypot(ev.clientX - d.startX, ev.clientY - d.startY) < DRAG_START_THRESHOLD_PX) return;
+    beginPointerDrag();
+    if (!pointerDrag) return;
+  }
+  if (isPointOutsideWindow(ev.clientX, ev.clientY)) {
+    void handOffDragToOs();
+    return;
+  }
+  moveDragGhost(d.ghost, ev.clientX, ev.clientY);
+  const target = dropTargetAt(ev.clientX, ev.clientY);
+  highlightDropTarget(target, d.pane);
+  updateDragAutoScroll(target);
+}
+
+function onPointerDragEnd(ev) {
+  const d = pointerDrag;
+  if (!d || ev.pointerId !== d.pointerId) return;
+  const { pane, paths, started } = d;
+  const x = ev.clientX;
+  const y = ev.clientY;
+  cancelPointerDrag();
+  if (!started) return;
+  const target = dropTargetAt(x, y);
+  if (!target || target.pane === pane) return;
+  void runPaneDrop(pane, paths, target);
+}
+
+function onPointerDragCancel(ev) {
+  if (pointerDrag && ev.pointerId === pointerDrag.pointerId) cancelPointerDrag();
+}
+
+function onPointerDragKeyDown(ev) {
+  if (ev.key === "Escape") cancelPointerDrag();
+}
+
+/** Tear the drag down — listeners, ghost, capture, highlight. A no-op when nothing is dragging. */
+function cancelPointerDrag() {
+  const d = pointerDrag;
+  pointerDrag = null;
+  window.removeEventListener("pointermove", onPointerDragMove, true);
+  window.removeEventListener("pointerup", onPointerDragEnd, true);
+  window.removeEventListener("pointercancel", onPointerDragCancel, true);
+  window.removeEventListener("keydown", onPointerDragKeyDown, true);
+  if (!d) return;
+  if (d.autoScrollTimer != null) window.clearInterval(d.autoScrollTimer);
+  d.ghost?.remove();
+  try {
+    if (d.wrap.hasPointerCapture?.(d.pointerId)) d.wrap.releasePointerCapture(d.pointerId);
+  } catch {
+    // The pointer is already gone; nothing to release.
+  }
+  document.body.classList.remove("explorer-dragging");
+  clearDropHighlight();
+}
+
+/** @param {string[]} paths */
+function createDragGhost(paths) {
+  const el = document.createElement("div");
+  el.className = "explorer-drag-ghost";
+  const count = document.createElement("span");
+  count.className = "explorer-drag-ghost-count";
+  count.textContent = String(paths.length);
+  const label = document.createElement("span");
+  label.className = "explorer-drag-ghost-label";
+  label.textContent = basenameForMessage(paths[0]);
+  el.append(count, label);
+  if (paths.length > 1) {
+    const more = document.createElement("span");
+    more.className = "explorer-drag-ghost-more";
+    more.textContent = `+ ${paths.length - 1} more`;
+    el.append(more);
+  }
+  document.body.appendChild(el);
+  return el;
+}
+
+function moveDragGhost(el, clientX, clientY) {
+  if (el) el.style.transform = `translate(${clientX + 14}px, ${clientY + 12}px)`;
+}
+
+/** True once the pointer is clear of the window — the cue to hand the drag to the shell. */
+function isPointOutsideWindow(x, y) {
+  const m = DRAG_OUT_MARGIN_PX;
+  return x < -m || y < -m || x > window.innerWidth - 1 + m || y > window.innerHeight - 1 + m;
+}
+
+/**
+ * The pane and destination folder under a point, or null when that point is not over a file list.
+ * @returns {{ pane: "cart" | "pc", wrap: HTMLElement, dirRow: HTMLTableRowElement | null, destPath: string | null } | null}
+ */
+function dropTargetAt(clientX, clientY) {
+  if (isExplorerModalOpen()) return null;
+  const el = document.elementFromPoint(clientX, clientY);
+  if (!(el instanceof Element)) return null;
+  const wrap = el.closest(".explorer-table-wrap[data-drop-pane]");
+  if (!wrap) return null;
+  const pane = wrap.dataset.dropPane;
+  if (pane !== "cart" && pane !== "pc") return null;
+  const dirRow = el.closest("tbody tr[data-is-dir='1']");
+  return { pane, wrap, dirRow: dirRow || null, destPath: dirRow?.dataset?.path || null };
+}
+
+/**
+ * Light up the folder row under the pointer, or the whole pane when the drop would land in its
+ * current folder. `sourcePane` suppresses the highlight for a drop that would do nothing.
+ */
+function highlightDropTarget(target, sourcePane = null) {
+  const effective = target && (!sourcePane || target.pane !== sourcePane) ? target : null;
+  const row = effective?.dirRow ?? null;
+  const wrap = effective?.wrap ?? null;
+  if (dropHighlight && dropHighlight.wrap === wrap && dropHighlight.row === row) return;
+  clearDropHighlight();
+  if (!wrap) return;
+  if (row) row.classList.add("drag-over-drop-target");
+  else wrap.classList.add("drag-over-target");
+  dropHighlight = { wrap, row };
+}
+
+function clearDropHighlight() {
+  if (!dropHighlight) return;
+  dropHighlight.wrap?.classList.remove("drag-over-target");
+  dropHighlight.row?.classList.remove("drag-over-drop-target");
+  dropHighlight = null;
+}
+
+/** Scroll a list that is dragged over near its edge, and keep the highlight on what rolls under. */
+function updateDragAutoScroll(target) {
+  const d = pointerDrag;
+  if (!d) return;
+  if (d.autoScrollTimer != null) {
+    window.clearInterval(d.autoScrollTimer);
+    d.autoScrollTimer = null;
+  }
+  if (!target) return;
+  const rect = target.wrap.getBoundingClientRect();
+  let dir = 0;
+  if (d.lastY < rect.top + DRAG_AUTOSCROLL_EDGE_PX) dir = -1;
+  else if (d.lastY > rect.bottom - DRAG_AUTOSCROLL_EDGE_PX) dir = 1;
+  if (!dir) return;
+  const wrap = target.wrap;
+  d.autoScrollTimer = window.setInterval(() => {
+    const live = pointerDrag;
+    if (!live) return;
+    wrap.scrollTop += dir * DRAG_AUTOSCROLL_STEP_PX;
+    // The virtual list re-mounts rows as it scrolls, so re-resolve what is under the pointer.
+    highlightDropTarget(dropTargetAt(live.lastX, live.lastY), live.pane);
+  }, DRAG_AUTOSCROLL_INTERVAL_MS);
+}
+
+/** @param {"cart" | "pc"} sourcePane */
+async function runPaneDrop(sourcePane, paths, target) {
+  if (!paths.length) return;
+  if (sourcePane === "cart" && target.pane === "pc") await copyCartToPcPaths(paths, target.destPath);
+  else if (sourcePane === "pc" && target.pane === "cart") await copyPcToCartPaths(paths, target.destPath);
 }
 
 /** @param {"cart" | "pc"} pane */
@@ -2226,7 +2458,6 @@ function createEntryRowElement(pane, e) {
         <td class="col-type">${fileTypeLabel(e)}</td>`;
   if (state[pane].selected.has(e.path)) tr.classList.add("selected");
   setupNameTooltipForRow(tr, e.name);
-  tr.draggable = true;
   tr.addEventListener("click", (ev) => onRowClick(pane, e.path, ev));
   tr.addEventListener("dblclick", (ev) => {
     ev.preventDefault();
@@ -2236,9 +2467,7 @@ function createEntryRowElement(pane, e) {
     }
     if (e.isDir) navigate(pane, e.path, true);
   });
-  bindRowDrag(pane, tr, e.path);
-  bindRowDragOver(tr);
-  if (e.isDir) bindDirectoryDropTargetRow(tr);
+  bindRowPointerDrag(pane, tr, e.path);
   return tr;
 }
 
@@ -2357,21 +2586,6 @@ function restorePaneSelectionAfterLoad(pane, visible, savedSel, savedAnchor, syn
     st.anchorPath = st.selected.size ? [...st.selected][0] : null;
   }
   if (syncDom) applySelectionDiffToDom(pane, prevSel);
-}
-
-function parseInternalDragPayload(textPlain) {
-  if (!textPlain || typeof textPlain !== "string") return null;
-  const s = textPlain.trim();
-  if (!s.startsWith(DRAG_INTERNAL_PREFIX)) return null;
-  try {
-    const parsed = JSON.parse(s.slice(DRAG_INTERNAL_PREFIX.length));
-    if (parsed && (parsed.sourcePane === "cart" || parsed.sourcePane === "pc") && Array.isArray(parsed.paths)) {
-      return parsed;
-    }
-  } catch {
-    return null;
-  }
-  return null;
 }
 
 function rectsIntersect(a, b) {
@@ -2571,6 +2785,146 @@ async function copyPcToCartPaths(paths, cartParentOverride = null) {
   }
 }
 
+/**
+ * Windows → Windows copy: the destination side of a drop from Explorer into the PC pane. No cart
+ * is involved, so there is no daemon handshake and no COM port to hold.
+ * @param {string[]} paths
+ * @param {string | null} destOverride folder row the drop landed on, if any
+ */
+async function copyPcToPcPaths(paths, destOverride = null) {
+  const dest =
+    destOverride != null && String(destOverride).trim() !== ""
+      ? normalizePath(destOverride)
+      : state.pc.path;
+  if (!dest) {
+    finishOperationProgress("Choose a Windows folder first (Browse … next to the path).", true, "pc");
+    return;
+  }
+  // Dropping a file back into the folder it already sits in is a no-op, not a copy over itself.
+  const srcs = [];
+  let intoItself = false;
+  for (const p of paths) {
+    if (isSamePcDir(dirnameWin(p), dest)) continue;
+    if (isPcPathInside(p, dest)) {
+      intoItself = true;
+      continue;
+    }
+    srcs.push(p);
+  }
+  if (!srcs.length) {
+    if (intoItself) finishOperationProgress("A folder cannot be copied into itself.", true, "pc");
+    return;
+  }
+  const one = srcs.length === 1 ? basenameForMessage(srcs[0]) : "";
+  const label = one ? `${copyActionLabel("fs")} — "${one}"` : `${copyActionLabel("fs")} — ${srcs.length} items`;
+  showOperationProgress("Preparing copy…", "pc", false);
+  try {
+    await invoke("explorer_reset_cancel");
+    const plan = await invoke("build_fs_copy_plan", { destDir: dest, srcPaths: srcs });
+    if (!plan.length) {
+      hideOperationProgressPane("pc");
+      return;
+    }
+    await runWithProgress("pc", `${label}…`, () => runFsCopyPlan(plan));
+    await loadPcPane({ forceRefresh: true });
+    finishOperationProgress(one ? `Copied ${one}.` : `Copied ${srcs.length} items.`, false, "pc");
+  } catch (e) {
+    // A failure partway through still copied earlier files; refresh so the pane matches disk.
+    await loadPcPane({ forceRefresh: true }).catch(() => {});
+    if (e && e.userCancelledCopy) {
+      finishOperationProgress("Cancelled.", false, "pc");
+      return;
+    }
+    if (isCancelledBackendError(e)) {
+      finishOperationProgress(cancelMessageFor(e), false, "pc");
+      return;
+    }
+    finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
+  }
+}
+
+/** Windows paths differ only in case and trailing slashes far more often than they differ in fact. */
+function normalizedPcDir(v) {
+  return normalizePath(v).replace(/\\+$/, "").toLowerCase();
+}
+
+function isSamePcDir(a, b) {
+  return normalizedPcDir(a) === normalizedPcDir(b);
+}
+
+/** True when `child` is `parent` or sits under it — a folder dropped onto its own descendant. */
+function isPcPathInside(parent, child) {
+  const p = normalizedPcDir(parent);
+  const c = normalizedPcDir(child);
+  return c === p || c.startsWith(`${p}\\`);
+}
+
+/**
+ * Run a PC → PC plan step by step, prompting on each conflict.
+ *
+ * `runInteractiveCopyPlan` cannot be reused: cart copies are sent as one batch so the COM port
+ * opens once for the whole plan, while these are plain file copies with nothing to hold open.
+ * @param {Record<string, unknown>[]} plan
+ */
+async function runFsCopyPlan(plan) {
+  const total = plan.reduce((sum, st) => sum + (Number(st.bytes) || 0), 0) || 1;
+  const n = plan.length;
+  let doneBytes = 0;
+  let yesAll = false;
+  let skipAll = false;
+  const initialMsg =
+    n === 0 ? "" : n === 1 ? formatCopyProgressMessage(plan[0], "fs", 0, 1) : `${copyActionLabel("fs")} — ${n} files`;
+  await invoke("explorer_emit_progress", { done: 0, total, message: initialMsg });
+  for (let i = 0; i < n; i++) {
+    const step = plan[i];
+    // isDir marks a directory-creation step (see InteractiveCopyStep) — mkdir, not a file copy.
+    if (step.isDir === true) {
+      await invoke("fs_mkdir", { path: step.destPc });
+      continue;
+    }
+    let overwrite = true;
+    let skipThis = false;
+    if (step.conflictIfExists) {
+      if (yesAll) {
+        overwrite = true;
+      } else if (skipAll) {
+        skipThis = true;
+      } else {
+        const choice = await showFileReplaceModal({ mode: "fs", step, totalInPlan: n });
+        if (choice === "cancel") throwUserCopyCancel();
+        if (choice === "skip") skipThis = true;
+        if (choice === "skipAll") {
+          skipAll = true;
+          skipThis = true;
+        }
+        if (choice === "yesAll") yesAll = true;
+      }
+    }
+    if (skipThis) {
+      doneBytes += Number(step.bytes) || 0;
+      await invoke("explorer_emit_progress", {
+        done: doneBytes,
+        total,
+        message: formatSkipProgressMessage(step, "fs", i, n),
+      });
+      continue;
+    }
+    await invoke("explorer_emit_progress", {
+      done: doneBytes,
+      total,
+      message: formatCopyProgressMessage(step, "fs", i, n),
+    });
+    await invoke("fs_copy_one_file", {
+      src: step.srcPc,
+      dest: step.destPc,
+      overwrite,
+      progressDoneBase: doneBytes,
+      progressTotal: total,
+    });
+    doneBytes += Number(step.bytes) || 0;
+  }
+}
+
 function setupTableWrapMarquee(pane) {
   const wrap = document.getElementById(`table-wrap-${pane}`);
   if (!wrap) return;
@@ -2662,62 +3016,210 @@ function setupTableWrapMarquee(pane) {
   });
 }
 
-function setupTableWrapDrop(pane) {
-  const wrap = document.getElementById(`table-wrap-${pane}`);
-  if (!wrap) return;
-
-  const onDragEnter = (ev) => {
-    if (isExternalFileDrag(ev.dataTransfer)) {
-      ev.dataTransfer.dropEffect = "none";
+/**
+ * Drops that come from outside the app. Tauri only reports these when the window has
+ * `dragDropEnabled: true`, and it is the only route that carries real paths — which is what
+ * makes an Explorer drop copyable at all.
+ */
+function setupOsFileDrops() {
+  const eventApi = window.__TAURI__?.event;
+  if (!eventApi?.listen) return;
+  const onOsDragMove = (payload) => {
+    if (osDragInFlight) return;
+    highlightDropTarget(osDropTargetFor(payload));
+  };
+  void eventApi.listen("tauri://drag-enter", (e) => onOsDragMove(e.payload));
+  void eventApi.listen("tauri://drag-over", (e) => onOsDragMove(e.payload));
+  void eventApi.listen("tauri://drag-leave", () => clearDropHighlight());
+  void eventApi.listen("tauri://drag-drop", (e) => {
+    const target = osDropTargetFor(e.payload);
+    clearDropHighlight();
+    // A drag we started ourselves, dropped back on our own window: the selection is already here.
+    if (osDragInFlight) {
+      endOsDrag();
       return;
     }
-    ev.preventDefault();
-    ev.dataTransfer.dropEffect = "copy";
-  };
+    void runOsFileDrop(e.payload?.paths, target);
+  });
+}
 
-  const onDragOver = (ev) => {
-    if (isExternalFileDrag(ev.dataTransfer)) {
-      ev.preventDefault();
-      ev.dataTransfer.dropEffect = "none";
-      wrap.classList.remove("drag-over-target");
+/** Tauri reports the pointer in physical pixels; `elementFromPoint` works in CSS pixels. */
+function osDropTargetFor(payload) {
+  const pos = payload?.position;
+  if (!pos) return null;
+  const scale = window.devicePixelRatio || 1;
+  return dropTargetAt(Number(pos.x) / scale, Number(pos.y) / scale);
+}
+
+async function runOsFileDrop(paths, target) {
+  const list = (Array.isArray(paths) ? paths : []).map((p) => String(p || "").trim()).filter(Boolean);
+  if (!list.length || !target) return;
+  if (target.pane === "cart") await copyPcToCartPaths(list, target.destPath);
+  else await copyPcToPcPaths(list, target.destPath);
+}
+
+/** The pointer left the window mid-drag: the shell takes it from here. */
+async function handOffDragToOs() {
+  const d = pointerDrag;
+  if (!d || !d.started) return;
+  const { pane, paths } = d;
+  cancelPointerDrag();
+  if (!paths.length) return;
+  if (pane === "pc") await startOsDragOut(paths, "pc");
+  else await startCartDragOut(paths);
+}
+
+/**
+ * Hand `paths` to the OS as a drag. Every path must exist on disk — the shell copies files, it
+ * does not ask us for them, which is the whole reason cart files are staged first.
+ * @param {string[]} paths
+ * @param {"cart" | "pc"} pane pane the drag came from, for error reporting
+ */
+async function startOsDragOut(paths, pane) {
+  const core = window.__TAURI__?.core;
+  if (!core?.Channel) return;
+  const onEvent = new core.Channel();
+  onEvent.onmessage = () => endOsDrag();
+  beginOsDrag();
+  try {
+    await invoke("plugin:drag|start_drag", { item: paths, image: OS_DRAG_IMAGE_PNG, onEvent });
+  } catch (e) {
+    endOsDrag();
+    finishOperationProgress(userFacingErrorMessage(e, { context: pane }), true, pane);
+  }
+}
+
+function beginOsDrag() {
+  osDragInFlight = true;
+  if (osDragWatchdogTimer != null) window.clearTimeout(osDragWatchdogTimer);
+  osDragWatchdogTimer = window.setTimeout(() => {
+    osDragInFlight = false;
+    osDragWatchdogTimer = null;
+  }, OS_DRAG_WATCHDOG_MS);
+}
+
+function endOsDrag() {
+  osDragInFlight = false;
+  if (osDragWatchdogTimer != null) {
+    window.clearTimeout(osDragWatchdogTimer);
+    osDragWatchdogTimer = null;
+  }
+}
+
+/**
+ * Cart paths for a staging batch, tagged with size and modified time so a file that changed on
+ * the cart is exported again rather than dragged out stale.
+ * @param {string[]} paths
+ */
+function cartStagingKeyFor(paths) {
+  const byPath = new Map(state.cart.listEntries.map((e) => [e.path, e]));
+  return paths
+    .map((p) => {
+      const e = byPath.get(p);
+      return `${p}|${e ? e.size : "?"}|${e && e.modifiedMs != null ? e.modifiedMs : "?"}`;
+    })
+    .join("\n");
+}
+
+/** Join a staged file onto the staging directory, keeping whatever separator the backend used. */
+function joinStagedPath(dir, name) {
+  const base = String(dir).replace(/[\\/]+$/, "");
+  return `${base}${base.includes("\\") ? "\\" : "/"}${name}`;
+}
+
+async function discardStagingDir(dir) {
+  if (!dir) return;
+  if (cartDragStaged?.dir === dir) cartDragStaged = null;
+  try {
+    await invoke("drag_staging_release", { dir });
+  } catch {
+    // Temp files: a failed cleanup is pruned on a later run, and is not worth a dialog.
+  }
+}
+
+/** Forget staged cart copies: after a port or cart change they may be from a different card. */
+async function forgetStagedCartDrag() {
+  cartDragStaged = null;
+  try {
+    await invoke("drag_staging_clear");
+  } catch {
+    // Temp files; a failed cleanup is pruned on a later run.
+  }
+}
+
+/**
+ * Drag a cart selection out to another window.
+ *
+ * Windows will not start a drag for a file that does not exist, and the cart's SD card is not a
+ * drive — so the first drag-out of a selection exports it to a staging directory over serial and
+ * stops there. The pointer has long been released by the time that finishes, so the drag itself
+ * is the *next* gesture, which finds the staged copies ready and goes straight out.
+ * @param {string[]} paths
+ */
+async function startCartDragOut(paths) {
+  const key = cartStagingKeyFor(paths);
+  if (cartDragStaged && cartDragStaged.key === key) {
+    await startOsDragOut(cartDragStaged.files, "cart");
+    return;
+  }
+  await stageCartPathsForDragOut(paths, key);
+}
+
+async function stageCartPathsForDragOut(paths, key) {
+  await discardStagingDir(cartDragStaged?.dir);
+  const one = paths.length === 1 ? basenameForMessage(paths[0]) : "";
+  const label = one ? `Preparing "${one}" for Windows` : `Preparing ${paths.length} items for Windows`;
+  beginPaneActionLoading("cart", "Preparing…");
+  let dir = null;
+  let staged = false;
+  try {
+    const cancelled = await withCartDaemonYield(
+      async () => {
+        endPaneActionLoading("cart");
+        showOperationProgress("Preparing for drag…", "cart", false);
+        try {
+          await invoke("explorer_reset_cancel");
+          dir = await invoke("drag_staging_begin");
+          const plan = await invoke("build_cart_export_plan", { cartPaths: paths, toPcParent: dir });
+          if (!plan.length) {
+            hideOperationProgressPane("cart");
+            return;
+          }
+          await runWithProgress("cart", `${label}…`, () => runInteractiveCopyPlan(plan, "export"));
+          cartDragStaged = { key, dir, files: paths.map((p) => joinStagedPath(dir, basenameForMessage(p))) };
+          staged = true;
+        } catch (e) {
+          hideOperationProgressPane("cart");
+          throw e;
+        }
+      },
+      { confirm: true, actionPane: "cart" }
+    );
+    if (cancelled || !staged) {
+      await discardStagingDir(dir);
       return;
     }
-    ev.preventDefault();
-    ev.dataTransfer.dropEffect = "copy";
-    const dirTr = ev.target.closest("tbody tr[data-is-dir='1']");
-    if (dirTr) wrap.classList.remove("drag-over-target");
-    else wrap.classList.add("drag-over-target");
-  };
-
-  const onDragLeave = (ev) => {
-    if (!wrap.contains(ev.relatedTarget)) wrap.classList.remove("drag-over-target");
-  };
-
-  wrap.addEventListener("dragenter", onDragEnter, true);
-  wrap.addEventListener("dragover", onDragOver, true);
-  wrap.addEventListener("dragleave", onDragLeave, true);
-
-  wrap.addEventListener(
-    "drop",
-    async (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      wrap.classList.remove("drag-over-target");
-      const dirTr = ev.target.closest("tbody tr[data-is-dir='1']");
-      dirTr?.classList.remove("drag-over-drop-target");
-      const destPath = dirTr?.dataset?.path ?? null;
-
-      const dt = ev.dataTransfer;
-      const plain = dt.getData("text/plain");
-      const internal = parseInternalDragPayload(plain);
-      if (!internal) return;
-      const { sourcePane, paths } = internal;
-      if (!paths.length || sourcePane === pane) return;
-      if (sourcePane === "cart" && pane === "pc") await copyCartToPcPaths(paths, destPath);
-      else if (sourcePane === "pc" && pane === "cart") await copyPcToCartPaths(paths, destPath);
-    },
-    true
-  );
+    finishOperationProgress(
+      one
+        ? `Ready — drag "${one}" out again to copy it to Windows.`
+        : `Ready — drag the ${paths.length} items out again to copy them to Windows.`,
+      false,
+      "cart"
+    );
+  } catch (e) {
+    await discardStagingDir(dir);
+    if (e && e.userCancelledCopy) {
+      finishOperationProgress("Cancelled.", false, "cart");
+      return;
+    }
+    if (isCancelledBackendError(e)) {
+      finishOperationProgress(cancelMessageFor(e), false, "cart");
+      return;
+    }
+    finishOperationProgress(userFacingErrorMessage(e, { context: "cart" }), true, "cart");
+  } finally {
+    endPaneActionLoading("cart");
+  }
 }
 
 /**
@@ -3830,6 +4332,7 @@ function setupExplorerSettings() {
       lastExplorerSettingsCommit = buildExplorerSettingsCommit(settings);
       if (cartDeviceChanged) {
         await invoke("cart_serial_invalidate_probe_cache");
+        await forgetStagedCartDrag();
       }
     } catch (e) {
       await showExplorerAlert(userFacingErrorMessage(e, { context: "general" }));
@@ -3973,6 +4476,7 @@ async function init() {
   document.getElementById("select-usb-com")?.addEventListener("change", async () => {
     const v = document.getElementById("select-usb-com").value;
     localStorage.setItem(LS_USB_COM, v);
+    await forgetStagedCartDrag();
     await syncPreferredComToBackend();
     await refreshUsbDetectHint();
     await loadCartPane({ forceRefresh: true });
@@ -4045,19 +4549,13 @@ async function init() {
 
   setupTableWrapMarquee("cart");
   setupTableWrapMarquee("pc");
-  setupTableWrapDrop("cart");
-  setupTableWrapDrop("pc");
+  setupOsFileDrops();
 
   for (const pane of ["cart", "pc"]) {
     document.getElementById(`explorer-operation-cancel-${pane}`)?.addEventListener("click", () => {
       requestProgressCancel();
     });
   }
-
-  document.addEventListener("dragend", () => {
-    document.querySelectorAll(".explorer-table-wrap.drag-over-target").forEach((w) => w.classList.remove("drag-over-target"));
-    document.querySelectorAll("tbody tr.drag-over-drop-target").forEach((r) => r.classList.remove("drag-over-drop-target"));
-  });
 
   setupUsbSerialHotplug();
 }

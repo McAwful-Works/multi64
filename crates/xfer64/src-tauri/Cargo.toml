@@ -25,3 +25,4 @@ multi64-sc64-sd = { path = "../../multi64-sc64-sd", features = ["ed64"] }
 multi64-ed64-link = { path = "../../multi64-ed64-link" }
 serialport = "4"
 ureq = { version = "3", default-features = false }
+tauri-plugin-drag = "2.1.1"

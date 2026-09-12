@@ -3071,6 +3071,94 @@ mod fs_tests {
         assert_eq!(bytes, b"roundtrip payload");
     }
 
+    /// The streaming read must be safe against a sink that writes short or gives up: partial
+    /// writes must not drop bytes, and a sink that refuses more must surface as an error rather
+    /// than a silently truncated file. Today's sink is a `BufWriter<File>`, which does neither —
+    /// but the export path's correctness should not rest on that.
+    #[test]
+    fn fat_streaming_read_survives_a_short_writing_sink() {
+        /// Accepts at most 7 bytes per call, and stops accepting after `limit` bytes in total.
+        struct ShortSink {
+            got: Vec<u8>,
+            limit: usize,
+        }
+        impl Write for ShortSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if self.got.len() >= self.limit {
+                    return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "full"));
+                }
+                let n = buf.len().min(7).min(self.limit - self.got.len());
+                self.got.extend_from_slice(&buf[..n]);
+                Ok(n)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let arc = Arc::new(std::sync::Mutex::new(vec![0u8; FAT32_IMAGE_BYTES]));
+        {
+            let mut d = RamPartitionDisk::new_writable(Arc::clone(&arc));
+            fatfs::format_volume(&mut d, FormatVolumeOptions::new()).expect("format FAT32");
+        }
+        // Larger than one write() so the short-write loop actually runs.
+        let payload: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
+        write_file_fat_streaming_impl(
+            RamPartitionDisk::new_writable(Arc::clone(&arc)),
+            "rom.z64",
+            &mut Cursor::new(&payload[..]),
+            &mut |_| true,
+        )
+        .expect("write");
+
+        let mut sink = ShortSink {
+            got: Vec::new(),
+            limit: usize::MAX,
+        };
+        super::read_file_fat_streaming(
+            RamPartitionDisk::new_readonly(Arc::clone(&arc)),
+            "rom.z64",
+            &mut sink,
+            &mut |_| true,
+            Some(payload.len() as u64),
+        )
+        .expect("stream");
+        assert_eq!(sink.got, payload, "short writes must not lose bytes");
+
+        // A sink that stops accepting is an error, not a silent truncation.
+        let mut stubborn = ShortSink {
+            got: Vec::new(),
+            limit: 100,
+        };
+        let err = super::read_file_fat_streaming(
+            RamPartitionDisk::new_readonly(Arc::clone(&arc)),
+            "rom.z64",
+            &mut stubborn,
+            &mut |_| true,
+            Some(payload.len() as u64),
+        )
+        .expect_err("a sink that refuses more bytes must fail the stream");
+        assert!(matches!(
+            err.kind(),
+            std::io::ErrorKind::WriteZero | std::io::ErrorKind::Interrupted
+        ));
+
+        // Cancelling from the progress callback is how a released stream aborts the reader.
+        let mut cancelled = ShortSink {
+            got: Vec::new(),
+            limit: usize::MAX,
+        };
+        let err = super::read_file_fat_streaming(
+            RamPartitionDisk::new_readonly(Arc::clone(&arc)),
+            "rom.z64",
+            &mut cancelled,
+            &mut |_| false,
+            Some(payload.len() as u64),
+        )
+        .expect_err("cancelling must not report success");
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+    }
+
     #[test]
     fn ram_disk_exfat_list_read_after_hadris_write() {
         let arc = Arc::new(std::sync::Mutex::new(vec![0u8; EXFAT_IMAGE_BYTES]));
