@@ -51,8 +51,26 @@
  * Hooks the host program must provide.
  */
 
-/** Send one APPLICATION payload (magic-first) as an L3 DATA frame. */
+/**
+ * Send one APPLICATION payload (magic-first) as an L3 DATA frame.
+ *
+ * `app` may already be the buffer m64p_reply_buffer() returned -- that is how every
+ * PEEKV response arrives -- in which case the payload is in place and must not be
+ * copied onto itself. Other replies are small and built on the stack.
+ */
 void m64p_transport_send(const uint8_t *app, int app_len);
+
+/**
+ * Where to build a reply, so it can be sent without a copy: room for at least
+ * M64P_APP_CAP bytes, normally just past the host's own frame header in its transmit
+ * buffer. It must not overlap the payload passed to m64p_handle(), which is still
+ * being read while the reply is written.
+ *
+ * A hook rather than a buffer of this module's own because a game-resident agent
+ * already owns a transmit buffer that size. Keeping a second one cost ~8 KB of static
+ * RAM, plus a copy of up to 8 KB per response, in games that may have no RAM to spare.
+ */
+uint8_t *m64p_reply_buffer(void);
 
 /** RDRAM size in bytes, for range checks. */
 uint32_t m64p_rdram_size(void);

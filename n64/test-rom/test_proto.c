@@ -151,7 +151,9 @@ static int build_l3_frame(uint8_t ftype, uint8_t channel, const uint8_t *payload
     out[13] = (uint8_t)(((uint32_t)payload_len >> 16) & 0xff);
     out[14] = (uint8_t)(((uint32_t)payload_len >> 8) & 0xff);
     out[15] = (uint8_t)((uint32_t)payload_len & 0xff);
-    if (payload_len > 0 && payload != NULL) {
+    /* A payload already in place -- mem_proto builds PEEKV responses there, via
+       m64p_reply_buffer() -- is not copied: memcpy onto itself is undefined. */
+    if (payload_len > 0 && payload != NULL && payload != out + 16) {
         memcpy(out + 16, payload, (size_t)payload_len);
     }
     return total;
@@ -183,14 +185,19 @@ static int send_l3_application_payload(const uint8_t *app, int app_len, uint8_t 
     return build_l3_frame(L3_TYPE_DATA, L3_CH_APPLICATION, app, app_len, out, out_cap);
 }
 
+/* Frame buffer for APPLICATION sends. File scope so m64p_reply_buffer() can hand
+   mem_proto the payload area behind the header, and PEEKV responses are sent
+   without being copied. Separate from s_rx, so a reply never overwrites the
+   request it answers. */
+static uint8_t s_app_out[TEST_L3_OUT_CAP];
+
 static void send_l3_app(const uint8_t *app, int app_len)
 {
-    static uint8_t out[TEST_L3_OUT_CAP];
-    int nw = send_l3_application_payload(app, app_len, out, (int)sizeof(out));
+    int nw = send_l3_application_payload(app, app_len, s_app_out, (int)sizeof(s_app_out));
     if (nw <= 0) {
         return;
     }
-    send_l3_wire_once(out, nw);
+    send_l3_wire_once(s_app_out, nw);
 }
 
 /*
@@ -200,6 +207,11 @@ static void send_l3_app(const uint8_t *app, int app_len)
 void m64p_transport_send(const uint8_t *app, int app_len)
 {
     send_l3_app(app, app_len);
+}
+
+uint8_t *m64p_reply_buffer(void)
+{
+    return s_app_out + 16;
 }
 
 uint32_t m64p_rdram_size(void)
