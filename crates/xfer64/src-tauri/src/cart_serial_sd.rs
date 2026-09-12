@@ -1135,9 +1135,17 @@ pub async fn drag_start_cart_promise(
         // DoDragDrop is modal and belongs to the thread owning the message loop; it does not
         // return until the drop is finished, which is also when the shell has drained our
         // streams. Wait for it off the async runtime rather than on it.
+        let logger: drag_promise::PromiseLog = {
+            let dev = (*dev).clone();
+            Arc::new(move |line: String| dev.log(line))
+        };
+        logger(format!(
+            "drag_start_cart_promise: {} file(s) offered to the shell",
+            files.len()
+        ));
         let (tx, rx) = std::sync::mpsc::channel();
         app.run_on_main_thread(move || {
-            let _ = tx.send(drag_promise::win::run_promise_drag(files, source));
+            let _ = tx.send(drag_promise::win::run_promise_drag(files, source, logger));
         })
         .map_err(|e| e.to_string())?;
         tauri::async_runtime::spawn_blocking(move || rx.recv())

@@ -217,6 +217,11 @@ impl Drop for PipeReader {
     }
 }
 
+/// Where the promise writes its trace. The COM layer knows nothing about the app's dev log, so
+/// the caller passes one of these in; it is the only way to see what the shell actually asked for,
+/// since every call below happens inside the shell's copy engine.
+pub type PromiseLog = std::sync::Arc<dyn Fn(String) + Send + Sync>;
+
 /// Opens a byte stream for one cart file. Called when the shell asks for the contents — which is
 /// after the drop, so this is where the serial traffic starts, not at drag start.
 pub trait CartFileSource: Send + Sync + 'static {
@@ -413,7 +418,9 @@ mod tests {
 // ---------------------------------------------------------------------------
 #[cfg(windows)]
 pub mod win {
-    use super::{file_group_descriptor_bytes, CartFileSource, PipeReader, PromisedFile};
+    use super::{
+        file_group_descriptor_bytes, CartFileSource, PipeReader, PromiseLog, PromisedFile,
+    };
     use std::ffi::c_void;
     use std::sync::{Arc, Mutex, Once};
     use windows::Win32::Foundation::{
@@ -496,14 +503,16 @@ pub mod win {
         reader: Mutex<PipeReader>,
         size: u64,
         position: Mutex<u64>,
+        log: PromiseLog,
     }
 
     impl PromiseStream {
-        fn new(reader: PipeReader, size: u64) -> Self {
+        fn new(reader: PipeReader, size: u64, log: PromiseLog) -> Self {
             Self {
                 reader: Mutex::new(reader),
                 size,
                 position: Mutex::new(0),
+                log,
             }
         }
     }
@@ -518,29 +527,44 @@ pub mod win {
             let Ok(mut guard) = self.reader.lock() else {
                 return STG_E_INVALIDFUNCTION;
             };
-            // One call, one pipe read: a short read is legal and the shell asks again. Blocking
-            // here is fine — the cart fills the pipe from its own thread.
-            match std::io::Read::read(&mut *guard, out) {
-                Ok(n) => {
-                    if let Ok(mut p) = self.position.lock() {
-                        *p += n as u64;
+            // Fill the buffer before returning. The pipe hands back whatever the cart has read so
+            // far, but a copy engine is entitled to treat a short read as the end of the file, so
+            // only a real EOF may shorten this. Blocking is fine — the cart fills the pipe from
+            // its own thread.
+            let mut filled = 0usize;
+            let mut failed = false;
+            while filled < out.len() {
+                match std::io::Read::read(&mut *guard, &mut out[filled..]) {
+                    Ok(0) => break,
+                    Ok(n) => filled += n,
+                    Err(e) => {
+                        (self.log)(format!(
+                            "promise: stream read failed after {filled} bytes: {e}"
+                        ));
+                        failed = true;
+                        break;
                     }
-                    if !pcbread.is_null() {
-                        unsafe { *pcbread = n as u32 };
-                    }
-                    if n == 0 {
-                        S_FALSE
-                    } else {
-                        S_OK
-                    }
-                }
-                Err(_) => {
-                    if !pcbread.is_null() {
-                        unsafe { *pcbread = 0 };
-                    }
-                    STG_E_INVALIDFUNCTION
                 }
             }
+            if let Ok(mut p) = self.position.lock() {
+                *p += filled as u64;
+            }
+            if !pcbread.is_null() {
+                unsafe { *pcbread = filled as u32 };
+            }
+            if failed && filled == 0 {
+                return STG_E_INVALIDFUNCTION;
+            }
+            if filled < out.len() {
+                let at = self.position.lock().map(|p| *p).unwrap_or_default();
+                (self.log)(format!(
+                    "promise: stream end at {at} of {} bytes",
+                    self.size
+                ));
+            }
+            // S_OK with zero bytes is the conventional end of stream; S_FALSE reads as an error
+            // to some callers.
+            S_OK
         }
 
         fn Write(&self, _pv: *const c_void, _cb: u32, _pcbwritten: *mut u32) -> HRESULT {
@@ -657,6 +681,22 @@ pub mod win {
         files: Vec<PromisedFile>,
         source: Arc<dyn CartFileSource>,
         formats: Formats,
+        log: PromiseLog,
+    }
+
+    impl PromiseDataObject {
+        /// Name a clipboard format for the log; the shell asks for plenty we do not offer.
+        fn format_name(&self, cf: u16) -> String {
+            if cf == self.formats.descriptor {
+                "FileGroupDescriptorW".into()
+            } else if cf == self.formats.contents {
+                "FileContents".into()
+            } else if cf == self.formats.preferred_effect {
+                "PreferredDropEffect".into()
+            } else {
+                format!("cf#{cf}")
+            }
+        }
     }
 
     #[allow(non_snake_case)]
@@ -665,9 +705,20 @@ pub mod win {
             let format =
                 unsafe { pformatetcin.as_ref() }.ok_or_else(|| WinError::from(E_POINTER))?;
             let cf = format.cfFormat;
+            (self.log)(format!(
+                "promise: GetData {} lindex={} tymed={}",
+                self.format_name(cf),
+                format.lindex,
+                format.tymed
+            ));
 
             if cf == self.formats.descriptor {
                 let bytes = file_group_descriptor_bytes(&self.files);
+                (self.log)(format!(
+                    "promise: serving descriptor, {} bytes for {} file(s)",
+                    bytes.len(),
+                    self.files.len()
+                ));
                 return Ok(medium_from_hglobal(hglobal_from_bytes(&bytes)?));
             }
 
@@ -684,11 +735,19 @@ pub mod win {
                     .ok()
                     .and_then(|i| self.files.get(i))
                     .ok_or_else(|| WinError::from(DV_E_FORMATETC))?;
-                let reader = self
-                    .source
-                    .open(&file.cart_path)
-                    .map_err(|_| WinError::from(STG_E_INVALIDFUNCTION))?;
-                let stream: IStream = PromiseStream::new(reader, file.size).into();
+                (self.log)(format!(
+                    "promise: opening cart stream for {} ({} bytes)",
+                    file.cart_path, file.size
+                ));
+                let reader = self.source.open(&file.cart_path).map_err(|e| {
+                    (self.log)(format!(
+                        "promise: cart stream FAILED for {}: {e}",
+                        file.cart_path
+                    ));
+                    WinError::from(STG_E_INVALIDFUNCTION)
+                })?;
+                let stream: IStream =
+                    PromiseStream::new(reader, file.size, Arc::clone(&self.log)).into();
                 return Ok(STGMEDIUM {
                     tymed: TYMED_ISTREAM.0 as u32,
                     u: STGMEDIUM_0 {
@@ -698,6 +757,7 @@ pub mod win {
                 });
             }
 
+            (self.log)(format!("promise: GetData refused {}", self.format_name(cf)));
             Err(WinError::from(DV_E_FORMATETC))
         }
 
@@ -718,6 +778,10 @@ pub mod win {
                 || cf == self.formats.contents
                 || cf == self.formats.preferred_effect;
             if !known {
+                (self.log)(format!(
+                    "promise: QueryGetData unknown {}",
+                    self.format_name(cf)
+                ));
                 return DV_E_FORMATETC;
             }
             let wanted = if cf == self.formats.contents {
@@ -726,8 +790,14 @@ pub mod win {
                 TYMED_HGLOBAL.0 as u32
             };
             if format.tymed & wanted == 0 {
+                (self.log)(format!(
+                    "promise: QueryGetData {} wrong tymed (asked {}, we serve {wanted})",
+                    self.format_name(cf),
+                    format.tymed
+                ));
                 return DV_E_TYMED;
             }
+            (self.log)(format!("promise: QueryGetData ok {}", self.format_name(cf)));
             S_OK
         }
 
@@ -753,6 +823,7 @@ pub mod win {
         }
 
         fn EnumFormatEtc(&self, dwdirection: u32) -> WinResult<IEnumFORMATETC> {
+            (self.log)(format!("promise: EnumFormatEtc direction={dwdirection}"));
             // DATADIR_GET only; we never accept data.
             if dwdirection != 1 {
                 return Err(WinError::from(E_NOTIMPL));
@@ -826,17 +897,31 @@ pub mod win {
     pub fn run_promise_drag(
         files: Vec<PromisedFile>,
         source: Arc<dyn CartFileSource>,
+        log: PromiseLog,
     ) -> Result<bool, String> {
         init_ole();
+        let formats = Formats::register();
+        log(format!(
+            "promise: starting drag for {} file(s); formats descriptor={} contents={} effect={}",
+            files.len(),
+            formats.descriptor,
+            formats.contents,
+            formats.preferred_effect
+        ));
         let data: IDataObject = PromiseDataObject {
             files,
             source,
-            formats: Formats::register(),
+            formats,
+            log: Arc::clone(&log),
         }
         .into();
         let drop_source: IDropSource = PromiseDropSource.into();
         let mut effect = DROPEFFECT::default();
         let result = unsafe { DoDragDrop(&data, &drop_source, DROPEFFECT_COPY, &mut effect) };
+        log(format!(
+            "promise: DoDragDrop returned 0x{:08x}, effect={}",
+            result.0, effect.0
+        ));
         if result == DRAGDROP_S_DROP {
             Ok(true)
         } else if result == DRAGDROP_S_CANCEL {
