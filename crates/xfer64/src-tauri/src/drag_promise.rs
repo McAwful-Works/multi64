@@ -451,7 +451,8 @@ pub mod win {
     use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::System::Ole::{
-        DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, DROPEFFECT, DROPEFFECT_COPY,
+        DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, ReleaseStgMedium, DROPEFFECT,
+        DROPEFFECT_COPY,
     };
     use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
     use windows::Win32::UI::Shell::SHCreateStdEnumFmtEtc;
@@ -478,6 +479,9 @@ pub mod win {
         descriptor: u16,
         contents: u16,
         preferred_effect: u16,
+        /// What the target says it actually did, reported back through `SetData` after the drop.
+        performed_effect: u16,
+        logical_performed_effect: u16,
     }
 
     impl Formats {
@@ -486,6 +490,8 @@ pub mod win {
                 descriptor: clipboard_format("FileGroupDescriptorW"),
                 contents: clipboard_format("FileContents"),
                 preferred_effect: clipboard_format("Preferred DropEffect"),
+                performed_effect: clipboard_format("Performed DropEffect"),
+                logical_performed_effect: clipboard_format("Logical Performed DropEffect"),
             }
         }
     }
@@ -696,6 +702,8 @@ pub mod win {
         source: Arc<dyn CartFileSource>,
         formats: Formats,
         log: PromiseLog,
+        /// Set from `SetData` when the target reports what it did.
+        performed_effect: Arc<Mutex<Option<u32>>>,
     }
 
     impl PromiseDataObject {
@@ -707,6 +715,10 @@ pub mod win {
                 "FileContents".into()
             } else if cf == self.formats.preferred_effect {
                 "PreferredDropEffect".into()
+            } else if cf == self.formats.performed_effect {
+                "PerformedDropEffect".into()
+            } else if cf == self.formats.logical_performed_effect {
+                "LogicalPerformedDropEffect".into()
             } else {
                 format!("cf#{cf}")
             }
@@ -849,13 +861,52 @@ pub mod win {
             DATA_S_SAMEFORMATETC
         }
 
+        /// The target reports what it did here, and it is the only reliable answer.
+        ///
+        /// `DoDragDrop`'s out-effect can come back `DROPEFFECT_NONE` even after a successful
+        /// copy — the shell does the work asynchronously and tells the source afterwards through
+        /// `CFSTR_PERFORMEDDROPEFFECT`. Refusing this call leaves us guessing from the weaker
+        /// signal, which is how a working copy could be reported as a failure.
         fn SetData(
             &self,
-            _pformatetc: *const FORMATETC,
-            _pmedium: *const STGMEDIUM,
-            _frelease: BOOL,
+            pformatetc: *const FORMATETC,
+            pmedium: *const STGMEDIUM,
+            frelease: BOOL,
         ) -> WinResult<()> {
-            Err(WinError::from(E_NOTIMPL))
+            let Some(format) = (unsafe { pformatetc.as_ref() }) else {
+                return Err(WinError::from(E_POINTER));
+            };
+            let cf = format.cfFormat;
+            if cf != self.formats.performed_effect && cf != self.formats.logical_performed_effect {
+                (self.log)(format!("promise: SetData ignored {}", self.format_name(cf)));
+                return Err(WinError::from(E_NOTIMPL));
+            }
+            if let Some(medium) = unsafe { pmedium.as_ref() } {
+                if medium.tymed == TYMED_HGLOBAL.0 as u32 {
+                    let handle = unsafe { medium.u.hGlobal };
+                    let ptr = unsafe { GlobalLock(handle) };
+                    if !ptr.is_null() {
+                        let value = unsafe { std::ptr::read_unaligned(ptr as *const u32) };
+                        unsafe {
+                            let _ = GlobalUnlock(handle);
+                        }
+                        (self.log)(format!(
+                            "promise: target reported {} = {value}",
+                            self.format_name(cf)
+                        ));
+                        // The logical effect is advisory; the performed one is what happened.
+                        if cf == self.formats.performed_effect {
+                            if let Ok(mut g) = self.performed_effect.lock() {
+                                *g = Some(value);
+                            }
+                        }
+                    }
+                }
+            }
+            if frelease.as_bool() {
+                unsafe { ReleaseStgMedium(pmedium as *mut STGMEDIUM) };
+            }
+            Ok(())
         }
 
         fn EnumFormatEtc(&self, dwdirection: u32) -> WinResult<IEnumFORMATETC> {
@@ -944,11 +995,13 @@ pub mod win {
             formats.contents,
             formats.preferred_effect
         ));
+        let performed_effect = Arc::new(Mutex::new(None));
         let data: IDataObject = PromiseDataObject {
             files,
             source,
             formats,
             log: Arc::clone(&log),
+            performed_effect: Arc::clone(&performed_effect),
         }
         .into();
         let drop_source: IDropSource = PromiseDropSource.into();
@@ -959,9 +1012,15 @@ pub mod win {
             result.0, effect.0
         ));
         if result == DRAGDROP_S_DROP {
+            // What the target reported wins: the out-param is NONE for an asynchronous copy that
+            // in fact succeeded.
+            let reported = performed_effect.lock().ok().and_then(|g| *g);
+            if let Some(v) = reported {
+                log(format!("promise: using the target's reported effect {v}"));
+            }
             Ok(super::PromiseDragOutcome {
                 dropped: true,
-                effect: effect.0,
+                effect: reported.unwrap_or(effect.0),
             })
         } else if result == DRAGDROP_S_CANCEL {
             Ok(super::PromiseDragOutcome {
