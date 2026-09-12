@@ -2,14 +2,15 @@
  * L3 APPLICATION RDRAM peek/poke (M64P) — see docs/spec/memory-l3-application-v0.md
  *
  * Deliberately free of libdragon: the only outside world this module knows is the
- * two hooks below. That is what lets the same source be lifted into a game-resident
- * agent (libultra, no libdragon) without editing the protocol handling.
+ * hooks below and m64p_types.h. That is what lets the same source be lifted into a
+ * game-resident agent (libultra, no libdragon) without editing the protocol handling.
  */
 #ifndef MULTI64_MEM_PROTO_H
 #define MULTI64_MEM_PROTO_H
 
-#include <stddef.h>
-#include <stdint.h>
+/* Fixed-width types come from m64p_types.h, never the C library directly, so a build
+   without <stdint.h> replaces that one file. See its header comment. */
+#include "m64p_types.h"
 
 #define M64P_MAGIC0 0x4DU
 #define M64P_MAGIC1 0x36U
