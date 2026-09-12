@@ -104,7 +104,11 @@ function installTauriStub() {
       if (window.__PROMISE_MODE__ === "unsupported") {
         throw new Error("File promises are a Windows feature.");
       }
-      return true;
+      // The shell accepted the drop but took nothing: DROPEFFECT_NONE.
+      if (window.__PROMISE_MODE__ === "refused") {
+        return { dropped: true, effect: 0 };
+      }
+      return { dropped: true, effect: 1 };
     },
   };
 
@@ -276,6 +280,21 @@ await page.waitForTimeout(600);
     !/drag .* again/i.test((await page.locator("#explorer-operation-text-cart").textContent()) || ""),
     String(await page.locator("#explorer-operation-text-cart").textContent()));
 }
+
+// --- a drop that copied nothing must say so ----------------------------
+await reset();
+await page.evaluate(() => {
+  window.__PROMISE_MODE__ = "refused";
+  document.querySelectorAll("#tbody-cart tr.selected").forEach((r) => r.classList.remove("selected"));
+});
+await drag(CART_FILE, await center(CART_FILE), { x: -40, y: 300 }, { upOutside: true });
+await page.waitForTimeout(500);
+{
+  const status = await page.locator("#explorer-operation-text-cart").textContent();
+  check("a drop the shell took nothing from is reported, not called a success",
+    /copied nothing/i.test(status || ""), String(status));
+}
+await page.evaluate(() => { window.__PROMISE_MODE__ = "ok"; });
 
 // --- a folder cannot be promised, so it stages ---------------------------
 await reset();

@@ -1116,9 +1116,12 @@ pub async fn drag_start_cart_promise(
     settings: State<'_, ExplorerSettingsState>,
     dev: State<'_, ExplorerDevLog>,
     files: Vec<drag_promise::PromisedFile>,
-) -> Result<bool, String> {
+) -> Result<drag_promise::PromiseDragOutcome, String> {
     if files.is_empty() {
-        return Ok(false);
+        return Ok(drag_promise::PromiseDragOutcome {
+            dropped: false,
+            effect: 0,
+        });
     }
     let source = Arc::new(CartPromiseSource {
         preferred_com: st.preferred_com.lock().map_err(|e| e.to_string())?.clone(),
@@ -1155,7 +1158,7 @@ pub async fn drag_start_cart_promise(
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, files, source);
+        let _ = (app, files, source, dev);
         Err("File promises are a Windows feature.".to_string())
     }
 }

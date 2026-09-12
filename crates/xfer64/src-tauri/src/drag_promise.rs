@@ -217,6 +217,20 @@ impl Drop for PipeReader {
     }
 }
 
+/// How a promise drag ended.
+///
+/// `dropped` alone does not mean anything was copied: `DoDragDrop` reports a drop whenever the
+/// button is released over a target that accepted the drag, and the *effect* is what says whether
+/// that target did anything. Reporting success on `dropped` alone is how a silent failure looked
+/// like a success in the status line.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromiseDragOutcome {
+    pub dropped: bool,
+    /// `DROPEFFECT_*`; zero means the target took nothing.
+    pub effect: u32,
+}
+
 /// Where the promise writes its trace. The COM layer knows nothing about the app's dev log, so
 /// the caller passes one of these in; it is the only way to see what the shell actually asked for,
 /// since every call below happens inside the shell's copy engine.
@@ -424,15 +438,15 @@ pub mod win {
     use std::ffi::c_void;
     use std::sync::{Arc, Mutex, Once};
     use windows::Win32::Foundation::{
-        DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, DV_E_FORMATETC,
-        DV_E_TYMED, E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, HGLOBAL, OLE_E_ADVISENOTSUPPORTED,
-        STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION, S_FALSE, S_OK,
+        DATA_S_SAMEFORMATETC, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS,
+        DV_E_FORMATETC, DV_E_TYMED, E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, HGLOBAL,
+        OLE_E_ADVISENOTSUPPORTED, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION, S_OK,
     };
     use windows::Win32::System::Com::{
         IAdviseSink, IDataObject, IDataObject_Impl, IEnumFORMATETC, IEnumSTATDATA,
         ISequentialStream_Impl, IStream, IStream_Impl, DVASPECT_CONTENT, FORMATETC, LOCKTYPE,
         STATFLAG, STATSTG, STGC, STGMEDIUM, STGMEDIUM_0, STREAM_SEEK, STREAM_SEEK_CUR,
-        STREAM_SEEK_SET, TYMED_HGLOBAL, TYMED_ISTREAM,
+        STREAM_SEEK_SET, TYMED_HGLOBAL, TYMED_ISTREAM, TYMED_NULL,
     };
     use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
@@ -801,16 +815,38 @@ pub mod win {
             S_OK
         }
 
+        /// Canonicalise a format — which means **copying the whole input structure out**, with
+        /// `ptd` cleared, not just clearing `ptd`.
+        ///
+        /// The caller hands us uninitialised memory for the output. Filling in one field and
+        /// leaving the rest is how the first hardware run lost every copy: the shell canonicalises
+        /// `FileContents` before fetching it, read back a `cfFormat` and `tymed` that were whatever
+        /// happened to be on its stack, asked `GetData` for that, got `DV_E_FORMATETC`, and
+        /// produced no file — while the drop itself still reported success.
         fn GetCanonicalFormatEtc(
             &self,
-            _pformatectin: *const FORMATETC,
+            pformatectin: *const FORMATETC,
             pformatetcout: *mut FORMATETC,
         ) -> HRESULT {
-            if !pformatetcout.is_null() {
-                unsafe { (*pformatetcout).ptd = std::ptr::null_mut() };
+            if pformatetcout.is_null() {
+                return E_POINTER;
             }
-            // Nothing to canonicalise: every format we offer is already in its only shape.
-            S_FALSE
+            let mut out = match unsafe { pformatectin.as_ref() } {
+                Some(input) => *input,
+                // No input to copy: hand back something inert rather than leaving the caller's
+                // memory as it found it.
+                None => FORMATETC {
+                    cfFormat: 0,
+                    ptd: std::ptr::null_mut(),
+                    dwAspect: DVASPECT_CONTENT.0,
+                    lindex: -1,
+                    tymed: TYMED_NULL.0 as u32,
+                },
+            };
+            out.ptd = std::ptr::null_mut();
+            unsafe { *pformatetcout = out };
+            // Every format we offer is already in its only shape.
+            DATA_S_SAMEFORMATETC
         }
 
         fn SetData(
@@ -898,7 +934,7 @@ pub mod win {
         files: Vec<PromisedFile>,
         source: Arc<dyn CartFileSource>,
         log: PromiseLog,
-    ) -> Result<bool, String> {
+    ) -> Result<super::PromiseDragOutcome, String> {
         init_ole();
         let formats = Formats::register();
         log(format!(
@@ -923,9 +959,15 @@ pub mod win {
             result.0, effect.0
         ));
         if result == DRAGDROP_S_DROP {
-            Ok(true)
+            Ok(super::PromiseDragOutcome {
+                dropped: true,
+                effect: effect.0,
+            })
         } else if result == DRAGDROP_S_CANCEL {
-            Ok(false)
+            Ok(super::PromiseDragOutcome {
+                dropped: false,
+                effect: 0,
+            })
         } else {
             Err(format!("DoDragDrop failed: 0x{:08x}", result.0))
         }

@@ -3209,14 +3209,23 @@ async function cartBridgeIsHoldingThePort() {
  */
 async function startCartPromiseDrag(files) {
   try {
-    const dropped = await invoke("drag_start_cart_promise", { files });
-    if (dropped) {
-      // The shell copies inside the drag and reports its own errors, so this says what we know:
-      // the drop happened.
+    const outcome = await invoke("drag_start_cart_promise", { files });
+    const dropped = outcome?.dropped === true;
+    // A drop is not a copy. Windows reports one whenever the button is released over a target
+    // that accepted the drag; the effect is what says whether that target took anything, and
+    // saying "Dropped" without checking it is what made a silent failure look like a success.
+    const effect = Number(outcome?.effect) || 0;
+    if (dropped && effect === 0) {
+      finishOperationProgress(
+        "Windows accepted the drop but copied nothing — try a folder in File Explorer.",
+        true,
+        "cart"
+      );
+    } else if (dropped) {
       finishOperationProgress(
         files.length === 1
-          ? `Dropped "${files[0].name}" into Windows.`
-          : `Dropped ${files.length} items into Windows.`,
+          ? `Copied "${files[0].name}" to Windows.`
+          : `Copied ${files.length} items to Windows.`,
         false,
         "cart"
       );
