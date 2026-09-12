@@ -11,11 +11,6 @@ mod copy_plan;
 mod daemon;
 mod dev_log;
 mod drag_out;
-// Only Windows calls into the promise machinery, but it is plain Rust in construction — the
-// descriptor layout and the pipe are tested on every platform, so the module stays compiled and
-// tested everywhere rather than being cfg'd out of reach of CI.
-#[cfg_attr(not(windows), allow(dead_code))]
-mod drag_promise;
 mod explorer;
 mod progress;
 mod send_to_windows;
@@ -130,7 +125,6 @@ pub fn run() {
             cart_serial_sd::cart_serial_remove_cart,
             cart_serial_sd::cart_serial_mkdir_cart,
             cart_serial_sd::cart_serial_rename_cart,
-            cart_serial_sd::drag_start_cart_promise,
             dev_log::explorer_get_settings,
             dev_log::explorer_set_settings,
             dev_log::explorer_set_quick_upload_cart_path,

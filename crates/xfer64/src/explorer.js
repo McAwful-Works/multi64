@@ -3150,92 +3150,19 @@ async function forgetStagedCartDrag() {
 /**
  * Drag a cart selection out to another window.
  *
- * Normally this is a **file promise**: the drag starts at once carrying just names and sizes, and
- * Windows asks for the bytes after you drop, which we read off the cart straight into the shell's
- * copy. One gesture, no temp files, any size.
- *
- * Two cases still stage an export first and need a second drag, because a promise cannot carry
- * them: a selection containing a folder (a promise is a flat list of files, and walking the tree
- * would mean opening the cart before the drag can start), and a cart whose port the Multi64
- * bridge is holding — releasing that needs the confirmation dialog, which cannot be shown with
- * the mouse button down. Anything else that goes wrong falls back the same way.
+ * Windows will not start a drag for a file that does not exist, and the cart's SD card is not a
+ * drive — so the first drag-out of a selection exports it to a staging directory over serial and
+ * stops there. The pointer has long been released by the time that finishes, so the drag itself
+ * is the *next* gesture, which finds the staged copies ready and goes straight out.
  * @param {string[]} paths
  */
 async function startCartDragOut(paths) {
-  const promised = promisedCartFiles(paths);
-  if (promised && !(await cartBridgeIsHoldingThePort())) {
-    if (await startCartPromiseDrag(promised)) return;
-  }
   const key = cartStagingKeyFor(paths);
   if (cartDragStaged && cartDragStaged.key === key) {
     await startOsDragOut(cartDragStaged.files, "cart");
     return;
   }
   await stageCartPathsForDragOut(paths, key);
-}
-
-/**
- * The selection as promise entries, or null if it cannot be promised.
- *
- * The shell wants each file's size up front — its progress bar and free-space check come from the
- * descriptor, long before it asks for a byte — and the pane's listing already has them.
- * @param {string[]} paths
- */
-function promisedCartFiles(paths) {
-  const byPath = new Map(state.cart.listEntries.map((e) => [e.path, e]));
-  const out = [];
-  for (const p of paths) {
-    const e = byPath.get(p);
-    // A folder is a tree; a promise is a flat list. Those go the staging route.
-    if (!e || e.isDir) return null;
-    out.push({ cartPath: p, name: e.name, size: Number(e.size) || 0 });
-  }
-  return out.length ? out : null;
-}
-
-/** True when multi64d has the cart's COM port, which a promise drag cannot negotiate mid-gesture. */
-async function cartBridgeIsHoldingThePort() {
-  try {
-    const probe = await invoke("explorer_daemon_probe", { listen: daemonListenUrl() });
-    return probe?.up === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Run a promise drag. Resolves true once the gesture is over — dropped or cancelled, both mean it
- * was handled — and false if the promise could not be started at all, which is the cue to stage.
- */
-async function startCartPromiseDrag(files) {
-  try {
-    const outcome = await invoke("drag_start_cart_promise", { files });
-    const dropped = outcome?.dropped === true;
-    // A drop is not a copy. Windows reports one whenever the button is released over a target
-    // that accepted the drag; the effect is what says whether that target took anything, and
-    // saying "Dropped" without checking it is what made a silent failure look like a success.
-    const effect = Number(outcome?.effect) || 0;
-    if (dropped && effect === 0) {
-      // Prefer what actually went wrong. "Copied nothing" is the symptom; `error` is the cause,
-      // and without it the only record of the cause is the developer log.
-      const reason = String(outcome?.error || "").trim();
-      finishOperationProgress(reason || "Windows copied nothing from the drop.", true, "cart");
-    } else if (!dropped && outcome?.error) {
-      finishOperationProgress(String(outcome.error), true, "cart");
-    } else if (dropped) {
-      finishOperationProgress(
-        files.length === 1
-          ? `Copied "${files[0].name}" to Windows.`
-          : `Copied ${files.length} items to Windows.`,
-        false,
-        "cart"
-      );
-    }
-    return true;
-  } catch {
-    // Not Windows, or the drag could not start. The staging route still works.
-    return false;
-  }
 }
 
 async function stageCartPathsForDragOut(paths, key) {

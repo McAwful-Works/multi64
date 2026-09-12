@@ -249,53 +249,6 @@ impl Sc64SdSession {
         }
     }
 
-    /// Stream one file from the SD card into `out`, in card order, reporting bytes read (delta)
-    /// to `progress`. Return `false` from `progress` to abort (yields [`io::ErrorKind::Interrupted`]).
-    ///
-    /// [`Self::copy_cart_entry_to_host_with_progress`] with the destination left to the caller.
-    /// A Windows drag-and-drop *promise* hands the shell a stream and has nowhere to put the
-    /// bytes in between, so the file cannot go via a path. Files only: a directory is an error
-    /// here rather than a recursive walk, because a stream has no shape to put a tree into.
-    pub fn stream_cart_file_to_writer<W, F>(
-        &self,
-        cart_path: &str,
-        out: &mut W,
-        mut progress: F,
-    ) -> io::Result<()>
-    where
-        W: Write,
-        F: FnMut(u64) -> bool,
-    {
-        let (parent, name) = cart_path_parts(cart_path);
-        let list = self.list_dir(&parent)?;
-        let entry = list
-            .into_iter()
-            .find(|e| cart_entry_name_matches(&e.name, &name))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cart path not found"))?;
-        if entry.is_dir {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "cannot stream a directory",
-            ));
-        }
-        let disk = Sc64PartitionDisk::new(
-            self.link.clone(),
-            self.partition_start_sector,
-            self.partition_bytes,
-        );
-        if self.exfat {
-            read_file_exfat_streaming(
-                PartitionDiskUnion::Sc64(disk),
-                &entry.path,
-                out,
-                &mut progress,
-                Some(entry.size),
-            )
-        } else {
-            read_file_fat_streaming(disk, &entry.path, out, &mut progress, Some(entry.size))
-        }
-    }
-
     /// Copy a file or directory from the SD to a host path (export).
     pub fn copy_cart_entry_to_host(&self, cart_path: &str, dest: &Path) -> io::Result<()> {
         self.copy_cart_entry_to_host_with_progress(cart_path, dest, false, |_| true)
@@ -742,48 +695,6 @@ impl Ed64SdSession {
             cart_dir_total_bytes_ed64(self, &entry.path)
         } else {
             Ok(entry.size)
-        }
-    }
-
-    /// Stream one file from the SD card into `out`. See
-    /// [`Sc64SdSession::stream_cart_file_to_writer`]; same contract, EverDrive session.
-    pub fn stream_cart_file_to_writer<W, F>(
-        &self,
-        cart_path: &str,
-        out: &mut W,
-        mut progress: F,
-    ) -> io::Result<()>
-    where
-        W: Write,
-        F: FnMut(u64) -> bool,
-    {
-        let (parent, name) = cart_path_parts(cart_path);
-        let list = self.list_dir(&parent)?;
-        let entry = list
-            .into_iter()
-            .find(|e| cart_entry_name_matches(&e.name, &name))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cart path not found"))?;
-        if entry.is_dir {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "cannot stream a directory",
-            ));
-        }
-        let disk = SectorPartitionDisk::new(
-            self.link.clone(),
-            self.partition_start_sector,
-            self.partition_bytes,
-        );
-        if self.exfat {
-            read_file_exfat_streaming(
-                PartitionDiskUnion::Ed64(disk),
-                &entry.path,
-                out,
-                &mut progress,
-                Some(entry.size),
-            )
-        } else {
-            read_file_fat_streaming(disk, &entry.path, out, &mut progress, Some(entry.size))
         }
     }
 
@@ -3160,9 +3071,10 @@ mod fs_tests {
         assert_eq!(bytes, b"roundtrip payload");
     }
 
-    /// The drag-and-drop promise streams a cart file into a pipe the shell drains, so the sink
-    /// writes short and can refuse to continue. Both have to be safe: partial writes must not
-    /// drop bytes, and a sink that gives up must surface as `Interrupted`, not a truncated file.
+    /// The streaming read must be safe against a sink that writes short or gives up: partial
+    /// writes must not drop bytes, and a sink that refuses more must surface as an error rather
+    /// than a silently truncated file. Today's sink is a `BufWriter<File>`, which does neither —
+    /// but the export path's correctness should not rest on that.
     #[test]
     fn fat_streaming_read_survives_a_short_writing_sink() {
         /// Accepts at most 7 bytes per call, and stops accepting after `limit` bytes in total.
