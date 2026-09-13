@@ -1,5 +1,12 @@
-//! Serial probes to distinguish **SummerCart64** vs **EverDrive USB** (usb64-style) when the user
-//! selects **Auto** in Settings. See [`docs/spec/l3-over-everdrive-x7.md`](../../../docs/spec/l3-over-everdrive-x7.md) §8.
+//! Serial probes that tell the carts apart when the user selects **Auto** in Settings, in order:
+//!
+//! 1. SummerCart64 `IDENTIFIER_GET`;
+//! 2. the **EverDrive-64 PRO**'s edlink handshake, which checks a status key, protocol ID and device ID
+//!    ([`docs/spec/ed64-pro-usb-host.md`](../../../docs/spec/ed64-pro-usb-host.md) §4);
+//! 3. the X-series `usb64` `cmd` + `t` test ([`docs/spec/l3-over-everdrive-x7.md`](../../../docs/spec/l3-over-everdrive-x7.md) §8).
+//!
+//! The PRO goes before the X-series because its handshake is the stronger identity check — and edlink
+//! itself sends that handshake to every port it scans.
 
 use multi64_sc64_sd::Sc64Link;
 use serialport::{ClearBuffer, SerialPort};
@@ -10,6 +17,8 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DetectedCartKind {
     Sc64,
+    /// EverDrive-64 PRO (experimental).
+    Ed64Pro,
     Ed64Beta,
     Unknown,
 }
@@ -18,16 +27,20 @@ impl DetectedCartKind {
     pub fn as_str(self) -> &'static str {
         match self {
             DetectedCartKind::Sc64 => "sc64",
+            DetectedCartKind::Ed64Pro => "ed64pro",
             DetectedCartKind::Ed64Beta => "ed64",
             DetectedCartKind::Unknown => "unknown",
         }
     }
 }
 
-/// Try SC64 `IDENTIFIER_GET` first, then EverDrive **`usb64`** test (`cmd` + `t` at 115200).
+/// SC64 `IDENTIFIER_GET`, then the EverDrive-64 PRO handshake, then the X-series `usb64` test.
 pub fn probe_serial_cart(port: &str) -> DetectedCartKind {
     if probe_sc64_identify(port) {
         return DetectedCartKind::Sc64;
+    }
+    if probe_ed64pro_handshake(port) {
+        return DetectedCartKind::Ed64Pro;
     }
     if probe_ed64_test_connection(port) {
         return DetectedCartKind::Ed64Beta;
@@ -41,6 +54,11 @@ fn probe_sc64_identify(port: &str) -> bool {
         Err(_) => return false,
     };
     link.identify().is_ok()
+}
+
+/// The full edlink connection sequence at 921600 baud; succeeds only for an EverDrive-64 PRO.
+fn probe_ed64pro_handshake(port: &str) -> bool {
+    multi64_ed64pro_link::Ed64Pro::open(port).is_ok()
 }
 
 fn probe_ed64_test_connection(port: &str) -> bool {

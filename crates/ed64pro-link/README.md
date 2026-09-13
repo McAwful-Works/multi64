@@ -17,6 +17,8 @@ Wire contract: [`docs/spec/ed64-pro-usb-host.md`](../../docs/spec/ed64-pro-usb-h
 
 Host-only. A scripted transport records every byte written and supplies the cart's replies. Each test checks the exact request bytes against Krikzz's sources. That proves the port matches those sources, **not** that the sources match the hardware.
 
+The `fake` feature adds `FakeEd64Pro`, an in-memory cart that decodes the same bytes, so other crates can test code built on `Ed64Pro` end to end without hardware. It agrees with the spec by construction, so it cannot catch errors in it.
+
 ```sh
 cargo test -p multi64-ed64pro-link
 ```

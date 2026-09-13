@@ -483,7 +483,13 @@
               <section class="explorer-help-section" aria-labelledby="help-h-auto">
                 <h3 class="explorer-help-section-title" id="help-h-auto">Auto-detect</h3>
                 <p>
-                  In <strong>Settings</strong>, <strong>Auto-detect (recommended)</strong> tries to figure out which cart is plugged in. If it guesses wrong, pick <strong>SummerCart64</strong> or <strong>EverDrive-64 X7 (experimental)</strong> yourself.
+                  In <strong>Settings</strong>, <strong>Auto-detect (recommended)</strong> tries to figure out which cart is plugged in. If it guesses wrong, pick <strong>SummerCart64</strong>, <strong>EverDrive-64 PRO (experimental)</strong> or <strong>EverDrive-64 X7 (experimental)</strong> yourself.
+                </p>
+              </section>
+              <section class="explorer-help-section explorer-help-section--note" aria-labelledby="help-h-ed64pro">
+                <h3 class="explorer-help-section-title" id="help-h-ed64pro">EverDrive-64 PRO (experimental)</h3>
+                <p>
+                  The EverDrive-64 PRO serves its SD card to the PC directly, so Xfer64 can browse it, copy files both ways, create folders and delete. Support is ported from Krikzz's published sources and has <strong>never been tested on a real cart</strong>, so Xfer64 asks before the first write each time it runs. Renaming is not available: the PRO's USB link has no rename command.
                 </p>
               </section>
               <section class="explorer-help-section explorer-help-section--note" aria-labelledby="help-h-ed64">
@@ -586,6 +592,7 @@
               <option value="auto">Auto-detect (recommended)</option>
               <option value="sc64">SummerCart64</option>
               <option value="ed64_beta">EverDrive-64 X7 (experimental)</option>
+              <option value="ed64_pro">EverDrive-64 PRO (experimental)</option>
             </select>
           </label>
           <p class="explorer-settings-hint" id="explorer-cart-device-hint"></p>

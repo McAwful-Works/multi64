@@ -2731,6 +2731,7 @@ dependencies = [
  "hadris-common",
  "hadris-fat",
  "multi64-ed64-link",
+ "multi64-ed64pro-link",
  "multi64-sc64-link",
  "serialport",
  "sha2 0.11.0",
@@ -6847,6 +6848,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "multi64-ed64-link",
+ "multi64-ed64pro-link",
  "multi64-sc64-sd",
  "rfd",
  "serde",

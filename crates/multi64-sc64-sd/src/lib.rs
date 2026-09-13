@@ -12,6 +12,12 @@
 //!
 //! Experimental: issues Krikzz-style **`RomRead`** over USB serial at a configurable linear base (`base + LBA·512`). `RomRead` reads cart ROM memory, not the SD card, so this is not expected to list the card; see workspace `docs/spec/ed64-sd-usb-host.md`. With **`ed64`**, see `Ed64RomLinear` and `Ed64SdSession` in this crate.
 //!
+//! # EverDrive-64 PRO (optional `ed64pro` feature)
+//!
+//! **Experimental; never run against a cart.** File-level, not sector-level: the PRO's microcontroller owns the
+//! file system and serves file commands over edlink Gen3, so [`Ed64ProSdSession`] maps each operation onto those
+//! commands instead of mounting FAT. See workspace `docs/spec/ed64-pro-usb-host.md`.
+//!
 //! # Unified API
 //!
 //! [`CartSession`] dispatches to [`Sc64SdSession`] or [`Ed64SdSession`] so UIs and tools can share one code path.
@@ -33,8 +39,12 @@ mod mem_disk;
 mod partition;
 
 pub use cart_session::CartSession;
+#[cfg(feature = "ed64pro")]
+mod ed64pro;
 #[cfg(feature = "ed64")]
 pub use ed64_linear::Ed64RomLinear;
+#[cfg(feature = "ed64pro")]
+pub use ed64pro::Ed64ProSdSession;
 pub use link::{Sc64Link, SdCardTransport, SD_CARD_BUFFER_ADDR, SD_CARD_BUFFER_MAX_BYTES};
 #[cfg(feature = "ed64")]
 pub use partition::Ed64SdSession;

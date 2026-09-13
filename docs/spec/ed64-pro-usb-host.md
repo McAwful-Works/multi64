@@ -198,6 +198,9 @@ Any L3 mapping over the PRO would have to supply its own framing on top of this.
 | Component | Role |
 |-----------|------|
 | [`crates/ed64pro-link`](../../crates/ed64pro-link/README.md) | **`multi64-ed64pro-link`**: `Ed64Pro` implements §2–§9. Tests use a scripted transport that checks exact request bytes; never run against a cart. |
+| `fake` feature of `multi64-ed64pro-link` | `FakeEd64Pro`: an in-memory cart that decodes this document's bytes, for host-only tests. It agrees with this document by construction, so it cannot catch errors in it. |
+| [`crates/multi64-sc64-sd`](../../crates/multi64-sc64-sd) (`ed64pro` feature) | `Ed64ProSdSession`: a file-level `CartSession` over §7 — list, copy both ways, mkdir, recursive delete. No rename, since §7 has none. |
+| [`crates/xfer64`](../../crates/xfer64/README.md) | Cart mode `ed64_pro`; Auto-detect tries §4 after SC64. Writes need the user's consent each run. |
 
 ---
 

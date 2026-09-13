@@ -34,6 +34,8 @@ pub struct UploadCliArgs {
     pub notify: bool,
     /// Open minimal UI to choose cart folder (starts Tauri; does not run headless import here).
     pub picker: bool,
+    /// Allow writing to an EverDrive-64 PRO (experimental), which a UI would otherwise confirm.
+    pub allow_ed64pro_writes: bool,
     pub paths: Vec<String>,
 }
 
@@ -48,6 +50,7 @@ pub fn parse_upload_args() -> Result<UploadCliArgs, String> {
     let mut overwrite = false;
     let mut notify = false;
     let mut picker = false;
+    let mut allow_ed64pro_writes = false;
     let mut paths = Vec::new();
     while let Some(a) = args.next() {
         if a == "--help" || a == "-h" {
@@ -60,7 +63,8 @@ pub fn parse_upload_args() -> Result<UploadCliArgs, String> {
                  --to PATH        Cart folder relative to SD root (headless only; default: quick-upload path or root)\n\
                  --overwrite, -y  Replace existing files on the cart\n\
                  --notify           When headless: show a message when finished\n\
-                 --picker           Choose destination folder in a small window (Send to / shell)\n"
+                 --picker           Choose destination folder in a small window (Send to / shell)\n\
+                 --experimental-ed64pro-writes  Allow writing to an EverDrive-64 PRO (experimental; never tested on a cart)\n"
                     .into(),
             );
         }
@@ -74,6 +78,8 @@ pub fn parse_upload_args() -> Result<UploadCliArgs, String> {
             notify = true;
         } else if a == "--picker" {
             picker = true;
+        } else if a == "--experimental-ed64pro-writes" {
+            allow_ed64pro_writes = true;
         } else {
             paths.push(a);
         }
@@ -84,6 +90,7 @@ pub fn parse_upload_args() -> Result<UploadCliArgs, String> {
         overwrite,
         notify,
         picker,
+        allow_ed64pro_writes,
         paths,
     })
 }
@@ -94,6 +101,10 @@ pub fn parse_upload_args() -> Result<UploadCliArgs, String> {
 /// `cancel` is supplied by the caller so a UI can actually stop the transfer. It used to be
 /// created here, which made it unshared and therefore inert: the picker window offered a Cancel
 /// button that nothing could act on. The CLI has no UI to cancel from and passes a fresh one.
+///
+/// `allow_ed64pro_writes` must be true to write to an EverDrive-64 PRO: the picker passes it after
+/// asking the user, the CLI only with `--experimental-ed64pro-writes`.
+#[allow(clippy::too_many_arguments)]
 pub fn run_headless_import_upload(
     paths: Vec<PathBuf>,
     cart_parent: String,
@@ -102,6 +113,7 @@ pub fn run_headless_import_upload(
     com_override: Option<String>,
     app: Option<AppHandle>,
     cancel: ExplorerCancelState,
+    allow_ed64pro_writes: bool,
 ) -> Result<UploadImportSummary, String> {
     let settings = ExplorerSettingsState::load();
     let snap = settings.snapshot();
@@ -142,6 +154,7 @@ pub fn run_headless_import_upload(
         notify_on_success || notify_env == "1" || notify_env.eq_ignore_ascii_case("true");
 
     let result = cart_serial_sd::with_session(&dev, "cli_upload", &st, &snap, |session| {
+        cart_serial_sd::require_ed64pro_write_consent_for(session, allow_ed64pro_writes)?;
         let plan = copy_plan::build_pc_import_plan(session, &paths, &cart_parent)?;
         if plan.is_empty() {
             return Err("Nothing to copy (paths missing or not supported).".into());
@@ -331,7 +344,15 @@ pub fn run_cli_upload_from_args(args: UploadCliArgs) -> Result<(), String> {
         com,
         None,
         ExplorerCancelState::default(),
-    )?;
+        args.allow_ed64pro_writes,
+    )
+    .map_err(|e| {
+        if e.contains(cart_serial_sd::ED64PRO_WRITE_CONSENT_MARKER) {
+            format!("{e}\nRe-run with --experimental-ed64pro-writes to allow it.")
+        } else {
+            e
+        }
+    })?;
     Ok(())
 }
 

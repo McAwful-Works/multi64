@@ -43,7 +43,8 @@ function explorerSettingsCommitUsbEquivalent(prev, next) {
   return (
     prev.cartDevice === "auto" &&
     ((next.cartDevice === "sc64" && lastAutoUsbCartKind === "sc64") ||
-      (next.cartDevice === "ed64_beta" && lastAutoUsbCartKind === "ed64"))
+      (next.cartDevice === "ed64_beta" && lastAutoUsbCartKind === "ed64") ||
+      (next.cartDevice === "ed64_pro" && lastAutoUsbCartKind === "ed64pro"))
   );
 }
 
@@ -51,6 +52,7 @@ function explorerSettingsCommitUsbEquivalent(prev, next) {
 function normalizeCartDeviceSetting(raw) {
   const r = (raw || "").trim();
   if (r === "ed64_beta") return "ed64_beta";
+  if (r === "ed64_pro") return "ed64_pro";
   if (r === "sc64") return "sc64";
   return "auto";
 }
@@ -417,6 +419,7 @@ async function listCartDirPaged(listPath, forceRefresh) {
   let offset = 0;
   const lim = EXPLORER_LIST_PAGE_SIZE;
   let exfat = false;
+  let fsLabel = "";
   for (;;) {
     const page = await invoke("cart_serial_list_dir_page", {
       path: listPath,
@@ -425,11 +428,12 @@ async function listCartDirPaged(listPath, forceRefresh) {
       fresh: forceRefresh && offset === 0,
     });
     exfat = page.exfat;
+    fsLabel = page.fsLabel || "";
     all.push(...page.entries);
     offset += page.entries.length;
     if (offset >= page.total || page.entries.length === 0) break;
   }
-  return { entries: all, exfat };
+  return { entries: all, exfat, fsLabel };
 }
 
 /**
@@ -746,7 +750,7 @@ async function runRenameCartFromPaths(fromPath, newNameTrimmed) {
       async () => {
         endPaneActionLoading("cart");
         showOperationProgress(`Renaming on SD card — "${newNameTrimmed}"…`, "cart");
-        await invoke("cart_serial_rename_cart", { from: normalizeUsbPath(fromPath), to: toPath });
+        await invokeCartWrite("cart_serial_rename_cart", { from: normalizeUsbPath(fromPath), to: toPath });
         await loadCartPane();
       },
       { confirm: true, actionPane: "cart" }
@@ -1507,6 +1511,34 @@ function showExplorerConfirm(message) {
   return showExplorerModal({ type: "confirm", message });
 }
 
+/** Start of the backend's refusal to write to an EverDrive-64 PRO before consent (`ED64PRO_WRITE_CONSENT_MARKER`). */
+const ED64PRO_WRITE_CONSENT_MARKER = "ED64PRO_WRITE_CONSENT_REQUIRED";
+
+const ED64PRO_WRITE_WARNING =
+  "Writing to an EverDrive-64 PRO is experimental. Xfer64's support for it is ported from Krikzz's published sources and has never been tested on a real cart, so a write could fail partway or damage files on the SD card.\n\nBack up anything important on the card first.\n\nAllow writes to this cart until Xfer64 closes?";
+
+/**
+ * Invoke a command that writes to the cart. An EverDrive-64 PRO refuses until the user accepts, once per
+ * app run, that writing to it is experimental: this asks, records the answer, and retries.
+ * @param {string} cmd
+ * @param {Record<string, unknown>} args
+ */
+async function invokeCartWrite(cmd, args) {
+  try {
+    return await invoke(cmd, args);
+  } catch (e) {
+    if (!String(e).includes(ED64PRO_WRITE_CONSENT_MARKER)) throw e;
+    const ok = await showExplorerModal({
+      type: "confirm",
+      title: "EverDrive-64 PRO: write to the SD card?",
+      message: ED64PRO_WRITE_WARNING,
+    });
+    if (!ok) throw new Error("Cancelled");
+    await invoke("cart_serial_allow_ed64pro_writes");
+    return invoke(cmd, args);
+  }
+}
+
 /**
  * @param {string} message
  * @param {{ defaultValue?: string, placeholder?: string, selectFilenameStem?: boolean, disableOkIfEmpty?: boolean }} [opts]
@@ -1696,7 +1728,7 @@ async function runInteractiveCopyPlan(plan, mode) {
   }
   if (batchPayload.length === 0) return;
   const batchCmd = mode === "export" ? "cart_serial_export_copy_batch" : "cart_serial_import_copy_batch";
-  await invoke(batchCmd, { items: batchPayload, progressTotal: total });
+  await invokeCartWrite(batchCmd, { items: batchPayload, progressTotal: total });
 }
 
 /**
@@ -1927,7 +1959,7 @@ async function loadCartPane(opts = {}) {
     const cancelled = await withCartDaemonYield(async () => {
       try {
         const listPath = normalizeUsbPath(state.cart.path);
-        const { entries, exfat } = await listCartDirPaged(listPath, forceRefresh);
+        const { entries, exfat, fsLabel } = await listCartDirPaged(listPath, forceRefresh);
         const visible = sortEntriesForPane("cart", filterHiddenEntries(entries, showHiddenForPane("cart")));
         if (!preserveSelection) {
           state.cart.selected.clear();
@@ -1942,7 +1974,7 @@ async function loadCartPane(opts = {}) {
           restorePaneSelectionAfterLoad("cart", visible, savedSel, savedAnchor, false);
         }
         renderExplorerPane("cart");
-        const vol = exfat ? "exFAT" : "FAT";
+        const vol = fsLabel || (exfat ? "exFAT" : "FAT");
         if (statusMeta) statusMeta.textContent = `${visible.length} item(s) · ${vol}`;
       } catch (err) {
         abandonInlineRenameIfPane("cart");
@@ -3365,7 +3397,7 @@ async function deleteSelectedCart(alertIfEmpty) {
         paths.length === 1
           ? `Deleting from SD card — "${basenameForMessage(paths[0])}"…`
           : `Deleting from SD card — ${paths.length} items…`,
-        () => invoke("cart_serial_remove_cart", { paths })
+        () => invokeCartWrite("cart_serial_remove_cart", { paths })
       );
       state.cart.selected.clear();
       await loadCartPane();
@@ -3476,7 +3508,7 @@ async function promptMkdirCart() {
       async () => {
         endPaneActionLoading("cart");
         showOperationProgress(`Creating folder on SD card — "${display}"…`, "cart");
-        await invoke("cart_serial_mkdir_cart", { path });
+        await invokeCartWrite("cart_serial_mkdir_cart", { path });
         await loadCartPane();
       },
       { confirm: true, actionPane: "cart" }
@@ -4003,6 +4035,9 @@ async function updateCartDeviceSettingsHint() {
       hintEl.textContent =
         "SD browsing on EverDrive is experimental (see EverDrive SD (experimental) below). For SD access over USB, use SummerCart64.";
     }
+  } else if (v === "ed64_pro") {
+    hintEl.textContent =
+      "Experimental: SD file access through the EverDrive-64 PRO's USB link, ported from Krikzz's sources and never tested on a cart. Renaming is not available, and Xfer64 asks before the first write.";
   } else if (v === "sc64") {
     hintEl.textContent = "Full USB SD file access over serial (FAT or exFAT) for SummerCart64.";
   } else {
@@ -4017,18 +4052,19 @@ async function refreshUsbDetectHint() {
   try {
     try {
       const s = await invoke("explorer_get_settings");
-      const mode =
-        s.cartDevice === "ed64_beta" ? "ed64_beta" : s.cartDevice === "sc64" ? "sc64" : "auto";
+      const mode = normalizeCartDeviceSetting(s.cartDevice);
       const hint = document.getElementById("explorer-pane-cart-hint");
       const usbHint = document.getElementById("usb-hint");
       if (mode !== "auto") {
         lastAutoUsbCartKind = "unset";
         if (hint) {
           if (mode === "ed64_beta") hint.textContent = "EverDrive (experimental)";
+          else if (mode === "ed64_pro") hint.textContent = "EverDrive PRO (experimental)";
           else hint.textContent = "SC64";
         }
         if (usbHint) {
-          usbHint.textContent = mode === "ed64_beta" ? "Manual: EverDrive" : "Manual: SC64";
+          usbHint.textContent =
+            mode === "ed64_beta" ? "Manual: EverDrive" : mode === "ed64_pro" ? "Manual: EverDrive PRO" : "Manual: SC64";
         }
         return;
       }
@@ -4037,6 +4073,7 @@ async function refreshUsbDetectHint() {
         const st = await invoke("cart_serial_probe_status");
         if (hint) {
           if (st.detectedKind === "sc64") hint.textContent = "SC64";
+          else if (st.detectedKind === "ed64pro") hint.textContent = "EverDrive PRO (experimental)";
           else if (st.detectedKind === "ed64") hint.textContent = "EverDrive (experimental)";
           else if (st.detectedKind === "unknown") hint.textContent = "Unknown";
           else hint.textContent = "Auto";
@@ -4044,6 +4081,7 @@ async function refreshUsbDetectHint() {
         if (usbHint) {
           const p = st.resolvedPort || "";
           if (st.detectedKind === "sc64") usbHint.textContent = `Auto · SC64 · ${p}`;
+          else if (st.detectedKind === "ed64pro") usbHint.textContent = `Auto · EverDrive PRO (experimental) · ${p}`;
           else if (st.detectedKind === "ed64") usbHint.textContent = `Auto · EverDrive (experimental) · ${p}`;
           else if (st.detectedKind === "unknown") usbHint.textContent = `Auto · not detected · ${p}`;
           else usbHint.textContent = p ? `Auto · ${p}` : "Auto-detect";
@@ -4075,6 +4113,7 @@ function applyCartDeviceUi(opts = {}) {
   const hint = document.getElementById("explorer-pane-cart-hint");
   if (hint) {
     if (v === "ed64_beta") hint.textContent = "EverDrive (experimental)";
+    else if (v === "ed64_pro") hint.textContent = "EverDrive PRO (experimental)";
     else if (v === "sc64") hint.textContent = "SC64";
     else hint.textContent = "Auto";
   }

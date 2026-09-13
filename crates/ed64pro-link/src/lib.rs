@@ -24,6 +24,8 @@
 #![forbid(unsafe_code)]
 
 mod device;
+#[cfg(any(test, feature = "fake"))]
+pub mod fake;
 pub mod transport;
 pub mod wire;
 

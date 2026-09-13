@@ -39,8 +39,8 @@ Only one process can hold the cart serial device. **`multi64d`** exposes `POST /
 
 | Piece | Role |
 |-------|------|
-| [`cart_serial_sd.rs`](../../crates/xfer64/src-tauri/src/cart_serial_sd.rs) | COM port, cart mode (`auto` / `sc64` / `ed64_beta`), `CartSdRole` (`Sc64` / `Ed64Linear` / `Ed64NoLinear`), `with_session` → [`CartSession`](../../crates/multi64-sc64-sd/src/cart_session.rs), Tauri IPC (`cart_serial_*`). |
-| [`cart_probe.rs`](../../crates/xfer64/src-tauri/src/cart_probe.rs) | Auto-detect: SC64 `IDENTIFIER_GET`, then EverDrive **`usb64`** `cmd`/`t` at **115200**. |
+| [`cart_serial_sd.rs`](../../crates/xfer64/src-tauri/src/cart_serial_sd.rs) | COM port, cart mode (`auto` / `sc64` / `ed64_beta` / `ed64_pro`), `CartSdRole` (`Sc64` / `Ed64Linear` / `Ed64NoLinear` / `Ed64Pro`), `with_session` → [`CartSession`](../../crates/multi64-sc64-sd/src/cart_session.rs), Tauri IPC (`cart_serial_*`). |
+| [`cart_probe.rs`](../../crates/xfer64/src-tauri/src/cart_probe.rs) | Auto-detect: SC64 `IDENTIFIER_GET`, then the EverDrive-64 PRO handshake at **921600**, then EverDrive **`usb64`** `cmd`/`t` at **115200**. |
 | [`copy_plan.rs`](../../crates/xfer64/src-tauri/src/copy_plan.rs) | Interactive copy plans; takes `&CartSession` for cart-side walks. |
 | [`daemon.rs`](../../crates/xfer64/src-tauri/src/daemon.rs) | `resolve_com_port` / multi64d yield around cart work. |
 | [`dev_log.rs`](../../crates/xfer64/src-tauri/src/dev_log.rs) | `xfer64-settings.json`: `cartDevice`, `ed64RomLinearBase`, `preferredCom`, … |
@@ -53,6 +53,7 @@ Only one process can hold the cart serial device. **`multi64d`** exposes `POST /
 | [`partition.rs`](../../crates/multi64-sc64-sd/src/partition.rs) | Partition discovery, FAT/exFAT sessions (`Sc64SdSession`, `Ed64SdSession`). |
 | [`cart_session.rs`](../../crates/multi64-sc64-sd/src/cart_session.rs) | [`CartSession`](../../crates/multi64-sc64-sd/src/cart_session.rs): unified explorer API. |
 | [`ed64_linear.rs`](../../crates/multi64-sc64-sd/src/ed64_linear.rs) | EverDrive: `RomRead` at `rom_linear_base + LBA×512` (optional feature). Reads cart ROM memory, not the SD card — see [`ed64-sd-usb-host.md`](./ed64-sd-usb-host.md#why-romread-is-not-sd-access). |
+| [`ed64pro.rs`](../../crates/multi64-sc64-sd/src/ed64pro.rs) | EverDrive-64 PRO (optional `ed64pro` feature): a file-level session over edlink Gen3 — no sector reads, no host FAT mount. Rename is unsupported. Experimental; see [`ed64-pro-usb-host.md`](./ed64-pro-usb-host.md). |
 
 ### Wire layer (`crates/multi64-ed64-link`)
 
@@ -62,5 +63,7 @@ Only one process can hold the cart serial device. **`multi64d`** exposes `POST /
 
 ### Settings (JSON)
 
-- **`cartDevice`**: `auto` \| `sc64` \| `ed64_beta` (`ExplorerSettingsSnapshot` in `dev_log.rs`).
+- **`cartDevice`**: `auto` \| `sc64` \| `ed64_beta` \| `ed64_pro` (`ExplorerSettingsSnapshot` in `dev_log.rs`).
 - **`ed64RomLinearBase`**: `u32` — base address for the EverDrive **`RomRead`** experiment, which reads cart ROM memory rather than the SD card ([why](./ed64-sd-usb-host.md#why-romread-is-not-sd-access)).
+
+**EverDrive-64 PRO writes need consent.** Every write command — import, mkdir, rename, remove, and `xfer64 upload` — refuses a PRO session with an error starting `ED64PRO_WRITE_CONSENT_REQUIRED` until the user agrees. Explorer asks, then calls `cart_serial_allow_ed64pro_writes`, which lasts until the app exits. The upload picker asks with a native dialog, and the headless CLI requires `--experimental-ed64pro-writes`.
