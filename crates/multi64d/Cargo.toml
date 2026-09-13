@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "multi64 reference daemon: WebSocket bridge to L3 byte stream (SummerCart64 L2 backend)"
+description = "multi64 reference daemon: WebSocket bridge to L3 byte stream (SummerCart64 L2 backend; experimental EverDrive X7)"
 
 [lib]
 name = "multi64d"
@@ -20,6 +20,7 @@ axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
 futures-util = "0.3"
+multi64-ed64-l2 = { path = "../ed64-l2" }
 multi64-sc64-l2 = { path = "../sc64-l2" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

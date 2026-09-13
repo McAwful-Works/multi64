@@ -170,7 +170,7 @@ No other N64-side change is expected. If validation turns one up, record it here
 | [`crates/ed64-echo-test`](../../crates/ed64-echo-test) | **`ed64-echo-test`**: same role as `sc64-echo-test` over **`Ed64L2Pipe`**; runs, exercising §4 framing that is still unvalidated. |
 | [`crates/ed64-l3-framing-e2e`](../../crates/ed64-l3-framing-e2e) | **`ed64-l3-framing-e2e`**: same role as `sc64-l3-framing-e2e` over **`Ed64L2Pipe`**; runs, exercising §4 framing that is still unvalidated. |
 | [`n64/test-rom`](../../n64/README.md) | Already uses libdragon `<usb.h>`, which supports both carts. Boots on `CART_SC64` and `CART_EVERDRIVE`, with an on-screen **UNVALIDATED** warning on the latter (§5). |
-| `multi64d` | Future: optional backend selection (`--link ed64` or similar) once `ed64-l2` is functional. |
+| `multi64d` | `--cart ed64` selects `Ed64L2Pipe` ([daemon API §5.1](./daemon-api-v1.md)). Experimental: wired in and host-tested, but it has never carried L3 to a cart. |
 
 ---
 

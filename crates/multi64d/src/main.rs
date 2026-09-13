@@ -1,8 +1,10 @@
 //! Reference daemon binary — see `multi64d` library and `docs/spec/daemon-api-v1.md`.
 
 use clap::Parser;
-use multi64d::config::{load_config_file, merge, resolve_config_path, FileConfig};
-use multi64d::{build_app, cart_reader_loop, open_pipe, AppState, LinkState, SerialConfig};
+use multi64d::config::{load_config_file, merge, resolve_config_path, CliConfig, FileConfig};
+use multi64d::{
+    build_app, cart_reader_loop, open_pipe, AppState, CartKind, LinkState, SerialConfig,
+};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,7 +23,7 @@ fn tracing_use_ansi() -> bool {
 #[derive(Parser, Debug)]
 #[command(
     name = "multi64d",
-    about = "multi64 WebSocket bridge (L3 stream; SummerCart64 serial backend)"
+    about = "multi64 WebSocket bridge (L3 stream; SummerCart64, or experimental EverDrive X7)"
 )]
 struct Args {
     /// TOML config file (env: `MULTI64D_CONFIG`). If omitted, tries `./multi64d.toml` then OS config dir.
@@ -35,6 +37,11 @@ struct Args {
     /// Env: `MULTI64D_BAUD`
     #[arg(long, env = "MULTI64D_BAUD")]
     baud: Option<u32>,
+
+    /// Flash cart L2 mapping; default `sc64`. `ed64` (EverDrive-64 X7) is experimental and has
+    /// never been run against a cart. Env: `MULTI64D_CART`.
+    #[arg(long, env = "MULTI64D_CART", value_enum, value_name = "CART")]
+    cart: Option<CartKind>,
 
     /// TCP listen address for HTTP + WebSocket. Env: `MULTI64D_LISTEN`
     #[arg(long, env = "MULTI64D_LISTEN")]
@@ -71,7 +78,8 @@ struct Args {
     #[arg(long, default_value_t = false)]
     list_ports: bool,
 
-    /// Log every non-empty serial read from the cart (`trace!` in `multi64-sc64-l2`).
+    /// Log every non-empty serial read from the cart (`trace!` in `multi64-sc64-l2` or
+    /// `multi64-ed64-l2`, depending on `--cart`).
     /// Also set env `MULTI64D_SERIAL_TRACE=1` (see `build_env_filter`).
     #[arg(long, default_value_t = false)]
     serial_trace: bool,
@@ -86,8 +94,12 @@ fn env_multi64d_serial_trace() -> bool {
         .unwrap_or(false)
 }
 
+/// Per-read trace targets of both L2 pipes. Enabling both costs nothing: only the pipe `--cart`
+/// selects ever emits.
+const SERIAL_TRACE_TARGETS: &str = "multi64_sc64_l2=trace,multi64_ed64_l2=trace";
+
 /// `tracing_subscriber::fmt` defaults to `info` when `RUST_LOG` is unset; our serial chunks use
-/// `trace!`, so they never appear unless `RUST_LOG` includes `multi64_sc64_l2=trace`.
+/// `trace!`, so they never appear unless `RUST_LOG` includes the pipe targets above.
 /// `--serial-trace` / `MULTI64D_SERIAL_TRACE=1` prepends that directive (and merges with `RUST_LOG`
 /// if set).
 fn build_env_filter(serial_trace_cli: bool) -> tracing_subscriber::EnvFilter {
@@ -96,15 +108,15 @@ fn build_env_filter(serial_trace_cli: bool) -> tracing_subscriber::EnvFilter {
         if let Ok(u) = std::env::var("RUST_LOG") {
             let u = u.trim();
             if !u.is_empty() {
-                let combined = format!("multi64_sc64_l2=trace,{u}");
+                let combined = format!("{SERIAL_TRACE_TARGETS},{u}");
                 return combined.parse().unwrap_or_else(|_| {
-                    "multi64_sc64_l2=trace,tower_http=error,info"
+                    format!("{SERIAL_TRACE_TARGETS},tower_http=error,info")
                         .parse()
                         .expect("fallback filter")
                 });
             }
         }
-        return "multi64_sc64_l2=trace,tower_http=error,info"
+        return format!("{SERIAL_TRACE_TARGETS},tower_http=error,info")
             .parse()
             .expect("embedded filter");
     }
@@ -124,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
     if args.serial_trace || env_multi64d_serial_trace() {
         tracing::info!(
             target: "multi64d",
-            "serial trace on (stderr): non-empty reads from cart emit TRACE on target multi64_sc64_l2"
+            "serial trace on (stderr): non-empty reads from cart emit TRACE on target multi64_sc64_l2 or multi64_ed64_l2"
         );
     }
 
@@ -135,11 +147,14 @@ async fn main() -> anyhow::Result<()> {
 
     let (file_cfg, loaded_path) = load_merged_file_config(&args)?;
     let resolved = merge(
-        args.serial.clone(),
-        args.baud,
-        args.listen.clone(),
-        args.clear_serial,
-        args.allow_origin.clone(),
+        CliConfig {
+            serial: args.serial.clone(),
+            baud: args.baud,
+            listen: args.listen.clone(),
+            clear_serial: args.clear_serial,
+            allow_origin: args.allow_origin.clone(),
+            cart: args.cart,
+        },
         file_cfg,
         loaded_path,
     )?;
@@ -154,8 +169,14 @@ async fn main() -> anyhow::Result<()> {
         listen = %resolved.listen,
         clear_serial = resolved.clear_serial,
         allow_origin = ?resolved.allow_origin,
+        cart = %resolved.cart,
         "resolved configuration"
     );
+    if resolved.cart == CartKind::Ed64 {
+        tracing::warn!(
+            "--cart ed64 is experimental: the EverDrive X7 mapping comes from UNFLoader and libdragon and has never been run against a cart (docs/spec/l3-over-everdrive-x7.md 4.5)"
+        );
+    }
     if !args.no_print_ports {
         log_serial_ports_tracing()?;
     }
@@ -164,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
         path: resolved.serial.clone(),
         baud: resolved.baud,
         clear_serial: resolved.clear_serial,
+        cart: resolved.cart,
     };
     // A missing cart at startup is not fatal. `cart_reader_loop` already reopens a `Faulted` link
     // once a second, so starting without one and waiting is strictly better than exiting: the
@@ -175,7 +197,7 @@ async fn main() -> anyhow::Result<()> {
     // offer and no way to recover once one appears.
     let link = match open_pipe(&serial_cfg) {
         Ok(pipe) => {
-            tracing::info!(serial = %serial_cfg.path, "serial link open");
+            tracing::info!(serial = %serial_cfg.path, cart = %serial_cfg.cart, "serial link open");
             LinkState::Active(pipe)
         }
         Err(e) => {
@@ -208,6 +230,7 @@ async fn main() -> anyhow::Result<()> {
         baud = resolved.baud,
         clear_serial = resolved.clear_serial,
         allow_origin = ?resolved.allow_origin,
+        cart = %resolved.cart,
         "multi64d started (cart reader runs always; WebSocket clients receive broadcast from cart)"
     );
     axum::serve(listener, app).await?;
