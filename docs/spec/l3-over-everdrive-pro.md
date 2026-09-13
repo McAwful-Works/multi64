@@ -119,6 +119,7 @@ Write §3's sequence to `FIFODATA` and poll `SYSSTAT` bit 0 with a bounded wait.
 | [`crates/ed64pro-l2`](../../crates/ed64pro-l2/README.md) | **`multi64-ed64pro-l2`**: `Ed64ProL2Pipe`, the host side of §2–§5, over `multi64-ed64pro-link`. Tested against the in-memory `FakeEd64Pro` only. |
 | `multi64d` | `--cart ed64pro` selects it ([daemon API §5.1](./daemon-api-v1.md#51-flags)). The PRO runs at its fixed 921600 baud; `--baud` does not apply. |
 | [`n64/test-rom`](../../n64/README.md) | `ed64pro.c` implements §6; `cart_link.c` detects a PRO before libdragon's `usb_initialize` and routes the test ROM's USB traffic to it. The ROM shows an on-screen **UNVALIDATED** warning on a PRO. |
+| [`n64/agent`](../../n64/agent/README.md) | `make CART=ed64pro` builds the in-game agent around its own `ed64pro.c`: §6 without libdragon, under the agent's PI rules, reassembling L3 frames across ticks. |
 
 The Multi64 app does not offer the PRO yet, and no `ed64pro` variant of the serial e2e tools exists: through `multi64d`, any L3 client is the test harness.
 

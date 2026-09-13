@@ -10,6 +10,8 @@
 # layout.env, which also carries the counter offsets a probe needs. Environment:
 #   PREFIX     toolchain prefix (default mips64-elf-, libdragon's)
 #   STUB_MAX   refuse a stub larger than this many bytes (default 4096)
+#   CART       sc64 (default; the only driver that has run on hardware), or ed64 / ed64pro for an
+#              EverDrive-64 X7 / PRO (experimental, never run on a cart)
 set -eu
 
 [ $# -ge 6 ] || { sed -n '2,15p' "$0" >&2; exit 2; }
@@ -21,6 +23,14 @@ PROTO="$HERE/../../test-rom"
 OUT=${7:-"$AGENT/build/flat"}
 P=${PREFIX:-mips64-elf-}
 STUB_MAX=${STUB_MAX:-4096}
+CART=${CART:-sc64}
+
+case "$CART" in
+    sc64)    DRIVERS="sc64";          DEFINE="" ;;
+    ed64)    DRIVERS="ed64 pi_io";    DEFINE="-DAGENT_CART_ED64" ;;
+    ed64pro) DRIVERS="ed64pro pi_io"; DEFINE="-DAGENT_CART_ED64PRO" ;;
+    *) echo "CART must be sc64, ed64 or ed64pro" >&2; exit 2 ;;
+esac
 
 mkdir -p "$OUT"
 CFLAGS="-O1 -fno-reorder-blocks -march=vr4300 -mtune=vr4300 -mabi=32 -mno-gpopt -G0 \
@@ -28,12 +38,16 @@ CFLAGS="-O1 -fno-reorder-blocks -march=vr4300 -mtune=vr4300 -mabi=32 -mno-gpopt 
 INC="-I$AGENT -I$PROTO"
 
 ${P}gcc $CFLAGS $INC -c "$HERE/segment_magic.c" -o "$OUT/segment_magic.o"
-${P}gcc $CFLAGS $INC -c "$AGENT/agent.c" -o "$OUT/agent.o"
-${P}gcc $CFLAGS $INC -c "$AGENT/sc64.c" -o "$OUT/sc64.o"
+${P}gcc $CFLAGS $DEFINE $INC -c "$AGENT/agent.c" -o "$OUT/agent.o"
+DRIVER_OBJS=()
+for d in $DRIVERS; do
+    ${P}gcc $CFLAGS $DEFINE $INC -c "$AGENT/$d.c" -o "$OUT/$d.o"
+    DRIVER_OBJS+=("$OUT/$d.o")
+done
 ${P}gcc $CFLAGS $INC -c "$PROTO/mem_proto.c" -o "$OUT/mem_proto.o"
 
 ${P}ld -T "$HERE/flat.ld" --defsym AGENT_VRAM=$VRAM -o "$OUT/agent.elf" \
-    "$OUT/segment_magic.o" "$OUT/agent.o" "$OUT/sc64.o" "$OUT/mem_proto.o"
+    "$OUT/segment_magic.o" "$OUT/agent.o" "${DRIVER_OBJS[@]}" "$OUT/mem_proto.o"
 ${P}objcopy -O binary --only-section=.text --only-section=.rodata --only-section=.data \
     "$OUT/agent.elf" "$OUT/agent.bin"
 
@@ -59,6 +73,7 @@ STUB_SIZE=$(stat -c %s "$OUT/stub.bin")
 [ "$STUB_SIZE" -le "$STUB_MAX" ] || { echo "stub is $STUB_SIZE B, over STUB_MAX=$STUB_MAX" >&2; exit 1; }
 
 cat > "$OUT/layout.env" <<EOF
+AGENT_CART=$CART
 AGENT_VRAM=$VRAM
 AGENT_ROM=$ROM
 AGENT_MIN_RAM=$MINRAM
@@ -80,7 +95,7 @@ OFF_REQUESTS=$(off s_requests)
 OFF_ERRORS=$(off s_errors)
 EOF
 
-echo "agent: RAM $VRAM-$BSS_END ($(( BSS_END - VRAM )) B, $(( BSS_END - BSS_START )) B of it BSS)," \
+echo "agent: $CART driver, RAM $VRAM-$BSS_END ($(( BSS_END - VRAM )) B, $(( BSS_END - BSS_START )) B of it BSS)," \
      "loads $LOAD_SIZE B from ROM $ROM"
 echo "stub:  $STUB_SIZE B at $STUB_VRAM; calls $HOOK_ORIGINAL, loads with $ROM_COPY, guard osMemSize >= $MINRAM"
 echo "wrote $OUT/{agent.bin,stub.bin,layout.env}"

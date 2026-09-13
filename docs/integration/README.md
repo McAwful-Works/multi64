@@ -84,7 +84,9 @@ clients, with location checks reaching a server and items arriving in game:
 | A game with no buildable source | Flat image, a hook stub in dead code, one retargeted `jal` | That none of the above needs a decomp |
 
 Two things none of them has exercised: a **4 MB** console with the agent in the base RAM (all
-three put it in the Expansion Pak), and any cart other than the SummerCart64.
+three put it in the Expansion Pak), and any cart other than the SummerCart64. EverDrive-64 X7 and
+PRO builds of the agent exist ([cart-agent.md §6](cart-agent.md#6-everdrive-builds-experimental)),
+but neither has run on a cart.
 
 ## Guides
 
