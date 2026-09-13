@@ -11,6 +11,7 @@ Normative wire rules live in **`spec/`**. Each spec file carries its own **Spec-
 | Repo overview | [Root README](../README.md) |
 | **L3** | [l3-bridge-protocol-v1.md](spec/l3-bridge-protocol-v1.md) |
 | **RDRAM peek/poke** | [memory-l3-application-v0.md](spec/memory-l3-application-v0.md) |
+| **Put the M64P agent in a game ROM** | [integration/README.md](integration/README.md), [n64/agent](../n64/agent/README.md) |
 | **L2** (any cart) | [l2-link-adapter.md](spec/l2-link-adapter.md) |
 | **SC64** L3 over USB | [l3-over-sc64.md](spec/l3-over-sc64.md) |
 | **SC64** SD / FAT host | [sc64-sd-usb-host.md](spec/sc64-sd-usb-host.md) |
@@ -69,6 +70,21 @@ Bump L3 **Protocol-Major** / **Protocol-Minor** only when the **byte** contract 
 5. [test-l3-application-v0.md](spec/test-l3-application-v0.md)  
 6. [memory-l3-application-v0.md](spec/memory-l3-application-v0.md) (optional — RDRAM peek/poke)  
 7. [sc64-sd-usb-host.md](spec/sc64-sd-usb-host.md), [ed64-sd-usb-host.md](spec/ed64-sd-usb-host.md), [xfer64-cart-serial.md](spec/xfer64-cart-serial.md) — SD / Xfer64 internals
+
+---
+
+## ROM integration (`integration/`)
+
+Guides, not specifications: how to make a game on real hardware readable and writable through
+[M64P](spec/memory-l3-application-v0.md), using the agent in [`n64/agent`](../n64/agent/README.md).
+
+| Document | Purpose |
+|----------|---------|
+| [integration/README.md](integration/README.md) | Overview, the three questions to answer first, checklist |
+| [integration/cart-agent.md](integration/cart-agent.md) | The agent's contract, what it does to the machine, building it |
+| [integration/placing-the-agent.md](integration/placing-the-agent.md) | RAM, per-frame hook, ROM location, loader, CRC — with and without a decomp |
+| [integration/host-connector.md](integration/host-connector.md) | Writing an emulator-API stand-in on the PC |
+| [integration/testing.md](integration/testing.md) | Verification order, and the traps met |
 
 ---
 

@@ -34,7 +34,9 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 | [`crates/`](crates/) | Rust workspace: L3, SC64/ED crates, `multi64d`, smoke/e2e, **Multi64** & **Xfer64** (Tauri) |
 | [`docs/spec/`](docs/spec/) | Normative protocols |
 | [`docs/connectors/`](docs/connectors/) | Host programs that use `multi64d` + L3 |
+| [`docs/integration/`](docs/integration/) | Guides: putting the M64P agent into a game ROM |
 | [`n64/test-rom/`](n64/test-rom/) | Builds **`multi64_test.z64`** — see [`n64/README.md`](n64/README.md) |
+| [`n64/agent/`](n64/agent/) | M64P agent for game ROMs — see [`n64/agent/README.md`](n64/agent/README.md) |
 | [`scripts/`](scripts/) | Optional Python WebSocket smoke + shell e2e helpers |
 
 ---

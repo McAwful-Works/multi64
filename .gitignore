@@ -35,3 +35,5 @@ crates/multi64-test-connector-gui/node_modules/
 # for every person who rebuilds. The shipped multi64_test.z64 stays tracked: it
 # is built from the stripped elf and is byte-reproducible from n64/toolchain.lock.
 n64/test-rom/build/
+n64/agent/build/
+n64/agent/tools/*.txt

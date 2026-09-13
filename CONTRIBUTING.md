@@ -39,7 +39,8 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [docs/README.md](docs/README.md) | **Documentation hub** — specs, [flash cart comparison](docs/README.md#flash-carts-l2-backends), connectors |
 | [docs/spec](docs/spec) | Normative protocol documents |
 | [docs/connectors](docs/connectors) | Connector usage docs |
-| [n64](n64) | libdragon **test ROM** (`test-rom/` → `multi64_test.z64`) |
+| [docs/integration](docs/integration) | ROM integration guides (not normative): putting the M64P agent in a game |
+| [n64](n64) | libdragon **test ROM** (`test-rom/` → `multi64_test.z64`); game-resident **M64P agent** (`agent/`) |
 | [scripts](scripts) | Python WebSocket smoke test, hardware e2e shell scripts |
 
 ### Rust crates (`crates/`)
