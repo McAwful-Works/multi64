@@ -3961,9 +3961,9 @@ async function maybeOfferEd64AutoScan() {
 
   const ok = await showExplorerModal({
     type: "confirm",
-    title: "EverDrive: find SD base",
+    title: "EverDrive (experimental): find SD base",
     message:
-      "Xfer64 can scan the USB link for a valid SD card start address. This sends many read commands and may take about a minute or longer.\n\nContinue with the scan now?\n\nYou can cancel and use “Scan for SD base” in Settings → EverDrive (advanced) later.",
+      "Experimental: Xfer64 can scan cart memory for data that looks like an SD card. EverDrive's USB protocol has no SD command, so this is not expected to find your card. The scan sends many read commands and may take about a minute or longer.\n\nContinue with the scan now?\n\nYou can cancel and use “Scan for SD base” in Settings → EverDrive SD (experimental) later.",
   });
   if (!ok) return false;
 
@@ -3994,14 +3994,14 @@ async function updateCartDeviceSettingsHint() {
       const base = s.ed64RomLinearBase;
       if (base != null && base !== "") {
         hintEl.textContent =
-          "SD browsing from this PC is enabled. Adjust the address under EverDrive (advanced) if needed.";
+          "Experimental SD browsing is on, but it reads cart memory and is not expected to show your card. Adjust the address under EverDrive SD (experimental) if needed.";
       } else {
         hintEl.textContent =
-          "Use EverDrive (advanced) below to enable SD browsing from this PC, or choose SummerCart64 above for plug-and-play USB SD access.";
+          "SD browsing on EverDrive is experimental and not expected to show your card (see EverDrive SD (experimental) below). For SD access over USB, choose SummerCart64 above.";
       }
     } catch {
       hintEl.textContent =
-        "Use EverDrive (advanced) below for SD browsing, or SummerCart64 for plug-and-play USB SD access.";
+        "SD browsing on EverDrive is experimental (see EverDrive SD (experimental) below). For SD access over USB, use SummerCart64.";
     }
   } else if (v === "sc64") {
     hintEl.textContent = "Full USB SD file access over serial (FAT or exFAT) for SummerCart64.";
@@ -4024,7 +4024,7 @@ async function refreshUsbDetectHint() {
       if (mode !== "auto") {
         lastAutoUsbCartKind = "unset";
         if (hint) {
-          if (mode === "ed64_beta") hint.textContent = "EverDrive (beta)";
+          if (mode === "ed64_beta") hint.textContent = "EverDrive (experimental)";
           else hint.textContent = "SC64";
         }
         if (usbHint) {
@@ -4037,14 +4037,14 @@ async function refreshUsbDetectHint() {
         const st = await invoke("cart_serial_probe_status");
         if (hint) {
           if (st.detectedKind === "sc64") hint.textContent = "SC64";
-          else if (st.detectedKind === "ed64") hint.textContent = "EverDrive (beta)";
+          else if (st.detectedKind === "ed64") hint.textContent = "EverDrive (experimental)";
           else if (st.detectedKind === "unknown") hint.textContent = "Unknown";
           else hint.textContent = "Auto";
         }
         if (usbHint) {
           const p = st.resolvedPort || "";
           if (st.detectedKind === "sc64") usbHint.textContent = `Auto · SC64 · ${p}`;
-          else if (st.detectedKind === "ed64") usbHint.textContent = `Auto · EverDrive (beta) · ${p}`;
+          else if (st.detectedKind === "ed64") usbHint.textContent = `Auto · EverDrive (experimental) · ${p}`;
           else if (st.detectedKind === "unknown") usbHint.textContent = `Auto · not detected · ${p}`;
           else usbHint.textContent = p ? `Auto · ${p}` : "Auto-detect";
         }
@@ -4074,7 +4074,7 @@ function applyCartDeviceUi(opts = {}) {
   const v = cd?.value || "auto";
   const hint = document.getElementById("explorer-pane-cart-hint");
   if (hint) {
-    if (v === "ed64_beta") hint.textContent = "EverDrive (beta)";
+    if (v === "ed64_beta") hint.textContent = "EverDrive (experimental)";
     else if (v === "sc64") hint.textContent = "SC64";
     else hint.textContent = "Auto";
   }
@@ -4321,7 +4321,7 @@ function setupExplorerSettings() {
         const parsed = parseEd64LinearBaseInput(rawBase);
         if (parsed === null) {
           await showExplorerAlert(
-            "Enter a valid linear ROM address (for example hex 0x10000000 or a decimal number), or leave the field blank to disable SD browsing from this app.",
+            "Enter a valid linear ROM address (for example hex 0x10000000 or a decimal number), or leave the field blank to turn off experimental SD browsing.",
           );
           return;
         }

@@ -44,7 +44,7 @@ Treat any EverDrive listing produced this way as untrustworthy. Real host SD acc
 
 Xfer64 ships a **curated list** of candidate bases ([`ED64_LINEAR_BASE_HINTS`](../../crates/multi64-ed64-link/src/linear_probe.rs)) plus a **coarse grid** over typical N64 cart ROM space. For each address, the host issues **`RomRead` for 512 bytes at `base + 0`** and accepts the base if the buffer looks like **disk sector 0** (protective MBR / MBR boot signature `0x55AA`, plausible FAT BPB, or exFAT boot). Given the premise above, a match means only that those bytes resemble a boot sector: it can be a **false positive**, and there may be **several**.
 
-The UI exposes **Scan for SD base** (Settings → EverDrive advanced), which runs [`probe_ed64_sd_linear_bases`](../../crates/multi64-ed64-link/src/linear_probe.rs) on the resolved COM port. The saved **`ed64RomLinearBase`** (if any) is **tried first** during a scan, then the generic hint/grid list.
+The UI exposes **Scan for SD base** (Settings → EverDrive SD (experimental)), which runs [`probe_ed64_sd_linear_bases`](../../crates/multi64-ed64-link/src/linear_probe.rs) on the resolved COM port. The saved **`ed64RomLinearBase`** (if any) is **tried first** during a scan, then the generic hint/grid list.
 
 On each SD session open, [`Ed64RomLinear`](../../crates/multi64-sc64-sd/src/ed64_linear.rs) **re-reads sector 0** at the configured base and checks [`looks_like_disk_sector0`](../../crates/multi64-ed64-link/src/linear_probe.rs) so a replug, firmware change, or bad manual value fails fast with a clear error.
 

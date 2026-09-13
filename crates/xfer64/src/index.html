@@ -483,19 +483,19 @@
               <section class="explorer-help-section" aria-labelledby="help-h-auto">
                 <h3 class="explorer-help-section-title" id="help-h-auto">Auto-detect</h3>
                 <p>
-                  In <strong>Settings</strong>, <strong>Auto-detect (recommended)</strong> tries to figure out which cart is plugged in. If it guesses wrong, pick <strong>SummerCart64</strong> or <strong>EverDrive-64 X7 (beta)</strong> yourself.
+                  In <strong>Settings</strong>, <strong>Auto-detect (recommended)</strong> tries to figure out which cart is plugged in. If it guesses wrong, pick <strong>SummerCart64</strong> or <strong>EverDrive-64 X7 (experimental)</strong> yourself.
                 </p>
               </section>
               <section class="explorer-help-section explorer-help-section--note" aria-labelledby="help-h-ed64">
-                <h3 class="explorer-help-section-title" id="help-h-ed64">EverDrive (beta)</h3>
+                <h3 class="explorer-help-section-title" id="help-h-ed64">EverDrive (experimental)</h3>
                 <p>
-                  EverDrive talks to the PC differently than SummerCart64. If you pick EverDrive in Settings and want to browse the SD card from this app, use <strong>EverDrive (advanced)</strong> there and enter the value your setup needs (or leave it blank if you only need the serial port for other tools).
-                  For the simplest “plug in and go” SD access from Windows here, choose <strong>SummerCart64</strong> or <strong>Auto-detect</strong> when a SummerCart64 is connected.
+                  EverDrive talks to the PC differently than SummerCart64. Browsing its SD card from this app is <strong>experimental</strong>: EverDrive's USB protocol has no SD command, so Xfer64 reads cart memory instead, and that is not expected to show your card's files. The settings are under <strong>EverDrive SD (experimental)</strong>; leave the address blank if you only need the serial port for other tools.
+                  For SD access over USB from Windows, use a <strong>SummerCart64</strong>, or <strong>Auto-detect</strong> with one connected.
                 </p>
                 <details class="explorer-help-details">
                   <summary>Technical details</summary>
                   <p>
-                    Access uses the vendor serial protocol and an optional linear ROM base address; firmware-dependent, and some card operations may be read-only. Repository documentation under <code>docs/spec/</code> has the full picture for developers.
+                    Experimental and read-only. Xfer64 sends the vendor <code>RomRead</code> command at a linear base address, which reads cart ROM memory rather than the SD card, so no address is expected to list the card. <code>docs/spec/ed64-sd-usb-host.md</code> in the repository explains why.
                   </p>
                 </details>
               </section>
@@ -585,7 +585,7 @@
             <select id="explorer-cart-device" class="explorer-cart-device-select" aria-describedby="explorer-cart-device-hint">
               <option value="auto">Auto-detect (recommended)</option>
               <option value="sc64">SummerCart64</option>
-              <option value="ed64_beta">EverDrive-64 X7 (beta)</option>
+              <option value="ed64_beta">EverDrive-64 X7 (experimental)</option>
             </select>
           </label>
           <p class="explorer-settings-hint" id="explorer-cart-device-hint"></p>
@@ -596,9 +596,9 @@
           hidden
           aria-hidden="true"
         >
-          <h3 class="explorer-settings-section-title">EverDrive (advanced)</h3>
+          <h3 class="explorer-settings-section-title">EverDrive SD (experimental)</h3>
           <p class="explorer-settings-hint">
-            Optional. Needed only if you want to list and copy files on the SD card from this PC while <strong>EverDrive-64 X7 (beta)</strong> is selected above.
+            Experimental and read-only. Xfer64 reads cart memory here rather than the SD card, so this is not expected to list your card's files. Used only while <strong>EverDrive-64 X7 (experimental)</strong> is selected above.
           </p>
           <label class="explorer-settings-field">
             <span class="explorer-settings-label">Linear ROM address</span>
@@ -608,12 +608,12 @@
               class="explorer-settings-text-input"
               autocomplete="off"
               spellcheck="false"
-              placeholder="Leave blank to disable SD browsing here"
+              placeholder="Leave blank to turn off experimental SD browsing"
               aria-describedby="explorer-ed64-linear-base-hint"
             />
           </label>
           <p class="explorer-settings-hint" id="explorer-ed64-linear-base-hint">
-            For advanced users: firmware-specific address for SD access over USB. Wrong values will not work. Clear the field to turn off SD browsing from this app. Use <strong>Scan for SD base</strong> to guess a value from the card (takes a short while).
+            Experimental: the address is read with the vendor <code>RomRead</code> command, which reaches cart memory rather than the SD card, so no value is expected to show your card. Clear the field to turn this off. <strong>Scan for SD base</strong> looks for memory that resembles a disk (takes a short while).
           </p>
           <div class="explorer-settings-row explorer-ed64-scan-row">
             <button type="button" class="btn" id="btn-ed64-probe-linear-base">Scan for SD base</button>

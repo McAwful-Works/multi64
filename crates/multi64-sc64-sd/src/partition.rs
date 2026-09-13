@@ -784,7 +784,7 @@ impl Ed64SdSession {
     ) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "EverDrive linear ROM session is read-only from the PC in this build.",
+            "The experimental EverDrive SD mode is read-only.",
         ))
     }
 
@@ -801,14 +801,14 @@ impl Ed64SdSession {
     {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "EverDrive linear ROM session is read-only from the PC in this build.",
+            "The experimental EverDrive SD mode is read-only.",
         ))
     }
 
     pub fn remove_cart_path(&self, _path: &str) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "EverDrive linear ROM session is read-only from the PC in this build.",
+            "The experimental EverDrive SD mode is read-only.",
         ))
     }
 
@@ -819,21 +819,21 @@ impl Ed64SdSession {
     ) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "EverDrive linear ROM session is read-only from the PC in this build.",
+            "The experimental EverDrive SD mode is read-only.",
         ))
     }
 
     pub fn mkdir_cart(&self, _path: &str) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "EverDrive linear ROM session is read-only from the PC in this build.",
+            "The experimental EverDrive SD mode is read-only.",
         ))
     }
 
     pub fn rename_cart(&self, _from: &str, _to: &str) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "EverDrive linear ROM session is read-only from the PC in this build.",
+            "The experimental EverDrive SD mode is read-only.",
         ))
     }
 }
