@@ -21,6 +21,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
 futures-util = "0.3"
 multi64-ed64-l2 = { path = "../ed64-l2" }
+multi64-ed64pro-l2 = { path = "../ed64pro-l2" }
 multi64-sc64-l2 = { path = "../sc64-l2" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

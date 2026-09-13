@@ -75,6 +75,12 @@ Implementations SHOULD document how they satisfy these; L3 already caps `PAYLOAD
 
 These rules keep **one L3 spec** for all carts; differences stay inside L2/L1.
 
+### 5.2 EverDrive-64 PRO (draft in repo)
+
+- **Scope:** the **EverDrive-64 PRO** only. It speaks Krikzz's edlink Gen3 protocol, not the X-series USB model above, so nothing in §5 before this subsection applies to it.
+- **Mapping (draft):** [**l3-over-everdrive-pro.md**](./l3-over-everdrive-pro.md). The host writes L3 octets into the cart FIFO in chunks of at most 2048 bytes (1024 recommended), paced by time because the host cannot see the FIFO's fill level; the ROM's output arrives raw. No padding and no framing, so §5.1 is satisfied by splitting alone.
+- **Implementation:** Rust crate **`multi64-ed64pro-l2`** (`crates/ed64pro-l2`). No public reference implementation exists, so this is the repository's own design, and it has never been run against a cart.
+
 ---
 
 ## 6. Error mapping

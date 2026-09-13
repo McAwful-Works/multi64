@@ -10,9 +10,9 @@ The console side of an RDRAM peek/poke integration: libdragon- and libultra-free
 
 ## `test-rom/` — all-in-one hardware test ROM
 
-**Single** build output: **`multi64_test.z64`** — the official **Multi64** e2e ROM for **SummerCart64** + L3, and the same binary for **EverDrive X7**. Uses libdragon (`N64_INST`).
+**Single** build output: **`multi64_test.z64`** — the official **Multi64** e2e ROM for **SummerCart64** + L3, and the same binary for **EverDrive X7** and **EverDrive-64 PRO** (both experimental). Uses libdragon (`N64_INST`).
 
-The committed binary is built from the current source and accepts both SummerCart64 and EverDrive.
+The committed binary is built from the current source and accepts SummerCart64, EverDrive X7 and EverDrive-64 PRO.
 
 > **Built with the versions pinned in [`toolchain.lock`](toolchain.lock)** — libdragon `c4a7e11`, mips64-elf GCC **16.2.0**. Use `./setup-toolchain.sh` to install exactly those; see *Toolchain* below.
 
@@ -68,6 +68,8 @@ cargo run -p sc64-echo-test -- --port COM3
 ```
 
 **EverDrive X7:** same ROM — the committed binary boots on an EverDrive and shows an on-screen **UNVALIDATED** warning; use **`ed64-l3-framing-e2e`** / **`ed64-echo-test`**. [`multi64-ed64-l2`](../crates/ed64-l2/README.md) implements **`Ed64L2Pipe`**, but the mapping is **unvalidated on hardware** — these are the tools that would validate it. Start with **`ed64-smoke`** to confirm the port, then see [`l3-over-everdrive-x7.md`](../docs/spec/l3-over-everdrive-x7.md) §4.5.
+
+**EverDrive-64 PRO:** same ROM. libdragon's `usb.h` does not know the PRO, so `test-rom/cart_link.c` detects one first and routes USB traffic through `test-rom/ed64pro.c`; the ROM then shows an on-screen **UNVALIDATED** warning. Host side: `multi64d --cart ed64pro`. Never run on a cart — see [`l3-over-everdrive-pro.md`](../docs/spec/l3-over-everdrive-pro.md) §8 and §9.
 
 ### `multi64d` + M64T / BENCH
 

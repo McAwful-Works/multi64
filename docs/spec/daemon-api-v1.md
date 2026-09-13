@@ -131,13 +131,13 @@ Server responds with:
 | `--config <path>` | (none) | TOML config file; env: `MULTI64D_CONFIG` |
 | `--serial` | (required†) | Serial device (e.g. `COM3`, `/dev/ttyACM0`); env: `MULTI64D_SERIAL` |
 | `--baud` | `115200` | Baud (often ignored on USB-CDC cart adapters); env: `MULTI64D_BAUD` |
-| `--cart <sc64\|ed64>` | `sc64` | Which cart's L2 mapping carries the L3 stream. `ed64` selects the EverDrive-64 X7 `DMA@` mapping, which is **experimental** and has never been run against a cart; the daemon logs a warning when it is chosen. Env: `MULTI64D_CART`; config file: `cart = "ed64"` |
+| `--cart <sc64\|ed64\|ed64pro>` | `sc64` | Which cart's L2 mapping carries the L3 stream. `ed64` selects the EverDrive-64 X7 `DMA@` mapping; `ed64pro` selects the EverDrive-64 PRO mapping ([`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md)), which runs at the PRO's fixed 921600 baud and ignores `--baud`. Both are **experimental** and have never been run against a cart; the daemon logs a warning when either is chosen. Env: `MULTI64D_CART`; config file: `cart = "ed64"` |
 | `--listen` | `127.0.0.1:38765` | TCP bind address; env: `MULTI64D_LISTEN` |
 | `--clear-serial [BOOL]` | off | Clear host serial buffers after open. Bare `--clear-serial` means `true`; `--clear-serial=false` (or `MULTI64D_CLEAR_SERIAL=false`) **overrides** `clear_serial = true` in a config file. Env: `MULTI64D_CLEAR_SERIAL` (`true` / `false`) |
 | `--allow-origin <ORIGIN>` | (none) | Browser origin permitted to call the daemon (§1.4); repeatable. Env: `MULTI64D_ALLOW_ORIGIN` (comma-separated) |
 | `--no-print-ports` | off | If set, do not log available serial ports at startup (default is to log them at info) |
 | `--list-ports` | off | Print serial port names to stdout and exit (for scripts) |
-| `--serial-trace` | off | Log every non-empty read from the cart at `trace!` on target `multi64_sc64_l2` or `multi64_ed64_l2`, depending on `--cart`. Merges with `RUST_LOG` when that is set. Env: `MULTI64D_SERIAL_TRACE` (`1` / `true` / `yes`) |
+| `--serial-trace` | off | Log every non-empty read from the cart at `trace!` on target `multi64_sc64_l2`, `multi64_ed64_l2` or `multi64_ed64pro_l2`, depending on `--cart`. Merges with `RUST_LOG` when that is set. Env: `MULTI64D_SERIAL_TRACE` (`1` / `true` / `yes`) |
 
 † Serial may come from **`--serial`**, **`MULTI64D_SERIAL`**, or **`serial = "..."`** in a config file (see §5.2). CLI and environment **override** file values — they never combine with them, so an explicit `false` or an explicit `--allow-origin` list replaces whatever the file said.
 

@@ -1,5 +1,5 @@
 /**
- * multi64 official test ROM — SummerCart64 + libdragon.
+ * multi64 official test ROM — SummerCart64 + libdragon (EverDrive X7 and PRO: experimental).
  *
  * Modes (pick from MODE MENU at boot or via menu hotkey):
  *   0 RAW L3 echo — verbatim MULTI64_L3 loopback (sc64-l3-framing-e2e, sc64-echo-test)
@@ -14,7 +14,7 @@
  *   When running: L opens menu (except in CTRL_POLL). In CTRL_POLL, only L+R opens the menu (after hold).
  *
  * M64T / BENCH controls (not in mode 3):
- *   B = STRESS_LARGE one usb_write (or chunked if C-down held).
+ *   B = STRESS_LARGE one cart_link_write (or chunked if C-down held).
  *   C-left/right = active port 0–3. C-up = L3 DATA on Log channel. D-up/down = bench interval ±15 (15..600).
  *   Start = L3 HEARTBEAT (Control).
  *
@@ -26,8 +26,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <timer.h>
-#include <usb.h>
 
+#include "cart_link.h"
 #include "mem_proto.h"
 #include "test_proto.h"
 
@@ -91,7 +91,7 @@ static void read_exact(uint8_t *dst, size_t cap, int total)
     int left = total;
     while (left > 0) {
         int chunk = left > (int)cap ? (int)cap : left;
-        usb_read(dst, chunk);
+        cart_link_read(dst, chunk);
         left -= chunk;
     }
 }
@@ -172,13 +172,8 @@ static void hud_redraw(uint32_t frame_ticks)
 
 static void run_raw_echo(void)
 {
-    uint32_t hdr = usb_poll();
-    if (hdr == 0) {
-        return;
-    }
-
-    uint32_t type = USBHEADER_GETTYPE(hdr);
-    int n = (int)USBHEADER_GETSIZE(hdr);
+    uint8_t type = 0;
+    int n = (int)cart_link_poll(&type);
 
     if (n <= 0) {
         return;
@@ -188,26 +183,23 @@ static void run_raw_echo(void)
     s_rx_bytes += (uint32_t)n;
 
     if (type == MULTI64_L3 && n <= (int)USB_READ_CHUNK) {
-        usb_write(MULTI64_L3, s_pkt, n);
+        cart_link_write(s_pkt, n);
         s_tx_bytes += (uint32_t)n;
     }
 }
 
 static void run_m64t_usb_rx(void)
 {
-    uint32_t hdr = usb_poll();
-    if (hdr != 0) {
-        uint32_t type = USBHEADER_GETTYPE(hdr);
-        int n = (int)USBHEADER_GETSIZE(hdr);
+    uint8_t type = 0;
+    int n = (int)cart_link_poll(&type);
 
-        if (n > 0) {
-            read_exact(s_pkt, USB_READ_CHUNK, n);
-            s_rx_bytes += (uint32_t)n;
+    if (n > 0) {
+        read_exact(s_pkt, USB_READ_CHUNK, n);
+        s_rx_bytes += (uint32_t)n;
 
-            if (type == MULTI64_L3) {
-                test_proto_rx_append(s_pkt, n);
-                (void)test_proto_drain_stream();
-            }
+        if (type == MULTI64_L3) {
+            test_proto_rx_append(s_pkt, n);
+            (void)test_proto_drain_stream();
         }
     }
 }
@@ -320,24 +312,28 @@ int main(void)
     printf("multi64 test ROM\n");
     printf("MODE MENU: D-pad + A to start\n");
 
-    if (!usb_initialize()) {
+    /* SC64 is the proven backend. The EverDrives are accepted so their host-side L2 mappings can
+       be validated at all -- neither has been exercised against a cart, so say so on screen rather
+       than let a silent boot imply it works. See docs/spec/l3-over-everdrive-x7.md 4.0 / 4.5 and
+       docs/spec/l3-over-everdrive-pro.md 8. */
+    const enum cart_link_kind cart = cart_link_init();
+    if (cart == CART_LINK_NONE) {
         printf("usb init failed\n");
         while (1) {
         }
     }
-
-    /* SC64 is the proven backend. EverDrive is accepted so the host-side ED64 L2 mapping can be
-       validated at all -- it has never been exercised against a cart, so say so on screen rather
-       than let a silent boot imply it works. See docs/spec/l3-over-everdrive-x7.md 4.0 / 4.5. */
-    const char cart = usb_getcart();
-    if (cart != CART_SC64 && cart != CART_EVERDRIVE) {
+    if (cart != CART_LINK_SC64 && cart != CART_LINK_EVERDRIVE && cart != CART_LINK_ED64PRO) {
         printf("Need SummerCart64 or EverDrive 64\n");
         while (1) {
         }
     }
-    if (cart == CART_EVERDRIVE) {
+    if (cart == CART_LINK_EVERDRIVE) {
         printf("EverDrive: UNVALIDATED host mapping\n");
         printf("  expect failures; see l3-over-everdrive-x7.md\n");
+    }
+    if (cart == CART_LINK_ED64PRO) {
+        printf("EverDrive PRO: UNVALIDATED host mapping\n");
+        printf("  expect failures; see l3-over-everdrive-pro.md\n");
     }
 
     printf("ready (menu open)\n");

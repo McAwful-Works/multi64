@@ -190,6 +190,8 @@ mod tests {
     fn cart_parses_from_toml() {
         let c: FileConfig = toml::from_str("serial = \"COM3\"\ncart = \"ed64\"\n").unwrap();
         assert_eq!(c.cart, Some(CartKind::Ed64));
+        let c: FileConfig = toml::from_str("serial = \"COM3\"\ncart = \"ed64pro\"\n").unwrap();
+        assert_eq!(c.cart, Some(CartKind::Ed64Pro));
         let c: FileConfig = toml::from_str("serial = \"COM3\"\n").unwrap();
         assert_eq!(c.cart, None);
     }
@@ -198,6 +200,9 @@ mod tests {
     fn unknown_cart_in_toml_is_rejected() {
         let err = toml::from_str::<FileConfig>("cart = \"everdrive\"\n").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("sc64") && msg.contains("ed64"), "{msg}");
+        assert!(
+            msg.contains("sc64") && msg.contains("ed64") && msg.contains("ed64pro"),
+            "{msg}"
+        );
     }
 }

@@ -16,6 +16,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use futures_util::StreamExt;
 use multi64_ed64_l2::Ed64L2Pipe;
+use multi64_ed64pro_l2::Ed64ProL2Pipe;
 use multi64_sc64_l2::Sc64L2Pipe;
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -40,6 +41,11 @@ const READ_BUF_BYTES: usize = 65536;
 /// [`CartKind::Ed64`] selects the EverDrive-64 X7 `DMA@` mapping from
 /// `docs/spec/l3-over-everdrive-x7.md` §4. It is **experimental**: transcribed from UNFLoader and
 /// libdragon, and never run against a cart. Selecting it here is wiring only.
+///
+/// [`CartKind::Ed64Pro`] selects the EverDrive-64 PRO mapping from
+/// `docs/spec/l3-over-everdrive-pro.md`: L3 octets written to the cart FIFO and read back raw. It
+/// is **experimental** in the same way, and more so: no reference host or ROM carries a byte stream
+/// over the PRO at all, so the mapping is this repository's own design on top of Krikzz's sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum CartKind {
@@ -48,6 +54,9 @@ pub enum CartKind {
     Sc64,
     /// EverDrive-64 X7 (experimental; never run against a cart).
     Ed64,
+    /// EverDrive-64 PRO (experimental; never run against a cart).
+    #[value(name = "ed64pro")]
+    Ed64Pro,
 }
 
 impl CartKind {
@@ -55,6 +64,7 @@ impl CartKind {
         match self {
             CartKind::Sc64 => "sc64",
             CartKind::Ed64 => "ed64",
+            CartKind::Ed64Pro => "ed64pro",
         }
     }
 }
@@ -74,11 +84,12 @@ pub struct SerialConfig {
     pub cart: CartKind,
 }
 
-/// An open L2 pipe for whichever cart [`SerialConfig::cart`] selects. Both pipes expose the same
+/// An open L2 pipe for whichever cart [`SerialConfig::cart`] selects. Every pipe exposes the same
 /// surface, so everything above this sees one L3 octet stream regardless of the cart.
 pub enum CartPipe {
     Sc64(Sc64L2Pipe),
     Ed64(Ed64L2Pipe),
+    Ed64Pro(Ed64ProL2Pipe),
 }
 
 impl CartPipe {
@@ -86,6 +97,7 @@ impl CartPipe {
         match self {
             CartPipe::Sc64(p) => p.set_timeout(t),
             CartPipe::Ed64(p) => p.set_timeout(t),
+            CartPipe::Ed64Pro(p) => p.set_timeout(t),
         }
     }
 
@@ -93,6 +105,7 @@ impl CartPipe {
         match self {
             CartPipe::Sc64(p) => p.clear_serial_buffers(),
             CartPipe::Ed64(p) => p.clear_serial_buffers(),
+            CartPipe::Ed64Pro(p) => p.clear_serial_buffers(),
         }
     }
 
@@ -100,6 +113,7 @@ impl CartPipe {
         match self {
             CartPipe::Sc64(p) => p.write_l3_stream(buf),
             CartPipe::Ed64(p) => p.write_l3_stream(buf),
+            CartPipe::Ed64Pro(p) => p.write_l3_stream(buf),
         }
     }
 
@@ -107,6 +121,7 @@ impl CartPipe {
         match self {
             CartPipe::Sc64(p) => p.read_l3_bytes(out),
             CartPipe::Ed64(p) => p.read_l3_bytes(out),
+            CartPipe::Ed64Pro(p) => p.read_l3_bytes(out),
         }
     }
 }
@@ -117,6 +132,9 @@ pub fn open_pipe(cfg: &SerialConfig) -> anyhow::Result<CartPipe> {
     let mut pipe = match cfg.cart {
         CartKind::Sc64 => CartPipe::Sc64(Sc64L2Pipe::open(&cfg.path, cfg.baud)?),
         CartKind::Ed64 => CartPipe::Ed64(Ed64L2Pipe::open(&cfg.path, cfg.baud)?),
+        // The PRO runs at its own fixed 921600 baud (ed64-pro-usb-host.md §2); `--baud` does not
+        // apply to it.
+        CartKind::Ed64Pro => CartPipe::Ed64Pro(Ed64ProL2Pipe::open(&cfg.path)?),
     };
     pipe.set_timeout(SERIAL_READ_TIMEOUT)?;
     if cfg.clear_serial {

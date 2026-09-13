@@ -9,6 +9,7 @@ Thanks for helping improve the bridge stack. This document is for **developers**
 | **Rust** | `rust-version` in the workspace [Cargo.toml](Cargo.toml) (currently **1.74+**). Install via [rustup](https://rustup.rs/). |
 | **SummerCart64** (optional) | Hardware runs: USB serial, [vendor USB docs](https://github.com/Polprzewodnikowy/SummerCart64). |
 | **EverDrive-64 X7** (optional) | **`multi64-ed64-l2`** / [docs/spec/l3-over-everdrive-x7.md](docs/spec/l3-over-everdrive-x7.md): USB model differs from SC64; see [Krikzz dev files](https://krikzz.com/pub/support/everdrive-64/x-series/dev/) and [N64brew ED64 X7](https://n64brew.dev/wiki/EverDrive-64_X7). **CI does not** exercise ED64 hardware. |
+| **EverDrive-64 PRO** (optional) | **`multi64-ed64pro-l2`** / [docs/spec/l3-over-everdrive-pro.md](docs/spec/l3-over-everdrive-pro.md): edlink Gen3, unrelated to the X7's USB model; start from spec §9. **CI does not** exercise it either. |
 | **N64 toolchain** (optional) | Build [n64/test-rom](n64/test-rom) → **`multi64_test.z64`**: **libdragon** and **`N64_INST`** per [n64/README.md](n64/README.md). |
 
 ## Quick checks
@@ -57,6 +58,7 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [crates/multi64-sc64-sd](crates/multi64-sc64-sd) | **SC64 SD over USB** — `Sc64SdSession`, FAT32 + exFAT (Xfer64 / `multi64d`); RAM-disk tests in `cargo test` |
 | [crates/multi64-ed64-link](crates/multi64-ed64-link) | EverDrive X-series **`usb64`** serial (`RomRead` / `RamRead`) |
 | [crates/ed64pro-link](crates/ed64pro-link) | **`multi64-ed64pro-link`** — EverDrive-64 PRO host link over edlink Gen3 ([spec](docs/spec/ed64-pro-usb-host.md)); scripted-transport tests only, **never run against a cart** |
+| [crates/ed64pro-l2](crates/ed64pro-l2) | **`multi64-ed64pro-l2`** — EverDrive-64 PRO L2 over the cart FIFO and USB link ([spec](docs/spec/l3-over-everdrive-pro.md)); fake-cart tests only, **never run against a cart** |
 | [crates/sc64-smoke](crates/sc64-smoke) | **`sc64-smoke`** — SC64 vendor `IDENTIFIER` / `VERSION` |
 | [crates/sc64-echo-test](crates/sc64-echo-test) | **`sc64-echo-test`** — raw L3 loopback e2e over **`Sc64L2Pipe`** (test ROM **RAW_ECHO**) |
 | [crates/sc64-l3-framing-e2e](crates/sc64-l3-framing-e2e) | **`sc64-l3-framing-e2e`** — L3 framing e2e over **`Sc64L2Pipe`** |

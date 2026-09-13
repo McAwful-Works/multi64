@@ -23,7 +23,7 @@ fn tracing_use_ansi() -> bool {
 #[derive(Parser, Debug)]
 #[command(
     name = "multi64d",
-    about = "multi64 WebSocket bridge (L3 stream; SummerCart64, or experimental EverDrive X7)"
+    about = "multi64 WebSocket bridge (L3 stream; SummerCart64, or experimental EverDrive X7 / PRO)"
 )]
 struct Args {
     /// TOML config file (env: `MULTI64D_CONFIG`). If omitted, tries `./multi64d.toml` then OS config dir.
@@ -38,8 +38,9 @@ struct Args {
     #[arg(long, env = "MULTI64D_BAUD")]
     baud: Option<u32>,
 
-    /// Flash cart L2 mapping; default `sc64`. `ed64` (EverDrive-64 X7) is experimental and has
-    /// never been run against a cart. Env: `MULTI64D_CART`.
+    /// Flash cart L2 mapping; default `sc64`. `ed64` (EverDrive-64 X7) and `ed64pro`
+    /// (EverDrive-64 PRO) are experimental and have never been run against a cart. The PRO ignores
+    /// `--baud`. Env: `MULTI64D_CART`.
     #[arg(long, env = "MULTI64D_CART", value_enum, value_name = "CART")]
     cart: Option<CartKind>,
 
@@ -78,8 +79,8 @@ struct Args {
     #[arg(long, default_value_t = false)]
     list_ports: bool,
 
-    /// Log every non-empty serial read from the cart (`trace!` in `multi64-sc64-l2` or
-    /// `multi64-ed64-l2`, depending on `--cart`).
+    /// Log every non-empty serial read from the cart (`trace!` in `multi64-sc64-l2`,
+    /// `multi64-ed64-l2` or `multi64-ed64pro-l2`, depending on `--cart`).
     /// Also set env `MULTI64D_SERIAL_TRACE=1` (see `build_env_filter`).
     #[arg(long, default_value_t = false)]
     serial_trace: bool,
@@ -96,7 +97,8 @@ fn env_multi64d_serial_trace() -> bool {
 
 /// Per-read trace targets of both L2 pipes. Enabling both costs nothing: only the pipe `--cart`
 /// selects ever emits.
-const SERIAL_TRACE_TARGETS: &str = "multi64_sc64_l2=trace,multi64_ed64_l2=trace";
+const SERIAL_TRACE_TARGETS: &str =
+    "multi64_sc64_l2=trace,multi64_ed64_l2=trace,multi64_ed64pro_l2=trace";
 
 /// `tracing_subscriber::fmt` defaults to `info` when `RUST_LOG` is unset; our serial chunks use
 /// `trace!`, so they never appear unless `RUST_LOG` includes the pipe targets above.
@@ -136,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
     if args.serial_trace || env_multi64d_serial_trace() {
         tracing::info!(
             target: "multi64d",
-            "serial trace on (stderr): non-empty reads from cart emit TRACE on target multi64_sc64_l2 or multi64_ed64_l2"
+            "serial trace on (stderr): non-empty reads from cart emit TRACE on target multi64_sc64_l2, multi64_ed64_l2 or multi64_ed64pro_l2"
         );
     }
 
@@ -172,10 +174,14 @@ async fn main() -> anyhow::Result<()> {
         cart = %resolved.cart,
         "resolved configuration"
     );
-    if resolved.cart == CartKind::Ed64 {
-        tracing::warn!(
+    match resolved.cart {
+        CartKind::Sc64 => {}
+        CartKind::Ed64 => tracing::warn!(
             "--cart ed64 is experimental: the EverDrive X7 mapping comes from UNFLoader and libdragon and has never been run against a cart (docs/spec/l3-over-everdrive-x7.md 4.5)"
-        );
+        ),
+        CartKind::Ed64Pro => tracing::warn!(
+            "--cart ed64pro is experimental: the EverDrive PRO mapping is this repository's own design on Krikzz's edlink sources and has never been run against a cart; --baud is ignored (docs/spec/l3-over-everdrive-pro.md)"
+        ),
     }
     if !args.no_print_ports {
         log_serial_ports_tracing()?;
