@@ -2,7 +2,11 @@
 
 > **Documentation:** [Documentation map](../docs/README.md) · [Flash carts (L2)](../docs/README.md#flash-carts-l2-backends) · **Contributing:** [CONTRIBUTING.md](../CONTRIBUTING.md)
 
-This folder builds **libdragon** ROMs for on-cart testing. The in-tree **L2** reference is **SummerCart64**; other carts need matching L2 + the same L3 stream ([`l2-link-adapter.md`](../docs/spec/l2-link-adapter.md)).
+This folder builds **libdragon** ROMs for on-cart testing, and holds the **M64P agent** that goes into other ROMs. The in-tree **L2** reference is **SummerCart64**; other carts need matching L2 + the same L3 stream ([`l2-link-adapter.md`](../docs/spec/l2-link-adapter.md)).
+
+## `agent/` — M64P agent for game ROMs
+
+The console side of an RDRAM peek/poke integration: libdragon- and libultra-free code a game calls once per frame. It shares `test-rom/mem_proto.c` with the test ROM's **MEM_AGENT** mode. See [`agent/README.md`](agent/README.md) and the [ROM integration guides](../docs/integration/README.md).
 
 ## `test-rom/` — all-in-one hardware test ROM
 
