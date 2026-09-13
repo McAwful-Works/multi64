@@ -2698,6 +2698,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "multi64-ed64pro-link"
+version = "0.1.0"
+dependencies = [
+ "serialport",
+ "tracing",
+]
+
+[[package]]
 name = "multi64-l3"
 version = "0.1.0"
 

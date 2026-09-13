@@ -18,6 +18,7 @@ members = [
     "crates/xfer64/src-tauri",
     "crates/multi64-sc64-sd",
     "crates/multi64-ed64-link",
+    "crates/ed64pro-link",
     "crates/multi64-test-connector-gui/src-tauri",
 ]
 

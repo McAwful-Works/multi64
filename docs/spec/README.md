@@ -16,6 +16,7 @@ Normative **Multi64** wire and behavior. Each spec file carries its own **Spec-R
 | [**sc64-sd-usb-host.md**](sc64-sd-usb-host.md) | **SC64**: host SD / FAT over USB (`SD_CARD_OP`); normative for `multi64-sc64-sd` |
 | [**ed64-sd-usb-host.md**](ed64-sd-usb-host.md) | **EverDrive**: X-series `usb64` serial, and why the **`RomRead`** SD experiment does not reach the card |
 | [**l3-over-everdrive-x7.md**](l3-over-everdrive-x7.md) | **EverDrive X7** (Draft): L3 over ED64 USB — §4 host mapping written, unvalidated on hardware |
+| [**ed64-pro-usb-host.md**](ed64-pro-usb-host.md) | **EverDrive-64 PRO** (Draft): edlink Gen3 host link — handshake, file system, cart memory, FIFO; unvalidated on hardware |
 | [**daemon-api-v1.md**](daemon-api-v1.md) | **`multi64d`**: HTTP + WebSocket bridge |
 | [**test-l3-application-v0.md**](test-l3-application-v0.md) | **M64T**: **`multi64_test.z64`** (`n64/test-rom`) host↔cart messages |
 | [**memory-l3-application-v0.md**](memory-l3-application-v0.md) | **M64P**: RDRAM peek/poke; game-agnostic, serviced from the ROM's per-frame hook |
@@ -34,6 +35,7 @@ Normative **Multi64** wire and behavior. Each spec file carries its own **Spec-R
 | Daemon API | `multi64d` (`crates/multi64d`) |
 | SC64 SD / FAT host (`SD_CARD_OP`, …) | `multi64-sc64-sd` (`crates/multi64-sc64-sd`) — see [`sc64-sd-usb-host.md`](sc64-sd-usb-host.md) |
 | EverDrive **`usb64`** serial helpers | `multi64-ed64-link` (`crates/multi64-ed64-link`) — see [`ed64-sd-usb-host.md`](ed64-sd-usb-host.md) |
+| EverDrive-64 **PRO** host link (edlink Gen3) | `multi64-ed64pro-link` (`crates/ed64pro-link`) — see [`ed64-pro-usb-host.md`](ed64-pro-usb-host.md); **unvalidated on hardware** |
 
 ### Host binaries (hardware / CLI)
 

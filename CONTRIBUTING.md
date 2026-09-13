@@ -56,6 +56,7 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [crates/multi64-test-connector-gui](crates/multi64-test-connector-gui) | Optional GUI; same WebSocket contract as the CLI |
 | [crates/multi64-sc64-sd](crates/multi64-sc64-sd) | **SC64 SD over USB** — `Sc64SdSession`, FAT32 + exFAT (Xfer64 / `multi64d`); RAM-disk tests in `cargo test` |
 | [crates/multi64-ed64-link](crates/multi64-ed64-link) | EverDrive X-series **`usb64`** serial (`RomRead` / `RamRead`) |
+| [crates/ed64pro-link](crates/ed64pro-link) | **`multi64-ed64pro-link`** — EverDrive-64 PRO host link over edlink Gen3 ([spec](docs/spec/ed64-pro-usb-host.md)); scripted-transport tests only, **never run against a cart** |
 | [crates/sc64-smoke](crates/sc64-smoke) | **`sc64-smoke`** — SC64 vendor `IDENTIFIER` / `VERSION` |
 | [crates/sc64-echo-test](crates/sc64-echo-test) | **`sc64-echo-test`** — raw L3 loopback e2e over **`Sc64L2Pipe`** (test ROM **RAW_ECHO**) |
 | [crates/sc64-l3-framing-e2e](crates/sc64-l3-framing-e2e) | **`sc64-l3-framing-e2e`** — L3 framing e2e over **`Sc64L2Pipe`** |

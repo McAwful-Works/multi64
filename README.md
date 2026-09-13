@@ -52,6 +52,7 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 | `multi64-test-connector` | CLI ↔ **`multi64_test.z64`** ([`docs/connectors/test-rom.md`](docs/connectors/test-rom.md)) |
 | `multi64-sc64-sd` | FAT/exFAT over SC64 USB; optional EverDrive `RomRead` experiment (does not reach the SD card) — Xfer64 / tooling |
 | `multi64-ed64-link` | EverDrive X-series **`usb64`** serial (`RomRead` / `RamRead`) |
+| `multi64-ed64pro-link` | EverDrive-64 **PRO** host link (edlink Gen3): handshake, SD file system, cart memory — **never run against a cart** |
 | `multi64` (**Multi64**), `xfer64` (**Xfer64**) | Windows Tauri apps — READMEs under [`crates/multi64`](crates/multi64), [`crates/xfer64`](crates/xfer64) |
 | `multi64-test-connector-gui` | Optional GUI; same WebSocket contract as the CLI ([`test-rom.md`](docs/connectors/test-rom.md)) |
 
