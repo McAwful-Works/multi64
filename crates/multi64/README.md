@@ -53,7 +53,9 @@ These preferences live in **`localStorage`**, *not* in the settings file — the
 ## Settings & tray
 
 - Settings: `%APPDATA%\multi64\gui-settings.json`
+- **Cart** is passed to the daemon as `--cart` ([daemon API §5.1](../../docs/spec/daemon-api-v1.md)): **SummerCart64** (default), or **EverDrive-64 X7 (experimental)**. The X7 mapping has never been run against a cart ([spec §4.5](../../docs/spec/l3-over-everdrive-x7.md)), so the option, the status panel, the tray and the daemon log all say *experimental*, and a running daemon is no evidence the cart link works. Changing it restarts a running daemon. The EverDrive-64 PRO is not offered: it speaks edlink, which no `multi64d` backend implements.
 - **COM port → Auto** picks only a port whose USB descriptors identify a SummerCart64: FTDI `0403:6014` with an `SC64…` serial number or product string. Nothing is written to a port to find out. Other serial devices are never chosen, and with two carts plugged in neither is: the port stays unset, Settings and the status line say why, and the daemon does not start. Pick a port explicitly to use anything else.
+- **With the EverDrive-64 X7 selected, Auto picks nothing.** Its FT245R (`0403:6001`) is a stock FTDI part with nothing cart-specific in its descriptors, and Auto does not write to ports to find out; it also never hands an EverDrive the SC64's port. Choose the EverDrive's COM port.
 - **Autostart** (log in → open this app): uses [`auto-launch`](https://crates.io/crates/auto-launch); still starts **`multi64d`** as a child when “start daemon automatically” is on — not a Windows Service.
 ### Tray
 
@@ -61,7 +63,7 @@ These preferences live in **`localStorage`**, *not* in the settings file — the
 
 | Item | |
 |------|---|
-| `Daemon: …` | Status line, disabled. While running, names the port the daemon was actually started on (not what the settings would pick now), else the listen address; while stopped, says so when there is no cart port. Reflects whether the **process** is alive — the window shows finer-grained health, since a status line that polled `/health` would issue a blocking request on every update |
+| `Daemon: …` | Status line, disabled. While running, names the port the daemon was actually started on (not what the settings would pick now), else the listen address; while stopped, says so when there is no cart port. Any cart other than the default SummerCart64 is named after it (`· EverDrive-64 X7 (experimental)`), again the one the running process was started for. Reflects whether the **process** is alive — the window shows finer-grained health, since a status line that polled `/health` would issue a blocking request on every update |
 | **Start / Stop daemon** | One item, whichever applies. Disabled with no serial port configured, because starting would fail; **Stop** stays enabled without one, since the port can disappear while the daemon runs |
 | **Restart daemon** | Disabled while stopped — that case is **Start** |
 | **Open Xfer64** | Reads *Install Xfer64…* when only the bundled installer is present, and is greyed when neither is |

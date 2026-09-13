@@ -32,6 +32,8 @@
       <dl class="status-grid">
         <dt>Daemon</dt>
         <dd id="status-running">—</dd>
+        <dt>Cart</dt>
+        <dd id="status-cart">—</dd>
         <dt>Health</dt>
         <dd id="status-healthy">—</dd>
         <dt>Listen</dt>
@@ -85,6 +87,18 @@
         <div class="settings-body">
         <section class="settings-section">
           <h3 class="settings-section-title">Serial &amp; network</h3>
+          <label class="field">
+            <span>Cart</span>
+            <select id="cart" aria-describedby="cart-hint">
+              <option value="sc64">SummerCart64</option>
+              <option value="ed64">EverDrive-64 X7 (experimental)</option>
+            </select>
+          </label>
+          <p class="hint hint-warning" id="cart-hint" hidden>
+            Experimental: the EverDrive-64 X7 link has never been run against a cart, so a running daemon does not
+            show that it works. X7 only — the EverDrive-64 PRO uses a different USB protocol and is not supported
+            here. Restarts the daemon when saved.
+          </p>
           <label class="field">
             <span>COM port</span>
             <select id="serial-port"></select>
@@ -162,7 +176,7 @@
             <span>Daemon logging</span>
             <select id="multi64d-log-preset" aria-describedby="multi64d-log-hint">
               <option value="default">Default (info)</option>
-              <option value="debug">Debug (SC64 + multi64d)</option>
+              <option value="debug">Debug (cart link + multi64d)</option>
               <option value="serialTrace">Serial trace (each cart read)</option>
               <option value="verbose">Verbose (debug + serial trace)</option>
             </select>

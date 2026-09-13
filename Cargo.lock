@@ -2669,6 +2669,7 @@ dependencies = [
  "anyhow",
  "auto-launch",
  "dirs",
+ "multi64d",
  "parking_lot",
  "serde",
  "serde_json",

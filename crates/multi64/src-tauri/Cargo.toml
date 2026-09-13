@@ -29,3 +29,7 @@ anyhow = "1"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
 
+[dev-dependencies]
+# Tests check the saved cart names against the daemon's own `--cart` values.
+multi64d = { path = "../../multi64d" }
+

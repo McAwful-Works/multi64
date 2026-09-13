@@ -11,6 +11,7 @@ async function refreshStatus() {
       : s.running
         ? "Waiting…"
         : "—";
+    document.getElementById("status-cart").textContent = s.cart || "—";
     document.getElementById("status-listen").textContent = s.listen || "—";
     document.getElementById("status-msg").textContent = s.message || "—";
     // Match the tray, which offers only the action that applies. Leaving both live means
@@ -25,15 +26,22 @@ async function refreshStatus() {
   }
 }
 
+/** The last port enumeration's auto pick, kept so a cart change can re-render without re-enumerating. */
+let lastAuto = { auto: null, autoWarning: null };
+
+const EVERDRIVE_AUTO_HINT =
+  "Auto only recognises a SummerCart64. Pick the EverDrive's COM port — its USB adapter has nothing cart-specific to detect.";
+
 async function refreshPorts() {
   // One call, one port enumeration: asking for the list and the auto pick separately enumerated
   // twice and could disagree if a cart was plugged in between the two.
   const { ports, auto, autoWarning } = await invoke("get_serial_port_options");
+  lastAuto = { auto, autoWarning };
   const sel = document.getElementById("serial-port");
+  const selected = sel.value;
   sel.innerHTML = "";
   const optAuto = document.createElement("option");
   optAuto.value = "";
-  optAuto.textContent = auto ? `Auto (${auto})` : "Auto (no cart selected)";
   sel.appendChild(optAuto);
   for (const p of ports) {
     const o = document.createElement("option");
@@ -41,17 +49,47 @@ async function refreshPorts() {
     o.textContent = p;
     sel.appendChild(o);
   }
-  // Auto only picks a port that identifies as a cart, so with no pick the daemon will not start
-  // on Auto. Say why in a warning rather than leaving a hint that reads as fine.
-  const hint = document.getElementById("auto-hint");
-  hint.textContent = auto
-    ? `Auto uses the cart on ${auto}.`
-    : autoWarning || "No cart found.";
-  hint.classList.toggle("hint-warning", !auto);
+  if ([...sel.options].some((o) => o.value === selected)) {
+    sel.value = selected;
+  }
+  renderCartAndAuto();
   return { ports, auto };
 }
 
+/**
+ * The Auto option text, the port hint and the cart warning all depend on the cart being edited,
+ * so they re-render when it changes. The backend enforces the same rule: Auto never gives an
+ * EverDrive a port, SC64's included.
+ */
+function renderCartAndAuto() {
+  const everdrive = document.getElementById("cart").value === "ed64";
+  const { auto, autoWarning } = lastAuto;
+  const sel = document.getElementById("serial-port");
+  const onAuto = sel.value === "";
+  const optAuto = sel.options[0];
+  if (optAuto) {
+    optAuto.textContent = everdrive
+      ? "Auto (SummerCart64 only)"
+      : auto
+        ? `Auto (${auto})`
+        : "Auto (no cart selected)";
+  }
+  document.getElementById("cart-hint").hidden = !everdrive;
+  // Auto only picks a port that identifies as a cart, so with no pick the daemon will not start
+  // on Auto. Say why in a warning rather than leaving a hint that reads as fine.
+  const hint = document.getElementById("auto-hint");
+  if (everdrive) {
+    hint.textContent = EVERDRIVE_AUTO_HINT;
+    hint.classList.toggle("hint-warning", onAuto);
+  } else {
+    hint.textContent = auto ? `Auto uses the cart on ${auto}.` : autoWarning || "No cart found.";
+    hint.classList.toggle("hint-warning", !auto);
+  }
+}
+
 function applySettingsToForm(s) {
+  // Anything unrecognised reads as the proven default rather than leaving the select blank.
+  document.getElementById("cart").value = s.cart === "ed64" ? "ed64" : "sc64";
   document.getElementById("baud").value = String(s.baud ?? 115200);
   document.getElementById("listen").value = s.listen || "127.0.0.1:38765";
   document.getElementById("auto-start-daemon").checked = s.autoStartDaemon !== false;
@@ -74,6 +112,7 @@ function readSettingsFromForm() {
   const raw = serialSel.value;
   return {
     serialPort: raw === "" ? null : raw,
+    cart: document.getElementById("cart").value === "ed64" ? "ed64" : "sc64",
     baud: parseInt(document.getElementById("baud").value, 10) || 115200,
     listen: document.getElementById("listen").value.trim() || "127.0.0.1:38765",
     autoStartDaemon: document.getElementById("auto-start-daemon").checked,
@@ -97,6 +136,8 @@ async function loadSettings() {
   } else {
     sel.value = "";
   }
+  // The hint depends on whether Auto is selected, which is only known now.
+  renderCartAndAuto();
   updateDevPanel();
   updateLogPresetVisibility();
   updateStartMinimizedGate();
@@ -221,6 +262,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btn-ports").addEventListener("click", async () => {
     await refreshPorts();
   });
+  document.getElementById("cart").addEventListener("change", renderCartAndAuto);
+  document.getElementById("serial-port").addEventListener("change", renderCartAndAuto);
   document.getElementById("btn-start").addEventListener("click", async () => {
     try {
       await invoke("daemon_start");
