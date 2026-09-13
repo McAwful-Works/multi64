@@ -6,6 +6,8 @@
 //! - **EverDrive X-series** — experimental **`RomRead`** linear map when `ed64RomLinearBase` is set. `RomRead`
 //!   reads cart ROM memory, not the SD card, so this is not expected to list the card
 //!   (`docs/spec/ed64-sd-usb-host.md`). Not Windows mass storage.
+//! - **EverDrive-64 PRO** — experimental file-level access over edlink Gen3 (`docs/spec/ed64-pro-usb-host.md`).
+//!   Writes are refused until the user consents ([`ED64PRO_WRITE_CONSENT_MARKER`]).
 //!
 //! # Layout
 //!
@@ -22,10 +24,13 @@ use crate::dev_log::{ExplorerDevLog, ExplorerSettingsSnapshot, ExplorerSettingsS
 use crate::explorer::ExplorerPathCache;
 use crate::progress::{emit_explorer_progress, emit_explorer_progress_full};
 use multi64_ed64_link as ed64_link;
-use multi64_sc64_sd::{cart_path_parts, CartSession, Ed64SdSession, Sc64SdSession};
+use multi64_sc64_sd::{
+    cart_path_parts, CartSession, Ed64ProSdSession, Ed64SdSession, Sc64SdSession,
+};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 use tauri::Manager;
@@ -74,11 +79,13 @@ pub struct ListDirPageResult {
     pub total: usize,
     pub offset: usize,
     pub exfat: bool,
+    /// Volume label for the status line: `FAT`, `exFAT`, or a cart name when the host does not mount the volume.
+    pub fs_label: String,
 }
 
 /// Directories first, then case-insensitive name — one `to_lowercase` per entry (matches PC pane sort).
-/// Cached cart directory list: path key, entries, exFAT volume flag.
-pub type CartDirListCache = Option<(String, Vec<UsbFsEntry>, bool)>;
+/// Cached cart directory list: path key, entries, exFAT volume flag, volume label.
+pub type CartDirListCache = Option<(String, Vec<UsbFsEntry>, bool, &'static str)>;
 
 fn sort_usb_entries_dirs_then_name_case_insensitive(out: &mut Vec<UsbFsEntry>) {
     if out.len() <= 1 {
@@ -144,7 +151,37 @@ const ED64_BETA_SD_MSG: &str = "EverDrive needs a linear ROM address for experim
 This mode reads cart memory rather than the SD card, so it is not expected to show your card's files.";
 
 const AUTO_DETECT_FAIL: &str = "Could not auto-detect the cart on this serial port. \
-Choose SummerCart64 or EverDrive-64 X7 (experimental) in Settings, or select another COM port.";
+Choose SummerCart64, EverDrive-64 PRO (experimental) or EverDrive-64 X7 (experimental) in Settings, or select another COM port.";
+
+/// Start of the error every write command returns for an EverDrive-64 PRO until the user consents.
+/// The frontend matches on it to ask, then retries; the CLI tells the user which flag to pass.
+pub const ED64PRO_WRITE_CONSENT_MARKER: &str = "ED64PRO_WRITE_CONSENT_REQUIRED";
+const ED64PRO_WRITE_CONSENT: &str = "ED64PRO_WRITE_CONSENT_REQUIRED: writing to an EverDrive-64 PRO is experimental and needs your confirmation first.";
+
+/// Set once the user accepts that EverDrive-64 PRO writes are experimental; lasts until the app exits.
+static ED64PRO_WRITES_ALLOWED: AtomicBool = AtomicBool::new(false);
+
+/// Refuse to write through an EverDrive-64 PRO session unless `allowed`.
+pub(crate) fn require_ed64pro_write_consent_for(
+    session: &CartSession,
+    allowed: bool,
+) -> Result<(), String> {
+    if session.is_ed64_pro() && !allowed {
+        Err(ED64PRO_WRITE_CONSENT.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn require_ed64pro_write_consent(session: &CartSession) -> Result<(), String> {
+    require_ed64pro_write_consent_for(session, ED64PRO_WRITES_ALLOWED.load(Ordering::SeqCst))
+}
+
+/// Record the user's consent to experimental EverDrive-64 PRO writes for the rest of this app run.
+#[tauri::command]
+pub fn cart_serial_allow_ed64pro_writes() {
+    ED64PRO_WRITES_ALLOWED.store(true, Ordering::SeqCst);
+}
 
 #[derive(Clone, Copy)]
 enum CartSdRole {
@@ -154,6 +191,8 @@ enum CartSdRole {
     Ed64Linear,
     /// EverDrive without a configured linear base.
     Ed64NoLinear,
+    /// EverDrive-64 PRO: file-level access over edlink Gen3 (experimental).
+    Ed64Pro,
 }
 
 fn cart_mode(settings: &ExplorerSettingsSnapshot) -> &str {
@@ -214,12 +253,14 @@ fn effective_sd_role_and_port(
             },
             None,
         )),
+        "ed64_pro" => Ok((CartSdRole::Ed64Pro, None)),
         "sc64" => Ok((CartSdRole::Sc64, None)),
         m if m.is_empty() || m == "auto" => {
             let port = resolve_port(st, settings)?;
             let k = probe_with_cache(st, &port, false)?;
             let role = match k {
                 DetectedCartKind::Sc64 => CartSdRole::Sc64,
+                DetectedCartKind::Ed64Pro => CartSdRole::Ed64Pro,
                 DetectedCartKind::Ed64Beta => {
                     if base.is_some() {
                         CartSdRole::Ed64Linear
@@ -270,7 +311,7 @@ fn suggest_port(settings: &ExplorerSettingsSnapshot) -> Option<String> {
         if let serialport::SerialPortType::UsbPort(u) = &p.port_type {
             let prod = u.product.as_deref().unwrap_or("").to_ascii_lowercase();
             let man = u.manufacturer.as_deref().unwrap_or("").to_ascii_lowercase();
-            let matches = if mode == "ed64_beta" {
+            let matches = if mode == "ed64_beta" || mode == "ed64_pro" {
                 usb_looks_ed64(&prod, &man)
             } else if mode == "sc64" {
                 usb_looks_sc64(&prod, &man)
@@ -325,7 +366,10 @@ fn detect_best_auto_port(
 
     for (_, port) in scored {
         let kind = probe_with_cache(st, &port, true)?;
-        if matches!(kind, DetectedCartKind::Sc64 | DetectedCartKind::Ed64Beta) {
+        if matches!(
+            kind,
+            DetectedCartKind::Sc64 | DetectedCartKind::Ed64Pro | DetectedCartKind::Ed64Beta
+        ) {
             return Ok(Some(port));
         }
     }
@@ -561,7 +605,7 @@ fn resolve_port_probed(
         if is_auto(settings) {
             "No matching cart port found: connect SC64/EverDrive or choose a COM port manually."
                 .to_string()
-        } else if is_ed64_beta_setting(settings) {
+        } else if is_ed64_beta_setting(settings) || cart_mode(settings) == "ed64_pro" {
             "No serial port: plug in the EverDrive (USB) or choose a COM port.".to_string()
         } else {
             "No serial port: plug in your flash cart (USB) or choose a COM port.".to_string()
@@ -614,6 +658,18 @@ where
                 let msg = e.to_string();
                 dev.log(format!(
                     "{context}: EverDrive SD session open FAILED: {msg}"
+                ));
+                msg
+            })?)
+        }
+        CartSdRole::Ed64Pro => {
+            dev.log(format!(
+                "{context}: open EverDrive-64 PRO session (port={port}, experimental)"
+            ));
+            CartSession::Ed64Pro(Ed64ProSdSession::open(&port).map_err(|e| {
+                let msg = e.to_string();
+                dev.log(format!(
+                    "{context}: EverDrive-64 PRO session open FAILED: {msg}"
                 ));
                 msg
             })?)
@@ -742,6 +798,12 @@ fn probe_status_blocking(
             mode,
             detected_kind: Some("ed64".to_string()),
             message: Some("Manual: EverDrive (experimental)".to_string()),
+        }),
+        "ed64_pro" => Ok(UsbProbeStatus {
+            resolved_port: port,
+            mode,
+            detected_kind: Some("ed64pro".to_string()),
+            message: Some("Manual: EverDrive PRO (experimental)".to_string()),
         }),
         "sc64" => Ok(UsbProbeStatus {
             resolved_port: port,
@@ -920,7 +982,7 @@ fn list_dir_page_blocking(
         let g = st.cart_list_cache.lock().map_err(|e| e.to_string())?;
         match g.as_ref() {
             None => true,
-            Some((k, _, _)) if k != &key => true,
+            Some((k, _, _, _)) if k != &key => true,
             Some(_) if fresh && off == 0 => true,
             _ => false,
         }
@@ -930,12 +992,13 @@ fn list_dir_page_blocking(
         dev.log(format!("cart_serial_list_dir_page load path={path:?}"));
         let path_for_closure = path.clone();
         let key_for_cache = key.clone();
-        let (mapped, exfat) =
+        let (mapped, exfat, fs_label) =
             with_session(dev, "cart_serial_list_dir_page", st, snap, |session| {
                 let entries = session
                     .list_dir(&path_for_closure)
                     .map_err(|e| e.to_string())?;
                 let exfat = session.is_exfat();
+                let fs_label = session.fs_label();
                 let mut mapped: Vec<UsbFsEntry> = entries
                     .into_iter()
                     .map(|e| UsbFsEntry {
@@ -948,14 +1011,14 @@ fn list_dir_page_blocking(
                     })
                     .collect();
                 sort_usb_entries_dirs_then_name_case_insensitive(&mut mapped);
-                Ok((mapped, exfat))
+                Ok((mapped, exfat, fs_label))
             })?;
         let mut g = st.cart_list_cache.lock().map_err(|e| e.to_string())?;
-        *g = Some((key_for_cache, mapped, exfat));
+        *g = Some((key_for_cache, mapped, exfat, fs_label));
     }
 
     let g = st.cart_list_cache.lock().map_err(|e| e.to_string())?;
-    let (_, entries, exfat) = g
+    let (_, entries, exfat, fs_label) = g
         .as_ref()
         .ok_or_else(|| "Internal: cart list cache empty.".to_string())?;
     let total = entries.len();
@@ -965,6 +1028,7 @@ fn list_dir_page_blocking(
         total,
         offset: off,
         exfat: *exfat,
+        fs_label: fs_label.to_string(),
     })
 }
 
@@ -1154,6 +1218,7 @@ pub async fn cart_serial_import_copy_one(
             port_lock,
         );
         with_session(&dev, "cart_serial_import_copy_one", &st, &snap, |session| {
+            require_ed64pro_write_consent(session)?;
             if cancel.is_cancelled() {
                 return Err("Cancelled".into());
             }
@@ -1333,6 +1398,7 @@ pub async fn cart_serial_import_copy_batch(
             &st,
             &snap,
             |session| {
+                require_ed64pro_write_consent(session)?;
                 for item in items {
                     if cancel.is_cancelled() {
                         return Err("Cancelled".into());
@@ -1496,6 +1562,7 @@ pub async fn cart_serial_remove_cart(
             port_lock,
         );
         with_session(&dev, "cart_serial_remove_cart", &st, &snap, |session| {
+            require_ed64pro_write_consent(session)?;
             for (i, p) in paths.iter().enumerate() {
                 if cancel.is_cancelled() {
                     return Err("Cancelled".into());
@@ -1546,6 +1613,7 @@ pub async fn cart_serial_mkdir_cart(
     let dev = (*dev).clone();
     spawn_with_cart_state(&st, "cart_serial_mkdir_cart", move |st| {
         let res = with_session(&dev, "cart_serial_mkdir_cart", st, &snap, |session| {
+            require_ed64pro_write_consent(session)?;
             session.mkdir_cart(&path).map_err(|e| e.to_string())
         });
         st.invalidate_cart_list_cache();
@@ -1566,6 +1634,7 @@ pub async fn cart_serial_rename_cart(
     let dev = (*dev).clone();
     spawn_with_cart_state(&st, "cart_serial_rename_cart", move |st| {
         let res = with_session(&dev, "cart_serial_rename_cart", st, &snap, |session| {
+            require_ed64pro_write_consent(session)?;
             session.rename_cart(&from, &to).map_err(|e| e.to_string())
         });
         st.invalidate_cart_list_cache();

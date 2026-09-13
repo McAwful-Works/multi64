@@ -14,3 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 serialport = "4"
 tracing = "0.1"
+
+[features]
+# In-memory EverDrive-64 PRO (`fake::FakeEd64Pro`) for other crates' host-only tests.
+fake = []

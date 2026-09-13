@@ -111,6 +111,7 @@ pub fn run() {
             cart_serial_sd::cart_serial_suggest_port,
             cart_serial_sd::cart_serial_probe_status,
             cart_serial_sd::cart_serial_invalidate_probe_cache,
+            cart_serial_sd::cart_serial_allow_ed64pro_writes,
             cart_serial_sd::cart_serial_ed64_linear_hint_bases,
             cart_serial_sd::cart_serial_probe_ed64_linear_base,
             cart_serial_sd::cart_serial_set_preferred_com,

@@ -79,7 +79,7 @@ A cart exposes one serial device, so the two stacks contend. `multi64d` resolves
 
 ### SD access layering
 
-`SdCardTransport` (`crates/multi64-sc64-sd/src/link.rs`) is the sector-level seam: SC64 implements it with vendor SD ops, EverDrive with `RomRead` at a configured base address — an experiment that reads cart ROM memory rather than the SD card, so it is not expected to list the card (`docs/spec/ed64-sd-usb-host.md`). `CartSession` sits above it and is what UI code uses (`list_dir`, `copy_cart_entry_to_host_with_progress`, `mkdir_cart`, …). EverDrive support is behind the crate's `ed64` feature, enabled only by `crates/xfer64/src-tauri`. The EverDrive SD path is experimental and read-only.
+`SdCardTransport` (`crates/multi64-sc64-sd/src/link.rs`) is the sector-level seam: SC64 implements it with vendor SD ops, EverDrive with `RomRead` at a configured base address — an experiment that reads cart ROM memory rather than the SD card, so it is not expected to list the card (`docs/spec/ed64-sd-usb-host.md`). `CartSession` sits above it and is what UI code uses (`list_dir`, `copy_cart_entry_to_host_with_progress`, `mkdir_cart`, …). EverDrive support is behind the crate's `ed64` feature, enabled only by `crates/xfer64/src-tauri`. The X-series EverDrive SD path is experimental and read-only. The **EverDrive-64 PRO** is different: its cart serves files, so `Ed64ProSdSession` (feature `ed64pro`) implements `CartSession` at file level with no `SdCardTransport`. It is experimental, never run against a cart, needs the user's consent before writing, and cannot rename.
 
 ## Conventions
 

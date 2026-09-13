@@ -4,11 +4,12 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Flash-cart SD over USB serial: SC64 SD_READ/MEMORY_READ + optional EverDrive RomRead experiment; FAT/exFAT"
+description = "Flash-cart SD over USB serial: SC64 SD_READ/MEMORY_READ (FAT/exFAT), optional EverDrive RomRead experiment, optional EverDrive-64 PRO file access"
 
 [dependencies]
 multi64-sc64-link = { path = "../sc64-link" }
 multi64-ed64-link = { path = "../multi64-ed64-link", optional = true }
+multi64-ed64pro-link = { path = "../ed64pro-link", optional = true }
 serialport = "4"
 fatfs = { version = "0.3", default-features = false, features = ["std", "alloc"] }
 hadris-fat = { version = "1.1", default-features = false, features = ["std", "read", "write", "lfn", "exfat"] }
@@ -19,6 +20,9 @@ bytemuck = { version = "1.14", features = ["derive", "min_const_generics"] }
 [features]
 default = []
 ed64 = ["dep:multi64-ed64-link"]
+# EverDrive-64 PRO: file-level SD access over edlink Gen3 (experimental).
+ed64pro = ["dep:multi64-ed64pro-link"]
 
 [dev-dependencies]
 sha2 = "0.11"
+multi64-ed64pro-link = { path = "../ed64pro-link", features = ["fake"] }
