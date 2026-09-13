@@ -86,7 +86,7 @@ impl SdCardTransport for Ed64RomLinear {
     fn write_sd_sectors(&mut self, _start_lba: u64, _buf: &[u8]) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "EverDrive SD mapping is read-only from the PC in this build.",
+            "The experimental EverDrive SD mode is read-only.",
         ))
     }
 

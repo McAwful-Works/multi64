@@ -140,11 +140,11 @@ impl ExplorerCartSerialState {
 }
 
 /// Shown when EverDrive is selected but no linear ROM address is configured for SD access.
-const ED64_BETA_SD_MSG: &str = "EverDrive needs a linear ROM address for SD access. Open Settings → EverDrive (advanced), then Scan for SD base or enter an address. \
-Until then, only USB cart detection works—the SD card is not available here.";
+const ED64_BETA_SD_MSG: &str = "EverDrive needs a linear ROM address for experimental SD access. Open Settings → EverDrive SD (experimental), then Scan for SD base or enter an address. \
+This mode reads cart memory rather than the SD card, so it is not expected to show your card's files.";
 
 const AUTO_DETECT_FAIL: &str = "Could not auto-detect the cart on this serial port. \
-Choose SummerCart64 or EverDrive (beta) in Settings, or select another COM port.";
+Choose SummerCart64 or EverDrive-64 X7 (experimental) in Settings, or select another COM port.";
 
 #[derive(Clone, Copy)]
 enum CartSdRole {
@@ -741,7 +741,7 @@ fn probe_status_blocking(
             resolved_port: port,
             mode,
             detected_kind: Some("ed64".to_string()),
-            message: Some("Manual: EverDrive (beta)".to_string()),
+            message: Some("Manual: EverDrive (experimental)".to_string()),
         }),
         "sc64" => Ok(UsbProbeStatus {
             resolved_port: port,
@@ -802,7 +802,7 @@ pub struct Ed64LinearProbeResult {
 }
 
 /// Read sector 0 at many candidate ROM addresses over USB serial; returns bases that look like a boot sector.
-/// Requires an EverDrive on the resolved COM port and Settings set to Auto-detect (EverDrive found) or EverDrive (beta).
+/// Requires an EverDrive on the resolved COM port and Settings set to Auto-detect (EverDrive found) or EverDrive-64 X7 (experimental).
 #[tauri::command]
 pub async fn cart_serial_probe_ed64_linear_base(
     st: State<'_, ExplorerCartSerialState>,
@@ -832,7 +832,7 @@ fn probe_ed64_linear_base_blocking(
     };
     if !allow {
         return Err(
-            "Connect an EverDrive, choose Auto-detect or EverDrive-64 X7 (beta) in Settings, then try again."
+            "Connect an EverDrive, choose Auto-detect or EverDrive-64 X7 (experimental) in Settings, then try again."
                 .into(),
         );
     }
