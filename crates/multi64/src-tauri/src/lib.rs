@@ -114,6 +114,12 @@ pub struct DaemonStatus {
 #[derive(Default)]
 struct DaemonInner {
     child: Option<Child>,
+    /// The port `child` was spawned with; set and cleared together with it.
+    ///
+    /// Settings only say what the *next* start would use. Re-resolving them can name a different
+    /// port than the live process holds: Auto re-enumerates, and a cart plugged in or pulled
+    /// mid-session changes the answer.
+    serial: Option<String>,
     logs: Vec<String>,
 }
 
@@ -453,6 +459,7 @@ fn daemon_is_running(daemon: &Arc<Mutex<DaemonInner>>) -> bool {
     match child.try_wait() {
         Ok(Some(status)) => {
             inner.child = None;
+            inner.serial = None;
             // push_log would re-lock this same non-reentrant mutex, so append inline.
             if inner.logs.len() >= MAX_LOG_LINES {
                 let drain = inner.logs.len() - MAX_LOG_LINES + 1;
@@ -485,6 +492,7 @@ fn kill_daemon(daemon: &Arc<Mutex<DaemonInner>>) {
 /// [`kill_daemon`] for callers already holding [`DAEMON_OPS`].
 fn kill_daemon_locked(daemon: &Arc<Mutex<DaemonInner>>) {
     let mut inner = daemon.lock();
+    inner.serial = None;
     if let Some(mut c) = inner.child.take() {
         let _ = c.kill();
         let _ = c.wait();
@@ -548,6 +556,7 @@ fn start_daemon(
 
     let mut inner = daemon.lock();
     inner.child = Some(child);
+    inner.serial = Some(serial);
     drop(inner);
     let _ = app.emit("daemon-changed", ());
     Ok(())
@@ -1055,6 +1064,23 @@ fn tray_labels(running: bool, serial: Option<&str>, listen: &str) -> TrayLabels 
     }
 }
 
+/// The port the tray names: while running, the one the live process was spawned with; while
+/// stopped, the one Start would use.
+///
+/// Running never re-resolves, so the label cannot drift from the process and a running daemon
+/// costs no port enumeration per menu rebuild.
+fn tray_serial(
+    running: bool,
+    spawned: Option<String>,
+    resolve: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if running {
+        spawned
+    } else {
+        resolve()
+    }
+}
+
 /// Text and enabled state for the Xfer64 item. `None` means the state could not be read.
 fn xfer64_label(state: Option<&Xfer64State>) -> (&'static str, bool) {
     match state {
@@ -1080,10 +1106,13 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let (running, listen, serial) = match app.try_state::<AppState>() {
         Some(state) => {
             let settings = state.settings.lock().clone();
+            // `daemon_is_running` takes the daemon lock itself, so read the port after it returns.
+            let running = daemon_is_running(&state.daemon);
+            let spawned = state.daemon.lock().serial.clone();
             (
-                daemon_is_running(&state.daemon),
+                running,
                 settings.listen.clone(),
-                effective_serial(&settings),
+                tray_serial(running, spawned, || effective_serial(&settings)),
             )
         }
         None => (false, DEFAULT_LISTEN.to_string(), None),
@@ -1596,6 +1625,35 @@ mod tray_tests {
         assert_eq!(l.toggle, "Stop daemon");
         assert!(l.toggle_enabled);
         assert!(l.restart_enabled);
+    }
+
+    /// The reported drift: the daemon was spawned on one port, Auto would now resolve another,
+    /// and the label must keep naming the port the process actually holds.
+    #[test]
+    fn running_names_the_spawned_port_not_the_current_resolution() {
+        let serial = tray_serial(true, Some("COM4".into()), || {
+            panic!("a running daemon must not re-resolve its port")
+        });
+        assert_eq!(serial.as_deref(), Some("COM4"));
+        let l = tray_labels(true, serial.as_deref(), "127.0.0.1:38765");
+        assert_eq!(l.status, "Daemon: running on COM4");
+    }
+
+    #[test]
+    fn stopped_names_what_start_would_use() {
+        assert_eq!(
+            tray_serial(false, None, || Some("COM4".into())).as_deref(),
+            Some("COM4")
+        );
+        // A stale spawned port from a dead process is not what Start would use.
+        assert_eq!(tray_serial(false, Some("COM5".into()), || None), None);
+    }
+
+    #[test]
+    fn running_without_a_recorded_port_falls_back_to_listen() {
+        let serial = tray_serial(true, None, || Some("COM4".into()));
+        let l = tray_labels(true, serial.as_deref(), "127.0.0.1:38765");
+        assert_eq!(l.status, "Daemon: running (127.0.0.1:38765)");
     }
 
     #[test]

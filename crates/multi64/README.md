@@ -61,7 +61,7 @@ These preferences live in **`localStorage`**, *not* in the settings file — the
 
 | Item | |
 |------|---|
-| `Daemon: …` | Status line, disabled. Names the port when running, else the listen address; while stopped, says so when there is no cart port. Reflects whether the **process** is alive — the window shows finer-grained health, since a status line that polled `/health` would issue a blocking request on every update |
+| `Daemon: …` | Status line, disabled. While running, names the port the daemon was actually started on (not what the settings would pick now), else the listen address; while stopped, says so when there is no cart port. Reflects whether the **process** is alive — the window shows finer-grained health, since a status line that polled `/health` would issue a blocking request on every update |
 | **Start / Stop daemon** | One item, whichever applies. Disabled with no serial port configured, because starting would fail; **Stop** stays enabled without one, since the port can disappear while the daemon runs |
 | **Restart daemon** | Disabled while stopped — that case is **Start** |
 | **Open Xfer64** | Reads *Install Xfer64…* when only the bundled installer is present, and is greyed when neither is |
