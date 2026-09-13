@@ -147,11 +147,12 @@ impl Ed64Link {
         self.read_exact_payload(length_bytes)
     }
 
-    /// Read one 512-byte SD sector using **linear cart addressing**: `address = rom_base + lba * 512`.
+    /// Read 512 bytes with **`RomRead`** at `address = rom_linear_base + lba * 512`, for the experimental SD path.
     ///
-    /// **Community / experimental:** public vendor `usb64` does not document raw SD LBAs. N64brew lists
-    /// N64-side SD registers ([EverDrive-64 X7](https://n64brew.dev/wiki/EverDrive-64_X7)); mapping LBAs to
-    /// **`RomRead`** addresses depends on firmware/OS. Callers supply `rom_linear_base` discovered for their setup.
+    /// **This does not read the SD card.** `usb64` has no SD command, and `RomRead` reads cart ROM memory. The card is
+    /// reachable only from the N64 side, through the cart's SD registers
+    /// ([EverDrive-64 X7](https://n64brew.dev/wiki/EverDrive-64_X7)); sector data appears in ROM space only if
+    /// console-side code copies it there. See workspace `docs/spec/ed64-sd-usb-host.md`.
     pub fn read_sd_sector_linear_rom(
         &mut self,
         rom_linear_base: u32,

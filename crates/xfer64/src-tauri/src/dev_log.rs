@@ -15,7 +15,7 @@ fn default_cart_device() -> String {
     "auto".to_string()
 }
 
-/// `auto` — probe serial (SC64 identify, then EverDrive `usb64` test). `sc64` — SummerCart64. `ed64_beta` — EverDrive; [`ed64_rom_linear_base`] required for SD via experimental linear `RomRead`.
+/// `auto` — probe serial (SC64 identify, then EverDrive `usb64` test). `sc64` — SummerCart64. `ed64_beta` — EverDrive; [`ed64_rom_linear_base`] required for the experimental `RomRead` SD path, which reads cart ROM memory rather than the SD card.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplorerSettingsSnapshot {
@@ -32,7 +32,7 @@ pub struct ExplorerSettingsSnapshot {
     /// Default for upload picker / Send to: replace files that already exist on the cart.
     #[serde(default)]
     pub quick_upload_overwrite: bool,
-    /// EverDrive SD linear base for LBA 0 (`base + LBA·512` on usb64 `RomRead`).
+    /// Base address for the EverDrive `RomRead` experiment (`base + LBA·512`); not an SD card mapping.
     #[serde(default)]
     pub ed64_rom_linear_base: Option<u32>,
 }

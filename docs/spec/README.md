@@ -14,7 +14,7 @@ Normative **Multi64** wire and behavior. Each spec file carries its own **Spec-R
 | [**l2-link-adapter.md**](l2-link-adapter.md) | **L2**: responsibilities of a host-side link and constraints for backends |
 | [**l3-over-sc64.md**](l3-over-sc64.md) | **SC64**: L3 octets over `USB_WRITE` / `PKT` `U` |
 | [**sc64-sd-usb-host.md**](sc64-sd-usb-host.md) | **SC64**: host SD / FAT over USB (`SD_CARD_OP`); normative for `multi64-sc64-sd` |
-| [**ed64-sd-usb-host.md**](ed64-sd-usb-host.md) | **EverDrive**: experimental X-series SD via **`RomRead`** |
+| [**ed64-sd-usb-host.md**](ed64-sd-usb-host.md) | **EverDrive**: X-series `usb64` serial, and why the **`RomRead`** SD experiment does not reach the card |
 | [**l3-over-everdrive-x7.md**](l3-over-everdrive-x7.md) | **EverDrive X7** (Draft): L3 over ED64 USB — §4 host mapping written, unvalidated on hardware |
 | [**daemon-api-v1.md**](daemon-api-v1.md) | **`multi64d`**: HTTP + WebSocket bridge |
 | [**test-l3-application-v0.md**](test-l3-application-v0.md) | **M64T**: **`multi64_test.z64`** (`n64/test-rom`) host↔cart messages |

@@ -10,7 +10,7 @@
 //!
 //! # EverDrive X-series (optional `ed64` feature)
 //!
-//! Uses Krikzz-style **`RomRead`** over USB serial at a configurable linear base (`base + LBA·512`); see workspace `docs/spec/ed64-sd-usb-host.md`. With **`ed64`**, see `Ed64RomLinear` and `Ed64SdSession` in this crate.
+//! Experimental: issues Krikzz-style **`RomRead`** over USB serial at a configurable linear base (`base + LBA·512`). `RomRead` reads cart ROM memory, not the SD card, so this is not expected to list the card; see workspace `docs/spec/ed64-sd-usb-host.md`. With **`ed64`**, see `Ed64RomLinear` and `Ed64SdSession` in this crate.
 //!
 //! # Unified API
 //!

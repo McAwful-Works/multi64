@@ -3,7 +3,8 @@
 //! # Protocols
 //!
 //! - **SummerCart64** — `SD_READ` / `MEMORY_READ` via `multi64-sc64-link`.
-//! - **EverDrive X-series** — experimental **`RomRead`** linear map when `ed64RomLinearBase` is set
+//! - **EverDrive X-series** — experimental **`RomRead`** linear map when `ed64RomLinearBase` is set. `RomRead`
+//!   reads cart ROM memory, not the SD card, so this is not expected to list the card
 //!   (`docs/spec/ed64-sd-usb-host.md`). Not Windows mass storage.
 //!
 //! # Layout
@@ -149,7 +150,7 @@ Choose SummerCart64 or EverDrive (beta) in Settings, or select another COM port.
 enum CartSdRole {
     /// SummerCart64 — full USB SD session.
     Sc64,
-    /// EverDrive with `ed64_rom_linear_base` set (experimental `RomRead` sector mapping).
+    /// EverDrive with `ed64_rom_linear_base` set (the `RomRead` experiment; reads cart ROM memory, not SD).
     Ed64Linear,
     /// EverDrive without a configured linear base.
     Ed64NoLinear,

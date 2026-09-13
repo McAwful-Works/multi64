@@ -17,4 +17,4 @@ cargo test -p multi64-ed64-l2
 4. **`ed64-echo-test`** / **`ed64-l3-framing-e2e`** — same roles as SC64 e2e tools; ROM in **RAW_ECHO** today.
 5. Optional: **`multi64d`** backend switch once the pipe is stable.
 
-**Hardware:** **X7** USB models only (X5 has no USB; **PRO/CORE** are not an N64 line, so edlink does not apply — see [spec §1.1](../../docs/spec/l3-over-everdrive-x7.md)).
+**Hardware:** **X7** (and probably 3.0) USB models only. X5 has no USB. The **EverDrive-64 PRO** has USB but speaks edlink, not this `DMA@` mapping, so this crate does not apply to it — see [spec §1.1](../../docs/spec/l3-over-everdrive-x7.md#11-which-everdrives-this-can-apply-to).
