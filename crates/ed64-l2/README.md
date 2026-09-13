@@ -15,6 +15,6 @@ cargo test -p multi64-ed64-l2
 2. ~~Implement **`Ed64L2Pipe`**~~ — **done**; the surface mirrors **`Sc64L2Pipe`** where the carts agree.
 3. **`ed64-smoke`** — `usb64` `cmd`/`t` probe ([spec §8](../../docs/spec/l3-over-everdrive-x7.md)) — not L3.
 4. **`ed64-echo-test`** / **`ed64-l3-framing-e2e`** — same roles as SC64 e2e tools; ROM in **RAW_ECHO** today.
-5. ~~**`multi64d`** backend switch~~ — **done**, experimental: `multi64d --cart ed64` ([daemon API §5.1](../../docs/spec/daemon-api-v1.md)). It carries L3 only once the pipe itself is proven.
+5. ~~**`multi64d`** backend switch~~ — **done**, experimental: `multi64d --cart ed64` ([daemon API §5.1](../../docs/spec/daemon-api-v1.md)), which Multi64's Settings → **Cart** passes. It carries L3 only once the pipe itself is proven.
 
 **Hardware:** **X7** (and probably 3.0) USB models only. X5 has no USB. The **EverDrive-64 PRO** has USB but speaks edlink, not this `DMA@` mapping, so this crate does not apply to it — see [spec §1.1](../../docs/spec/l3-over-everdrive-x7.md#11-which-everdrives-this-can-apply-to).

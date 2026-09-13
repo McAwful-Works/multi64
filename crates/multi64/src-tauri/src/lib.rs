@@ -35,10 +35,45 @@ pub struct Settings {
     pub developer_mode: bool,
     #[serde(default)]
     pub multi64d_log_preset: Multi64dLogPreset,
+    /// Which cart `multi64d` talks to (`--cart`). Files written before this existed mean SC64.
+    #[serde(default)]
+    pub cart: DaemonCart,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// The cart `multi64d` is started for, passed as `--cart`.
+///
+/// The serialised names are the daemon's own `--cart` values, so the settings file and the
+/// argument share one vocabulary (checked against `multi64d::CartKind` in the tests).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DaemonCart {
+    /// SummerCart64: the only backend proven on hardware.
+    #[default]
+    Sc64,
+    /// EverDrive-64 X7: experimental, never run against a cart (`l3-over-everdrive-x7.md` §4.5).
+    Ed64,
+}
+
+impl DaemonCart {
+    /// The `--cart` value.
+    fn arg(self) -> &'static str {
+        match self {
+            DaemonCart::Sc64 => "sc64",
+            DaemonCart::Ed64 => "ed64",
+        }
+    }
+
+    /// How the window, tray and log name the cart. Anything unproven says so every time.
+    fn label(self) -> &'static str {
+        match self {
+            DaemonCart::Sc64 => "SummerCart64",
+            DaemonCart::Ed64 => "EverDrive-64 X7 (experimental)",
+        }
+    }
 }
 
 /// How verbose `multi64d` stderr logging should be (see `multi64d` `--serial-trace` and `RUST_LOG`).
@@ -48,7 +83,8 @@ pub enum Multi64dLogPreset {
     /// `RUST_LOG` unset → tracing default `info` (same as upstream).
     #[default]
     Default,
-    /// `multi64_sc64_l2` + `multi64d` at debug without per-read serial trace.
+    /// Both L2 pipes (`multi64_sc64_l2`, `multi64_ed64_l2`) + `multi64d` at debug, without
+    /// per-read serial trace.
     Debug,
     /// `--serial-trace`: `trace!` on each non-empty cart read (`multi64_sc64_l2=trace`).
     SerialTrace,
@@ -65,7 +101,7 @@ fn apply_multi64d_log_preset(cmd: &mut Command, preset: Multi64dLogPreset) {
         Multi64dLogPreset::Debug => {
             cmd.env(
                 "RUST_LOG",
-                "multi64_sc64_l2=debug,multi64d=debug,tower_http=warn,info",
+                "multi64_sc64_l2=debug,multi64_ed64_l2=debug,multi64d=debug,tower_http=warn,info",
             );
         }
         Multi64dLogPreset::SerialTrace => {
@@ -98,6 +134,7 @@ impl Default for Settings {
             tray_enabled: true,
             developer_mode: false,
             multi64d_log_preset: Multi64dLogPreset::Default,
+            cart: DaemonCart::Sc64,
         }
     }
 }
@@ -109,6 +146,8 @@ pub struct DaemonStatus {
     pub healthy: bool,
     pub listen: String,
     pub message: String,
+    /// While running, the cart the live process was started for; while stopped, the next start's.
+    pub cart: &'static str,
 }
 
 #[derive(Default)]
@@ -120,6 +159,9 @@ struct DaemonInner {
     /// port than the live process holds: Auto re-enumerates, and a cart plugged in or pulled
     /// mid-session changes the answer.
     serial: Option<String>,
+    /// The cart `child` was spawned for. Only meaningful while `serial` is set, for the same
+    /// reason: a cart changed in Settings is what the next start uses, not what is running.
+    cart: DaemonCart,
     logs: Vec<String>,
 }
 
@@ -391,12 +433,28 @@ fn serial_port_options() -> SerialPortOptions {
     }
 }
 
+/// Why Auto has no port for an EverDrive, worded like [`AutoPort::problem`].
+const EVERDRIVE_NEEDS_PORT: &str =
+    "Auto only recognises a SummerCart64. Pick the EverDrive's COM port in Settings.";
+
 /// The saved port if there is one, else the auto pick. `Err` says why there is no port.
 ///
 /// `auto` runs only without a saved port, so a pinned port never costs an enumeration.
-fn resolve_serial(saved: Option<&str>, auto: impl FnOnce() -> AutoPort) -> Result<String, String> {
+///
+/// Auto never picks a port for an EverDrive. It judges from USB descriptors alone, and the X7's
+/// FT245R (`0403:6001`) is a stock FTDI part with nothing cart-specific to match; finding it by
+/// writing to ports would disturb whatever else is plugged in. Handing it an SC64's port instead
+/// would run the EverDrive framing against the wrong cart.
+fn resolve_serial(
+    saved: Option<&str>,
+    cart: DaemonCart,
+    auto: impl FnOnce() -> AutoPort,
+) -> Result<String, String> {
     if let Some(port) = saved.filter(|s| !s.is_empty()) {
         return Ok(port.to_string());
+    }
+    if cart != DaemonCart::Sc64 {
+        return Err(EVERDRIVE_NEEDS_PORT.to_string());
     }
     let auto = auto();
     match auto.problem() {
@@ -406,7 +464,7 @@ fn resolve_serial(saved: Option<&str>, auto: impl FnOnce() -> AutoPort) -> Resul
 }
 
 fn serial_for(settings: &Settings) -> Result<String, String> {
-    resolve_serial(settings.serial_port.as_deref(), auto_port)
+    resolve_serial(settings.serial_port.as_deref(), settings.cart, auto_port)
 }
 
 fn effective_serial(settings: &Settings) -> Option<String> {
@@ -499,6 +557,25 @@ fn kill_daemon_locked(daemon: &Arc<Mutex<DaemonInner>>) {
     }
 }
 
+/// Spawn-time arguments for `multi64d`. Pure, so what reaches the daemon is testable without
+/// spawning it.
+fn daemon_args(serial: &str, settings: &Settings) -> Vec<String> {
+    vec![
+        "--serial".into(),
+        serial.into(),
+        // baud is a spawn-time argument like the rest: multi64d takes --baud and feeds it to the
+        // L2 pipe. It used to be collected and saved by the UI but never passed, so the setting
+        // did nothing and the daemon always ran at its own 115200 default.
+        "--baud".into(),
+        settings.baud.to_string(),
+        "--cart".into(),
+        settings.cart.arg().into(),
+        "--listen".into(),
+        settings.listen.clone(),
+        "--no-print-ports".into(),
+    ]
+}
+
 fn start_daemon(
     app: &tauri::AppHandle,
     daemon: &Arc<Mutex<DaemonInner>>,
@@ -520,27 +597,24 @@ fn start_daemon(
     push_log(
         daemon,
         format!(
-            "Starting multi64d on {serial} ({}) [logging: {log_label}]",
+            "Starting multi64d on {serial} for {} ({}) [logging: {log_label}]",
+            settings.cart.label(),
             settings.listen
         ),
     );
+    if settings.cart == DaemonCart::Ed64 {
+        push_log(
+            daemon,
+            "EverDrive-64 X7 support is experimental and has never been run against a cart: \
+             a running daemon does not show that the cart link works."
+                .to_string(),
+        );
+    }
 
     let daemon_path = resolve_multi64d_path(app)?;
     let mut cmd = Command::new(&daemon_path);
-    // baud is a spawn-time argument like the rest: multi64d takes --baud and feeds it to
-    // Sc64L2Pipe::open. It used to be collected and saved by the UI but never passed, so the
-    // setting did nothing and the daemon always ran at its own 115200 default.
-    let baud = settings.baud.to_string();
     cmd.env("NO_COLOR", "1")
-        .args([
-            "--serial",
-            &serial,
-            "--baud",
-            &baud,
-            "--listen",
-            &settings.listen,
-            "--no-print-ports",
-        ])
+        .args(daemon_args(&serial, settings))
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .stdin(Stdio::null());
@@ -557,6 +631,7 @@ fn start_daemon(
     let mut inner = daemon.lock();
     inner.child = Some(child);
     inner.serial = Some(serial);
+    inner.cart = settings.cart;
     drop(inner);
     let _ = app.emit("daemon-changed", ());
     Ok(())
@@ -614,11 +689,12 @@ fn apply_settings(app: &AppHandle, state: &AppState, settings: Settings) -> Resu
     if settings.autostart_app != prev.autostart_app {
         set_autostart_windows_impl(settings.autostart_app)?;
     }
-    // Serial port, baud, listen address and log preset are command-line arguments fixed at
+    // Serial port, baud, cart, listen address and log preset are command-line arguments fixed at
     // spawn, so a running daemon keeps using the old ones. Saving used to appear to apply them
     // while the bridge quietly stayed on the previous port.
     let spawn_args_changed = settings.serial_port != prev.serial_port
         || settings.baud != prev.baud
+        || settings.cart != prev.cart
         || settings.listen != prev.listen
         || settings.multi64d_log_preset != prev.multi64d_log_preset;
     if spawn_args_changed && daemon_is_running(&state.daemon) {
@@ -670,6 +746,12 @@ fn daemon_status(state: &AppState) -> DaemonStatus {
     let settings = state.settings.lock().clone();
     let listen = settings.listen.clone();
     let running = daemon_is_running(&state.daemon);
+    // Read after `daemon_is_running` returns: it takes the daemon lock itself.
+    let cart = if running {
+        state.daemon.lock().cart
+    } else {
+        settings.cart
+    };
     let healthy = running && check_health(&listen);
     let message = if !running {
         // Name why Start cannot work. Without a saved port this enumerates on every poll, which
@@ -688,6 +770,7 @@ fn daemon_status(state: &AppState) -> DaemonStatus {
         healthy,
         listen,
         message,
+        cart: cart.label(),
     }
 }
 
@@ -1037,21 +1120,28 @@ struct TrayLabels {
     restart_enabled: bool,
 }
 
-fn tray_labels(running: bool, serial: Option<&str>, listen: &str) -> TrayLabels {
+fn tray_labels(running: bool, serial: Option<&str>, cart: DaemonCart, listen: &str) -> TrayLabels {
+    // SC64 is the default and needs no mention; any other cart is named, so an experimental
+    // daemon is never mistaken for the proven one.
+    let cart_note = match cart {
+        DaemonCart::Sc64 => String::new(),
+        other => format!(" · {}", other.label()),
+    };
+    let status = if running {
+        match serial {
+            Some(port) => format!("Daemon: running on {port}"),
+            // No configured or auto-detected port, but a live process: report where it
+            // listens rather than claiming a port we cannot name.
+            None => format!("Daemon: running ({listen})"),
+        }
+    } else if serial.is_some() {
+        "Daemon: stopped".to_string()
+    } else {
+        // Start is greyed out below; say why, since the tray has no room for the full reason.
+        "Daemon: stopped (no cart port)".to_string()
+    };
     TrayLabels {
-        status: if running {
-            match serial {
-                Some(port) => format!("Daemon: running on {port}"),
-                // No configured or auto-detected port, but a live process: report where it
-                // listens rather than claiming a port we cannot name.
-                None => format!("Daemon: running ({listen})"),
-            }
-        } else if serial.is_some() {
-            "Daemon: stopped".to_string()
-        } else {
-            // Start is greyed out below; say why, since the tray has no room for the full reason.
-            "Daemon: stopped (no cart port)".to_string()
-        },
+        status: format!("{status}{cart_note}"),
         toggle: if running {
             "Stop daemon"
         } else {
@@ -1103,22 +1193,28 @@ fn xfer64_label(state: Option<&Xfer64State>) -> (&'static str, bool) {
 /// runs on every `daemon-changed` event. "Running" here means the child process is alive; the
 /// window shows the finer-grained health.
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let (running, listen, serial) = match app.try_state::<AppState>() {
+    let (running, listen, serial, cart) = match app.try_state::<AppState>() {
         Some(state) => {
             let settings = state.settings.lock().clone();
             // `daemon_is_running` takes the daemon lock itself, so read the port after it returns.
             let running = daemon_is_running(&state.daemon);
-            let spawned = state.daemon.lock().serial.clone();
+            let (spawned, spawned_cart) = {
+                let inner = state.daemon.lock();
+                (inner.serial.clone(), inner.cart)
+            };
+            // Same rule as the port: a running daemon is named for what it was started with.
+            let cart = if running { spawned_cart } else { settings.cart };
             (
                 running,
                 settings.listen.clone(),
                 tray_serial(running, spawned, || effective_serial(&settings)),
+                cart,
             )
         }
-        None => (false, DEFAULT_LISTEN.to_string(), None),
+        None => (false, DEFAULT_LISTEN.to_string(), None, DaemonCart::Sc64),
     };
 
-    let labels = tray_labels(running, serial.as_deref(), &listen);
+    let labels = tray_labels(running, serial.as_deref(), cart, &listen);
     // Disabled: a status line, not an action.
     let status = MenuItem::with_id(app, "status", &labels.status, false, None::<&str>)?;
     let toggle = MenuItem::with_id(
@@ -1363,6 +1459,52 @@ mod tests {
         assert!(s.tray_enabled, "default_true");
         assert!(!s.autostart_app);
         assert_eq!(s.multi64d_log_preset, Multi64dLogPreset::Default);
+        assert_eq!(
+            s.cart,
+            DaemonCart::Sc64,
+            "files predating the setting meant SC64"
+        );
+    }
+
+    #[test]
+    fn a_saved_everdrive_cart_is_read_back() {
+        let json =
+            r#"{"serialPort":"COM6","baud":115200,"listen":"127.0.0.1:38765","cart":"ed64"}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.cart, DaemonCart::Ed64);
+    }
+
+    /// The settings file and `--cart` must use multi64d's own names, or the daemon refuses to
+    /// start (clap rejects an unknown value) or reads a config it does not understand.
+    #[test]
+    fn cart_names_match_multi64d() {
+        for cart in [DaemonCart::Sc64, DaemonCart::Ed64] {
+            let json = serde_json::to_string(&cart).unwrap();
+            let daemon: multi64d::CartKind = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("multi64d does not know {json}: {e}"));
+            assert_eq!(daemon.as_str(), cart.arg());
+        }
+    }
+
+    #[test]
+    fn daemon_args_carry_the_cart() {
+        let flag = |args: &[String], name: &str| {
+            let at = args.iter().position(|a| a == name).expect(name);
+            args[at + 1].clone()
+        };
+        let sc64 = daemon_args("COM4", &Settings::default());
+        assert_eq!(flag(&sc64, "--cart"), "sc64");
+        assert_eq!(flag(&sc64, "--serial"), "COM4");
+        let ed64 = daemon_args(
+            "COM6",
+            &Settings {
+                cart: DaemonCart::Ed64,
+                baud: 57600,
+                ..Settings::default()
+            },
+        );
+        assert_eq!(flag(&ed64, "--cart"), "ed64");
+        assert_eq!(flag(&ed64, "--baud"), "57600");
     }
 
     /// start_minimized is meaningless without a tray to restore from.
@@ -1538,7 +1680,7 @@ mod port_selection_tests {
 
     #[test]
     fn a_saved_port_wins_without_enumerating() {
-        let got = resolve_serial(Some("COM5"), || {
+        let got = resolve_serial(Some("COM5"), DaemonCart::Sc64, || {
             panic!("auto must not run with a saved port")
         });
         assert_eq!(got, Ok("COM5".into()));
@@ -1546,18 +1688,34 @@ mod port_selection_tests {
 
     #[test]
     fn an_empty_saved_port_means_auto() {
-        let got = resolve_serial(Some(""), || AutoPort::Found("COM4".into()));
+        let got = resolve_serial(Some(""), DaemonCart::Sc64, || {
+            AutoPort::Found("COM4".into())
+        });
         assert_eq!(got, Ok("COM4".into()));
-        let got = resolve_serial(None, || AutoPort::Found("COM4".into()));
+        let got = resolve_serial(None, DaemonCart::Sc64, || AutoPort::Found("COM4".into()));
         assert_eq!(got, Ok("COM4".into()));
+    }
+
+    /// Auto cannot identify an EverDrive, and must not hand it an SC64's port either.
+    #[test]
+    fn an_everdrive_on_auto_is_an_error_without_enumerating() {
+        let err = resolve_serial(None, DaemonCart::Ed64, || {
+            panic!("an EverDrive must not fall back to the SC64 auto pick")
+        })
+        .unwrap_err();
+        assert!(err.contains("EverDrive"), "{err}");
+        let got = resolve_serial(Some("COM6"), DaemonCart::Ed64, || {
+            panic!("auto must not run with a saved port")
+        });
+        assert_eq!(got, Ok("COM6".into()));
     }
 
     /// No cart on Auto is an error carrying the reason, not some other port.
     #[test]
     fn no_cart_on_auto_is_an_error_with_the_reason() {
-        let err = resolve_serial(None, || AutoPort::NoCart).unwrap_err();
+        let err = resolve_serial(None, DaemonCart::Sc64, || AutoPort::NoCart).unwrap_err();
         assert_eq!(Some(err), AutoPort::NoCart.problem());
-        let err = resolve_serial(None, || {
+        let err = resolve_serial(None, DaemonCart::Sc64, || {
             AutoPort::Ambiguous(vec!["COM4".into(), "COM8".into()])
         })
         .unwrap_err();
@@ -1584,7 +1742,7 @@ mod tray_tests {
 
     #[test]
     fn status_names_the_port_when_running() {
-        let l = tray_labels(true, Some("COM4"), "127.0.0.1:38765");
+        let l = tray_labels(true, Some("COM4"), DaemonCart::Sc64, "127.0.0.1:38765");
         assert_eq!(l.status, "Daemon: running on COM4");
         assert_eq!(l.toggle, "Stop daemon");
     }
@@ -1593,13 +1751,30 @@ mod tray_tests {
     fn status_falls_back_to_listen_when_the_port_is_unknown() {
         // A live daemon with no configured or auto-detected port: name where it listens rather
         // than a port we cannot identify.
-        let l = tray_labels(true, None, "127.0.0.1:38765");
+        let l = tray_labels(true, None, DaemonCart::Sc64, "127.0.0.1:38765");
         assert_eq!(l.status, "Daemon: running (127.0.0.1:38765)");
+    }
+
+    /// An experimental daemon is named in the tray, running or not; SC64 stays unadorned.
+    #[test]
+    fn status_names_an_everdrive_cart() {
+        let l = tray_labels(true, Some("COM6"), DaemonCart::Ed64, "127.0.0.1:38765");
+        assert_eq!(
+            l.status,
+            "Daemon: running on COM6 · EverDrive-64 X7 (experimental)"
+        );
+        let l = tray_labels(false, None, DaemonCart::Ed64, "127.0.0.1:38765");
+        assert_eq!(
+            l.status,
+            "Daemon: stopped (no cart port) · EverDrive-64 X7 (experimental)"
+        );
+        let l = tray_labels(true, Some("COM4"), DaemonCart::Sc64, "127.0.0.1:38765");
+        assert_eq!(l.status, "Daemon: running on COM4");
     }
 
     #[test]
     fn stopped_shows_start_and_disables_restart() {
-        let l = tray_labels(false, Some("COM4"), "127.0.0.1:38765");
+        let l = tray_labels(false, Some("COM4"), DaemonCart::Sc64, "127.0.0.1:38765");
         assert_eq!(l.status, "Daemon: stopped");
         assert_eq!(l.toggle, "Start daemon");
         assert!(l.toggle_enabled, "a port is configured, so Start is usable");
@@ -1612,7 +1787,7 @@ mod tray_tests {
     #[test]
     fn start_is_disabled_without_a_port() {
         // `start_daemon` fails with no serial port, so the item must not invite the click.
-        let l = tray_labels(false, None, "127.0.0.1:38765");
+        let l = tray_labels(false, None, DaemonCart::Sc64, "127.0.0.1:38765");
         assert!(!l.toggle_enabled);
         // ...and the status line says why it is greyed out.
         assert_eq!(l.status, "Daemon: stopped (no cart port)");
@@ -1621,7 +1796,7 @@ mod tray_tests {
     #[test]
     fn stop_stays_enabled_even_without_a_port() {
         // The port can disappear while the daemon runs; stopping it must still be possible.
-        let l = tray_labels(true, None, "127.0.0.1:38765");
+        let l = tray_labels(true, None, DaemonCart::Sc64, "127.0.0.1:38765");
         assert_eq!(l.toggle, "Stop daemon");
         assert!(l.toggle_enabled);
         assert!(l.restart_enabled);
@@ -1635,7 +1810,7 @@ mod tray_tests {
             panic!("a running daemon must not re-resolve its port")
         });
         assert_eq!(serial.as_deref(), Some("COM4"));
-        let l = tray_labels(true, serial.as_deref(), "127.0.0.1:38765");
+        let l = tray_labels(true, serial.as_deref(), DaemonCart::Sc64, "127.0.0.1:38765");
         assert_eq!(l.status, "Daemon: running on COM4");
     }
 
@@ -1652,7 +1827,7 @@ mod tray_tests {
     #[test]
     fn running_without_a_recorded_port_falls_back_to_listen() {
         let serial = tray_serial(true, None, || Some("COM4".into()));
-        let l = tray_labels(true, serial.as_deref(), "127.0.0.1:38765");
+        let l = tray_labels(true, serial.as_deref(), DaemonCart::Sc64, "127.0.0.1:38765");
         assert_eq!(l.status, "Daemon: running (127.0.0.1:38765)");
     }
 
