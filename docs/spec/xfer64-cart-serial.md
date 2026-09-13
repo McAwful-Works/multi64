@@ -52,15 +52,15 @@ Only one process can hold the cart serial device. **`multi64d`** exposes `POST /
 | [`link.rs`](../../crates/multi64-sc64-sd/src/link.rs) | [`SdCardTransport`](../../crates/multi64-sc64-sd/src/link.rs): sector read/write + flush. [`Sc64Link`](../../crates/multi64-sc64-sd/src/link.rs) (SC64) and, with `feature = "ed64"`, [`Ed64RomLinear`](../../crates/multi64-sc64-sd/src/ed64_linear.rs). |
 | [`partition.rs`](../../crates/multi64-sc64-sd/src/partition.rs) | Partition discovery, FAT/exFAT sessions (`Sc64SdSession`, `Ed64SdSession`). |
 | [`cart_session.rs`](../../crates/multi64-sc64-sd/src/cart_session.rs) | [`CartSession`](../../crates/multi64-sc64-sd/src/cart_session.rs): unified explorer API. |
-| [`ed64_linear.rs`](../../crates/multi64-sc64-sd/src/ed64_linear.rs) | EverDrive: `RomRead` at `rom_linear_base + LBA×512` (optional feature). |
+| [`ed64_linear.rs`](../../crates/multi64-sc64-sd/src/ed64_linear.rs) | EverDrive: `RomRead` at `rom_linear_base + LBA×512` (optional feature). Reads cart ROM memory, not the SD card — see [`ed64-sd-usb-host.md`](./ed64-sd-usb-host.md#why-romread-is-not-sd-access). |
 
 ### Wire layer (`crates/multi64-ed64-link`)
 
 - Legacy **X-series `usb64`** 16-byte **`cmd`**, **`RomRead`** / **`RamRead`** — [`Ed64Link`](../../crates/multi64-ed64-link/src/lib.rs) ([ed64-x-pub](https://github.com/krikzz/ed64-x-pub) / UNFLoader).
 
-`multi64-sc64-sd` enables linear **`RomRead`** SD with its **`ed64`** feature.
+`multi64-sc64-sd` enables the **`RomRead`** SD experiment with its **`ed64`** feature.
 
 ### Settings (JSON)
 
 - **`cartDevice`**: `auto` \| `sc64` \| `ed64_beta` (`ExplorerSettingsSnapshot` in `dev_log.rs`).
-- **`ed64RomLinearBase`**: `u32` — required for EverDrive SD via experimental linear **`RomRead`**.
+- **`ed64RomLinearBase`**: `u32` — base address for the EverDrive **`RomRead`** experiment, which reads cart ROM memory rather than the SD card ([why](./ed64-sd-usb-host.md#why-romread-is-not-sd-access)).

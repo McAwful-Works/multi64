@@ -19,16 +19,20 @@ This document will define how **L3** octets ([l3-bridge-protocol-v1.md](./l3-bri
 
 ### 1.1 Which EverDrives this can apply to
 
-Krikzz's **Nintendo 64** line is **X5 and X7 only**. There is no N64 cartridge in the PRO or CORE series.
+Krikzz's N64 carts fall into **two unrelated USB families**. This document covers only the first: the X-series lineage, which speaks `usb64` (§8) plus the `DMA@` framing (§4).
 
-| Model | USB | Supportable | Notes |
-|-------|-----|-------------|-------|
-| **EverDrive-64 X7** | yes | **target** | The model this mapping is written for. Supported by Krikzz `usb64` and by UNFLoader (OS **3.04+**). |
-| **EverDrive 64 3.0** | yes | probably | UNFLoader supports OS **3.04+** but documents OS **3.07+** as *incompatible*. Untested here; firmware version decides. |
-| **EverDrive-64 X5** | **no** | **never** | No USB port. Nothing host-side is possible. |
-| EverDrive **PRO** / **CORE** series | n/a | **not applicable** | These are Krikzz's *other-console* lines (Mega EverDrive PRO, EverDrive N8 PRO, …). **No N64 cartridge is in them.** |
+| Model | USB | Supportable by this mapping | Notes |
+|-------|-----|-----------------------------|-------|
+| **EverDrive-64 X7** | yes | **target** | The model this mapping is written for. FTDI FT245R (`0403:6001`). Supported by Krikzz `usb64` and by UNFLoader (OS **3.04+**). |
+| **EverDrive 64 3.0** | yes | probably | Discontinued. UNFLoader supports OS **3.04+** but documents OS **3.07+** as *incompatible*. Untested here; firmware version decides. |
+| **EverDrive-64 X5** | **no** | **never** | No USB port (cart ID `0xED640014`). Nothing host-side is possible. |
+| EverDrive 64 **2.5 and earlier** | **no** | **never** | No USB. libdragon's `usb.c` rejects 2.5 (`0xED640007`) explicitly. |
+| **EverDrive-64 PRO** | yes | **no — different protocol** | Released August 2026. Speaks **edlink** (Gen3; protocol ID `0x07`, device ID `0x27`), not `usb64` + `DMA@`. Its N64-side registers at `0x1F800000` are a command FIFO and a mailbox, with none of the X7's USB registers, and neither libdragon's `usb.c` nor UNFLoader recognises it. Supporting it is a separate mapping; see below. |
+| Other EverDrive **PRO** / **CORE** carts | n/a | not applicable | Krikzz's other-console lines (Mega EverDrive PRO, EverDrive N8 PRO, …). |
 
-**Do not implement Krikzz [edlink](https://github.com/krikzz/edlink) for N64.** edlink is the Gen3 `++`-framed protocol (921600 baud, EPO/FCI reads) for the **PRO and CORE** series, per its own README. A previous attempt in this repository added an `EdlinkLink` backend with a `PROTOCOL_ID_ED64` handshake; because no N64 cartridge speaks Gen3, the handshake could never match, the code silently fell through to the `usb64` path it was written to fall back to, and the work was reverted. The N64 host protocol is **`usb64`** (§8) plus the data framing in **§4** — not edlink.
+**Do not use edlink for the X7 or 3.0.** edlink is the Gen3 protocol (921600 baud, `EPO`/`FCI` commands) of the PRO and CORE series. A previous attempt in this repository added an `EdlinkLink` backend with a `PROTOCOL_ID_ED64` handshake for X-series carts; because they do not speak Gen3, the handshake could never match, the code silently fell through to the `usb64` path it was written to fall back to, and the work was reverted. The X-series host protocol is **`usb64`** (§8) plus the data framing in **§4** — not edlink.
+
+That conclusion is specific to the X-series. The **EverDrive-64 PRO does speak edlink**: [krikzz/edlink](https://github.com/krikzz/edlink) has an `ED64` device module, and [krikzz/ed64-pro-pub](https://github.com/krikzz/ed64-pro-pub) has N64-side sources for its FIFO, USB and SD file commands, both MIT-licensed. A PRO backend would be new work that reuses neither §4 nor `ed64-l2`, and nothing in this repository implements one. Everything stated about the PRO here comes from those sources, not from hardware.
 
 ---
 
@@ -42,6 +46,8 @@ Implementors should start from vendor and community sources:
 | [krikzz/ed64-x-pub](https://github.com/krikzz/ed64-x-pub) (GitHub) | Reference code: **`usb64/usb64/`** (Windows `usb64` tool, C# `CommandProcessor`), **`ED64-XIO`** sample, **`docs/`** (TOC, hardware ID; some USB wire notes may be **WIP**) |
 | [N64brew — EverDrive-64 X7](https://n64brew.dev/wiki/EverDrive-64_X7) | **N64-side** registers (`REG_USB_CFG`, `REG_USB_DATA` 512-byte buffer), `bi_usb_rd` / `bi_usb_wr` behavior |
 | [jsdf/webserial-ed64log](https://github.com/jsdf/webserial-ed64log) | Example of host serial/WebUSB usage |
+| [krikzz/edlink](https://github.com/krikzz/edlink) | Gen3 USB utility for PRO/CORE carts, including `edlink/DEV_ED64` for the **EverDrive-64 PRO** (MIT). **Not** applicable to the X-series (§1.1). |
+| [krikzz/ed64-pro-pub](https://github.com/krikzz/ed64-pro-pub) | **EverDrive-64 PRO** dev sources: the `edio` sample ROM (FIFO, USB, SD file access) and host scripts (MIT). |
 
 **Normative for Multi64:** once this spec defines the **PC-side** framing, the **`ed64-l2`** crate MUST match it; the N64 ROM MUST use compatible `bi_usb_*` (or equivalent) so L3 bytes round-trip.
 

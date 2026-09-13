@@ -1,12 +1,13 @@
-//! EverDrive-64 SD access over USB serial using **experimental linear `RomRead`** at
-//! `rom_linear_base + LBA * 512` (Krikzz X-series **`usb64`**).
+//! Experimental EverDrive-64 "SD" reader: **`RomRead`** at `rom_linear_base + LBA * 512` (Krikzz X-series
+//! **`usb64`**). `RomRead` reads cart ROM memory, not the SD card, so this is not expected to see the card unless
+//! console-side code has copied sectors into ROM space; see workspace `docs/spec/ed64-sd-usb-host.md`.
 
 use crate::link::SdCardTransport;
 use crate::link::SD_CARD_BUFFER_MAX_BYTES;
 use multi64_ed64_link::{looks_like_disk_sector0, Ed64Link, SECTOR_BYTES};
 use std::io;
 
-/// Cart-side sector reader via **`usb64` `RomRead`** at a configured linear base.
+/// Reads 512-byte blocks via **`usb64` `RomRead`** at a configured base (cart ROM memory, not the SD card).
 pub struct Ed64RomLinear {
     link: Ed64Link,
     rom_linear_base: u32,

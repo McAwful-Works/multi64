@@ -1,4 +1,5 @@
-//! Unified cart SD session for tooling that supports both SummerCart64 and (optional) EverDrive linear `RomRead`.
+//! Unified cart SD session for tooling that supports both SummerCart64 and (optional) the EverDrive `RomRead`
+//! experiment, which reads cart ROM memory rather than the SD card.
 
 #[cfg(feature = "ed64")]
 use crate::partition::Ed64SdSession;
@@ -7,7 +8,7 @@ use crate::SessionEntry;
 use std::io;
 use std::path::Path;
 
-/// Active USB SD session: SC64 or EverDrive experimental linear mapping.
+/// Active USB SD session: SC64, or the EverDrive `RomRead` experiment (not real SD access).
 ///
 /// Dropping the session releases it (see [`Sc64SdSession`]'s `Drop`), so no path can strand the
 /// cart's SD card locked to the PC side. Call [`close`](Self::close) where the error matters.

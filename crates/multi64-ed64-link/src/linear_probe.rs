@@ -1,5 +1,6 @@
-//! Heuristic **linear base** discovery: first 512-byte block at each candidate address should look like **disk sector 0**
-//! (MBR / protective MBR, FAT/exFAT boot sector). Uses **`usb64` `RomRead`**.
+//! Heuristic **linear base** scan: accepts a candidate address when its first 512-byte block looks like **disk sector 0**
+//! (MBR / protective MBR, FAT/exFAT boot sector). Uses **`usb64` `RomRead`**, which reads cart ROM memory rather than the
+//! SD card, so a match only means those bytes resemble a boot sector; see workspace `docs/spec/ed64-sd-usb-host.md`.
 
 use crate::{Ed64Link, SECTOR_BYTES};
 use std::collections::BTreeSet;
