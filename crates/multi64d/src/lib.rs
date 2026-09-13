@@ -15,8 +15,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use futures_util::StreamExt;
+use multi64_ed64_l2::Ed64L2Pipe;
 use multi64_sc64_l2::Sc64L2Pipe;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -34,18 +35,89 @@ const REOPEN_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 /// Reader buffer size. One allocation for the life of the loop; see `cart_reader_loop`.
 const READ_BUF_BYTES: usize = 65536;
 
+/// Which flash cart's L2 mapping carries the L3 stream (`--cart` / `MULTI64D_CART` / `cart = ...`).
+///
+/// [`CartKind::Ed64`] selects the EverDrive-64 X7 `DMA@` mapping from
+/// `docs/spec/l3-over-everdrive-x7.md` §4. It is **experimental**: transcribed from UNFLoader and
+/// libdragon, and never run against a cart. Selecting it here is wiring only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum CartKind {
+    /// SummerCart64 (`docs/spec/l3-over-sc64.md`); the only backend verified on hardware.
+    #[default]
+    Sc64,
+    /// EverDrive-64 X7 (experimental; never run against a cart).
+    Ed64,
+}
+
+impl CartKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CartKind::Sc64 => "sc64",
+            CartKind::Ed64 => "ed64",
+        }
+    }
+}
+
+impl std::fmt::Display for CartKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Configuration needed to open — and later reopen — the serial port.
 #[derive(Clone)]
 pub struct SerialConfig {
     pub path: String,
     pub baud: u32,
     pub clear_serial: bool,
+    pub cart: CartKind,
+}
+
+/// An open L2 pipe for whichever cart [`SerialConfig::cart`] selects. Both pipes expose the same
+/// surface, so everything above this sees one L3 octet stream regardless of the cart.
+pub enum CartPipe {
+    Sc64(Sc64L2Pipe),
+    Ed64(Ed64L2Pipe),
+}
+
+impl CartPipe {
+    pub fn set_timeout(&mut self, t: Duration) -> io::Result<()> {
+        match self {
+            CartPipe::Sc64(p) => p.set_timeout(t),
+            CartPipe::Ed64(p) => p.set_timeout(t),
+        }
+    }
+
+    pub fn clear_serial_buffers(&mut self) -> io::Result<()> {
+        match self {
+            CartPipe::Sc64(p) => p.clear_serial_buffers(),
+            CartPipe::Ed64(p) => p.clear_serial_buffers(),
+        }
+    }
+
+    pub fn write_l3_stream(&mut self, buf: &[u8]) -> io::Result<()> {
+        match self {
+            CartPipe::Sc64(p) => p.write_l3_stream(buf),
+            CartPipe::Ed64(p) => p.write_l3_stream(buf),
+        }
+    }
+
+    pub fn read_l3_bytes(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        match self {
+            CartPipe::Sc64(p) => p.read_l3_bytes(out),
+            CartPipe::Ed64(p) => p.read_l3_bytes(out),
+        }
+    }
 }
 
 /// Open the cart serial port and apply [`SerialConfig`]. Used at startup, by
 /// `POST /v1/serial/resume`, and by the reader loop when recovering from [`LinkState::Faulted`].
-pub fn open_pipe(cfg: &SerialConfig) -> anyhow::Result<Sc64L2Pipe> {
-    let mut pipe = Sc64L2Pipe::open(&cfg.path, cfg.baud)?;
+pub fn open_pipe(cfg: &SerialConfig) -> anyhow::Result<CartPipe> {
+    let mut pipe = match cfg.cart {
+        CartKind::Sc64 => CartPipe::Sc64(Sc64L2Pipe::open(&cfg.path, cfg.baud)?),
+        CartKind::Ed64 => CartPipe::Ed64(Ed64L2Pipe::open(&cfg.path, cfg.baud)?),
+    };
     pipe.set_timeout(SERIAL_READ_TIMEOUT)?;
     if cfg.clear_serial {
         pipe.clear_serial_buffers()?;
@@ -55,7 +127,7 @@ pub fn open_pipe(cfg: &SerialConfig) -> anyhow::Result<Sc64L2Pipe> {
 
 /// Cart link state: an open L2 pipe, or one of two distinct down states.
 pub enum LinkState {
-    Active(Sc64L2Pipe),
+    Active(CartPipe),
     /// Deliberately released by `POST /v1/serial/release` so another process (Xfer64) can open the
     /// port. Never reopened on its own — only `POST /v1/serial/resume` leaves this state.
     Released,
@@ -227,7 +299,7 @@ async fn health() -> impl IntoResponse {
 
 async fn post_serial_release(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let link = state.link.clone();
-    // Assigning over the guard drops the `Sc64L2Pipe` — and closes the COM port — before the lock
+    // Assigning over the guard drops the pipe — and closes the COM port — before the lock
     // is released, so the caller cannot see 200 while the handle is still open.
     let res = tokio::task::spawn_blocking(move || *lock_link(&link) = LinkState::Released).await;
     match res {
@@ -247,7 +319,7 @@ async fn post_serial_resume(State(state): State<Arc<AppState>>) -> impl IntoResp
         let mut g = lock_link(&link);
         if matches!(&*g, LinkState::Active(_)) {
             // Idempotent: Xfer64 may call resume in nested `withCartDaemonYield` (e.g. copy
-            // then refresh list). A second `Sc64L2Pipe::open` would fail with "Access denied" while
+            // then refresh list). A second `open_pipe` would fail with "Access denied" while
             // the first handle is still active. A link that failed on I/O is `Faulted`, not
             // `Active`, so this early return never hides a dead pipe.
             return Ok::<_, String>(());

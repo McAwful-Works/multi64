@@ -4,7 +4,7 @@
 
 This document describes **`multi64d`**, the reference PC daemon: HTTP metadata + health + **WebSocket** bridge to the **L3 octet stream** between host and N64.
 
-The daemon is **L3-facing**: clients send and receive **raw L3 bytes** on the WebSocket binary channel. How those bytes move over USB/serial is **L2** and depends on the cart. The **reference build** uses the **SummerCart64** mapping ([`l3-over-sc64.md`](./l3-over-sc64.md)). Other carts (e.g. **EverDrive** — [`l3-over-everdrive-x7.md`](./l3-over-everdrive-x7.md)) should present the **same L3 stream** at this boundary once implemented.
+The daemon is **L3-facing**: clients send and receive **raw L3 bytes** on the WebSocket binary channel. How those bytes move over USB/serial is **L2** and depends on the cart. The daemon speaks the **SummerCart64** mapping ([`l3-over-sc64.md`](./l3-over-sc64.md)) by default, and the **EverDrive-64 X7** mapping ([`l3-over-everdrive-x7.md`](./l3-over-everdrive-x7.md)) with `--cart ed64` (§5.1). Both present the **same L3 stream** at this boundary. The EverDrive mapping is **experimental**: it has never been run against a cart.
 
 ---
 
@@ -131,12 +131,13 @@ Server responds with:
 | `--config <path>` | (none) | TOML config file; env: `MULTI64D_CONFIG` |
 | `--serial` | (required†) | Serial device (e.g. `COM3`, `/dev/ttyACM0`); env: `MULTI64D_SERIAL` |
 | `--baud` | `115200` | Baud (often ignored on USB-CDC cart adapters); env: `MULTI64D_BAUD` |
+| `--cart <sc64\|ed64>` | `sc64` | Which cart's L2 mapping carries the L3 stream. `ed64` selects the EverDrive-64 X7 `DMA@` mapping, which is **experimental** and has never been run against a cart; the daemon logs a warning when it is chosen. Env: `MULTI64D_CART`; config file: `cart = "ed64"` |
 | `--listen` | `127.0.0.1:38765` | TCP bind address; env: `MULTI64D_LISTEN` |
 | `--clear-serial [BOOL]` | off | Clear host serial buffers after open. Bare `--clear-serial` means `true`; `--clear-serial=false` (or `MULTI64D_CLEAR_SERIAL=false`) **overrides** `clear_serial = true` in a config file. Env: `MULTI64D_CLEAR_SERIAL` (`true` / `false`) |
 | `--allow-origin <ORIGIN>` | (none) | Browser origin permitted to call the daemon (§1.4); repeatable. Env: `MULTI64D_ALLOW_ORIGIN` (comma-separated) |
 | `--no-print-ports` | off | If set, do not log available serial ports at startup (default is to log them at info) |
 | `--list-ports` | off | Print serial port names to stdout and exit (for scripts) |
-| `--serial-trace` | off | Log every non-empty read from the cart at `trace!` on target `multi64_sc64_l2`. Merges with `RUST_LOG` when that is set. Env: `MULTI64D_SERIAL_TRACE` (`1` / `true` / `yes`) |
+| `--serial-trace` | off | Log every non-empty read from the cart at `trace!` on target `multi64_sc64_l2` or `multi64_ed64_l2`, depending on `--cart`. Merges with `RUST_LOG` when that is set. Env: `MULTI64D_SERIAL_TRACE` (`1` / `true` / `yes`) |
 
 † Serial may come from **`--serial`**, **`MULTI64D_SERIAL`**, or **`serial = "..."`** in a config file (see §5.2). CLI and environment **override** file values — they never combine with them, so an explicit `false` or an explicit `--allow-origin` list replaces whatever the file said.
 

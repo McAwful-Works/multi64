@@ -3,7 +3,7 @@
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use multi64d::{build_app, http_metadata_router, AppState, LinkState, SerialConfig};
+use multi64d::{build_app, http_metadata_router, AppState, CartKind, LinkState, SerialConfig};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower::ServiceExt;
@@ -51,6 +51,7 @@ fn app_with_allowed_origins(allowed: &[&str]) -> Router {
             path: "COM_TEST".into(),
             baud: 115200,
             clear_serial: false,
+            cart: CartKind::Sc64,
         },
         LinkState::Faulted,
         from_cart,

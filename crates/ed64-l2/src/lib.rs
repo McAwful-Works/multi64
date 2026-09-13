@@ -237,6 +237,12 @@ impl Ed64L2Pipe {
             match self.port.read(&mut scratch) {
                 Ok(0) => return Ok(0),
                 Ok(n) => {
+                    // Same target shape as `multi64_sc64_l2`, so `multi64d --serial-trace` shows either cart.
+                    tracing::trace!(
+                        target: "multi64_ed64_l2",
+                        raw_bytes = n,
+                        "serial read from cart"
+                    );
                     self.wire.push_bytes(&scratch[..n]);
                     process_wire_messages(&mut self.wire, &mut self.l3_rx)?;
                 }

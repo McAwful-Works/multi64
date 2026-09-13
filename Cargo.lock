@@ -2763,6 +2763,7 @@ dependencies = [
  "clap",
  "dirs",
  "futures-util",
+ "multi64-ed64-l2",
  "multi64-sc64-l2",
  "serde",
  "serde_json",

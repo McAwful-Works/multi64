@@ -34,7 +34,7 @@ That warning is deliberate. The gate was relaxed ahead of validation because a m
 
 `ed64-echo-test` and `ed64-l3-framing-e2e` already link `Ed64L2Pipe` and need no changes — they start working when the link does. Both want the ROM in **RAW_ECHO** and real X7 hardware; X5 has no USB.
 
-Wiring `multi64d` to select an ED64 backend is a later, optional step, not part of proving the pipe.
+`multi64d --cart ed64` already selects `Ed64L2Pipe`, so a proven pipe needs no further daemon change. Prove the pipe with the e2e tools first: a failure through the daemon adds HTTP, the WebSocket and the reader loop to what could be wrong.
 
 ## When it actually works
 
