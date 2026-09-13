@@ -16,6 +16,7 @@
   --control-primary-text: #e8eaed;
   /* Black as a triple so overlays and shadows can vary alpha without repeating the colour. */
   --shadow-rgb: 0, 0, 0;
+  --warning-text: #e8c07a;
   font-family:
     "Segoe UI",
     system-ui,
@@ -46,6 +47,7 @@
   --control-primary-border: #0b57d0;
   --control-primary-text: #ffffff;
   --shadow-rgb: 60, 64, 67;
+  --warning-text: #a15c00;
   /* In light the "highlight" hairline must darken, not lighten. */
 }
 
@@ -68,6 +70,7 @@
     --control-primary-bg-hover: #0842a0;
     --control-primary-border: #0b57d0;
     --shadow-rgb: 60, 64, 67;
+    --warning-text: #a15c00;
     /* In light the "highlight" hairline must darken, not lighten. */
   }
 }
@@ -89,6 +92,7 @@
   --control-primary-border: #9ecbff;
   --control-primary-text: #ffffff;
   --shadow-rgb: 0, 0, 0;
+  --warning-text: #ffd479;
 }
 
 /* ---------------------------------------------------------------------------
@@ -292,6 +296,11 @@ body.settings-open {
   padding: 0.45rem 0.5rem;
   font-size: 0.95rem;
   max-width: 100%;
+}
+
+/* Two classes so it wins over `.hint` regardless of order. */
+.hint.hint-warning {
+  color: var(--warning-text);
 }
 
 .hint {

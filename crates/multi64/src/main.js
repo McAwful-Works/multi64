@@ -28,12 +28,12 @@ async function refreshStatus() {
 async function refreshPorts() {
   // One call, one port enumeration: asking for the list and the auto pick separately enumerated
   // twice and could disagree if a cart was plugged in between the two.
-  const { ports, auto } = await invoke("get_serial_port_options");
+  const { ports, auto, autoWarning } = await invoke("get_serial_port_options");
   const sel = document.getElementById("serial-port");
   sel.innerHTML = "";
   const optAuto = document.createElement("option");
   optAuto.value = "";
-  optAuto.textContent = auto ? `Auto (${auto})` : "Auto (no port found)";
+  optAuto.textContent = auto ? `Auto (${auto})` : "Auto (no cart selected)";
   sel.appendChild(optAuto);
   for (const p of ports) {
     const o = document.createElement("option");
@@ -41,9 +41,13 @@ async function refreshPorts() {
     o.textContent = p;
     sel.appendChild(o);
   }
-  document.getElementById("auto-hint").textContent = auto
-    ? `Default selection uses USB when possible: ${auto}`
-    : "No serial ports detected.";
+  // Auto only picks a port that identifies as a cart, so with no pick the daemon will not start
+  // on Auto. Say why in a warning rather than leaving a hint that reads as fine.
+  const hint = document.getElementById("auto-hint");
+  hint.textContent = auto
+    ? `Auto uses the cart on ${auto}.`
+    : autoWarning || "No cart found.";
+  hint.classList.toggle("hint-warning", !auto);
   return { ports, auto };
 }
 
