@@ -11,7 +11,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <usb.h>
+
+#include "cart_link.h"
 
 #define MULTI64_L3 0x01
 
@@ -164,7 +165,7 @@ static void send_l3_wire_once(const uint8_t *wire, int len)
     if (len <= 0) {
         return;
     }
-    usb_write(MULTI64_L3, wire, (size_t)len);
+    cart_link_write(wire, len);
 }
 
 static void send_l3_wire_chunked(const uint8_t *wire, int total_len)
@@ -175,7 +176,7 @@ static void send_l3_wire_chunked(const uint8_t *wire, int total_len)
         if (chunk > (int)TEST_USB_FRAG_CHUNK) {
             chunk = (int)TEST_USB_FRAG_CHUNK;
         }
-        usb_write(MULTI64_L3, wire + off, (size_t)chunk);
+        cart_link_write(wire + off, chunk);
         off += chunk;
     }
 }

@@ -365,6 +365,21 @@ impl<T: Transport> Ed64Pro<T> {
         Ok(n)
     }
 
+    /// Drop whatever has already arrived and not been read (edlink's `FlushPort`).
+    ///
+    /// For a host that is about to stream from a running ROM: anything waiting predates it.
+    pub fn discard_input(&mut self) -> Result<()> {
+        self.io.clear_input()?;
+        Ok(())
+    }
+
+    /// The transport itself, e.g. to queue a fake cart's output in a test.
+    ///
+    /// Bytes written through this bypass the protocol entirely.
+    pub fn transport_mut(&mut self) -> &mut T {
+        &mut self.io
+    }
+
     pub fn into_inner(self) -> T {
         self.io
     }

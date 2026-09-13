@@ -21,7 +21,8 @@ else
   SRAM_TEST_FLAGS := -DTEST_SRAM_BYTES=0
 endif
 
-OBJS = $(BUILD_DIR)/main.o $(BUILD_DIR)/test_proto.o $(BUILD_DIR)/mem_proto.o $(BUILD_DIR)/save_hw.o
+OBJS = $(BUILD_DIR)/main.o $(BUILD_DIR)/test_proto.o $(BUILD_DIR)/mem_proto.o $(BUILD_DIR)/save_hw.o \
+       $(BUILD_DIR)/cart_link.o $(BUILD_DIR)/ed64pro.o
 
 all: multi64_test.z64
 .PHONY: all

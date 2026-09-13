@@ -8,6 +8,7 @@
 //! Status codes are invented (see [`status`]); neither Krikzz source documents the firmware's.
 
 use crate::transport::Transport;
+use crate::wire::FIFO_ADDR;
 use crate::wire::{
     fs, open_mode, Endpoint, ACK_BLOCK, ATTR_DIR, CMD_EPO, CMD_FS, CMD_NRESP, CMD_STATUS,
     CMD_STATUS2, DEVICE_ID_ED64_PRO, EPO_SCMD_XFER, PROTOCOL_ID, STATUS_KEY,
@@ -66,6 +67,8 @@ pub struct FakeEd64Pro {
     listing: Vec<String>,
     pending: Pending,
     memory: HashMap<u32, u8>,
+    /// Bytes queued for the ROM at [`FIFO_ADDR`], in arrival order.
+    fifo: Vec<u8>,
 }
 
 impl Default for FakeEd64Pro {
@@ -103,6 +106,7 @@ impl FakeEd64Pro {
             listing: Vec::new(),
             pending: Pending::Command,
             memory: HashMap::new(),
+            fifo: Vec::new(),
         }
     }
 
@@ -147,6 +151,14 @@ impl FakeEd64Pro {
         (0..len)
             .map(|i| *self.memory.get(&addr.wrapping_add(i as u32)).unwrap_or(&0))
             .collect()
+    }
+
+    /// Everything the host has queued for a running ROM with `fifo_write`, in order.
+    ///
+    /// The cart's FIFO is a queue, not memory: consecutive writes append rather than overwrite,
+    /// and the ROM drains it (ed64-pro-pub `ed_fifo_rda`). Nothing here drains it.
+    pub fn fifo_received(&self) -> &[u8] {
+        &self.fifo
     }
 
     /// Queue bytes as if a running ROM had sent them with `ed_usb_wr`.
@@ -237,12 +249,20 @@ impl FakeEd64Pro {
                 }
                 Pending::RawMemory { addr, remaining } => {
                     let n = remaining.min(self.inbox.len());
-                    for (i, b) in self.inbox.drain(..n).enumerate() {
-                        self.memory.insert(addr.wrapping_add(i as u32), b);
-                    }
+                    let bytes: Vec<u8> = self.inbox.drain(..n).collect();
+                    let next = if addr == FIFO_ADDR {
+                        // A queue: the address does not advance.
+                        self.fifo.extend_from_slice(&bytes);
+                        addr
+                    } else {
+                        for (i, b) in bytes.into_iter().enumerate() {
+                            self.memory.insert(addr.wrapping_add(i as u32), b);
+                        }
+                        addr.wrapping_add(n as u32)
+                    };
                     if n < remaining {
                         self.pending = Pending::RawMemory {
-                            addr: addr.wrapping_add(n as u32),
+                            addr: next,
                             remaining: remaining - n,
                         };
                         return;
@@ -653,10 +673,12 @@ mod tests {
         let info = dev.file_info("ed64/menu.cfg").unwrap();
         assert_eq!((info.size, info.is_dir()), (10, false));
 
-        dev.fifo_write(b"hello rom").unwrap();
-        let mut fifo = [0u8; 9];
-        dev.mem_read(crate::wire::FIFO_ADDR, &mut fifo).unwrap();
-        assert_eq!(&fifo, b"hello rom");
+        dev.fifo_write(b"hello ").unwrap();
+        dev.fifo_write(b"rom").unwrap();
+        dev.mem_write(0x1000_0000, b"ram").unwrap();
+        let mut ram = [0u8; 3];
+        dev.mem_read(0x1000_0000, &mut ram).unwrap();
+        assert_eq!(&ram, b"ram");
 
         let err = dev.delete("roms").unwrap_err();
         assert!(
@@ -669,6 +691,11 @@ mod tests {
 
         let mut fake = dev.into_inner();
         assert!(fake.file("ed64/menu.cfg").is_some());
+        assert_eq!(
+            fake.fifo_received(),
+            b"hello rom",
+            "FIFO writes queue in order"
+        );
         fake.push_usb(b"log");
         let mut dev = Ed64Pro::connect(fake).expect("reconnect");
         let mut buf = [0u8; 8];

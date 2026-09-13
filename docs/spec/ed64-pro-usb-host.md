@@ -3,7 +3,7 @@
 **Spec-Revision:** 1  
 **Status:** **Draft.** This is transcribed from Krikzz's sources and has **never been run against an EverDrive-64 PRO**. Nothing here is normative until someone answers §11 on hardware. **`multi64-ed64pro-link`** implements it and is equally unverified.
 
-This document describes how a PC talks to an **EverDrive-64 PRO** over USB: the handshake, command framing, status and errors, bulk transfers, the SD file system, cart memory, and the channel to a running ROM. It does **not** define L3 over the PRO; that would be a separate mapping on top of §9.
+This document describes how a PC talks to an **EverDrive-64 PRO** over USB: the handshake, command framing, status and errors, bulk transfers, the SD file system, cart memory, and the channel to a running ROM. It does **not** define L3 over the PRO; [`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md) does, on top of §8 and §9.
 
 The PRO is **not** an X-series cart. It does not speak `usb64` or the `DMA@` framing in [`l3-over-everdrive-x7.md`](./l3-over-everdrive-x7.md) (see §1.1 there). Unlike the X-series, its microcontroller serves **file-system commands to the PC directly**, so real SD access over USB is possible without any code running on the N64.
 
@@ -166,7 +166,7 @@ This matches `EpoXfer` in `everdrive.c` plus its `ed_run_xfer` byte.
 
 A ROM sends to the host with `ed_usb_wr`, an `EPO` from LINK to the **USB** endpoint (§10). The host reads it **raw, with no framing**: edlink's `usbrd` reads whatever bytes are waiting. That data shares the serial stream with command replies, so a host MUST NOT issue commands while it expects ROM output.
 
-Any L3 mapping over the PRO would have to supply its own framing on top of this.
+[`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md) carries L3 over this without extra framing: L3 marks its own frame boundaries, and that mapping forbids the host from sending reply-producing commands while the stream is in use.
 
 ---
 
@@ -201,6 +201,8 @@ Any L3 mapping over the PRO would have to supply its own framing on top of this.
 | `fake` feature of `multi64-ed64pro-link` | `FakeEd64Pro`: an in-memory cart that decodes this document's bytes, for host-only tests. It agrees with this document by construction, so it cannot catch errors in it. |
 | [`crates/multi64-sc64-sd`](../../crates/multi64-sc64-sd) (`ed64pro` feature) | `Ed64ProSdSession`: a file-level `CartSession` over §7 — list, copy both ways, mkdir, recursive delete. No rename, since §7 has none. |
 | [`crates/xfer64`](../../crates/xfer64/README.md) | Cart mode `ed64_pro`; Auto-detect tries §4 after SC64. Writes need the user's consent each run. |
+| [`crates/ed64pro-l2`](../../crates/ed64pro-l2/README.md) | **`multi64-ed64pro-l2`**: the L3 stream over §8 and §9, as [`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md) specifies. Selected by `multi64d --cart ed64pro`. |
+| [`n64/test-rom`](../../n64/README.md) | `ed64pro.c`: the console side of that mapping — detection, FIFO receive, USB send. |
 
 ---
 

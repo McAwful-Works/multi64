@@ -38,7 +38,7 @@ cargo test -p multi64-l3 stream_decoder_resync  # one test by substring
 cargo test -p multi64-sc64-sd -- --exact partition::tests::detect_partition_legacy_mbr_first_lba
 ```
 
-Tests live in `crates/{l3,sc64-link,sc64-l2,ed64-l2,ed64pro-link,multi64-sc64-sd,multi64-ed64-link,ed64-smoke,xfer64,multi64d,multi64,sc64-sd-e2e}` — note `multi64d` has an HTTP integration suite in `tests/http.rs` (origin guard, faulted `serialActive`, resume), and `crates/multi64/src-tauri` unit-tests the settings and tray-menu label logic. Everything in CI is host-only — the SD/FAT logic is covered by RAM-disk tests, and no test touches hardware.
+Tests live in `crates/{l3,sc64-link,sc64-l2,ed64-l2,ed64pro-link,ed64pro-l2,multi64-sc64-sd,multi64-ed64-link,ed64-smoke,xfer64,multi64d,multi64,sc64-sd-e2e}` — note `multi64d` has an HTTP integration suite in `tests/http.rs` (origin guard, faulted `serialActive`, resume), and `crates/multi64/src-tauri` unit-tests the settings and tray-menu label logic. Everything in CI is host-only — the SD/FAT logic is covered by RAM-disk tests, and no test touches hardware.
 
 ### Tauri apps (`multi64`, `xfer64`, `multi64-test-connector-gui`)
 
@@ -74,6 +74,8 @@ A cart exposes one serial device, so the two stacks contend. `multi64d` resolves
 `multi64-l3` owns the `M64B` wire format, `StreamDecoder`, sessions and channels — no serial code. Each cart gets an L2 crate exposing the same conceptual handle (`open`, `write_l3_stream`, `read_l3_bytes`, `set_timeout`, `clear_serial_buffers`). Adding a cart means writing that handle, not touching L3.
 
 **SC64 is the only backend proven on hardware.** `Ed64L2Pipe` now implements the EverDrive `DMA@` framing from `docs/spec/l3-over-everdrive-x7.md` §4, but **it has never been run against a cart** — it is derived from UNFLoader and libdragon's `usb.c`, not from observation. Its unit tests cover the framing only. Do not describe EverDrive as supported, and do not treat a successful `open` as evidence: the data path has no identity handshake, so `open` only means the serial port opened. §4.5 lists what must be checked on hardware first. `multi64d --cart ed64` selects it (default `sc64`), and Multi64's Settings → **Cart** passes that flag; that is wiring only and makes EverDrive no more proven.
+
+The **EverDrive-64 PRO** has its own pipe, `Ed64ProL2Pipe` (`multi64-ed64pro-l2`, `multi64d --cart ed64pro`): L3 written into the cart FIFO and read back raw, per `docs/spec/l3-over-everdrive-pro.md`. It is less proven than the X7 pipe — libdragon and UNFLoader do not support the PRO, so there was no reference to transcribe and the mapping is this repo's own design. Its ROM side is `n64/test-rom/ed64pro.c`, which must detect the PRO before libdragon's `usb_initialize` runs. Its `open` does run an identity handshake, unlike the X7's, but that proves only that a PRO answered.
 
 `multi64-ed64-link` is *not* part of the L3 stack despite the name — it is EverDrive USB serial plumbing for the SD path, plus cart detection.
 
