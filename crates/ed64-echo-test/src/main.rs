@@ -19,7 +19,7 @@ struct Args {
     #[arg(long, default_value = "115200")]
     baud: u32,
 
-    /// Payload to send (length limits depend on the EverDrive L2 mapping once implemented)
+    /// Payload to send. `Ed64L2Pipe::write_l3_stream` splits it into 512-byte `DMA@` messages.
     #[arg(long, default_value = "multi64_test")]
     payload: String,
 

@@ -134,17 +134,23 @@ Homebrew should follow Krikzz-style initialization (`REG_KEY`, `REG_SYS_CFG`, US
 
 **In practice this is already handled.** `n64/test-rom` links libdragon's `<usb.h>` — the same UNFLoader-derived library that abstracts SC64 and EverDrive behind one API (`usb_initialize`, `usb_write`, `usb_read`, `usb_poll`, `usb_getcart`). It already emits `usb_write(MULTI64_L3, …)`, and the library applies the per-cart framing, which on EverDrive is §4.2.
 
-The one thing stopping the existing ROM from running on an X7 is an explicit gate in `n64/test-rom/main.c`:
+The ROM therefore **already boots on an X7**. `n64/test-rom/main.c` halts only on an unknown cart, and on an EverDrive it warns rather than implying support:
 
 ```c
-if (usb_getcart() != CART_SC64) {
-    printf("Need SummerCart64
-");
+const char cart = usb_getcart();
+if (cart != CART_SC64 && cart != CART_EVERDRIVE) {
+    printf("Need SummerCart64 or EverDrive 64\n");
     while (1) { }
+}
+if (cart == CART_EVERDRIVE) {
+    printf("EverDrive: UNVALIDATED host mapping\n");
+    printf("  expect failures; see l3-over-everdrive-x7.md\n");
 }
 ```
 
-Relaxing that to accept `CART_EVERDRIVE` is expected to be the whole N64-side change. It should be made **together with** hardware validation, not before — a ROM that advertises EverDrive support it has never demonstrated is worse than one that refuses to boot.
+This was relaxed **ahead of** hardware validation, deliberately: a host mapping cannot be validated without a ROM that boots on the cart, so keeping the `CART_SC64` gate would have left §4 untested indefinitely. The risk in doing it early — a ROM that implies support it has never demonstrated — is met by the on-screen warning instead of a silent boot. Keep that warning until §4.5 is answered. The committed `multi64_test.z64` includes this change.
+
+No other N64-side change is expected. If validation turns one up, record it here.
 
 ---
 
@@ -157,7 +163,7 @@ Relaxing that to accept `CART_EVERDRIVE` is expected to be the whole N64-side ch
 | [`crates/ed64-smoke`](../../crates/ed64-smoke) | **`ed64-smoke`** binary: host **`cmd`/`t`** smoke test (§8, `usb64`-style), not L3. |
 | [`crates/ed64-echo-test`](../../crates/ed64-echo-test) | **`ed64-echo-test`**: same role as `sc64-echo-test` over **`Ed64L2Pipe`**; runs, exercising §4 framing that is still unvalidated. |
 | [`crates/ed64-l3-framing-e2e`](../../crates/ed64-l3-framing-e2e) | **`ed64-l3-framing-e2e`**: same role as `sc64-l3-framing-e2e` over **`Ed64L2Pipe`**; runs, exercising §4 framing that is still unvalidated. |
-| [`n64/test-rom`](../../n64/README.md) | Already uses libdragon `<usb.h>`, which supports both carts; gated to `CART_SC64` today (§5). |
+| [`n64/test-rom`](../../n64/README.md) | Already uses libdragon `<usb.h>`, which supports both carts. Boots on `CART_SC64` and `CART_EVERDRIVE`, with an on-screen **UNVALIDATED** warning on the latter (§5). |
 | `multi64d` | Future: optional backend selection (`--link ed64` or similar) once `ed64-l2` is functional. |
 
 ---
@@ -166,7 +172,7 @@ Relaxing that to accept `CART_EVERDRIVE` is expected to be the whole N64-side ch
 
 For developers **with** an X7:
 
-1. Build and run **`n64/test-rom`** → **`multi64_test.z64`** with ED64-specific USB bring-up (may require a small ED64 init layer — to be shared in-repo when available).
+1. Flash **`multi64_test.z64`** and leave it in **RAW_ECHO**. The committed binary accepts an EverDrive and shows `EverDrive: UNVALIDATED host mapping` at boot (§5). libdragon's `<usb.h>` is expected to handle cart bring-up; if it does not, that is a §4.5 finding.
 2. Confirm **serial device** appears on the host when the ROM uses USB.
 3. Capture **host↔device** traces (optional) to help finalize §4.
 4. Open a PR updating this spec + **`ed64-l2`** with measured behavior.
