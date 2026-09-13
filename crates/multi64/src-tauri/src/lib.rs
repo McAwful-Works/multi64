@@ -264,18 +264,101 @@ fn resolve_multi64d_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     ))
 }
 
-/// First USB serial device, else the first port of any kind.
-fn pick_auto(ports: &[serialport::SerialPortInfo]) -> Option<String> {
-    for p in ports {
-        if let serialport::SerialPortType::UsbPort(_) = &p.port_type {
-            return Some(p.port_name.clone());
-        }
-    }
-    ports.first().map(|p| p.port_name.clone())
+/// FTDI FT232H, the USB bridge on a SummerCart64.
+///
+/// A stock FTDI part that also turns up in unrelated adapters, so the VID/PID is only half of the
+/// match; see [`usb_is_sc64`].
+const SC64_USB_VID: u16 = 0x0403;
+const SC64_USB_PID: u16 = 0x6014;
+/// The cart programs its FTDI serial number as `SC64…` and its product string as `SC64`.
+const SC64_USB_TAG: &str = "SC64";
+
+/// Whether a USB serial device is a SummerCart64, judged from its descriptors alone.
+///
+/// Deliberately writes nothing: until proven otherwise the port belongs to some other device,
+/// opening it can reset that device (many adapters toggle DTR on open), and the cart's own port
+/// may already be held by `multi64d`.
+///
+/// Windows reports the FTDI serial with the interface letter appended (`SC64XXXXXXA`) and the
+/// driver's description (`USB Serial Port`) as the product, so there the serial prefix is what
+/// matches; other platforms read the product string from the descriptor.
+fn usb_is_sc64(usb: &serialport::UsbPortInfo) -> bool {
+    let tagged = |s: &Option<String>| {
+        s.as_deref()
+            .and_then(|s| s.get(..SC64_USB_TAG.len()))
+            .is_some_and(|head| head.eq_ignore_ascii_case(SC64_USB_TAG))
+    };
+    usb.vid == SC64_USB_VID
+        && usb.pid == SC64_USB_PID
+        && (tagged(&usb.serial_number) || tagged(&usb.product))
 }
 
-fn auto_pick_port() -> Option<String> {
-    pick_auto(&serialport::available_ports().ok()?)
+/// What auto-selection found among the enumerated ports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AutoPort {
+    /// Exactly one cart.
+    Found(String),
+    /// No port identifies as a cart. Other serial devices may be present; they are not candidates.
+    NoCart,
+    /// More than one cart, so any choice would be a guess.
+    Ambiguous(Vec<String>),
+}
+
+impl AutoPort {
+    fn port(self) -> Option<String> {
+        match self {
+            AutoPort::Found(port) => Some(port),
+            AutoPort::NoCart | AutoPort::Ambiguous(_) => None,
+        }
+    }
+
+    /// Why there is no port, worded for the settings hint, the status line and the daemon log.
+    fn problem(&self) -> Option<String> {
+        match self {
+            AutoPort::Found(_) => None,
+            AutoPort::NoCart => Some(
+                "No SummerCart64 found on USB. Plug in the cart or pick its COM port in \
+                 Settings; other serial devices are never chosen automatically."
+                    .to_string(),
+            ),
+            AutoPort::Ambiguous(ports) => Some(format!(
+                "More than one SummerCart64 found ({}). Pick one in Settings.",
+                ports.join(", ")
+            )),
+        }
+    }
+}
+
+/// The cart's port, or nothing.
+///
+/// This used to return the first USB serial device of any kind, else the first port at all.
+/// Enumeration order is not stable, so on a machine with a second USB serial adapter the daemon
+/// opened whichever came first — and then reported itself healthy while holding an unrelated
+/// device, because opening a port proves nothing about what is on the other end. A port is now
+/// chosen only when it identifies as a cart, and only when that choice is unique.
+fn pick_auto(ports: &[serialport::SerialPortInfo]) -> AutoPort {
+    let mut carts: Vec<String> = ports
+        .iter()
+        .filter(|p| {
+            matches!(&p.port_type, serialport::SerialPortType::UsbPort(usb) if usb_is_sc64(usb))
+        })
+        .map(|p| p.port_name.clone())
+        .collect();
+    match carts.len() {
+        0 => AutoPort::NoCart,
+        1 => AutoPort::Found(carts.remove(0)),
+        _ => {
+            carts.sort();
+            AutoPort::Ambiguous(carts)
+        }
+    }
+}
+
+fn auto_port() -> AutoPort {
+    // A failed enumeration found no cart; reporting that beats failing the caller.
+    serialport::available_ports()
+        .map(|ports| pick_auto(&ports))
+        .unwrap_or(AutoPort::NoCart)
 }
 
 #[derive(Serialize)]
@@ -283,6 +366,8 @@ fn auto_pick_port() -> Option<String> {
 pub struct SerialPortOptions {
     pub ports: Vec<String>,
     pub auto: Option<String>,
+    /// Set whenever `auto` is `None`: why Auto has no port.
+    pub auto_warning: Option<String>,
 }
 
 /// Enumerate the ports once and derive both the list and the auto pick from it.
@@ -295,16 +380,31 @@ fn serial_port_options() -> SerialPortOptions {
     let auto = pick_auto(&ports);
     SerialPortOptions {
         ports: ports.into_iter().map(|p| p.port_name).collect(),
-        auto,
+        auto_warning: auto.problem(),
+        auto: auto.port(),
     }
 }
 
+/// The saved port if there is one, else the auto pick. `Err` says why there is no port.
+///
+/// `auto` runs only without a saved port, so a pinned port never costs an enumeration.
+fn resolve_serial(saved: Option<&str>, auto: impl FnOnce() -> AutoPort) -> Result<String, String> {
+    if let Some(port) = saved.filter(|s| !s.is_empty()) {
+        return Ok(port.to_string());
+    }
+    let auto = auto();
+    match auto.problem() {
+        Some(problem) => Err(problem),
+        None => auto.port().ok_or_else(|| "no serial port".to_string()),
+    }
+}
+
+fn serial_for(settings: &Settings) -> Result<String, String> {
+    resolve_serial(settings.serial_port.as_deref(), auto_port)
+}
+
 fn effective_serial(settings: &Settings) -> Option<String> {
-    settings
-        .serial_port
-        .clone()
-        .filter(|s| !s.is_empty())
-        .or_else(auto_pick_port)
+    serial_for(settings).ok()
 }
 
 fn daemon_health_url(listen: &str) -> String {
@@ -398,8 +498,7 @@ fn start_daemon(
 ) -> Result<(), String> {
     let _ops = DAEMON_OPS.lock();
     kill_daemon_locked(daemon);
-    let serial = effective_serial(settings)
-        .ok_or("No serial port (plug in the cart or pick a COM port).")?;
+    let serial = serial_for(settings)?;
     {
         let mut inner = daemon.lock();
         inner.logs.clear();
@@ -564,7 +663,12 @@ fn daemon_status(state: &AppState) -> DaemonStatus {
     let running = daemon_is_running(&state.daemon);
     let healthy = running && check_health(&listen);
     let message = if !running {
-        "Stopped".into()
+        // Name why Start cannot work. Without a saved port this enumerates on every poll, which
+        // is cheap and only happens while stopped.
+        match serial_for(&settings) {
+            Ok(_) => "Stopped".into(),
+            Err(why) => format!("Stopped — {why}"),
+        }
     } else if healthy {
         "Running (multi64d responds)".into()
     } else {
@@ -933,8 +1037,11 @@ fn tray_labels(running: bool, serial: Option<&str>, listen: &str) -> TrayLabels 
                 // listens rather than claiming a port we cannot name.
                 None => format!("Daemon: running ({listen})"),
             }
-        } else {
+        } else if serial.is_some() {
             "Daemon: stopped".to_string()
+        } else {
+            // Start is greyed out below; say why, since the tray has no room for the full reason.
+            "Daemon: stopped (no cart port)".to_string()
         },
         toggle: if running {
             "Stop daemon"
@@ -1166,17 +1273,23 @@ pub fn run() {
                 }
             }
 
-            if settings_for_setup.auto_start_daemon
-                && effective_serial(&settings_for_setup).is_some()
-            {
-                let h = handle.clone();
-                let d = Arc::clone(&daemon_for_setup);
-                let s = settings_for_setup.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(400));
-                    let _ = start_daemon(&h, &d, &s);
-                    let _ = h.emit("daemon-changed", ());
-                });
+            if settings_for_setup.auto_start_daemon {
+                match serial_for(&settings_for_setup) {
+                    Ok(_) => {
+                        let h = handle.clone();
+                        let d = Arc::clone(&daemon_for_setup);
+                        let s = settings_for_setup.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(400));
+                            if let Err(e) = start_daemon(&h, &d, &s) {
+                                push_log(&d, format!("Start failed: {e}"));
+                            }
+                            let _ = h.emit("daemon-changed", ());
+                        });
+                    }
+                    // Skipping the auto-start used to leave no trace; the log now says why.
+                    Err(why) => push_log(&daemon_for_setup, format!("multi64d not started: {why}")),
+                }
             }
 
             Ok(())
@@ -1252,6 +1365,191 @@ mod tests {
 }
 
 #[cfg(test)]
+mod port_selection_tests {
+    use super::*;
+    use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
+
+    fn usb(
+        name: &str,
+        vid: u16,
+        pid: u16,
+        serial: Option<&str>,
+        product: Option<&str>,
+    ) -> SerialPortInfo {
+        SerialPortInfo {
+            port_name: name.to_string(),
+            port_type: SerialPortType::UsbPort(UsbPortInfo {
+                vid,
+                pid,
+                serial_number: serial.map(str::to_string),
+                manufacturer: None,
+                product: product.map(str::to_string),
+            }),
+        }
+    }
+
+    /// A cart as Windows reports it: `FTDIBUS\VID_0403+PID_6014+SC64XXXXXXA\0000`, with the
+    /// FTDI interface letter on the serial and the driver's description as the product.
+    fn sc64_windows(name: &str) -> SerialPortInfo {
+        usb(
+            name,
+            0x0403,
+            0x6014,
+            Some("SC64XXXXXXA"),
+            Some("USB Serial Port"),
+        )
+    }
+
+    /// A CH340 adapter as Windows reports it: `USB\VID_1A86&PID_7523\...`.
+    fn ch340(name: &str) -> SerialPortInfo {
+        usb(name, 0x1a86, 0x7523, None, Some("USB-SERIAL CH340"))
+    }
+
+    /// The reported failure: a CH340 enumerated ahead of the cart was picked, and the daemon
+    /// held it while claiming to be healthy.
+    #[test]
+    fn picks_the_cart_over_an_adapter_enumerated_first() {
+        let ports = [ch340("COM5"), sc64_windows("COM4")];
+        assert_eq!(pick_auto(&ports), AutoPort::Found("COM4".into()));
+    }
+
+    #[test]
+    fn the_pick_does_not_depend_on_enumeration_order() {
+        let ports = [sc64_windows("COM4"), ch340("COM5")];
+        assert_eq!(pick_auto(&ports), AutoPort::Found("COM4".into()));
+    }
+
+    /// The old fallback took the only USB serial device, cart or not.
+    #[test]
+    fn a_lone_non_cart_adapter_is_not_chosen() {
+        let got = pick_auto(&[ch340("COM5")]);
+        assert_eq!(got, AutoPort::NoCart);
+        assert!(got.problem().is_some(), "the UI needs a reason to show");
+    }
+
+    /// The old last resort took the first port of any kind.
+    #[test]
+    fn non_usb_ports_are_not_chosen() {
+        let ports = [
+            SerialPortInfo {
+                port_name: "COM1".into(),
+                port_type: SerialPortType::PciPort,
+            },
+            SerialPortInfo {
+                port_name: "COM3".into(),
+                port_type: SerialPortType::BluetoothPort,
+            },
+            SerialPortInfo {
+                port_name: "COM9".into(),
+                port_type: SerialPortType::Unknown,
+            },
+        ];
+        assert_eq!(pick_auto(&ports), AutoPort::NoCart);
+        assert_eq!(pick_auto(&[]), AutoPort::NoCart);
+    }
+
+    /// The cart's VID/PID is a stock FTDI part; without the SC64 tag it is just some adapter.
+    #[test]
+    fn a_stock_ftdi_part_without_the_tag_is_not_a_cart() {
+        let ports = [usb(
+            "COM6",
+            0x0403,
+            0x6014,
+            Some("FT9ABCDEA"),
+            Some("USB Serial Port"),
+        )];
+        assert_eq!(pick_auto(&ports), AutoPort::NoCart);
+    }
+
+    #[test]
+    fn the_tag_without_the_ftdi_ids_is_not_a_cart() {
+        let wrong_pid = usb("COM6", 0x0403, 0x6001, Some("SC64XXXXXXA"), None);
+        let wrong_vid = usb("COM7", 0x1a86, 0x6014, None, Some("SC64"));
+        assert_eq!(pick_auto(&[wrong_pid, wrong_vid]), AutoPort::NoCart);
+    }
+
+    /// Linux and macOS read the descriptor's product string; the serial may not come through.
+    #[test]
+    fn matches_on_the_product_string_too() {
+        let ports = [usb("/dev/ttyUSB0", 0x0403, 0x6014, None, Some("SC64"))];
+        assert_eq!(pick_auto(&ports), AutoPort::Found("/dev/ttyUSB0".into()));
+    }
+
+    #[test]
+    fn the_tag_match_ignores_case_and_survives_short_or_non_ascii_strings() {
+        assert!(usb_is_sc64(&UsbPortInfo {
+            vid: 0x0403,
+            pid: 0x6014,
+            serial_number: Some("sc64xxxxxxa".into()),
+            manufacturer: None,
+            product: None,
+        }));
+        for odd in ["", "SC", "SCβ4", "βSC64"] {
+            assert!(
+                !usb_is_sc64(&UsbPortInfo {
+                    vid: 0x0403,
+                    pid: 0x6014,
+                    serial_number: Some(odd.into()),
+                    manufacturer: None,
+                    product: Some(odd.into()),
+                }),
+                "{odd:?} must not match (or panic on a char boundary)"
+            );
+        }
+    }
+
+    #[test]
+    fn two_carts_is_ambiguous_rather_than_a_guess() {
+        let ports = [sc64_windows("COM8"), ch340("COM5"), sc64_windows("COM4")];
+        let got = pick_auto(&ports);
+        assert_eq!(got, AutoPort::Ambiguous(vec!["COM4".into(), "COM8".into()]));
+        let problem = got.problem().unwrap();
+        assert!(problem.contains("COM4, COM8"), "{problem}");
+    }
+
+    #[test]
+    fn a_saved_port_wins_without_enumerating() {
+        let got = resolve_serial(Some("COM5"), || {
+            panic!("auto must not run with a saved port")
+        });
+        assert_eq!(got, Ok("COM5".into()));
+    }
+
+    #[test]
+    fn an_empty_saved_port_means_auto() {
+        let got = resolve_serial(Some(""), || AutoPort::Found("COM4".into()));
+        assert_eq!(got, Ok("COM4".into()));
+        let got = resolve_serial(None, || AutoPort::Found("COM4".into()));
+        assert_eq!(got, Ok("COM4".into()));
+    }
+
+    /// No cart on Auto is an error carrying the reason, not some other port.
+    #[test]
+    fn no_cart_on_auto_is_an_error_with_the_reason() {
+        let err = resolve_serial(None, || AutoPort::NoCart).unwrap_err();
+        assert_eq!(Some(err), AutoPort::NoCart.problem());
+        let err = resolve_serial(None, || {
+            AutoPort::Ambiguous(vec!["COM4".into(), "COM8".into()])
+        })
+        .unwrap_err();
+        assert!(err.contains("More than one"), "{err}");
+    }
+
+    /// The frontend reads `autoWarning`; a rename on either side would silently drop the warning.
+    #[test]
+    fn options_serialise_the_warning_for_the_frontend() {
+        let json = serde_json::to_value(SerialPortOptions {
+            ports: vec!["COM5".into()],
+            auto: None,
+            auto_warning: AutoPort::NoCart.problem(),
+        })
+        .unwrap();
+        assert!(json["auto"].is_null());
+        assert!(json["autoWarning"].is_string());
+    }
+}
+
+#[cfg(test)]
 mod tray_tests {
     use super::*;
 
@@ -1287,6 +1585,8 @@ mod tray_tests {
         // `start_daemon` fails with no serial port, so the item must not invite the click.
         let l = tray_labels(false, None, "127.0.0.1:38765");
         assert!(!l.toggle_enabled);
+        // ...and the status line says why it is greyed out.
+        assert_eq!(l.status, "Daemon: stopped (no cart port)");
     }
 
     #[test]

@@ -53,6 +53,7 @@ These preferences live in **`localStorage`**, *not* in the settings file — the
 ## Settings & tray
 
 - Settings: `%APPDATA%\multi64\gui-settings.json`
+- **COM port → Auto** picks only a port whose USB descriptors identify a SummerCart64: FTDI `0403:6014` with an `SC64…` serial number or product string. Nothing is written to a port to find out. Other serial devices are never chosen, and with two carts plugged in neither is: the port stays unset, Settings and the status line say why, and the daemon does not start. Pick a port explicitly to use anything else.
 - **Autostart** (log in → open this app): uses [`auto-launch`](https://crates.io/crates/auto-launch); still starts **`multi64d`** as a child when “start daemon automatically” is on — not a Windows Service.
 ### Tray
 
@@ -60,7 +61,7 @@ These preferences live in **`localStorage`**, *not* in the settings file — the
 
 | Item | |
 |------|---|
-| `Daemon: …` | Status line, disabled. Names the port when running, else the listen address. Reflects whether the **process** is alive — the window shows finer-grained health, since a status line that polled `/health` would issue a blocking request on every update |
+| `Daemon: …` | Status line, disabled. Names the port when running, else the listen address; while stopped, says so when there is no cart port. Reflects whether the **process** is alive — the window shows finer-grained health, since a status line that polled `/health` would issue a blocking request on every update |
 | **Start / Stop daemon** | One item, whichever applies. Disabled with no serial port configured, because starting would fail; **Stop** stays enabled without one, since the port can disappear while the daemon runs |
 | **Restart daemon** | Disabled while stopped — that case is **Start** |
 | **Open Xfer64** | Reads *Install Xfer64…* when only the bundled installer is present, and is greyed when neither is |
