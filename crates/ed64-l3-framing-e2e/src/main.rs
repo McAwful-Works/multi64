@@ -1,9 +1,9 @@
 //! End-to-end: build **L3 frames** (`M64B` wire), send the encoded stream over [`Ed64L2Pipe`], read the echoed bytes, decode with [`multi64_l3::Frame::decode`].
 //!
 //! Requires **`multi64_test.z64`** in **RAW_ECHO** mode (default) on hardware with **EverDrive X7** USB + L3 path active.
-//! **`multi64-ed64-l2`** must implement the wire mapping in **`docs/spec/l3-over-everdrive-x7.md`** — until then
-//! [`Ed64L2Pipe::open`] opens the port: the §4 framing is implemented but unvalidated on hardware, so a failure
-//! here may be the mapping rather than the ROM. See [spec §4.5](../../docs/spec/l3-over-everdrive-x7.md).
+//! **`multi64-ed64-l2`** implements the wire mapping in **`docs/spec/l3-over-everdrive-x7.md`** §4, but it has never
+//! been validated against hardware, so a failure here may be the mapping rather than the ROM. See
+//! [spec §4.5](../../docs/spec/l3-over-everdrive-x7.md).
 //!
 //! Use **`--large`** to exercise a payload larger than one typical host chunk (see spec; SC64 uses ~8192-byte `USB_WRITE` chunks).
 
@@ -12,7 +12,7 @@ use multi64_ed64_l2::Ed64L2Pipe;
 use multi64_l3::{Channel, Frame, FrameFlags, FrameType};
 use std::time::Duration;
 
-/// Slightly larger than one typical host L3 chunk so the wire spans multiple transfers once ED64 L2 is implemented.
+/// Slightly larger than one typical host L3 chunk, so the wire spans many 512-byte `DMA@` messages.
 const LARGE_PAYLOAD_LEN: usize = 8192 + 100;
 
 #[derive(Parser, Debug)]

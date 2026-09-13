@@ -1,6 +1,6 @@
 ---
 name: implement-ed64-l2
-description: Guide for finishing EverDrive 64 X7 support - the DMA@ framing is implemented in Ed64L2Pipe but has never touched hardware, so this covers what to validate first, the ROM-side cart gate, and what would make the spec normative. Use when asked to implement, validate, debug, or estimate ED64 L2 or L3-over-EverDrive support.
+description: Guide for finishing EverDrive 64 X7 support - the DMA@ framing is implemented in Ed64L2Pipe but has never touched hardware, so this covers what to validate first, the test ROM's EverDrive boot path, and what would make the spec normative. Use when asked to implement, validate, debug, or estimate ED64 L2 or L3-over-EverDrive support.
 ---
 
 # Finishing `multi64-ed64-l2`
@@ -26,13 +26,9 @@ Until someone runs this against an X7:
 
 ## The N64 side
 
-`n64/test-rom` already links libdragon's `<usb.h>`, which abstracts both carts, and already emits `usb_write(MULTI64_L3, ...)`. The only thing blocking EverDrive is an explicit gate in `main.c`:
+`n64/test-rom` links libdragon's `<usb.h>`, which abstracts both carts, and emits `usb_write(MULTI64_L3, ...)`. It **already boots on an EverDrive**: `main.c` accepts `CART_SC64` or `CART_EVERDRIVE`, halts only on an unknown cart, and on an EverDrive prints `EverDrive: UNVALIDATED host mapping`. The committed `multi64_test.z64` includes this, so no ROM change is needed to start testing.
 
-```c
-if (usb_getcart() != CART_SC64) { printf("Need SummerCart64\n"); while (1) { } }
-```
-
-Relax it to accept `CART_EVERDRIVE` **together with** hardware validation, not before. A ROM that advertises support it has never demonstrated is worse than one that refuses to boot.
+That warning is deliberate. The gate was relaxed ahead of validation because a mapping cannot be tested without a ROM that boots on the cart; the warning is what stops that boot implying support. Keep it until §4.5 is answered on hardware, and remove it in the same change that drops **Draft**.
 
 ## Then
 
@@ -44,4 +40,4 @@ Wiring `multi64d` to select an ED64 backend is a later, optional step, not part 
 
 Drop **Draft** from `docs/spec/l3-over-everdrive-x7.md` and make §4 normative only once §4.5 is answered by observation. Record what was tested and on which OS version. Bump L3 Protocol-Major/Minor only if the L3 byte contract changed — adding a backend does not. Leave **Spec-Revision** alone; maintainer-controlled.
 
-Several files still describe the crate as unvalidated — `README.md`, `CONTRIBUTING.md`, `docs/README.md`, `docs/spec/README.md`, `docs/connectors/test-rom.md`, `crates/ed64-l2/README.md`, and CLAUDE.md. Update them in the same change, and run `/check-docs`.
+Several files still describe the crate as unvalidated — `README.md`, `CONTRIBUTING.md`, `docs/README.md`, `docs/spec/README.md`, `docs/connectors/test-rom.md`, `crates/ed64-l2/README.md`, `n64/README.md`, and CLAUDE.md — plus the test ROM's on-screen warning in `n64/test-rom/main.c`, which means rebuilding and committing `multi64_test.z64`. Update them in the same change, and run `/check-docs`.
