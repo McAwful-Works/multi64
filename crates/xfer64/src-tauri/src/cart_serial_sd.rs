@@ -152,7 +152,7 @@ const ED64_BETA_SD_MSG: &str = "The EverDrive-64 X7 needs a linear ROM address f
 This mode reads cart memory rather than the SD card, so it is not expected to show your card's files.";
 
 const AUTO_DETECT_FAIL: &str = "No cart found on this serial port. \
-Choose SummerCart64, EverDrive-64 PRO (experimental) or EverDrive-64 X7 (experimental) in Settings, or choose another serial port.";
+Choose SummerCart64, EverDrive-64 PRO (beta) or EverDrive-64 X7 (beta) in Settings, or choose another serial port.";
 
 /// Start of the error every write command returns for an EverDrive-64 PRO until the user consents.
 /// The frontend matches on it to ask, then retries; the CLI tells the user which flag to pass.
@@ -827,13 +827,13 @@ fn probe_status_blocking(
             resolved_port: port,
             mode,
             detected_kind: Some("ed64".to_string()),
-            message: Some("Manual: EverDrive-64 X7 (experimental)".to_string()),
+            message: Some("Manual: EverDrive-64 X7 (beta)".to_string()),
         }),
         "ed64_pro" => Ok(UsbProbeStatus {
             resolved_port: port,
             mode,
             detected_kind: Some("ed64pro".to_string()),
-            message: Some("Manual: EverDrive-64 PRO (experimental)".to_string()),
+            message: Some("Manual: EverDrive-64 PRO (beta)".to_string()),
         }),
         "sc64" => Ok(UsbProbeStatus {
             resolved_port: port,
@@ -894,7 +894,7 @@ pub struct Ed64LinearProbeResult {
 }
 
 /// Read sector 0 at many candidate ROM addresses over USB serial; returns bases that look like a boot sector.
-/// Requires an EverDrive on the resolved COM port and Settings set to Auto-detect (EverDrive found) or EverDrive-64 X7 (experimental).
+/// Requires an EverDrive on the resolved COM port and Settings set to Auto-detect (EverDrive found) or EverDrive-64 X7 (beta).
 #[tauri::command]
 pub async fn cart_serial_probe_ed64_linear_base(
     st: State<'_, ExplorerCartSerialState>,
@@ -924,7 +924,7 @@ fn probe_ed64_linear_base_blocking(
     };
     if !allow {
         return Err(
-            "Connect an EverDrive-64 X7, choose Auto-detect or EverDrive-64 X7 (experimental) in Settings, then try again."
+            "Connect an EverDrive-64 X7, choose Auto-detect or EverDrive-64 X7 (beta) in Settings, then try again."
                 .into(),
         );
     }

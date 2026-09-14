@@ -76,8 +76,8 @@ impl DaemonCart {
     fn label(self) -> &'static str {
         match self {
             DaemonCart::Sc64 => "SummerCart64",
-            DaemonCart::Ed64 => "EverDrive-64 X7 (experimental)",
-            DaemonCart::Ed64Pro => "EverDrive-64 PRO (experimental)",
+            DaemonCart::Ed64 => "EverDrive-64 X7 (beta)",
+            DaemonCart::Ed64Pro => "EverDrive-64 PRO (beta)",
         }
     }
 }
@@ -1776,7 +1776,7 @@ mod tests {
         assert_eq!(running_cart_label(DaemonCart::Sc64, false), "SummerCart64");
         assert_eq!(
             running_cart_label(DaemonCart::Ed64Pro, true),
-            "Auto-detect: EverDrive-64 PRO (experimental)"
+            "Auto-detect: EverDrive-64 PRO (beta)"
         );
     }
 
@@ -2118,7 +2118,7 @@ mod tray_tests {
         );
         assert_eq!(
             tray_cart_note(true, DaemonCart::Ed64Pro, false, CartSetting::Ed64Pro).as_deref(),
-            Some("EverDrive-64 PRO (experimental)")
+            Some("EverDrive-64 PRO (beta)")
         );
         // Worded like the window's Cart row when Auto-detect chose the cart.
         assert_eq!(
@@ -2137,23 +2137,14 @@ mod tray_tests {
             true,
             Some("COM6"),
             true,
-            Some("EverDrive-64 X7 (experimental)"),
+            Some("EverDrive-64 X7 (beta)"),
             LISTEN,
         );
+        assert_eq!(l.status, "Bridge: running on COM6 · EverDrive-64 X7 (beta)");
+        let l = tray_labels(false, None, false, Some("EverDrive-64 X7 (beta)"), LISTEN);
         assert_eq!(
             l.status,
-            "Bridge: running on COM6 · EverDrive-64 X7 (experimental)"
-        );
-        let l = tray_labels(
-            false,
-            None,
-            false,
-            Some("EverDrive-64 X7 (experimental)"),
-            LISTEN,
-        );
-        assert_eq!(
-            l.status,
-            "Bridge: stopped (no serial port) · EverDrive-64 X7 (experimental)"
+            "Bridge: stopped (no serial port) · EverDrive-64 X7 (beta)"
         );
     }
 
