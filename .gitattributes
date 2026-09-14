@@ -15,6 +15,8 @@
 
 # N64 build inputs run under Linux/WSL toolchains: make rejects CRLF recipes, and
 # linker scripts and assembly are read by tools that do not expect it either.
+# toolchain.lock is sourced by n64/*.sh, where a trailing CR lands in every value.
 Makefile text eol=lf
 *.ld text eol=lf
 *.S text eol=lf
+toolchain.lock text eol=lf
