@@ -1,3 +1,12 @@
+/* ===========================================================================
+   Shared base for Multi64 and Xfer64.
+
+   This file is byte-identical in crates/multi64/src/styles.css and crates/xfer64/src/styles.css,
+   and a test in the multi64 crate fails if they differ: edit one, copy it to the other. Rules
+   that only one app uses belong in that app's own stylesheet (Multi64: app.css; Xfer64:
+   explorer.css, upload-picker.css), not here. See docs/frontend-appearance.md.
+   =========================================================================== */
+
 :root {
   color-scheme: dark;
   --bg: #1a1d23;
@@ -165,12 +174,32 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Text size. Every dimension in these sheets is in rem, so scaling the root
-   font size scales the whole UI proportionally rather than only the glyphs.
+   Scale. Every size in both apps comes from these tokens, so equivalent things match:
+   four text sizes plus the app title, three corner radii, and the stacking of dialogs.
+   Text sizes are in rem, so the Text size preference (--ui-scale) scales the whole UI.
    --------------------------------------------------------------------------- */
 
 :root {
   --ui-scale: 1;
+  /* Badges, uppercase eyebrow labels, the product line. */
+  --font-xs: 0.75rem;
+  /* Hints, captions, secondary text, status lines, logs, table cells in dense lists. */
+  --font-sm: 0.82rem;
+  /* Body text, buttons, field labels, inputs, checkboxes, dialog messages. */
+  --font-md: 0.9rem;
+  /* Card and dialog headings. */
+  --font-lg: 1.05rem;
+  /* The app name in the header. */
+  --font-title: 1.25rem;
+  /* Dense controls (toolbar selects, tooltips, inline code). */
+  --radius-sm: 4px;
+  /* Buttons, inputs, list rows. */
+  --radius-md: 6px;
+  /* Cards, dialogs, menus. */
+  --radius-lg: 10px;
+  /* Dialogs, and a dialog opened from a dialog (a confirm or alert raised from Settings). */
+  --z-dialog: 12000;
+  --z-dialog-top: 13000;
 }
 
 html {
@@ -178,14 +207,14 @@ html {
 }
 
 /* ---------------------------------------------------------------------------
-   Focus. A single visible ring for keyboard users, themed like everything else.
-   `:focus-visible` rather than `:focus` so a mouse click does not draw it.
+   Focus. A single visible ring for keyboard users, themed like everything else, and the only
+   focus style in either app. `:focus-visible` rather than `:focus` so a mouse click on a button
+   does not draw it; text fields still show it on click, which is what a caret needs.
    --------------------------------------------------------------------------- */
 
 :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 3px;
 }
 
 /* ---------------------------------------------------------------------------
@@ -215,6 +244,10 @@ html {
   scroll-behavior: auto !important;
 }
 
+/* ---------------------------------------------------------------------------
+   Base.
+   --------------------------------------------------------------------------- */
+
 * {
   box-sizing: border-box;
 }
@@ -227,112 +260,32 @@ html {
 
 body {
   margin: 0;
-  padding: 1rem 1.25rem 2rem;
   background: var(--bg);
   color: var(--text);
   line-height: 1.45;
 }
 
-body.settings-open {
-  overflow: hidden;
+code {
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.9em;
+  background: rgba(var(--highlight-rgb), 0.08);
+  padding: 0.05rem 0.3rem;
+  border-radius: var(--radius-sm);
 }
 
-html.settings-open,
-body.settings-open {
-  overflow: hidden;
-}
-
-.header-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 0.35rem;
-}
-
-.header-titles {
-  flex: 1;
-  min-width: 0;
-}
-
-.btn-settings {
-  flex-shrink: 0;
-  margin-top: 0.15rem;
-}
-
-.btn-settings[aria-expanded="true"] {
-  opacity: 0.55;
-  pointer-events: none;
-}
-
-.header h1 {
-  margin: 0 0 0.35rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.tagline {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.92rem;
-  max-width: 52rem;
-}
-
-.tagline code {
-  background: var(--card);
-  padding: 0.1rem 0.35rem;
-  border-radius: 4px;
-  font-size: 0.88em;
-}
-
-.card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 1rem 1.1rem;
-  margin-top: 1rem;
-  max-width: 40rem;
-}
-
-.card h2 {
-  margin: 0 0 0.75rem;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--accent);
-}
-
-.status-grid {
-  display: grid;
-  grid-template-columns: 7rem 1fr;
-  gap: 0.35rem 0.75rem;
-  margin: 0 0 1rem;
-  font-size: 0.92rem;
-}
-
-.status-grid dt {
-  color: var(--muted);
-  margin: 0;
-}
-
-.status-grid dd {
-  margin: 0;
-  font-family: ui-monospace, monospace;
-}
-
-.row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-}
+/* ---------------------------------------------------------------------------
+   Buttons.
+   --------------------------------------------------------------------------- */
 
 .btn {
   background: var(--control-bg);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 0.45rem 0.85rem;
-  font-size: 0.9rem;
+  font: inherit;
+  font-size: var(--font-md);
+  line-height: 1.2;
   cursor: pointer;
 }
 
@@ -357,10 +310,36 @@ body.settings-open {
   cursor: not-allowed;
 }
 
-.check:has(input:disabled) {
-  opacity: 0.55;
-  cursor: not-allowed;
+/* A square button holding one SVG icon (`.btn-icon-svg`). Always give it `aria-label` and a
+   `title` naming the action. */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0.3rem;
+  line-height: 0;
 }
+
+.btn-icon-svg {
+  width: 1.125rem;
+  height: 1.125rem;
+  display: block;
+  flex-shrink: 0;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+/* ---------------------------------------------------------------------------
+   Form fields. A `.field` is a <label> wrapping a <span> label and one control. A `.hint`
+   directly after a field, checkbox or button row describes it and sits close under it.
+   --------------------------------------------------------------------------- */
 
 .field {
   display: flex;
@@ -369,34 +348,32 @@ body.settings-open {
   margin-bottom: 0.75rem;
 }
 
-.field span {
-  font-size: 0.85rem;
-  color: var(--muted);
+.field > span {
+  font-size: var(--font-sm);
+  color: var(--text);
 }
 
 .field input,
-.field select {
+.field select,
+.input {
+  width: 100%;
+  max-width: 100%;
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.45rem 0.5rem;
-  font-size: 0.95rem;
-  max-width: 100%;
-}
-
-.hint {
-  font-size: 0.82rem;
-  color: var(--muted);
-  margin: 0 0 0.5rem;
+  border-radius: var(--radius-md);
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+  font-size: var(--font-md);
 }
 
 .check {
   display: flex;
   align-items: flex-start;
   gap: 0.5rem;
-  margin-bottom: 0.55rem;
-  font-size: 0.9rem;
+  margin-bottom: 0.6rem;
+  font-size: var(--font-md);
+  color: var(--text);
   cursor: pointer;
 }
 
@@ -404,56 +381,119 @@ body.settings-open {
   margin-top: 0.2rem;
 }
 
-.check code {
-  font-size: 0.85em;
-  background: var(--bg);
-  padding: 0.05rem 0.25rem;
-  border-radius: 3px;
+.check:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
-.log {
-  background: var(--surface-sunken);
-  color: var(--text-dim);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.65rem 0.75rem;
-  font-size: 0.78rem;
-  line-height: 1.35;
-  max-height: 220px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.footer {
-  margin-top: 2rem;
-  font-size: 0.75rem;
+.hint {
+  margin: 0 0 0.75rem;
+  font-size: var(--font-sm);
+  line-height: 1.4;
   color: var(--muted);
 }
 
-.dev-only a {
+.field + .hint,
+.check + .hint,
+.row + .hint {
+  margin-top: -0.4rem;
+}
+
+/* Two classes so they win over `.hint` regardless of order. */
+.hint.hint-warning {
+  color: var(--warning-text);
+}
+
+.hint.hint-error {
+  color: var(--danger-text);
+}
+
+/* ---------------------------------------------------------------------------
+   App header: the brand mark, the app name and product line, and icon buttons at the end.
+   --------------------------------------------------------------------------- */
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* `alt=""` on the image: the app name beside it already names the app. */
+.app-brand-mark {
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  display: block;
+}
+
+.app-brand-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.1rem 0.6rem;
+  min-width: 0;
+}
+
+.app-title {
+  margin: 0;
+  font-size: var(--font-title);
+  font-weight: 600;
+  line-height: 1.2;
   color: var(--accent);
 }
 
-/* Settings: full-viewport dim + centered dialog (avoids split-screen on narrow windows) */
-/* Author `display` must not override the HTML `hidden` attribute (WebView/Tauri). */
-.settings-backdrop[hidden],
-.settings-panel[hidden] {
-  display: none !important;
+.app-productline {
+  font-size: var(--font-xs);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--muted);
 }
 
-.settings-backdrop {
+.app-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Dialogs: Settings, Help and confirmations share one component.
+
+     <div class="dialog-backdrop" hidden></div>
+     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="…" hidden>
+       <div class="dialog-panel">
+         <div class="dialog-header">
+           <h2 class="dialog-title" id="…">Title</h2>
+           <div class="dialog-header-actions">…primary action, then the close icon button…</div>
+         </div>
+         <div class="dialog-body">
+           <section class="dialog-section">
+             <h3 class="dialog-section-title">Section</h3>
+             <p class="dialog-section-note">Applies immediately. Not part of Save settings.</p>
+             …fields…
+           </section>
+         </div>
+         <div class="dialog-footer">…buttons, when the actions belong at the bottom…</div>
+       </div>
+     </div>
+
+   Add `dialog--top` to both the backdrop and the dialog for one opened from another dialog.
+   While any dialog is open, put `dialog-open` on <html> and <body> to stop the page scrolling.
+   --------------------------------------------------------------------------- */
+
+.dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: var(--z-dialog);
   background: rgba(var(--shadow-rgb), 0.6);
   backdrop-filter: blur(4px);
 }
 
-.settings-panel {
+.dialog {
   position: fixed;
   inset: 0;
-  z-index: 101;
+  z-index: calc(var(--z-dialog) + 1);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -461,75 +501,118 @@ body.settings-open {
     max(0.75rem, env(safe-area-inset-right, 0px))
     max(0.75rem, env(safe-area-inset-bottom, 0px))
     max(0.75rem, env(safe-area-inset-left, 0px));
-  box-sizing: border-box;
   pointer-events: none;
 }
 
-.settings-panel-inner {
-  pointer-events: auto;
-  width: min(22rem, 100%);
-  max-height: min(90vh, 100%);
-  overflow: auto;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 16px 48px rgba(var(--shadow-rgb), 0.45);
-  padding: 1rem 1.1rem 1.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+.dialog-backdrop.dialog--top {
+  z-index: var(--z-dialog-top);
 }
 
-.settings-header {
+.dialog.dialog--top {
+  z-index: calc(var(--z-dialog-top) + 1);
+}
+
+.dialog-panel {
+  pointer-events: auto;
+  width: min(22rem, 100%);
+  max-height: min(90vh, calc(100vh - 2rem));
+  max-height: min(90dvh, calc(100dvh - 2rem));
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 48px rgba(var(--shadow-rgb), 0.45);
+}
+
+.dialog-panel--wide {
+  width: min(32rem, 100%);
+}
+
+.dialog-header {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  margin-bottom: 0.5rem;
-  position: sticky;
-  top: 0;
-  background: var(--card);
-  padding-bottom: 0.35rem;
-  margin-top: -0.25rem;
-  padding-top: 0.25rem;
-  z-index: 1;
+  padding: 0.9rem 1.1rem 0.65rem;
+  border-bottom: 1px solid var(--border);
 }
 
-.settings-header h2 {
+.dialog-title {
   margin: 0;
-  font-size: 1.05rem;
+  min-width: 0;
+  font-size: var(--font-lg);
   font-weight: 600;
   color: var(--accent);
 }
 
-.btn-close {
-  min-width: 2.25rem;
-  min-height: 2.25rem;
-  padding: 0;
-  font-size: 1.35rem;
-  line-height: 1;
-  border-radius: 8px;
+.dialog-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
 }
 
-.settings-section {
-  margin-top: 0.75rem;
+.dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 0.85rem 1.1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
-.settings-section:first-of-type {
-  margin-top: 0;
+.dialog-message {
+  margin: 0;
+  font-size: var(--font-md);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.settings-section-title {
+.dialog-footer {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1.1rem 0.9rem;
+  border-top: 1px solid var(--border);
+}
+
+.dialog-section-title {
   margin: 0 0 0.65rem;
-  font-size: 0.82rem;
+  font-size: var(--font-xs);
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   color: var(--muted);
 }
 
-.settings-actions {
-  margin-top: 1rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border);
+.dialog-section-note {
+  margin: -0.3rem 0 0.75rem;
+  font-size: var(--font-sm);
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* A button row between fields gets the same gap below as a field. */
+.dialog-section > .row {
+  margin-bottom: 0.75rem;
+}
+
+.dialog-section > :last-child {
+  margin-bottom: 0;
+}
+
+html.dialog-open,
+body.dialog-open {
+  overflow: hidden;
 }

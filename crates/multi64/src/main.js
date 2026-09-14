@@ -203,6 +203,26 @@ function showInlineError(id, message) {
   el.hidden = !message;
 }
 
+/** Every dialog on the page; while any is open, `dialog-open` on html/body stops the page scrolling. */
+const DIALOG_IDS = ["settings-panel", "help-panel", "discard-panel"];
+
+function syncDialogOpen() {
+  const open = DIALOG_IDS.some((id) => !document.getElementById(id).hidden);
+  document.documentElement.classList.toggle("dialog-open", open);
+  document.body.classList.toggle("dialog-open", open);
+}
+
+/**
+ * `readSettingsFromForm()` as JSON, taken when Settings finished loading on open; null while
+ * Settings is closed or still loading. Appearance controls are not in that form (they apply
+ * immediately), so they never count as unsaved.
+ */
+let settingsSnapshot = null;
+
+function settingsHaveUnsavedEdits() {
+  return settingsSnapshot !== null && JSON.stringify(readSettingsFromForm()) !== settingsSnapshot;
+}
+
 function setSettingsOpen(open) {
   const panel = document.getElementById("settings-panel");
   const backdrop = document.getElementById("settings-backdrop");
@@ -211,18 +231,64 @@ function setSettingsOpen(open) {
   panel.hidden = !open;
   backdrop.hidden = !open;
   opener.setAttribute("aria-expanded", open ? "true" : "false");
-  backdrop.setAttribute("aria-hidden", open ? "false" : "true");
-  document.documentElement.classList.toggle("settings-open", open);
-  document.body.classList.toggle("settings-open", open);
+  settingsSnapshot = null;
+  syncDialogOpen();
   if (open) {
     // Start from last saved values; do not apply draft toggles until Save.
     void loadSettings().then(() => {
+      // Closed again before loading finished: nothing to snapshot or focus.
+      if (panel.hidden) return;
+      settingsSnapshot = JSON.stringify(readSettingsFromForm());
       document.getElementById("btn-close-settings").focus();
     });
   } else {
     // Discard unsaved edits; only "Save settings" calls set_settings on the backend.
     void loadSettings().then(() => opener.focus());
   }
+}
+
+/** Close icon, backdrop and Esc: ask first when the form has unsaved edits. Save closes directly. */
+function requestCloseSettings() {
+  if (settingsHaveUnsavedEdits()) {
+    setDiscardOpen(true);
+  } else {
+    setSettingsOpen(false);
+  }
+}
+
+/** Where focus was in Settings when the discard confirm opened, to return to on "Keep editing". */
+let discardReturnFocus = null;
+
+function setDiscardOpen(open) {
+  if (open) discardReturnFocus = document.activeElement;
+  document.getElementById("discard-panel").hidden = !open;
+  document.getElementById("discard-backdrop").hidden = !open;
+  syncDialogOpen();
+  if (open) document.getElementById("btn-discard-keep").focus();
+}
+
+function keepEditingSettings() {
+  setDiscardOpen(false);
+  const settings = document.getElementById("settings-panel");
+  const back =
+    discardReturnFocus instanceof HTMLElement && settings.contains(discardReturnFocus)
+      ? discardReturnFocus
+      : document.getElementById("btn-close-settings");
+  discardReturnFocus = null;
+  back.focus();
+}
+
+function discardSettingsEdits() {
+  setDiscardOpen(false);
+  discardReturnFocus = null;
+  setSettingsOpen(false);
+}
+
+function setHelpOpen(open) {
+  document.getElementById("help-panel").hidden = !open;
+  document.getElementById("help-backdrop").hidden = !open;
+  syncDialogOpen();
+  document.getElementById(open ? "btn-close-help" : "btn-open-help").focus();
 }
 
 const EMPTY_LOG_HINT =
@@ -287,15 +353,27 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btn-open-settings").addEventListener("click", () => {
     setSettingsOpen(true);
   });
-  document.getElementById("btn-close-settings").addEventListener("click", () => {
-    setSettingsOpen(false);
-  });
-  document.getElementById("settings-backdrop").addEventListener("click", () => {
-    setSettingsOpen(false);
-  });
+  document.getElementById("btn-close-settings").addEventListener("click", requestCloseSettings);
+  document.getElementById("settings-backdrop").addEventListener("click", requestCloseSettings);
+
+  document.getElementById("btn-discard-keep").addEventListener("click", keepEditingSettings);
+  document.getElementById("discard-backdrop").addEventListener("click", keepEditingSettings);
+  document.getElementById("btn-discard-confirm").addEventListener("click", discardSettingsEdits);
+
+  document.getElementById("btn-open-help").addEventListener("click", () => setHelpOpen(true));
+  document.getElementById("btn-close-help").addEventListener("click", () => setHelpOpen(false));
+  document.getElementById("btn-help-done").addEventListener("click", () => setHelpOpen(false));
+  document.getElementById("help-backdrop").addEventListener("click", () => setHelpOpen(false));
+
+  // Esc closes the top dialog only: the discard confirm, else Help, else Settings.
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !document.getElementById("settings-panel").hidden) {
-      setSettingsOpen(false);
+    if (e.key !== "Escape") return;
+    if (!document.getElementById("discard-panel").hidden) {
+      keepEditingSettings();
+    } else if (!document.getElementById("help-panel").hidden) {
+      setHelpOpen(false);
+    } else if (!document.getElementById("settings-panel").hidden) {
+      requestCloseSettings();
     }
   });
 

@@ -1,0 +1,103 @@
+/* ===========================================================================
+   Multi64-only rules. The palette, size tokens, buttons, fields, hints, the app header brand
+   and the dialogs come from styles.css (the shared base); this file only lays out what the
+   Multi64 main window has and Xfer64 does not. No colour literals here -- use the tokens.
+   =========================================================================== */
+
+body {
+  padding: 1rem 1.25rem 2rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Header: brand on the left, icon buttons on the right, tagline below.
+   --------------------------------------------------------------------------- */
+
+.header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.tagline {
+  margin: 0.5rem 0 0;
+  max-width: 52rem;
+  font-size: var(--font-md);
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Cards.
+   --------------------------------------------------------------------------- */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.1rem;
+  margin-top: 1rem;
+  max-width: 40rem;
+}
+
+.card h2 {
+  margin: 0 0 0.75rem;
+  font-size: var(--font-lg);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* An error under a card's button row. */
+.hint.card-error {
+  margin: 0.6rem 0 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Status card.
+   --------------------------------------------------------------------------- */
+
+.status-grid {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: 0.35rem 0.75rem;
+  margin: 0 0 1rem;
+  font-size: var(--font-md);
+}
+
+.status-grid dt {
+  margin: 0;
+  color: var(--muted);
+}
+
+.status-grid dd {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+}
+
+/* ---------------------------------------------------------------------------
+   Developer card: the daemon log.
+   --------------------------------------------------------------------------- */
+
+.log {
+  background: var(--surface-sunken);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.65rem 0.75rem;
+  font-size: var(--font-sm);
+  line-height: 1.35;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------------------------------------------------------------------------
+   Help dialog. The base has `.dialog-message` for a one-line confirm, but it keeps
+   whitespace (pre-wrap), so running paragraphs get their own rule.
+   --------------------------------------------------------------------------- */
+
+.help-text {
+  margin: 0 0 0.6rem;
+  font-size: var(--font-md);
+  line-height: 1.5;
+}

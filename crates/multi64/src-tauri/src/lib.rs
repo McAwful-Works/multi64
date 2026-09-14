@@ -2246,6 +2246,37 @@ mod tray_tests {
 
 #[cfg(test)]
 mod frontend_tests {
+    /// `styles.css` is the shared base of both apps' stylesheets: the palette, the size tokens and
+    /// the components both use (`docs/frontend-appearance.md` §5). Like `appearance.js` it is copied
+    /// rather than shared, so this is what keeps the two apps from drifting apart again.
+    #[test]
+    fn shared_styles_css_is_identical_in_both_apps() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("crates/multi64/src-tauri -> repo root");
+        let read = |app: &str| {
+            let path = root.join(format!("crates/{app}/src/styles.css"));
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+        };
+        let (multi64, xfer64) = (read("multi64"), read("xfer64"));
+        if multi64 != xfer64 {
+            let first = multi64
+                .lines()
+                .zip(xfer64.lines())
+                .position(|(a, b)| a != b)
+                .map_or_else(
+                    || "same prefix, different lengths".to_string(),
+                    |i| format!("first differing line: {}", i + 1),
+                );
+            panic!(
+                "styles.css has drifted between the apps ({first}).
+                 Edit one and copy it to the other; they must stay byte-identical."
+            );
+        }
+    }
+
     /// `appearance.js` is duplicated verbatim in both apps because `frontendDist` is per-app and no
     /// file can be shared across crates at runtime. Nothing else enforces that, so a fix applied to
     /// one copy would silently leave the other stale — one app quietly ignoring a preference the

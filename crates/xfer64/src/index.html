@@ -10,11 +10,11 @@
   </head>
   <body class="explorer-root">
     <header class="explorer-appbar">
-      <div class="explorer-appbar-title">
-        <img class="explorer-appbar-mark" src="brand-mark.svg" alt="" width="26" height="26" />
-        <div class="explorer-appbar-heading">
-          <h1>Xfer64</h1>
-          <span class="explorer-appbar-productline">by Multi64</span>
+      <div class="app-brand">
+        <img class="app-brand-mark" src="brand-mark.svg" alt="" width="28" height="28" />
+        <div class="app-brand-text">
+          <h1 class="app-title">Xfer64</h1>
+          <span class="app-productline">by Multi64</span>
         </div>
       </div>
       <div class="explorer-usb-row" id="usb-row">
@@ -27,14 +27,15 @@
           <span id="usb-loading-text">Scanning…</span>
         </span>
         <span class="explorer-usb-hint" id="usb-hint">Auto-detect</span>
-        <div class="explorer-appbar-actions" role="toolbar" aria-label="Xfer64">
+        <div class="app-actions" role="toolbar" aria-label="Xfer64">
           <button
             type="button"
-            class="btn btn-icon explorer-appbar-icon-btn"
+            class="btn btn-icon"
             id="btn-open-settings"
             title="Settings"
             aria-label="Settings"
             aria-expanded="false"
+            aria-controls="explorer-settings-panel"
           >
             <svg
               class="btn-icon-svg"
@@ -55,7 +56,7 @@
           </button>
           <button
             type="button"
-            class="btn btn-icon explorer-appbar-icon-btn"
+            class="btn btn-icon"
             id="btn-explorer-help"
             title="Help"
             aria-label="Help"
@@ -537,136 +538,140 @@
       </div>
     </div>
 
-    <div id="explorer-settings-backdrop" class="explorer-settings-backdrop" hidden aria-hidden="true"></div>
+    <div id="explorer-settings-backdrop" class="dialog-backdrop" hidden aria-hidden="true"></div>
     <div
       id="explorer-settings-panel"
-      class="explorer-settings-panel"
+      class="dialog"
       role="dialog"
       aria-modal="true"
       aria-labelledby="explorer-settings-title"
       hidden
     >
-      <div class="explorer-settings-panel-inner">
-        <div class="explorer-settings-header">
-          <h2 id="explorer-settings-title">Settings</h2>
-          <div class="explorer-settings-header-actions">
+      <div class="dialog-panel">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="explorer-settings-title">Settings</h2>
+          <div class="dialog-header-actions">
             <button type="button" class="btn primary" id="btn-save-explorer-settings">Save settings</button>
-            <button type="button" class="btn btn-close-settings" id="btn-close-settings" title="Close (Esc)">×</button>
-          </div>
-        </div>
-        <div class="explorer-settings-body">
-        <section class="explorer-settings-section">
-          <h3 class="explorer-settings-section-title">Appearance</h3>
-          <label class="explorer-settings-field">
-            <span class="explorer-settings-label">Theme</span>
-            <select id="pref-theme">
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
-              <option value="system">Match system</option>
-              <option value="contrast">High contrast</option>
-            </select>
-          </label>
-          <label class="explorer-settings-field">
-            <span class="explorer-settings-label">Text size</span>
-            <select id="pref-scale">
-              <option value="0.9">Smaller (90%)</option>
-              <option value="1">Default (100%)</option>
-              <option value="1.15">Larger (115%)</option>
-              <option value="1.3">Largest (130%)</option>
-            </select>
-          </label>
-          <label class="explorer-settings-field">
-            <span class="explorer-settings-label">Motion</span>
-            <select id="pref-motion">
-              <option value="system">Follow system setting</option>
-              <option value="reduced">Reduce animation</option>
-            </select>
-          </label>
-          <p class="explorer-settings-hint">Applies immediately and is remembered on this PC. Not part of Save settings.</p>
-        </section>
-        <section class="explorer-settings-section">
-          <h3 class="explorer-settings-section-title">Cart device</h3>
-          <label class="explorer-settings-field">
-            <span class="explorer-settings-label">USB flash cart</span>
-            <select id="explorer-cart-device" class="explorer-cart-device-select" aria-describedby="explorer-cart-device-hint">
-              <option value="auto">Auto-detect (recommended)</option>
-              <option value="sc64">SummerCart64</option>
-              <option value="ed64_beta">EverDrive-64 X7 (experimental)</option>
-              <option value="ed64_pro">EverDrive-64 PRO (experimental)</option>
-            </select>
-          </label>
-          <p class="explorer-settings-hint" id="explorer-cart-device-hint"></p>
-        </section>
-        <section
-          class="explorer-settings-section"
-          id="explorer-ed64-advanced-section"
-          hidden
-          aria-hidden="true"
-        >
-          <h3 class="explorer-settings-section-title">EverDrive SD (experimental)</h3>
-          <p class="explorer-settings-hint">
-            Experimental and read-only. Xfer64 reads cart memory here rather than the SD card, so this is not expected to list your card's files. Used only while <strong>EverDrive-64 X7 (experimental)</strong> is selected above.
-          </p>
-          <label class="explorer-settings-field">
-            <span class="explorer-settings-label">Linear ROM address</span>
-            <input
-              type="text"
-              id="explorer-ed64-linear-base"
-              class="explorer-settings-text-input"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="Leave blank to turn off experimental SD browsing"
-              aria-describedby="explorer-ed64-linear-base-hint"
-            />
-          </label>
-          <p class="explorer-settings-hint" id="explorer-ed64-linear-base-hint">
-            Experimental: the address is read with the vendor <code>RomRead</code> command, which reaches cart memory rather than the SD card, so no value is expected to show your card. Clear the field to turn this off. <strong>Scan for SD base</strong> looks for memory that resembles a disk (takes a short while).
-          </p>
-          <div class="explorer-settings-row explorer-ed64-scan-row">
-            <button type="button" class="btn" id="btn-ed64-probe-linear-base">Scan for SD base</button>
-            <span id="explorer-ed64-probe-status" class="explorer-ed64-probe-status" aria-live="polite"></span>
-          </div>
-          <p class="explorer-settings-hint" id="explorer-ed64-hint-addresses"></p>
-        </section>
-        <section
-          class="explorer-settings-section"
-          id="explorer-settings-sendto-section"
-          hidden
-          aria-hidden="true"
-        >
-          <h3 class="explorer-settings-section-title">Windows integration</h3>
-          <p class="explorer-settings-hint">
-            Add <strong>Xfer64 upload</strong> to your user <strong>Send to</strong> menu (right-click a file → Send to). A small window opens so you can pick the SD folder before uploading—nothing runs in the background.
-          </p>
-          <div class="explorer-settings-row explorer-settings-sendto-row">
-            <button type="button" class="btn" id="btn-sendto-upload">Add to Send to</button>
-            <span
-              id="explorer-sendto-status"
-              class="explorer-sendto-status"
-              hidden
-              aria-hidden="true"
-              aria-live="polite"
-            >
-              <span class="explorer-loading-spinner explorer-loading-spinner--sm" aria-hidden="true"></span>
-              <span id="explorer-sendto-status-msg">Working…</span>
-            </span>
-          </div>
-        </section>
-        <section class="explorer-settings-section">
-          <h3 class="explorer-settings-section-title">Developer</h3>
-          <label class="check">
-            <input type="checkbox" id="explorer-developer-mode" />
-            <span>Developer mode (log USB / flash-cart SD sessions; separate log window)</span>
-          </label>
-          <p class="explorer-settings-hint">
-            When enabled, the backend records serial session open/close and cart operations. Use the log window to watch in real time (similar to Multi64 GUI developer mode).
-          </p>
-          <div class="explorer-settings-row" id="explorer-dev-shell-row" hidden aria-hidden="true">
-            <button type="button" class="btn primary" id="btn-open-dev-shell" disabled>
-              Open developer log window
+            <button type="button" class="btn btn-icon" id="btn-close-settings" aria-label="Close settings" title="Close (Esc)">
+              <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
             </button>
           </div>
-        </section>
+        </div>
+        <div class="dialog-body">
+          <section class="dialog-section">
+            <h3 class="dialog-section-title">Appearance</h3>
+            <p class="dialog-section-note">Applies immediately. Not part of Save settings.</p>
+            <label class="field">
+              <span>Theme</span>
+              <select id="pref-theme">
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+                <option value="system">Match system</option>
+                <option value="contrast">High contrast</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Text size</span>
+              <select id="pref-scale">
+                <option value="0.9">Smaller (90%)</option>
+                <option value="1">Default (100%)</option>
+                <option value="1.15">Larger (115%)</option>
+                <option value="1.3">Largest (130%)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Motion</span>
+              <select id="pref-motion">
+                <option value="system">Follow system setting</option>
+                <option value="reduced">Reduce animation</option>
+              </select>
+            </label>
+          </section>
+          <section class="dialog-section">
+            <h3 class="dialog-section-title">Cart device</h3>
+            <label class="field">
+              <span>USB flash cart</span>
+              <select id="explorer-cart-device" aria-describedby="explorer-cart-device-hint">
+                <option value="auto">Auto-detect (recommended)</option>
+                <option value="sc64">SummerCart64</option>
+                <option value="ed64_beta">EverDrive-64 X7 (experimental)</option>
+                <option value="ed64_pro">EverDrive-64 PRO (experimental)</option>
+              </select>
+            </label>
+            <p class="hint" id="explorer-cart-device-hint"></p>
+          </section>
+          <section
+            class="dialog-section"
+            id="explorer-ed64-advanced-section"
+            hidden
+            aria-hidden="true"
+          >
+            <h3 class="dialog-section-title">EverDrive SD (experimental)</h3>
+            <p class="hint">
+              Experimental and read-only. Xfer64 reads cart memory here rather than the SD card, so this is not expected to list your card's files. Used only while <strong>EverDrive-64 X7 (experimental)</strong> is selected above.
+            </p>
+            <label class="field">
+              <span>Linear ROM address</span>
+              <input
+                type="text"
+                id="explorer-ed64-linear-base"
+                class="explorer-mono-input"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Leave blank to turn off experimental SD browsing"
+                aria-describedby="explorer-ed64-linear-base-hint"
+              />
+            </label>
+            <p class="hint" id="explorer-ed64-linear-base-hint">
+              Experimental: the address is read with the vendor <code>RomRead</code> command, which reaches cart memory rather than the SD card, so no value is expected to show your card. Clear the field to turn this off. <strong>Scan for SD base</strong> looks for memory that resembles a disk (takes a short while).
+            </p>
+            <div class="row">
+              <button type="button" class="btn" id="btn-ed64-probe-linear-base">Scan for SD base</button>
+              <span id="explorer-ed64-probe-status" class="explorer-ed64-probe-status" aria-live="polite"></span>
+            </div>
+            <p class="hint">Scanning runs immediately; the address is saved with Save settings.</p>
+            <p class="hint" id="explorer-ed64-hint-addresses"></p>
+          </section>
+          <section
+            class="dialog-section"
+            id="explorer-settings-sendto-section"
+            hidden
+            aria-hidden="true"
+          >
+            <h3 class="dialog-section-title">Windows integration</h3>
+            <p class="dialog-section-note">Acts immediately. Not part of Save settings.</p>
+            <p class="hint">
+              Add <strong>Xfer64 upload</strong> to your user <strong>Send to</strong> menu (right-click a file → Send to). A small window opens so you can pick the SD folder before uploading—nothing runs in the background.
+            </p>
+            <div class="row">
+              <button type="button" class="btn" id="btn-sendto-upload">Add to Send to</button>
+              <span
+                id="explorer-sendto-status"
+                class="explorer-sendto-status"
+                hidden
+                aria-hidden="true"
+                aria-live="polite"
+              >
+                <span class="explorer-loading-spinner explorer-loading-spinner--sm" aria-hidden="true"></span>
+                <span id="explorer-sendto-status-msg">Working…</span>
+              </span>
+            </div>
+          </section>
+          <section class="dialog-section">
+            <h3 class="dialog-section-title">Developer</h3>
+            <label class="check">
+              <input type="checkbox" id="explorer-developer-mode" />
+              <span>Developer mode (log USB / flash-cart SD sessions; separate log window)</span>
+            </label>
+            <p class="hint">
+              When enabled, the backend records serial session open/close and cart operations. Use the log window to watch in real time (similar to Multi64 GUI developer mode).
+            </p>
+            <div class="row" id="explorer-dev-shell-row" hidden aria-hidden="true">
+              <button type="button" class="btn primary" id="btn-open-dev-shell" disabled>
+                Open developer log window
+              </button>
+            </div>
+          </section>
         </div>
       </div>
     </div>

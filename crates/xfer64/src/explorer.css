@@ -9,11 +9,6 @@ body.explorer-root {
   overflow: hidden;
 }
 
-body.explorer-root .btn:focus-visible {
-  outline: 2px solid rgba(var(--accent-rgb), 0.55);
-  outline-offset: 2px;
-}
-
 body.explorer-modal-open {
   overflow: hidden;
 }
@@ -21,9 +16,8 @@ body.explorer-modal-open {
 .explorer-modal-root {
   position: fixed;
   inset: 0;
-  /* Above the Settings backdrop and panel (12000/12001): an alert raised from Settings must not
-     open behind it. */
-  z-index: 13000;
+  /* Above Settings (--z-dialog): an alert or confirm raised from Settings must not open behind it. */
+  z-index: var(--z-dialog-top);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -53,20 +47,20 @@ body.explorer-modal-open {
   padding: 1rem 1.1rem 1rem;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 12px 40px rgba(var(--shadow-rgb), 0.45);
 }
 
 .explorer-modal-title {
   margin: 0 0 0.5rem;
-  font-size: 0.95rem;
+  font-size: var(--font-md);
   font-weight: 600;
   color: var(--accent);
 }
 
 .explorer-modal-message {
   margin: 0 0 0.85rem;
-  font-size: 0.88rem;
+  font-size: var(--font-md);
   line-height: 1.55;
   color: var(--text);
   white-space: pre-wrap;
@@ -77,16 +71,11 @@ body.explorer-modal-open {
   width: 100%;
   margin: 0 0 0.9rem;
   padding: 0.45rem 0.55rem;
-  font-size: 0.9rem;
+  font-size: var(--font-md);
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.explorer-modal-input:focus {
-  outline: 2px solid rgba(var(--accent-rgb), 0.45);
-  outline-offset: 1px;
+  border-radius: var(--radius-md);
 }
 
 .explorer-modal-input.hidden,
@@ -124,13 +113,10 @@ body.explorer-modal-open {
 }
 
 #explorer-modal-ok:disabled:hover,
-#explorer-modal-ok:disabled:focus,
-#explorer-modal-ok:disabled:focus-visible,
 #explorer-modal-ok:disabled:active {
   background: var(--control-surface);
   border-color: var(--control-surface-border);
   color: var(--muted);
-  outline: none;
 }
 
 .explorer-context-menu {
@@ -141,7 +127,7 @@ body.explorer-modal-open {
   margin: 0;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 8px 28px rgba(var(--shadow-rgb), 0.4);
 }
 
@@ -162,7 +148,7 @@ body.explorer-modal-open {
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 0.88rem;
+  font-size: var(--font-md);
   text-align: left;
   cursor: pointer;
 }
@@ -193,7 +179,7 @@ body.explorer-modal-open {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 0.35rem 0.75rem;
-  font-size: 0.86rem;
+  font-size: var(--font-sm);
   line-height: 1.4;
 }
 
@@ -220,49 +206,9 @@ body.explorer-modal-open {
   gap: 0.5rem 0.75rem;
 }
 
-.explorer-appbar-title {
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
-.explorer-appbar-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.5rem 0.75rem;
-}
-
-.explorer-appbar h1 {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 600;
-  color: var(--accent);
-  letter-spacing: 0.02em;
-}
-
-.explorer-appbar-productline {
-  margin: 0;
-  font-size: 0.72rem;
-  font-weight: 500;
-  color: var(--muted);
-  letter-spacing: 0.03em;
-}
-
-.explorer-appbar-actions {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 0.15rem;
-  flex-shrink: 0;
-}
-
-.explorer-appbar-icon-btn {
-  padding: 0.25rem;
-}
-
 .explorer-help-body {
   margin: 0 0 0.9rem;
-  font-size: 0.88rem;
+  font-size: var(--font-md);
   line-height: 1.5;
   color: var(--text);
 }
@@ -276,7 +222,7 @@ body.explorer-modal-open {
 }
 
 .explorer-help-body code {
-  font-size: 0.86rem;
+  font-size: var(--font-sm);
 }
 
 /* Setup tab: scannable sections */
@@ -292,7 +238,7 @@ body.explorer-modal-open {
   padding: 0.7rem 0.85rem 0.75rem;
   background: rgba(var(--accent-rgb), 0.05);
   border: 1px solid rgba(var(--highlight-rgb), 0.07);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   border-left: 3px solid rgba(var(--accent-rgb), 0.5);
   box-sizing: border-box;
 }
@@ -306,7 +252,7 @@ body.explorer-modal-open {
 .explorer-help-section-title {
   margin: 0 0 0.5rem;
   padding: 0;
-  font-size: 0.72rem;
+  font-size: var(--font-xs);
   font-weight: 600;
   color: var(--accent);
   letter-spacing: 0.06em;
@@ -316,7 +262,7 @@ body.explorer-modal-open {
 
 .explorer-help-setup .explorer-help-section p {
   margin: 0;
-  font-size: 0.86rem;
+  font-size: var(--font-sm);
   line-height: 1.55;
   color: var(--text);
 }
@@ -368,13 +314,13 @@ body.explorer-modal-open {
 .explorer-help-tab {
   margin: 0;
   padding: 0.4rem 0.75rem;
-  font-size: 0.82rem;
+  font-size: var(--font-sm);
   font-weight: 500;
   color: var(--muted);
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   cursor: pointer;
   font-family: inherit;
 }
@@ -390,11 +336,6 @@ body.explorer-modal-open {
   background: rgba(var(--accent-rgb), 0.08);
 }
 
-.explorer-help-tab:focus-visible {
-  outline: 2px solid rgba(var(--accent-rgb), 0.55);
-  outline-offset: 2px;
-}
-
 .explorer-help-panel {
   margin: 0;
   min-height: 0;
@@ -406,19 +347,19 @@ body.explorer-modal-open {
 
 .explorer-about-body .explorer-about-name {
   margin: 0 0 0.35rem;
-  font-size: 1rem;
+  font-size: var(--font-lg);
 }
 
 .explorer-about-body .explorer-about-productline {
   margin: 0 0 0.5rem;
-  font-size: 0.78rem;
+  font-size: var(--font-sm);
   color: var(--muted);
   letter-spacing: 0.03em;
 }
 
 .explorer-about-body .explorer-about-version {
   margin: 0 0 0.75rem;
-  font-size: 0.82rem;
+  font-size: var(--font-sm);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
@@ -428,7 +369,7 @@ body.explorer-modal-open {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.45rem;
-  font-size: 0.82rem;
+  font-size: var(--font-sm);
   margin-left: auto;
   flex-shrink: 0;
   justify-content: flex-end;
@@ -445,9 +386,9 @@ body.explorer-modal-open {
   min-width: 8rem;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: var(--font-sm);
   padding: 0.25rem 0.4rem;
 }
 
@@ -457,7 +398,7 @@ body.explorer-modal-open {
   gap: 0.35rem;
   flex-shrink: 0;
   max-width: min(14rem, 38vw);
-  font-size: 0.72rem;
+  font-size: var(--font-xs);
   font-weight: 500;
   color: var(--accent);
   line-height: 1.2;
@@ -475,7 +416,7 @@ body.explorer-modal-open {
 
 .explorer-usb-hint {
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: var(--font-xs);
 }
 
 .explorer-body {
@@ -521,7 +462,7 @@ body.explorer-modal-open {
   gap: 0.65rem;
   max-width: 18rem;
   padding: 1rem 1.25rem;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: rgba(var(--surface-inset-rgb), 0.94);
   border: 1px solid rgba(var(--highlight-rgb), 0.08);
   box-shadow: 0 10px 36px rgba(var(--shadow-rgb), 0.55);
@@ -529,7 +470,7 @@ body.explorer-modal-open {
 }
 
 .explorer-table-shade-text {
-  font-size: 0.84rem;
+  font-size: var(--font-sm);
   font-weight: 500;
   color: var(--accent);
   text-align: center;
@@ -571,7 +512,7 @@ body.explorer-modal-open {
 .explorer-actions .btn {
   width: 100%;
   justify-content: center;
-  font-size: 0.8rem;
+  font-size: var(--font-sm);
   padding: 0.4rem 0.5rem;
 }
 
@@ -587,11 +528,11 @@ body.explorer-modal-open {
 
 .explorer-copy-line1 {
   font-weight: 600;
-  font-size: 0.82rem;
+  font-size: var(--font-sm);
 }
 
 .explorer-copy-line2 {
-  font-size: 0.72rem;
+  font-size: var(--font-xs);
   font-weight: 400;
   opacity: 0.88;
 }
@@ -616,14 +557,14 @@ body.explorer-modal-open {
 }
 
 .explorer-pane-head-title {
-  font-size: 0.84rem;
+  font-size: var(--font-sm);
   font-weight: 600;
   color: var(--text);
   letter-spacing: 0.01em;
 }
 
 .explorer-pane-head-hint {
-  font-size: 0.72rem;
+  font-size: var(--font-xs);
   font-weight: 500;
   color: var(--muted);
   text-transform: uppercase;
@@ -663,7 +604,7 @@ body.explorer-modal-open {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  font-size: 0.82rem;
+  font-size: var(--font-sm);
   line-height: 1;
 }
 
@@ -679,23 +620,6 @@ body.explorer-modal-open {
 .explorer-show-hidden-btn[aria-pressed="true"] .btn-icon-svg {
   opacity: 1;
   color: var(--accent);
-}
-
-.btn-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 2rem;
-  min-height: 2rem;
-  padding: 0.3rem;
-  line-height: 0;
-}
-
-.btn-icon-svg {
-  width: 1.125rem;
-  height: 1.125rem;
-  display: block;
-  flex-shrink: 0;
 }
 
 .btn-icon-danger {
@@ -730,8 +654,8 @@ body.explorer-modal-open {
   max-width: 100%;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 0.82rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-sm);
   font-family: ui-monospace, monospace;
   color: var(--text);
   padding: 0.35rem 0.45rem;
@@ -759,8 +683,8 @@ body.explorer-modal-open {
   box-sizing: border-box;
 }
 
+/* The base ring, drawn inside: the wrap scrolls, so an outer ring would be clipped. */
 .explorer-table-wrap:focus-visible {
-  outline: 2px solid rgba(var(--accent-rgb), 0.45);
   outline-offset: -2px;
 }
 
@@ -787,10 +711,10 @@ body.explorer-modal-open {
   max-width: 20rem;
   padding: 0.25rem 0.55rem 0.25rem 0.3rem;
   border: 1px solid rgba(var(--accent-rgb), 0.7);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: rgba(var(--surface-inset-rgb), 0.96);
   color: var(--text);
-  font-size: 0.78rem;
+  font-size: var(--font-sm);
   white-space: nowrap;
   pointer-events: none;
   box-shadow: 0 8px 20px rgba(var(--shadow-rgb), 0.45);
@@ -803,7 +727,7 @@ body.explorer-modal-open {
   border-radius: 999px;
   background: var(--accent);
   color: var(--bg);
-  font-size: 0.72rem;
+  font-size: var(--font-xs);
   font-weight: 600;
   text-align: center;
 }
@@ -841,7 +765,7 @@ body.explorer-dragging .explorer-table tbody tr {
   width: 100%;
   min-width: 0;
   border-collapse: collapse;
-  font-size: 0.84rem;
+  font-size: var(--font-sm);
 }
 
 .explorer-table th.col-name {
@@ -885,7 +809,7 @@ body.explorer-dragging .explorer-table tbody tr {
 .explorer-table th[data-sort-key]::after {
   content: "";
   margin-left: 0.35rem;
-  font-size: 0.68rem;
+  font-size: var(--font-xs);
   opacity: 0.75;
 }
 
@@ -939,7 +863,7 @@ body.explorer-dragging .explorer-table tbody tr {
   text-align: center;
   padding: 1.35rem 0.75rem;
   color: var(--muted);
-  font-size: 0.84rem;
+  font-size: var(--font-sm);
   cursor: default;
 }
 
@@ -979,15 +903,15 @@ body.explorer-dragging .explorer-table tbody tr {
   padding: 0.05rem 0.3rem;
   margin: 0;
   border: 1px solid var(--accent);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--bg);
   color: var(--text);
   box-sizing: border-box;
 }
 
-.explorer-name-input:focus {
-  outline: 2px solid rgba(var(--accent-rgb), 0.45);
-  outline-offset: 1px;
+/* The base ring, drawn inside: the name cell hides overflow, so an outer ring would be clipped. */
+.explorer-name-input:focus-visible {
+  outline-offset: -2px;
 }
 
 .explorer-name-row-inner .explorer-icon {
@@ -1010,7 +934,7 @@ body.explorer-dragging .explorer-table tbody tr {
 
 .explorer-table .col-type {
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: var(--font-sm);
   white-space: nowrap;
 }
 
@@ -1021,7 +945,7 @@ body.explorer-dragging .explorer-table tbody tr {
   justify-content: space-between;
   gap: 0.5rem;
   padding: 0.22rem 0.5rem;
-  font-size: 0.78rem;
+  font-size: var(--font-sm);
   color: var(--muted);
   border-top: 1px solid var(--border);
   background: var(--surface-inset);
@@ -1068,12 +992,12 @@ body.explorer-dragging .explorer-table tbody tr {
   z-index: 5000;
   max-width: min(560px, calc(100vw - 16px));
   padding: 0.45rem 0.65rem;
-  font-size: 0.82rem;
+  font-size: var(--font-sm);
   line-height: 1.4;
   color: var(--text);
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   box-shadow: 0 4px 18px rgba(var(--shadow-rgb), 0.5);
   pointer-events: none;
   overflow-wrap: anywhere;
@@ -1150,7 +1074,7 @@ body.explorer-dragging .explorer-table tbody tr {
 
 .explorer-operation-track {
   height: 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: rgba(var(--accent-rgb), 0.1);
   overflow: hidden;
 }
@@ -1159,7 +1083,7 @@ body.explorer-dragging .explorer-table tbody tr {
   height: 100%;
   width: 0;
   min-width: 0;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.65), rgba(var(--accent-rgb), 1));
   transition: width 0.18s ease-out;
   box-sizing: border-box;
@@ -1189,7 +1113,7 @@ body.explorer-dragging .explorer-table tbody tr {
 
 .explorer-operation-text {
   margin: 0;
-  font-size: 0.8rem;
+  font-size: var(--font-sm);
   color: var(--muted);
   line-height: 1.35;
   word-break: break-word;
@@ -1212,151 +1136,9 @@ body.explorer-dragging .explorer-table tbody tr {
   color: var(--warning-text);
 }
 
-/* Settings (multi64 GUI–style overlay) */
-.explorer-settings-backdrop[hidden],
-.explorer-settings-panel[hidden] {
-  display: none !important;
-}
-
-.explorer-settings-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 12000;
-  background: rgba(var(--shadow-rgb), 0.6);
-  backdrop-filter: blur(4px);
-}
-
-.explorer-settings-panel {
-  position: fixed;
-  inset: 0;
-  z-index: 12001;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: max(0.75rem, env(safe-area-inset-top, 0px))
-    max(0.75rem, env(safe-area-inset-right, 0px))
-    max(0.75rem, env(safe-area-inset-bottom, 0px))
-    max(0.75rem, env(safe-area-inset-left, 0px));
-  box-sizing: border-box;
-  pointer-events: none;
-}
-
-.explorer-settings-panel-inner {
-  pointer-events: auto;
-  width: min(22rem, 100%);
-  max-height: min(90vh, calc(100vh - 2rem));
-  max-height: min(90dvh, calc(100dvh - 2rem));
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 16px 48px rgba(var(--shadow-rgb), 0.45);
-}
-
-.explorer-settings-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-gutter: stable;
-  padding: 0.25rem 1.1rem max(1.25rem, env(safe-area-inset-bottom, 0px));
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.explorer-settings-body .explorer-settings-section {
-  margin-top: 0;
-}
-
-.explorer-settings-header {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 1rem 1.1rem 0.5rem;
-}
-
-.explorer-settings-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-shrink: 0;
-}
-
-.explorer-settings-header h2 {
-  margin: 0;
-  min-width: 0;
-  font-size: 1.05rem;
-  font-weight: 600;
-  color: var(--accent);
-}
-
-.btn-close-settings {
-  min-width: 2.25rem;
-  min-height: 2.25rem;
-  padding: 0;
-  font-size: 1.35rem;
-  line-height: 1;
-  border-radius: 8px;
-}
-
-.explorer-settings-section {
-  margin-top: 0.5rem;
-}
-
-.explorer-settings-section-title {
-  margin: 0 0 0.65rem;
-  font-size: 0.82rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-}
-
-.explorer-settings-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.explorer-settings-label {
-  font-size: 0.84rem;
-  color: var(--text);
-}
-
-.explorer-cart-device-select {
-  width: 100%;
-  max-width: 100%;
-  padding: 0.4rem 0.5rem;
-  font-size: 0.84rem;
-  background: var(--card);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.explorer-settings-text-input {
-  width: 100%;
-  max-width: 100%;
-  padding: 0.4rem 0.5rem;
-  font-size: 0.84rem;
-  font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
-  background: var(--card);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
 .explorer-help-details {
   margin-top: 0.75rem;
-  font-size: 0.84rem;
+  font-size: var(--font-sm);
   color: var(--muted);
   line-height: 1.45;
 }
@@ -1371,27 +1153,20 @@ body.explorer-dragging .explorer-table tbody tr {
   margin: 0.5rem 0 0;
 }
 
-.explorer-settings-hint {
-  margin: 0.5rem 0 0;
-  font-size: 0.78rem;
-  color: var(--muted);
-  line-height: 1.4;
+/* The EverDrive linear ROM address is a number typed in hex: monospace, like the path fields.
+   Two classes so it wins over the base .field input rule. */
+.field .explorer-mono-input {
+  font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
 }
 
-.explorer-settings-row {
-  margin-top: 0.75rem;
-}
-
-.explorer-settings-sendto-row,
-.explorer-ed64-scan-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem;
+/* The base .dialog-section > :last-child cannot see past a trailing control the script has hidden
+   (Developer's log-window row), so the hint before it would keep its bottom gap. */
+.dialog-section > .hint:has(+ [hidden]:last-child) {
+  margin-bottom: 0;
 }
 
 .explorer-ed64-probe-status {
-  font-size: 0.78rem;
+  font-size: var(--font-sm);
   color: var(--muted);
 }
 
@@ -1399,7 +1174,7 @@ body.explorer-dragging .explorer-table tbody tr {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  font-size: 0.88rem;
+  font-size: var(--font-md);
   color: var(--muted);
 }
 
@@ -1414,11 +1189,6 @@ body.explorer-dragging .explorer-table tbody tr {
   opacity: 0.65;
 }
 
-html.explorer-settings-open,
-body.explorer-settings-open {
-  overflow: hidden;
-}
-
 /* Developer log window (second Webview) */
 body.dev-shell-root {
   height: 100vh;
@@ -1429,6 +1199,25 @@ body.dev-shell-root {
 
 .dev-shell-appbar {
   flex-shrink: 0;
+}
+
+.dev-shell-intro {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.dev-shell-heading {
+  margin: 0;
+  font-size: var(--font-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dev-shell-desc {
+  margin: 0;
+  font-size: var(--font-sm);
+  line-height: 1.4;
+  color: var(--muted);
 }
 
 .dev-shell-actions {
@@ -1450,14 +1239,14 @@ body.dev-shell-root {
   max-height: 100%;
   overflow: auto;
   padding: 0.6rem 0.75rem;
-  font-size: 0.75rem;
+  font-size: var(--font-xs);
   line-height: 1.45;
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   white-space: pre-wrap;
   word-break: break-word;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   color: var(--text);
 }
 
@@ -1503,19 +1292,4 @@ body.dev-shell-root {
   .explorer-actions .btn {
     width: auto;
   }
-}
-
-/* Brand mark in the app bar. `alt=""` on the image: the adjacent <h1> already names the app,
-   so a description here would make a screen reader announce "Xfer64" twice. */
-.explorer-appbar-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.explorer-appbar-mark {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  display: block;
 }

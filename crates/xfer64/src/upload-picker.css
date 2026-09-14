@@ -48,7 +48,7 @@ body.upload-picker-root {
 
 .upload-picker-boot-text {
   margin: 0;
-  font-size: 0.86rem;
+  font-size: var(--font-sm);
   font-weight: 500;
   color: var(--accent);
   line-height: 1.4;
@@ -64,7 +64,7 @@ body.upload-picker-booting {
   gap: 0.35rem 0.5rem;
 }
 
-.upload-picker-appbar .explorer-appbar-title {
+.upload-picker-heading {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -75,7 +75,7 @@ body.upload-picker-booting {
 
 .upload-picker-tagline {
   margin: 0;
-  font-size: clamp(0.7rem, 0.72rem + 0.2vw, 0.76rem);
+  font-size: var(--font-xs);
   color: var(--muted);
   line-height: 1.38;
   max-width: 36rem;
@@ -103,7 +103,7 @@ body.upload-picker-booting {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--card);
   min-width: 0;
@@ -127,7 +127,7 @@ body.upload-picker-booting {
 .upload-picker-overwrite-inline.check {
   flex: 0 1 auto;
   margin: 0;
-  font-size: 0.72rem;
+  font-size: var(--font-xs);
   line-height: 1.2;
   gap: 0.28rem;
   align-items: center;
@@ -165,7 +165,7 @@ body.upload-picker-booting {
 
 .upload-picker-shade.explorer-table-shade {
   z-index: 30;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
 }
 
 .upload-picker-table-wrap.explorer-table-wrap {
@@ -182,8 +182,8 @@ body.upload-picker-booting {
   box-sizing: border-box;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 0.8rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-sm);
   font-family: ui-monospace, monospace;
   color: var(--text);
   padding: 0.32rem 0.4rem;
@@ -205,17 +205,14 @@ body.upload-picker-booting {
   background: rgba(var(--accent-rgb), 0.08);
 }
 
+/* The base ring, drawn inside the row: the list scrolls, so an outer ring would be clipped. */
 .upload-picker-table-wrap .explorer-table tbody tr:focus-visible {
-  outline: none;
-}
-
-.upload-picker-table-wrap .explorer-table tbody tr:focus-visible td {
-  box-shadow: inset 0 0 0 2px rgba(var(--accent-rgb), 0.45);
+  outline-offset: -2px;
 }
 
 .upload-picker-empty td {
   color: var(--muted);
-  font-size: 0.84rem;
+  font-size: var(--font-sm);
   font-style: italic;
   cursor: default;
 }
@@ -227,7 +224,7 @@ body.upload-picker-booting {
 .upload-picker-selection {
   margin: 0;
   padding: 0 0.05rem;
-  font-size: 0.76rem;
+  font-size: var(--font-xs);
   font-family: ui-monospace, monospace;
   color: var(--accent);
   line-height: 1.35;
@@ -241,12 +238,12 @@ body.upload-picker-booting {
   flex-shrink: 0;
   margin: 0;
   padding: 0.38rem 0.5rem;
-  font-size: 0.8rem;
+  font-size: var(--font-sm);
   line-height: 1.4;
   color: var(--danger-text);
   background: rgba(var(--danger-rgb), 0.08);
   border: 1px solid rgba(var(--danger-rgb), 0.25);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   min-width: 0;
 }
 
@@ -286,12 +283,12 @@ body.upload-picker-booting {
   gap: 0.35rem;
   padding: 0.38rem 0.5rem;
   margin: 0;
-  font-size: 0.78rem;
+  font-size: var(--font-sm);
   line-height: 1.35;
   color: var(--muted);
   border-top: 1px solid var(--border);
   background: var(--surface-inset);
-  border-radius: 0 0 6px 6px;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
   box-sizing: border-box;
   /* Fixed height: text row (2 lines max) + gap + progress track (6px, matches explorer-operation-track) */
   height: calc(0.38rem * 2 + 2.15rem + 0.35rem + 6px);
@@ -387,11 +384,6 @@ body.upload-picker-uploading .upload-picker-pane-head,
 body.upload-picker-uploading .upload-picker-sd-body {
   opacity: 0.88;
   pointer-events: none;
-}
-
-.upload-picker-root .btn:focus-visible {
-  outline: 2px solid rgba(var(--accent-rgb), 0.55);
-  outline-offset: 2px;
 }
 
 @media (max-width: 400px) {
