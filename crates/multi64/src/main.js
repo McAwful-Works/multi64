@@ -86,7 +86,7 @@ function renderCartAndAuto() {
   const optAuto = sel.options[0];
   if (optAuto) {
     optAuto.textContent = everdrive
-      ? "Auto (SummerCart64 only)"
+      ? "Auto (not for EverDrive: pick a port)"
       : auto
         ? `Auto (${auto})`
         : cart === "auto"
