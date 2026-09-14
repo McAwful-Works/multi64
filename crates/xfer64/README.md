@@ -1,12 +1,12 @@
 # Xfer64 (Windows)
 
-**A Multi64 product** — dual-pane file manager for N64 flash-cart **SD contents over USB serial** (**FAT/exFAT** via [`multi64-sc64-sd`](../multi64-sc64-sd); no Windows drive letter; exclusive COM port).
+**A Multi64 product** — dual-pane file manager for N64 flash-cart **SD contents over USB serial** (**FAT/exFAT** via [`multi64-sc64-sd`](../multi64-sc64-sd); no Windows drive letter; exclusive serial port).
 
 - **SummerCart64**: vendor `SD_CARD_OP` / `SD_READ` / `MEMORY_READ` (see SC64 USB docs).
 - **EverDrive 64 X-series**: Krikzz **usb64**-style serial (different opcodes than SC64). An **experimental** SD mode issues `RomRead` at `ed64RomLinearBase + LBA·512` (set in developer settings / `xfer64-settings.json`), but `RomRead` reads cart ROM memory rather than the SD card, so it is not expected to list the card and has never done so on hardware. See [`docs/spec/ed64-sd-usb-host.md`](../../docs/spec/ed64-sd-usb-host.md#why-romread-is-not-sd-access).
 - **EverDrive-64 PRO** (experimental): file-level SD access over Krikzz's edlink Gen3 protocol, where the cart itself serves the file system ([`docs/spec/ed64-pro-usb-host.md`](../../docs/spec/ed64-pro-usb-host.md)). Browse, copy both ways, create folders, delete and rename. The PRO's link has no rename command, so a rename **copies the item and then deletes the original**: it takes as long as copying it off the cart and back, and cannot change only the letter case of a name. It has never been tested on a real cart, so Xfer64 asks before the first write each run, and `xfer64 upload` needs `--experimental-ed64pro-writes`.
 
-**Auto-detect** (default in Settings) probes candidate COM ports and picks the first positive cart signature match: SC64 `IDENTIFIER_GET` first, then the EverDrive-64 PRO handshake, then the X-series EverDrive test (`cmd` + `t`). Non-cart serial devices are ignored when no signature matches. Override with **SummerCart64**, **EverDrive-64 PRO (experimental)** or **EverDrive-64 X7 (experimental)** in Settings.
+**Auto-detect** (default in Settings) probes candidate serial ports and picks the first positive cart signature match: SC64 `IDENTIFIER_GET` first, then the EverDrive-64 PRO handshake, then the X-series EverDrive test (`cmd` + `t`). Non-cart serial devices are ignored when no signature matches. Override with **SummerCart64**, **EverDrive-64 PRO (experimental)** or **EverDrive-64 X7 (experimental)** in Settings.
 
 **Maintainer map:** [`docs/spec/xfer64-cart-serial.md`](../../docs/spec/xfer64-cart-serial.md).
 
@@ -16,28 +16,28 @@ Files cross between Windows and Xfer64 by dragging, in both directions.
 
 | Drag | What happens |
 |------|--------------|
-| **Explorer → SD card pane** | Imports over serial, exactly as the **Import** button does. |
-| **Explorer → Windows pane** | An ordinary file copy into that folder. |
-| **Pane → pane** | Unchanged: cart ↔ Windows copy in the direction you dragged. |
-| **Windows pane → Explorer** | Hands the OS the real paths; the shell copies them. |
-| **SD card pane → Explorer** | Stages first, then drags — see below. |
+| **Explorer → Cart pane** | Imports over serial, exactly as the **Import** button does. |
+| **Explorer → This PC pane** | An ordinary file copy into that folder. |
+| **Pane → pane** | Unchanged: cart ↔ This PC copy in the direction you dragged. |
+| **This PC pane → Explorer** | Hands the OS the real paths; the shell copies them. |
+| **Cart pane → Explorer** | Stages first, then drags — see below. |
 
 A drop lands in the **folder row under the pointer**; with no row there, it lands in the pane's
 current folder. Dragging out starts when the pointer leaves the Xfer64 window, so a target window
 that sits *on top of* Xfer64 cannot be dropped on — drag to a part of it that is outside the
-Xfer64 window, or use **Export to Windows**.
+Xfer64 window, or use **Export to This PC**.
 
 ### Dragging cart files out takes two gestures
 
 Windows will not start a drag for a file that does not exist, and the cart's SD card is not a
-drive letter. So the first drag out of the SD card pane **exports the selection to a staging
+drive letter. So the first drag out of the Cart pane **exports the selection to a staging
 directory** (`%TEMP%\xfer64-drag\…`) with the usual progress bar and Cancel; a 64 MB ROM over
 serial takes as long as it takes. The pointer is long released by then, so the status line says
 *Ready — drag … out again*, and the second drag goes straight to the shell.
 
 Staged files are copies. They are deleted when Xfer64 exits, one left behind by a crash is pruned
 on a later start, and a selection is re-exported if the file changed on the cart meanwhile —
-or if the COM port or cart type changed, since the staged copies may be from another card.
+or if the serial port or cart type changed, since the staged copies may be from another card.
 
 **The main window sets `dragDropEnabled: true`** (`tauri.conf.json`) — that is the only way Tauri
 reports the dropped paths, and WebView2's own HTML5 drop reports none. It also switches HTML5
@@ -56,7 +56,7 @@ Settings → **Appearance**, in both apps. Changes apply immediately; there is n
 |--------|--------|
 | **Theme** | Dark · Light · **Match system** (default) · High contrast |
 | **Text size** | 90% · 100% · 115% · 130% |
-| **Motion** | Follow system setting · Reduce animation |
+| **Motion** | **Match system** (default) · Reduce animation |
 
 **Match system** follows the OS via `prefers-color-scheme`. **High contrast** is a darker, higher-contrast variant with solid borders; all four themes meet WCAG AA for text contrast.
 

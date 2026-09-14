@@ -1,4 +1,4 @@
-import { userFacingErrorMessage } from "./user-error.js";
+import { countNoun, userFacingErrorMessage } from "./user-error.js";
 import { normalizeUsbPath, probeSavedCartFolderReachable } from "./saved-cart-path.js";
 
 const { invoke } = window.__TAURI__.core;
@@ -89,7 +89,8 @@ async function withCartDaemonYield(fn, opts = {}) {
   if (confirm) {
     if (actionPane) endPaneActionLoading(actionPane);
     const ok = await showExplorerConfirm(
-      "The Multi64 bridge (multi64d) is using this cart on the same COM port.\n\nIt will pause while this finishes, then resume. Continue?"
+      "The Multi64 bridge is using this cart on the same serial port.\n\nIt will pause while this finishes, then resume. Continue?",
+      { title: "Pause the Multi64 bridge?", okLabel: "Continue" }
     );
     if (!ok) return true;
   }
@@ -117,7 +118,8 @@ ${String(
         resumeError
       )}
 
-multi64d is not using the cart until it resumes — restart it, or reconnect from Multi64.`
+The bridge is not using the cart until it resumes — use Restart bridge in Multi64.`,
+      { title: "Multi64 bridge not resumed" }
     );
   }
   if (fnError) throw fnError;
@@ -273,13 +275,19 @@ function isCancelledBackendError(e) {
  * Message to show for a backend-reported cancellation.
  *
  * Cancellation is detected by substring, so the error often carries more than the bare word --
- * an interrupted overwrite reports that the file on the card is now incomplete. Replacing every
+ * an interrupted overwrite reports that the file on the cart is now incomplete. Replacing every
  * such message with a flat "Cancelled." hid exactly the part the user needed to see.
+ *
+ * Every cancelled operation finishes as "<Operation> cancelled." (e.g. "Export cancelled."); a
+ * backend detail that starts with "Cancelled" keeps its detail under that same lead.
+ * @param {unknown} e
+ * @param {string} operation noun for the operation, e.g. "Export", "Import", "Copy", "Delete"
  */
-function cancelMessageFor(e) {
+function cancelMessageFor(e, operation) {
   const raw = String(e && e.message ? e.message : e).trim();
   const stripped = raw.replace(/^Error:\s*/i, "").trim();
-  if (!stripped || /^cancelled[.]?$/i.test(stripped)) return "Cancelled.";
+  if (!stripped || /^cancelled[.]?$/i.test(stripped)) return `${operation} cancelled.`;
+  if (/^cancelled\b/i.test(stripped)) return stripped.replace(/^cancelled\b/i, `${operation} cancelled`);
   return stripped;
 }
 
@@ -302,13 +310,36 @@ function basenameForMessage(p) {
 }
 
 /**
- * Human-readable copy action for the progress line.
+ * Human-readable copy action for the progress line. Names the destination the same way everywhere.
  * @param {"fs" | "export" | "import"} mode
  */
 function copyActionLabel(mode) {
-  if (mode === "import") return "Copying to SD card";
-  if (mode === "export") return "Copying from SD card";
-  return "Copying to Windows folder";
+  if (mode === "import") return "Importing to cart";
+  if (mode === "export") return "Exporting to This PC";
+  return "Copying";
+}
+
+/**
+ * Operation noun for a copy's cancel line ("Export cancelled.").
+ * @param {"fs" | "export" | "import"} mode
+ */
+function copyOperationNoun(mode) {
+  if (mode === "import") return "Import";
+  if (mode === "export") return "Export";
+  return "Copy";
+}
+
+/**
+ * How a finished message names what it acted on: the quoted name for one path, otherwise a count —
+ * "files" when every path is a known file in `pane`, "items" when folders are or may be mixed in.
+ * @param {"cart" | "pc"} pane
+ * @param {string[]} paths
+ */
+function selectionLabel(pane, paths) {
+  if (paths.length === 1) return `"${basenameForMessage(paths[0])}"`;
+  const byPath = new Map(state[pane].listEntries.map((e) => [e.path, e]));
+  const allFiles = paths.every((p) => byPath.get(p)?.isDir === false);
+  return countNoun(paths.length, allFiles ? "file" : "item");
 }
 
 /**
@@ -326,26 +357,27 @@ function currentItemLabelForCopyStep(step, mode) {
 }
 
 /**
+ * One progress format for a whole copy, first step to last: `Exporting to This PC — "a.z64" (2 of 5)…`.
  * @param {Record<string, unknown>} step
  * @param {"fs" | "export" | "import"} mode
+ * @param {string} [action] progress lead; defaults to `copyActionLabel(mode)`
  */
-function formatCopyProgressMessage(step, mode, i, n) {
+function formatCopyProgressMessage(step, mode, i, n, action = copyActionLabel(mode)) {
   const name = currentItemLabelForCopyStep(step, mode);
-  const rem = n - i - 1;
-  const action = copyActionLabel(mode);
-  if (n <= 1) return `${action} — ${name}`;
-  return `${action} — ${name} · ${i + 1} of ${n} (${rem} left)`;
+  if (n <= 1) return `${action} — "${name}"…`;
+  return `${action} — "${name}" (${i + 1} of ${n})…`;
 }
 
 /**
+ * Same shape as `formatCopyProgressMessage`, for a step the user chose to skip.
  * @param {Record<string, unknown>} step
  * @param {"fs" | "export" | "import"} mode
+ * @param {string} [action]
  */
-function formatSkipProgressMessage(step, mode, i, n) {
+function formatSkipProgressMessage(step, mode, i, n, action = copyActionLabel(mode)) {
   const name = currentItemLabelForCopyStep(step, mode);
-  const rem = n - i - 1;
-  if (n <= 1) return `Skipping — ${name}`;
-  return `Skipping — ${name} · ${i + 1} of ${n} (${rem} left)`;
+  if (n <= 1) return `${action} — skipping "${name}"…`;
+  return `${action} — skipping "${name}" (${i + 1} of ${n})…`;
 }
 
 function clearOperationHideTimer() {
@@ -763,7 +795,7 @@ async function runRenameCartFromPaths(fromPath, newNameTrimmed) {
     const cancelled = await withCartDaemonYield(
       async () => {
         endPaneActionLoading("cart");
-        showOperationProgress(`Renaming on SD card — "${newNameTrimmed}"…`, "cart");
+        showOperationProgress(`Renaming on cart — "${newNameTrimmed}"…`, "cart");
         await invokeCartWrite("cart_serial_rename_cart", { from: normalizeUsbPath(fromPath), to: toPath });
         await loadCartPane();
       },
@@ -783,7 +815,7 @@ async function runRenameCartFromPaths(fromPath, newNameTrimmed) {
 async function runRenamePcFromPaths(fromPath, newNameTrimmed) {
   const parent = dirnameWin(fromPath);
   const toPath = `${parent}${newNameTrimmed}`;
-  showOperationProgress(`Renaming on Windows — "${newNameTrimmed}"…`, "pc");
+  showOperationProgress(`Renaming on This PC — "${newNameTrimmed}"…`, "pc");
   await invoke("fs_rename", { from: fromPath, to: toPath });
   await loadPcPane();
   finishOperationProgress(`Renamed to "${newNameTrimmed}".`, false, "pc");
@@ -907,7 +939,7 @@ function fillCartPathSelect(sel) {
   const optRoot = document.createElement("option");
   optRoot.value = "";
   optRoot.textContent = "/";
-  optRoot.title = "Root of SD";
+  optRoot.title = "Cart root";
   sel.appendChild(optRoot);
   if (inner) {
     const parts = inner.split("/").filter(Boolean);
@@ -1114,6 +1146,7 @@ function hideNameTooltip() {
 }
 
 const MODAL_TITLE_DEFAULT = "Xfer64";
+const MODAL_OK_LABEL_DEFAULT = "OK";
 
 function isExplorerModalOpen() {
   const root = document.getElementById("explorer-modal-root");
@@ -1174,7 +1207,7 @@ function showExplorerContextMenu(pane, clientX, clientY, blankArea = false) {
   menu.dataset.pane = pane;
   const copyBtn = menu.querySelector('[data-ctx="copy"]');
   if (copyBtn) {
-    copyBtn.textContent = pane === "cart" ? "Export to Windows" : "Import to SD card";
+    copyBtn.textContent = pane === "cart" ? "Export to This PC" : "Import to cart";
   }
   menu.classList.remove("hidden");
   menu.removeAttribute("hidden");
@@ -1346,7 +1379,7 @@ async function openExplorerPropertiesForCurrentFolder(pane) {
         fillExplorerPropertiesDl(
           dl,
           {
-            name: "(SD root)",
+            name: "(Cart root)",
             path: "/",
             isDir: true,
             size: 0,
@@ -1366,7 +1399,7 @@ async function openExplorerPropertiesForCurrentFolder(pane) {
         errDt.textContent = "Error";
         const errDd = document.createElement("dd");
         errDd.textContent =
-          "Choose a Windows folder first (Browse … next to the path).";
+          "Choose a folder on This PC first (Browse … next to the path).";
         dl.appendChild(errDt);
         dl.appendChild(errDd);
         document.getElementById("explorer-properties-close")?.focus();
@@ -1515,21 +1548,29 @@ function setupExplorerPropertiesModal() {
   );
 }
 
-/** @param {string} message */
-function showExplorerAlert(message) {
-  return showExplorerModal({ type: "alert", message });
+/**
+ * @param {string} message
+ * @param {{ title?: string }} [opts] `title` defaults to "Xfer64".
+ */
+function showExplorerAlert(message, opts = {}) {
+  return showExplorerModal({ type: "alert", message, title: opts.title });
 }
 
-/** @param {string} message */
-function showExplorerConfirm(message) {
-  return showExplorerModal({ type: "confirm", message });
+/**
+ * @param {string} message
+ * @param {{ title?: string, okLabel?: string }} [opts]
+ *   `title` defaults to "Xfer64" and `okLabel` to "OK". Destructive confirms should pass both: a
+ *   title that says what the dialog is about, and a button that names the action ("Delete").
+ */
+function showExplorerConfirm(message, opts = {}) {
+  return showExplorerModal({ type: "confirm", message, title: opts.title, okLabel: opts.okLabel });
 }
 
 /** Start of the backend's refusal to write to an EverDrive-64 PRO before consent (`ED64PRO_WRITE_CONSENT_MARKER`). */
 const ED64PRO_WRITE_CONSENT_MARKER = "ED64PRO_WRITE_CONSENT_REQUIRED";
 
 const ED64PRO_WRITE_WARNING =
-  "Writing to an EverDrive-64 PRO is experimental. Xfer64's support for it is ported from Krikzz's published sources and has never been tested on a real cart, so a write could fail partway or damage files on the SD card.\n\nBack up anything important on the card first.\n\nAllow writes to this cart until Xfer64 closes?";
+  "Writing to an EverDrive-64 PRO is experimental. Xfer64's support for it is ported from Krikzz's published sources and has never been tested on a real cart, so a write could fail partway or damage files on the SD card.\n\nBack up anything important on the SD card first.\n\nAllow writes to this cart until Xfer64 closes?";
 
 /**
  * Invoke a command that writes to the cart. An EverDrive-64 PRO refuses until the user accepts, once per
@@ -1542,10 +1583,9 @@ async function invokeCartWrite(cmd, args) {
     return await invoke(cmd, args);
   } catch (e) {
     if (!String(e).includes(ED64PRO_WRITE_CONSENT_MARKER)) throw e;
-    const ok = await showExplorerModal({
-      type: "confirm",
-      title: "EverDrive-64 PRO: write to the SD card?",
-      message: ED64PRO_WRITE_WARNING,
+    const ok = await showExplorerConfirm(ED64PRO_WRITE_WARNING, {
+      title: "Allow writes to the EverDrive-64 PRO?",
+      okLabel: "Allow writes",
     });
     if (!ok) throw new Error("Cancelled");
     await invoke("cart_serial_allow_ed64pro_writes");
@@ -1555,7 +1595,8 @@ async function invokeCartWrite(cmd, args) {
 
 /**
  * @param {string} message
- * @param {{ defaultValue?: string, placeholder?: string, selectFilenameStem?: boolean, disableOkIfEmpty?: boolean }} [opts]
+ * @param {{ title?: string, okLabel?: string, defaultValue?: string, placeholder?: string, selectFilenameStem?: boolean, disableOkIfEmpty?: boolean }} [opts]
+ *   `title` defaults to "Xfer64" and `okLabel` to "OK".
  *   When `selectFilenameStem` is true, only the part before the last "." is selected (Windows-style rename).
  *   When `disableOkIfEmpty` is true, OK stays disabled until the trimmed value is non-empty.
  */
@@ -1563,6 +1604,8 @@ function showExplorerPrompt(message, opts = {}) {
   return showExplorerModal({
     type: "prompt",
     message,
+    title: opts.title,
+    okLabel: opts.okLabel,
     defaultValue: opts.defaultValue ?? "",
     placeholder: opts.placeholder ?? "",
     selectFilenameStem: opts.selectFilenameStem === true,
@@ -1571,7 +1614,15 @@ function showExplorerPrompt(message, opts = {}) {
 }
 
 /** Shared options for cart + PC "new folder" prompt (default label, OK disabled when empty). */
-const PROMPT_MKDIR_OPTS = { defaultValue: "New Folder", disableOkIfEmpty: true };
+const PROMPT_MKDIR_OPTS = {
+  title: "New folder",
+  okLabel: "Create",
+  defaultValue: "New folder",
+  disableOkIfEmpty: true,
+};
+
+/** Shared options for cart + PC rename prompt; `defaultValue` is added per call. */
+const PROMPT_RENAME_OPTS = { title: "Rename", okLabel: "Rename", selectFilenameStem: true };
 
 function throwUserCopyCancel() {
   const e = new Error("Cancelled");
@@ -1618,7 +1669,8 @@ function showFileReplaceModal(cfg) {
     } else {
       targetLine = String(step.destPc || "").trim() || "(unknown)";
     }
-    msgEl.textContent = `A file with this name already exists:\n\n${targetLine}\n\nReplace it, skip it, or cancel the copy?`;
+    const operation = copyOperationNoun(cfg.mode).toLowerCase();
+    msgEl.textContent = `A file with this name already exists:\n\n${targetLine}\n\nReplace it, skip it, or cancel the ${operation}?`;
 
     let settled = false;
     const prevFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -1680,8 +1732,9 @@ function showFileReplaceModal(cfg) {
  * (`cart_serial_*_copy_batch`) so the COM port opens once for the whole batch.
  * @param {Record<string, unknown>[]} plan
  * @param {'export'|'import'} mode
+ * @param {string} [action] progress lead for every step; defaults to `copyActionLabel(mode)`
  */
-async function runInteractiveCopyPlan(plan, mode) {
+async function runInteractiveCopyPlan(plan, mode, action = copyActionLabel(mode)) {
   if (mode !== "export" && mode !== "import") {
     throw new Error("runInteractiveCopyPlan: only export and import are supported");
   }
@@ -1690,8 +1743,7 @@ async function runInteractiveCopyPlan(plan, mode) {
   let yesAll = false;
   let skipAll = false;
   const n = plan.length;
-  const initialMsg =
-    n === 0 ? "" : n === 1 ? formatCopyProgressMessage(plan[0], mode, 0, 1) : `${copyActionLabel(mode)} — ${n} files`;
+  const initialMsg = n === 0 ? "" : formatCopyProgressMessage(plan[0], mode, 0, n, action);
   await invoke("explorer_emit_progress", { done: 0, total, message: initialMsg });
   const batchPayload = [];
   for (let i = 0; i < plan.length; i++) {
@@ -1723,13 +1775,13 @@ async function runInteractiveCopyPlan(plan, mode) {
       await invoke("explorer_emit_progress", {
         done: doneBytes,
         total,
-        message: formatSkipProgressMessage(step, mode, i, n),
+        message: formatSkipProgressMessage(step, mode, i, n, action),
       });
       continue;
     }
     const ow = step.conflictIfExists ? overwrite : true;
     const base = doneBytes;
-    const msg = formatCopyProgressMessage(step, mode, i, n);
+    const msg = formatCopyProgressMessage(step, mode, i, n, action);
     const bytes = Number(step.bytes) || 0;
     // isDir marks a directory-creation step (empty folders); the backend mkdirs instead of copying.
     const common = { overwrite: ow, progressDoneBase: base, progressMessage: msg, bytes, isDir: step.isDir === true };
@@ -1746,7 +1798,8 @@ async function runInteractiveCopyPlan(plan, mode) {
 }
 
 /**
- * @param {{ type: 'alert'|'confirm'|'prompt', message: string, title?: string, defaultValue?: string, placeholder?: string, selectFilenameStem?: boolean, disableOkIfEmpty?: boolean }} cfg
+ * @param {{ type: 'alert'|'confirm'|'prompt', message: string, title?: string, okLabel?: string, defaultValue?: string, placeholder?: string, selectFilenameStem?: boolean, disableOkIfEmpty?: boolean }} cfg
+ *   `title` defaults to "Xfer64" and `okLabel` to "OK"; both are reset on every open.
  */
 function showExplorerModal(cfg) {
   return new Promise((resolve) => {
@@ -1769,6 +1822,9 @@ function showExplorerModal(cfg) {
 
     titleEl.textContent = cfg.title || MODAL_TITLE_DEFAULT;
     msgEl.textContent = cfg.message;
+    const okLabel = cfg.okLabel || MODAL_OK_LABEL_DEFAULT;
+    btnOk.textContent = okLabel;
+    btnOk.title = `${okLabel} (Enter)`;
 
     const isPrompt = cfg.type === "prompt";
     const isAlert = cfg.type === "alert";
@@ -1939,7 +1995,7 @@ function setupNameTooltipForRow(tr, fullName) {
 }
 
 /** Substring of `ED64_BETA_SD_MSG` in `cart_serial_sd.rs` — sniff test for the long “configure linear base” footer text. */
-const ED64_NO_BASE_ERR_PREFIX = "EverDrive needs a linear ROM address";
+const ED64_NO_BASE_ERR_PREFIX = "EverDrive-64 X7 needs a linear ROM address";
 
 const ED64_SD_BASE_SCAN_LABEL = "Scanning for SD base";
 /** Cart footer + progress strip while `runEd64LinearBaseScan` runs. */
@@ -1958,7 +2014,7 @@ function isCartSdBaseScanProgressBarActive() {
  * `forceRefresh` — bypass Rust cart list cache on the first page (e.g. F5).
  */
 async function loadCartPane(opts = {}) {
-  beginPaneLoading("cart", "Reading SD card…");
+  beginPaneLoading("cart", "Reading cart…");
   try {
     const preserveSelection = opts.preserveSelection === true;
     const forceRefresh = opts.forceRefresh === true;
@@ -1989,7 +2045,7 @@ async function loadCartPane(opts = {}) {
         }
         renderExplorerPane("cart");
         const vol = fsLabel || (exfat ? "exFAT" : "FAT");
-        if (statusMeta) statusMeta.textContent = `${visible.length} item(s) · ${vol}`;
+        if (statusMeta) statusMeta.textContent = `${countNoun(visible.length, "item")} · ${vol}`;
       } catch (err) {
         abandonInlineRenameIfPane("cart");
         state.cart.listEntries = [];
@@ -2041,7 +2097,7 @@ async function loadPcPane(opts = {}) {
       lastVirtualRange.pc = null;
       tbody.replaceChildren();
       if (statusMeta) {
-        statusMeta.textContent = "Choose a Windows folder (use Browse … next to the path).";
+        statusMeta.textContent = "Choose a folder on This PC (use Browse … next to the path).";
       }
       return;
     }
@@ -2061,7 +2117,7 @@ async function loadPcPane(opts = {}) {
         restorePaneSelectionAfterLoad("pc", visible, savedSel, savedAnchor, false);
       }
       renderExplorerPane("pc");
-      if (statusMeta) statusMeta.textContent = `${visible.length} item(s)`;
+      if (statusMeta) statusMeta.textContent = countNoun(visible.length, "item");
       localStorage.setItem(LS_PC, p);
     } catch (err) {
       abandonInlineRenameIfPane("pc");
@@ -2702,22 +2758,19 @@ async function copyCartToPcPaths(paths, destOverride = null) {
       ? normalizePath(destOverride)
       : state.pc.path;
   if (!dest) {
-    finishOperationProgress("Choose a Windows folder first (Browse … next to the path).", true, "pc");
+    finishOperationProgress("Choose a folder on This PC first (Browse … next to the path).", true, "pc");
     return;
   }
   if (paths.length === 0) return;
   const action = copyActionLabel("export");
-  const label =
-    paths.length === 1
-      ? `${action} — "${basenameForMessage(paths[0])}"`
-      : `${action} — ${paths.length} files`;
+  const doneLabel = selectionLabel("cart", paths);
   beginPaneActionLoading("cart", "Preparing…");
   try {
     let performed = false;
     const cancelled = await withCartDaemonYield(
       async () => {
         endPaneActionLoading("cart");
-        showOperationProgress("Preparing copy…", "cart", false);
+        showOperationProgress(`${action}…`, "cart", false);
         try {
           await invoke("explorer_reset_cancel");
           const plan = await invoke("build_cart_export_plan", {
@@ -2729,7 +2782,9 @@ async function copyCartToPcPaths(paths, destOverride = null) {
             return;
           }
           performed = true;
-          await runWithProgress("cart", `${label}…`, () => runInteractiveCopyPlan(plan, "export"));
+          await runWithProgress("cart", formatCopyProgressMessage(plan[0], "export", 0, plan.length), () =>
+            runInteractiveCopyPlan(plan, "export")
+          );
           await loadBothPanes();
         } catch (e) {
           hideOperationProgressPane("cart");
@@ -2740,22 +2795,16 @@ async function copyCartToPcPaths(paths, destOverride = null) {
     );
     if (cancelled) return;
     if (!performed) return;
-    finishOperationProgress(
-      paths.length === 1
-        ? `Copied ${basenameForMessage(paths[0])}.`
-        : `Copied ${paths.length} items.`,
-      false,
-      "cart"
-    );
+    finishOperationProgress(`Exported ${doneLabel} to This PC.`, false, "cart");
   } catch (e) {
     if (e && e.userCancelledCopy) {
       await loadBothPanes({ forceRefresh: true });
-      finishOperationCancelled("Cancelled.", "cart");
+      finishOperationCancelled("Export cancelled.", "cart");
       return;
     }
     if (isCancelledBackendError(e)) {
       await loadBothPanes({ forceRefresh: true });
-      finishOperationCancelled(cancelMessageFor(e), "cart");
+      finishOperationCancelled(cancelMessageFor(e, "Export"), "cart");
     } else {
       // A failure partway through still copied earlier files; refresh so the panes match disk.
       await loadBothPanes({ forceRefresh: true }).catch(() => {});
@@ -2773,17 +2822,14 @@ async function copyPcToCartPaths(paths, cartParentOverride = null) {
       : normalizeUsbPath(state.cart.path);
   if (paths.length === 0) return;
   const action = copyActionLabel("import");
-  const label =
-    paths.length === 1
-      ? `${action} — "${basenameForMessage(paths[0])}"`
-      : `${action} — ${paths.length} files`;
+  const doneLabel = selectionLabel("pc", paths);
   beginPaneActionLoading("pc", "Preparing…");
   try {
     let performed = false;
     const cancelled = await withCartDaemonYield(
       async () => {
         endPaneActionLoading("pc");
-        showOperationProgress("Preparing copy…", "pc", false);
+        showOperationProgress(`${action}…`, "pc", false);
         try {
           await invoke("explorer_reset_cancel");
           const plan = await invoke("build_cart_import_plan", {
@@ -2795,7 +2841,9 @@ async function copyPcToCartPaths(paths, cartParentOverride = null) {
             return;
           }
           performed = true;
-          await runWithProgress("pc", `${label}…`, () => runInteractiveCopyPlan(plan, "import"));
+          await runWithProgress("pc", formatCopyProgressMessage(plan[0], "import", 0, plan.length), () =>
+            runInteractiveCopyPlan(plan, "import")
+          );
           await loadBothPanes();
         } catch (e) {
           hideOperationProgressPane("pc");
@@ -2806,22 +2854,16 @@ async function copyPcToCartPaths(paths, cartParentOverride = null) {
     );
     if (cancelled) return;
     if (!performed) return;
-    finishOperationProgress(
-      paths.length === 1
-        ? `Copied ${basenameForMessage(paths[0])}.`
-        : `Copied ${paths.length} items.`,
-      false,
-      "pc"
-    );
+    finishOperationProgress(`Imported ${doneLabel} to cart.`, false, "pc");
   } catch (e) {
     if (e && e.userCancelledCopy) {
       await loadBothPanes({ forceRefresh: true });
-      finishOperationCancelled("Cancelled.", "pc");
+      finishOperationCancelled("Import cancelled.", "pc");
       return;
     }
     if (isCancelledBackendError(e)) {
       await loadBothPanes({ forceRefresh: true });
-      finishOperationCancelled(cancelMessageFor(e), "pc");
+      finishOperationCancelled(cancelMessageFor(e, "Import"), "pc");
     } else {
       await loadBothPanes({ forceRefresh: true }).catch(() => {});
       finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
@@ -2843,7 +2885,7 @@ async function copyPcToPcPaths(paths, destOverride = null) {
       ? normalizePath(destOverride)
       : state.pc.path;
   if (!dest) {
-    finishOperationProgress("Choose a Windows folder first (Browse … next to the path).", true, "pc");
+    finishOperationProgress("Choose a folder on This PC first (Browse … next to the path).", true, "pc");
     return;
   }
   // Dropping a file back into the folder it already sits in is a no-op, not a copy over itself.
@@ -2861,9 +2903,8 @@ async function copyPcToPcPaths(paths, destOverride = null) {
     if (intoItself) finishOperationProgress("A folder cannot be copied into itself.", true, "pc");
     return;
   }
-  const one = srcs.length === 1 ? basenameForMessage(srcs[0]) : "";
-  const label = one ? `${copyActionLabel("fs")} — "${one}"` : `${copyActionLabel("fs")} — ${srcs.length} items`;
-  showOperationProgress("Preparing copy…", "pc", false);
+  const doneLabel = selectionLabel("pc", srcs);
+  showOperationProgress(`${copyActionLabel("fs")}…`, "pc", false);
   try {
     await invoke("explorer_reset_cancel");
     const plan = await invoke("build_fs_copy_plan", { destDir: dest, srcPaths: srcs });
@@ -2871,18 +2912,18 @@ async function copyPcToPcPaths(paths, destOverride = null) {
       hideOperationProgressPane("pc");
       return;
     }
-    await runWithProgress("pc", `${label}…`, () => runFsCopyPlan(plan));
+    await runWithProgress("pc", formatCopyProgressMessage(plan[0], "fs", 0, plan.length), () => runFsCopyPlan(plan));
     await loadPcPane({ forceRefresh: true });
-    finishOperationProgress(one ? `Copied ${one}.` : `Copied ${srcs.length} items.`, false, "pc");
+    finishOperationProgress(`Copied ${doneLabel}.`, false, "pc");
   } catch (e) {
     // A failure partway through still copied earlier files; refresh so the pane matches disk.
     await loadPcPane({ forceRefresh: true }).catch(() => {});
     if (e && e.userCancelledCopy) {
-      finishOperationCancelled("Cancelled.", "pc");
+      finishOperationCancelled("Copy cancelled.", "pc");
       return;
     }
     if (isCancelledBackendError(e)) {
-      finishOperationCancelled(cancelMessageFor(e), "pc");
+      finishOperationCancelled(cancelMessageFor(e, "Copy"), "pc");
       return;
     }
     finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
@@ -2918,8 +2959,7 @@ async function runFsCopyPlan(plan) {
   let doneBytes = 0;
   let yesAll = false;
   let skipAll = false;
-  const initialMsg =
-    n === 0 ? "" : n === 1 ? formatCopyProgressMessage(plan[0], "fs", 0, 1) : `${copyActionLabel("fs")} — ${n} files`;
+  const initialMsg = n === 0 ? "" : formatCopyProgressMessage(plan[0], "fs", 0, n);
   await invoke("explorer_emit_progress", { done: 0, total, message: initialMsg });
   for (let i = 0; i < n; i++) {
     const step = plan[i];
@@ -3213,8 +3253,8 @@ async function startCartDragOut(paths) {
 
 async function stageCartPathsForDragOut(paths, key) {
   await discardStagingDir(cartDragStaged?.dir);
-  const one = paths.length === 1 ? basenameForMessage(paths[0]) : "";
-  const label = one ? `Preparing "${one}" for Windows` : `Preparing ${paths.length} items for Windows`;
+  const doneLabel = selectionLabel("cart", paths);
+  const action = "Preparing to drag out";
   beginPaneActionLoading("cart", "Preparing…");
   let dir = null;
   let staged = false;
@@ -3222,7 +3262,7 @@ async function stageCartPathsForDragOut(paths, key) {
     const cancelled = await withCartDaemonYield(
       async () => {
         endPaneActionLoading("cart");
-        showOperationProgress("Preparing for drag…", "cart", false);
+        showOperationProgress(`${action}…`, "cart", false);
         try {
           await invoke("explorer_reset_cancel");
           dir = await invoke("drag_staging_begin");
@@ -3231,7 +3271,9 @@ async function stageCartPathsForDragOut(paths, key) {
             hideOperationProgressPane("cart");
             return;
           }
-          await runWithProgress("cart", `${label}…`, () => runInteractiveCopyPlan(plan, "export"));
+          await runWithProgress("cart", formatCopyProgressMessage(plan[0], "export", 0, plan.length, action), () =>
+            runInteractiveCopyPlan(plan, "export", action)
+          );
           cartDragStaged = { key, dir, files: paths.map((p) => joinStagedPath(dir, basenameForMessage(p))) };
           staged = true;
         } catch (e) {
@@ -3246,20 +3288,20 @@ async function stageCartPathsForDragOut(paths, key) {
       return;
     }
     finishOperationProgress(
-      one
-        ? `Ready — drag "${one}" out again to copy it to Windows.`
-        : `Ready — drag the ${paths.length} items out again to copy them to Windows.`,
+      paths.length === 1
+        ? `Ready — drag ${doneLabel} out again to copy it.`
+        : `Ready — drag the ${doneLabel} out again to copy them.`,
       false,
       "cart"
     );
   } catch (e) {
     await discardStagingDir(dir);
     if (e && e.userCancelledCopy) {
-      finishOperationCancelled("Cancelled.", "cart");
+      finishOperationCancelled("Drag-out cancelled.", "cart");
       return;
     }
     if (isCancelledBackendError(e)) {
-      finishOperationCancelled(cancelMessageFor(e), "cart");
+      finishOperationCancelled(cancelMessageFor(e, "Drag-out"), "cart");
       return;
     }
     finishOperationProgress(userFacingErrorMessage(e, { context: "cart" }), true, "cart");
@@ -3385,9 +3427,12 @@ function activateSelectedFolder(pane) {
 async function deleteSelectedCart(alertIfEmpty) {
   const paths = [...state.cart.selected];
   if (paths.length === 0) {
-    if (alertIfEmpty) await showExplorerAlert("Select one or more items on the SD card to delete.");
+    if (alertIfEmpty) {
+      await showExplorerAlert("Select one or more items on the cart to delete.", { title: "Nothing selected" });
+    }
     return;
   }
+  const what = selectionLabel("cart", paths);
   beginPaneActionLoading("cart", "Preparing…");
   let multi64dRunning = false;
   try {
@@ -3397,38 +3442,29 @@ async function deleteSelectedCart(alertIfEmpty) {
     multi64dRunning = false;
   }
   const deleteMsg = multi64dRunning
-    ? `Delete ${paths.length} ${paths.length === 1 ? "item" : "items"} from the SD card?\n\nThe Multi64 bridge is using this cart—it will pause during the delete, then resume.`
-    : `Delete ${paths.length} ${paths.length === 1 ? "item" : "items"} from the SD card?`;
+    ? `Delete ${what} from the cart?\n\nThe Multi64 bridge is using this cart — it will pause during the delete, then resume.`
+    : `Delete ${what} from the cart?`;
   endPaneActionLoading("cart");
-  if (!(await showExplorerConfirm(deleteMsg))) return;
+  if (!(await showExplorerConfirm(deleteMsg, { title: "Delete from cart?", okLabel: "Delete" }))) return;
   beginPaneActionLoading("cart", "Preparing…");
   try {
     const cancelled = await withCartDaemonYield(async () => {
       endPaneActionLoading("cart");
-      showOperationProgress("Preparing…", "cart", false);
-      await runWithProgress(
-        "cart",
-        paths.length === 1
-          ? `Deleting from SD card — "${basenameForMessage(paths[0])}"…`
-          : `Deleting from SD card — ${paths.length} items…`,
-        () => invokeCartWrite("cart_serial_remove_cart", { paths })
+      // The backend names each item as it goes, in the same `Deleting from cart — "a" (1 of 3)…` shape.
+      showOperationProgress("Deleting from cart…", "cart", false);
+      await runWithProgress("cart", "Deleting from cart…", () =>
+        invokeCartWrite("cart_serial_remove_cart", { paths })
       );
       state.cart.selected.clear();
       await loadCartPane();
     });
     if (cancelled) return;
-    finishOperationProgress(
-      paths.length === 1
-        ? `Deleted "${basenameForMessage(paths[0])}".`
-        : `Deleted ${paths.length} items.`,
-      false,
-      "cart"
-    );
+    finishOperationProgress(`Deleted ${what}.`, false, "cart");
   } catch (e) {
     if (isCancelledBackendError(e)) {
       state.cart.selected.clear();
       await loadCartPane();
-      finishOperationCancelled(cancelMessageFor(e), "cart");
+      finishOperationCancelled(cancelMessageFor(e, "Delete"), "cart");
     } else {
       // Deletes run one at a time, so a failure partway through still removed earlier items.
       state.cart.selected.clear();
@@ -3443,48 +3479,42 @@ async function deleteSelectedCart(alertIfEmpty) {
 async function deleteSelectedPc(alertIfEmpty) {
   const paths = [...state.pc.selected];
   if (paths.length === 0) {
-    if (alertIfEmpty) await showExplorerAlert("Select one or more items in the Windows folder to delete.");
+    if (alertIfEmpty) {
+      await showExplorerAlert("Select one or more items on This PC to delete.", { title: "Nothing selected" });
+    }
     return;
   }
+  const what = selectionLabel("pc", paths);
   beginPaneActionLoading("pc", "Preparing…");
   await new Promise((r) => requestAnimationFrame(r));
   endPaneActionLoading("pc");
-  if (
-    !(await showExplorerConfirm(
-      `Delete ${paths.length} ${paths.length === 1 ? "item" : "items"} from this Windows folder?`
-    ))
-  )
+  if (!(await showExplorerConfirm(`Delete ${what} from This PC?`, { title: "Delete from This PC?", okLabel: "Delete" })))
     return;
   beginPaneActionLoading("pc", "Preparing…");
   try {
     resetProgressCancel();
     endPaneActionLoading("pc");
-    showOperationProgress(
-      paths.length === 1
-        ? `Deleting from Windows — "${basenameForMessage(paths[0])}"…`
-        : `Deleting from Windows — ${paths.length} items…`,
-      "pc",
-      true
-    );
+    const n = paths.length;
+    /** One format from first item to last: `Deleting from This PC — "a" (1 of 3)…`. */
+    const deletingMessage = (i) => {
+      const itemName = basenameForMessage(paths[i]);
+      return n === 1
+        ? `Deleting from This PC — "${itemName}"…`
+        : `Deleting from This PC — "${itemName}" (${i + 1} of ${n})…`;
+    };
+    showOperationProgress(deletingMessage(0), "pc", true);
     const fill = document.getElementById("explorer-operation-fill-pc");
     const textOp = document.getElementById("explorer-operation-text-pc");
-    const n = paths.length;
     for (let i = 0; i < n; i++) {
       if (progressCancelRequested) {
         state.pc.selected.clear();
         await loadPcPane();
-        finishOperationCancelled("Cancelled.", "pc");
+        finishOperationCancelled("Delete cancelled.", "pc");
         return;
       }
+      if (textOp) textOp.textContent = deletingMessage(i);
       await invoke("fs_remove", { path: paths[i] });
       const done = i + 1;
-      const rem = n - done;
-      const itemName = basenameForMessage(paths[i]);
-      if (textOp)
-        textOp.textContent =
-          n === 1
-            ? `Deleting from Windows — "${itemName}"…`
-            : `Deleting from Windows — "${itemName}" (${done} of ${n}, ${rem} left)`;
       if (fill) {
         fill.classList.remove("indeterminate");
         fill.style.width = `${(done / n) * 100}%`;
@@ -3493,13 +3523,7 @@ async function deleteSelectedPc(alertIfEmpty) {
     state.pc.selected.clear();
     state.pc.anchorPath = null;
     await loadPcPane();
-    finishOperationProgress(
-      paths.length === 1
-        ? `Deleted "${basenameForMessage(paths[0])}".`
-        : `Deleted ${paths.length} items.`,
-      false,
-      "pc"
-    );
+    finishOperationProgress(`Deleted ${what}.`, false, "pc");
   } catch (e) {
     // Files deleted before the failure are gone; refresh so they stop being listed.
     state.pc.selected.clear();
@@ -3521,7 +3545,7 @@ async function promptMkdirCart() {
     const cancelled = await withCartDaemonYield(
       async () => {
         endPaneActionLoading("cart");
-        showOperationProgress(`Creating folder on SD card — "${display}"…`, "cart");
+        showOperationProgress(`Creating folder on cart — "${display}"…`, "cart");
         await invokeCartWrite("cart_serial_mkdir_cart", { path });
         await loadCartPane();
       },
@@ -3539,14 +3563,14 @@ async function promptMkdirCart() {
 async function promptMkdirPc() {
   const parent = state.pc.path;
   if (!parent) {
-    finishOperationProgress("Choose a Windows folder first (Browse … next to the path).", true, "pc");
+    finishOperationProgress("Choose a folder on This PC first (Browse … next to the path).", true, "pc");
     return;
   }
   const name = await showExplorerPrompt("Name the new folder:", PROMPT_MKDIR_OPTS);
   if (!name || !name.trim()) return;
   const path = `${parent.replace(/[/\\]+$/, "")}\\${name.trim()}`;
   const display = name.trim();
-  showOperationProgress(`Creating folder on Windows — "${display}"…`, "pc");
+  showOperationProgress(`Creating folder on This PC — "${display}"…`, "pc");
   try {
     await invoke("fs_mkdir", { path });
     await loadPcPane();
@@ -3564,10 +3588,7 @@ async function promptRenameCart() {
   }
   const fromPath = normalizeUsbPath([...state.cart.selected][0]);
   const baseName = basenameForMessage(fromPath);
-  const name = await showExplorerPrompt("New name:", {
-    defaultValue: baseName,
-    selectFilenameStem: true,
-  });
+  const name = await showExplorerPrompt("New name:", { ...PROMPT_RENAME_OPTS, defaultValue: baseName });
   if (!name || !name.trim()) return;
   try {
     await runRenameCartFromPaths(fromPath, name.trim());
@@ -3584,10 +3605,7 @@ async function promptRenamePc() {
   }
   const fromPath = [...state.pc.selected][0];
   const baseName = basenameForMessage(fromPath);
-  const name = await showExplorerPrompt("New name:", {
-    defaultValue: baseName,
-    selectFilenameStem: true,
-  });
+  const name = await showExplorerPrompt("New name:", { ...PROMPT_RENAME_OPTS, defaultValue: baseName });
   if (!name || !name.trim()) return;
   try {
     await runRenamePcFromPaths(fromPath, name.trim());
@@ -3923,7 +3941,7 @@ async function refreshEd64LinearHintBases() {
   if (!el) return;
   try {
     const hints = await invoke("cart_serial_ed64_linear_hint_bases");
-    el.textContent = `Scan tries these first: ${hints.join(", ")}, then a wider grid over the cart ROM range. If several matches appear, pick the one that lists your SD correctly.`;
+    el.textContent = `Scan tries these first: ${hints.join(", ")}, then a wider grid over the cart ROM range. If several matches appear, pick the one that lists your SD card correctly.`;
   } catch {
     el.textContent = "";
   }
@@ -3964,10 +3982,12 @@ async function runEd64LinearBaseScan() {
     const candidates = r.candidates || [];
     const checked = r.basesChecked ?? 0;
     if (candidates.length === 0) {
+      const tried = countNoun(checked, "address", "addresses");
       await showExplorerAlert(
-        `No automatic match (${checked} addresses tried). Try another USB port, close other apps using the cart, or enter a base address manually.`,
+        `No automatic match (${tried} tried). Try another USB port, close other apps using the cart, or enter a base address manually.`,
+        { title: "No SD base found" },
       );
-      finishOperationProgress(`No automatic match (${checked} addresses tried).`, true, "cart");
+      finishOperationProgress(`No automatic match (${tried} tried).`, true, "cart");
     } else if (candidates.length === 1) {
       if (input) input.value = formatEd64LinearBaseForInput(candidates[0]);
       finishOperationProgress("SD base address filled in.", false, "cart");
@@ -3975,7 +3995,8 @@ async function runEd64LinearBaseScan() {
       if (input) input.value = formatEd64LinearBaseForInput(candidates[0]);
       const list = candidates.map((x) => formatEd64LinearBaseForInput(x)).join(", ");
       await showExplorerAlert(
-        `Several possible bases: ${list}. The first is filled in—save Settings and try the SD pane; if listing fails, try the next value.`,
+        `Several possible bases: ${list}. The first is filled in — save Settings and try the cart pane; if listing fails, try the next value.`,
+        { title: "Several possible SD bases" },
       );
       finishOperationProgress("Several possible bases — see the alert.", false, "cart");
     }
@@ -3983,7 +4004,7 @@ async function runEd64LinearBaseScan() {
   } catch (e) {
     if (isCancelledBackendError(e)) {
       scanCancelled = true;
-      if (status) status.textContent = "Cancelled.";
+      if (status) status.textContent = "Scan cancelled.";
       finishOperationCancelled("Scan cancelled.", "cart");
       return false;
     }
@@ -4005,12 +4026,10 @@ async function maybeOfferEd64AutoScan() {
   if (ed64LinearScanRunning) return false;
   if (await hasEd64RomLinearBaseConfigured()) return false;
 
-  const ok = await showExplorerModal({
-    type: "confirm",
-    title: "EverDrive (experimental): find SD base",
-    message:
-      "Experimental: Xfer64 can scan cart memory for data that looks like an SD card. EverDrive's USB protocol has no SD command, so this is not expected to find your card. The scan sends many read commands and may take about a minute or longer.\n\nContinue with the scan now?\n\nYou can cancel and use “Scan for SD base” in Settings → EverDrive SD (experimental) later.",
-  });
+  const ok = await showExplorerConfirm(
+    "Experimental: Xfer64 can scan cart memory for data that looks like an SD card. The EverDrive-64 X7's USB protocol has no SD command, so this is not expected to find your card. The scan sends many read commands and may take about a minute or longer.\n\nScan now?\n\nYou can cancel and use \"Scan for SD base\" in Settings → EverDrive SD (experimental) later.",
+    { title: "Scan the EverDrive-64 X7 for an SD base?", okLabel: "Scan" },
+  );
   if (!ok) return false;
 
   return runEd64LinearBaseScan();
@@ -4044,20 +4063,20 @@ async function updateCartDeviceSettingsHint() {
           "Experimental SD browsing is on, but it reads cart memory and is not expected to show your card. Adjust the address under EverDrive SD (experimental) if needed.";
       } else {
         hintEl.textContent =
-          "SD browsing on EverDrive is experimental and not expected to show your card (see EverDrive SD (experimental) below). For SD access over USB, choose SummerCart64 above.";
+          "SD browsing on the EverDrive-64 X7 is experimental and not expected to show your card (see EverDrive SD (experimental) below). For SD card access over USB, choose SummerCart64 above.";
       }
     } catch {
       hintEl.textContent =
-        "SD browsing on EverDrive is experimental (see EverDrive SD (experimental) below). For SD access over USB, use SummerCart64.";
+        "SD browsing on the EverDrive-64 X7 is experimental (see EverDrive SD (experimental) below). For SD card access over USB, use a SummerCart64.";
     }
   } else if (v === "ed64_pro") {
     hintEl.textContent =
       "Experimental: SD file access through the EverDrive-64 PRO's USB link, ported from Krikzz's sources and never tested on a cart. Renaming copies the item and then deletes the original, and Xfer64 asks before the first write.";
   } else if (v === "sc64") {
-    hintEl.textContent = "Full USB SD file access over serial (FAT or exFAT) for SummerCart64.";
+    hintEl.textContent = "Full SD file access over USB serial (FAT or exFAT) for the SummerCart64.";
   } else {
     hintEl.textContent =
-      "Probes candidate COM ports and picks the first SC64/EverDrive signature match. Non-cart serial devices are ignored; override manually if needed.";
+      "Checks each serial port and uses the first SummerCart64 or EverDrive that answers. Other serial devices are ignored; choose a cart yourself if the wrong one is picked.";
   }
 }
 
@@ -4072,34 +4091,20 @@ async function refreshUsbDetectHint() {
       const usbHint = document.getElementById("usb-hint");
       if (mode !== "auto") {
         lastAutoUsbCartKind = "unset";
-        if (hint) {
-          if (mode === "ed64_beta") hint.textContent = "EverDrive (experimental)";
-          else if (mode === "ed64_pro") hint.textContent = "EverDrive PRO (experimental)";
-          else hint.textContent = "SC64";
-        }
-        if (usbHint) {
-          usbHint.textContent =
-            mode === "ed64_beta" ? "Manual: EverDrive" : mode === "ed64_pro" ? "Manual: EverDrive PRO" : "Manual: SC64";
-        }
+        if (hint) hint.textContent = cartPaneBadge(mode);
+        if (usbHint) usbHint.textContent = `Manual: ${cartFullName(mode)}`;
         return;
       }
       const hasEd64Base = s.ed64RomLinearBase != null && s.ed64RomLinearBase !== "";
       await withCartDaemonYield(async () => {
         const st = await invoke("cart_serial_probe_status");
-        if (hint) {
-          if (st.detectedKind === "sc64") hint.textContent = "SC64";
-          else if (st.detectedKind === "ed64pro") hint.textContent = "EverDrive PRO (experimental)";
-          else if (st.detectedKind === "ed64") hint.textContent = "EverDrive (experimental)";
-          else if (st.detectedKind === "unknown") hint.textContent = "Unknown";
-          else hint.textContent = "Auto";
-        }
+        const detected = st.detectedKind === "unknown" ? "" : st.detectedKind || "";
+        const found = detected === "sc64" || detected === "ed64pro" || detected === "ed64";
+        if (hint) hint.textContent = found ? cartPaneBadge(detected) : "Not detected";
         if (usbHint) {
+          // The select beside this already says Auto-detect; show only the result.
           const p = st.resolvedPort || "";
-          if (st.detectedKind === "sc64") usbHint.textContent = `Auto · SC64 · ${p}`;
-          else if (st.detectedKind === "ed64pro") usbHint.textContent = `Auto · EverDrive PRO (experimental) · ${p}`;
-          else if (st.detectedKind === "ed64") usbHint.textContent = `Auto · EverDrive (experimental) · ${p}`;
-          else if (st.detectedKind === "unknown") usbHint.textContent = `Auto · not detected · ${p}`;
-          else usbHint.textContent = p ? `Auto · ${p}` : "Auto-detect";
+          usbHint.textContent = found ? `${cartFullName(detected)}${p ? ` on ${p}` : ""}` : "Not detected";
         }
         const kind = st.detectedKind || "unknown";
         if (kind === "ed64" && !hasEd64Base && lastAutoUsbCartKind !== "ed64") {
@@ -4110,11 +4115,31 @@ async function refreshUsbDetectHint() {
       });
     } catch {
       const usbHint = document.getElementById("usb-hint");
-      if (usbHint) usbHint.textContent = "Auto-detect";
+      if (usbHint) usbHint.textContent = "Not detected";
     }
   } finally {
     endUsbLoading();
   }
+}
+
+/**
+ * Full cart name for running text and the app bar, from a Settings mode or a detected kind.
+ * @param {string} kind `sc64`, `ed64_beta` / `ed64`, or `ed64_pro` / `ed64pro`
+ */
+function cartFullName(kind) {
+  if (kind === "ed64_beta" || kind === "ed64") return "EverDrive-64 X7 (experimental)";
+  if (kind === "ed64_pro" || kind === "ed64pro") return "EverDrive-64 PRO (experimental)";
+  return "SummerCart64";
+}
+
+/**
+ * Short form for the cart pane's corner badge only, where space is tight.
+ * @param {string} kind same values as `cartFullName`
+ */
+function cartPaneBadge(kind) {
+  if (kind === "ed64_beta" || kind === "ed64") return "X7 (experimental)";
+  if (kind === "ed64_pro" || kind === "ed64pro") return "PRO (experimental)";
+  return "SC64";
 }
 
 /**
@@ -4126,12 +4151,7 @@ function applyCartDeviceUi(opts = {}) {
   const cd = document.getElementById("explorer-cart-device");
   const v = cd?.value || "auto";
   const hint = document.getElementById("explorer-pane-cart-hint");
-  if (hint) {
-    if (v === "ed64_beta") hint.textContent = "EverDrive (experimental)";
-    else if (v === "ed64_pro") hint.textContent = "EverDrive PRO (experimental)";
-    else if (v === "sc64") hint.textContent = "SC64";
-    else hint.textContent = "Auto";
-  }
+  if (hint) hint.textContent = v === "auto" ? "Auto-detect" : cartPaneBadge(v);
   updateEd64AdvancedSectionVisibility();
   void updateCartDeviceSettingsHint();
   if (!skipUsbRefresh) {
@@ -4191,7 +4211,10 @@ async function requestCloseExplorerSettings() {
     explorerSettingsDiscardPending = true;
     let discard = false;
     try {
-      discard = await showExplorerConfirm("Discard unsaved changes to Settings?");
+      discard = await showExplorerConfirm("Discard unsaved changes to Settings?", {
+        title: "Discard changes?",
+        okLabel: "Discard",
+      });
     } finally {
       explorerSettingsDiscardPending = false;
     }
@@ -4420,6 +4443,7 @@ function setupExplorerSettings() {
         if (parsed === null) {
           await showExplorerAlert(
             "Enter a valid linear ROM address (for example hex 0x10000000 or a decimal number), or leave the field blank to turn off experimental SD browsing.",
+            { title: "Invalid address" },
           );
           return;
         }
@@ -4604,7 +4628,8 @@ async function init() {
     const paths = [...state.cart.selected];
     if (paths.length === 0) {
       await showExplorerAlert(
-        "Select one or more items on the SD card to export.\n\nTip: Ctrl+click, Shift+click, or drag to select multiple items."
+        "Select one or more items on the cart to export.\n\nTip: Ctrl+click, Shift+click, or drag to select multiple items.",
+        { title: "Nothing selected" }
       );
       return;
     }
@@ -4615,7 +4640,8 @@ async function init() {
     const paths = [...state.pc.selected];
     if (paths.length === 0) {
       await showExplorerAlert(
-        "Select one or more items in the Windows folder to import.\n\nTip: Ctrl+click, Shift+click, or drag to select multiple items."
+        "Select one or more items on This PC to import.\n\nTip: Ctrl+click, Shift+click, or drag to select multiple items.",
+        { title: "Nothing selected" }
       );
       return;
     }

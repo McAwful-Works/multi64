@@ -1,18 +1,30 @@
 /**
- * Human-friendly error text when Rust/Tauri returns stack-y or internal-looking strings.
+ * User-facing text shared by the main window and the upload picker: friendly error messages when
+ * Rust/Tauri returns stack-y or internal-looking strings, and counted nouns ("1 file", "3 files").
  * @typedef {"cart" | "pc" | "general"} UserErrorContext
  */
 
 /**
- * "Press F5" only where F5 refreshes: the cart and Windows panes of the main window. `general` is
+ * "Press F5" only where F5 refreshes: the Cart and This PC panes of the main window. `general` is
  * also used by the upload picker and by dialogs, where F5 does nothing.
  */
 const FALLBACK_BY_CONTEXT = {
-  cart:
-    "Couldn't refresh the SD card. Check the USB connection and try again, or press F5.",
+  cart: "Couldn't refresh the cart. Check the USB connection and try again, or press F5.",
   pc: "Couldn't refresh this folder. Try again, or press F5.",
   general: "Something went wrong. Try again.",
 };
+
+/**
+ * A count with its noun: `countNoun(1, "file")` is "1 file", `countNoun(3, "file")` is "3 files".
+ * Use "item" when files and folders may be mixed. Never "file(s)".
+ * @param {number} n
+ * @param {string} singular
+ * @param {string} [plural] defaults to `singular + "s"`
+ * @returns {string}
+ */
+export function countNoun(n, singular, plural = `${singular}s`) {
+  return `${n} ${n === 1 ? singular : plural}`;
+}
 
 /** @param {unknown} err */
 function errorToString(err) {

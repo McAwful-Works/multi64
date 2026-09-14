@@ -79,7 +79,7 @@ Both need **Node + npm** for `tauri dev` / `tauri build`.
 | [crates/multi64](crates/multi64) | **Multi64** — end-user GUI (Windows); manages `multi64d`. `tauri build` produces **MSI** and **NSIS** under `target/release/bundle/`; both embed the same `bundle.resources` (e.g. `multi64d.exe`, `xfer64-setup.exe` copied by `src-tauri/build.rs`). See [crates/multi64/README.md](crates/multi64/README.md) for **Xfer64** build order. |
 | [crates/xfer64](crates/xfer64) | **Xfer64** — dual-pane cart SD ↔ Windows file manager. See [crates/xfer64/README.md](crates/xfer64/README.md). |
 
-For **Start daemon** in Multi64, build **`multi64d`** first (`cargo build -p multi64d`) with the **same** profile as the GUI. If lookup still fails, set **`MULTI64D_EXE`** to the full path of `multi64d.exe`. You also need a **COM port** (device plugged in or a port selected in the UI).
+For **Start bridge** in Multi64, build **`multi64d`** first (`cargo build -p multi64d`) with the **same** profile as the GUI. If lookup still fails, set **`MULTI64D_EXE`** to the full path of `multi64d.exe`. You also need a **serial port** (device plugged in or a port selected in the UI).
 
 ## Documentation
 

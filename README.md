@@ -10,7 +10,7 @@
 
 **Status:** **`multi64d`** ships with **SummerCart64** L2 ([`l3-over-sc64.md`](docs/spec/l3-over-sc64.md)). **EverDrive-64 X7** L2 is **implemented but unvalidated on hardware** — crate **`multi64-ed64-l2`** speaks the mapping in [`l3-over-everdrive-x7.md`](docs/spec/l3-over-everdrive-x7.md) §4, which stays **Draft** until §4.5 is answered against a cart. **EverDrive-64 PRO** L2 is implemented too (**`multi64-ed64pro-l2`**, [`l3-over-everdrive-pro.md`](docs/spec/l3-over-everdrive-pro.md)) and is less proven still: no reference implementation exists, so the mapping is this repo's own design.
 
-**Windows:** [**Multi64**](crates/multi64/README.md) (start/stop daemon, COM port, tray). [**Xfer64**](crates/xfer64/README.md) (SD card over USB; no drive letter).  
+**Windows:** [**Multi64**](crates/multi64/README.md) (start and stop the bridge, serial port, tray). [**Xfer64**](crates/xfer64/README.md) (SD card over USB; no drive letter).  
 **Developers:** [`docs/README.md`](docs/README.md) (spec map, reading order). [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, layout).
 
 ---

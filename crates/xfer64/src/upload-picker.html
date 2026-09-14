@@ -21,7 +21,7 @@
     >
       <div class="upload-picker-boot-inner">
         <span class="explorer-loading-spinner explorer-loading-spinner--lg" aria-hidden="true"></span>
-        <p class="upload-picker-boot-text">Loading Xfer64 quick upload…</p>
+        <p class="upload-picker-boot-text">Loading Quick upload…</p>
       </div>
     </div>
 
@@ -41,15 +41,15 @@
     </header>
 
     <main class="upload-picker-main">
-      <section class="upload-picker-sd-pane" aria-label="SD card folder">
+      <section class="upload-picker-sd-pane" aria-label="Cart folder">
         <div class="explorer-pane-head upload-picker-pane-head">
           <div class="upload-picker-pane-head-titles">
-            <span class="explorer-pane-head-title">SD card</span>
+            <span class="explorer-pane-head-title">Cart</span>
             <span class="explorer-pane-head-hint">Choose folder</span>
           </div>
           <label
             class="check upload-picker-overwrite-inline"
-            title="Replace a file on the SD card when it has the same name as one you are uploading."
+            title="Replace a file on the cart when it has the same name as one you are uploading."
           >
             <input type="checkbox" id="upload-picker-overwrite" />
             <span>Overwrite existing</span>
@@ -64,7 +64,7 @@
                 id="upload-picker-path"
                 class="upload-picker-path-readonly"
                 aria-live="polite"
-                title="Current folder on the SD card"
+                title="Current folder on the cart"
               >
                 /
               </div>
@@ -84,7 +84,7 @@
               </div>
             </div>
             <div id="upload-picker-table-wrap" class="explorer-table-wrap upload-picker-table-wrap" tabindex="0">
-              <table class="explorer-table" aria-label="Folders on SD card">
+              <table class="explorer-table" aria-label="Folders on cart">
                 <thead>
                   <tr>
                     <th class="col-name">Name</th>
@@ -103,7 +103,7 @@
 
       <footer class="upload-picker-footer">
         <div class="explorer-modal-actions upload-picker-actions">
-          <button type="button" class="btn" id="upload-picker-btn-close">Cancel</button>
+          <button type="button" class="btn" id="upload-picker-btn-close">Close</button>
           <button type="button" class="btn primary" id="upload-picker-btn-upload">Upload here</button>
         </div>
         <div

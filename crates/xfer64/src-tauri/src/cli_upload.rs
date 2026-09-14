@@ -17,6 +17,11 @@ fn path_label_for_progress_msg(path: &str) -> String {
         .unwrap_or_else(|| path.trim().to_string())
 }
 
+/// "1 file" / "3 files" — the frontend's `countNoun`, for messages written here.
+fn count_files(n: u32) -> String {
+    format!("{n} {}", if n == 1 { "file" } else { "files" })
+}
+
 /// Result of [`run_headless_import_upload`] (picker UI and CLI share the same import loop).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,10 +62,10 @@ pub fn parse_upload_args() -> Result<UploadCliArgs, String> {
             return Err(
                 "usage: xfer64 upload [options] <files...>\n\
                  \n\
-                 Upload files from the PC to the flash cart’s SD card over USB serial.\n\
+                 Upload files from this PC to the flash cart's SD card over USB serial.\n\
                  \n\
                  --com COM        Serial port (default: settings file, or MULTI64_XFER64_COM, or auto)\n\
-                 --to PATH        Cart folder relative to SD root (headless only; default: quick-upload path or root)\n\
+                 --to PATH        Cart folder relative to the cart root (headless only; default: Quick upload folder or root)\n\
                  --overwrite, -y  Replace existing files on the cart\n\
                  --notify           When headless: show a message when finished\n\
                  --picker           Choose destination folder in a small window (Send to / shell)\n\
@@ -171,7 +176,7 @@ pub fn run_headless_import_upload(
                 app,
                 0,
                 t_total,
-                Some("Uploading to the SD card…".into()),
+                Some("Uploading to cart…".into()),
                 None,
                 None,
             );
@@ -233,7 +238,7 @@ pub fn run_headless_import_upload(
                             app,
                             done_base,
                             t_total,
-                            Some(format!("Skipped (exists): \"{label}\"")),
+                            Some(format!("Uploading to cart — skipping \"{label}\"…")),
                             None,
                             None,
                         );
@@ -243,7 +248,7 @@ pub fn run_headless_import_upload(
                 _ => {}
             }
             let label = path_label_for_progress_msg(cart_path);
-            let msg = format!("Uploading to the SD card — \"{label}\"…");
+            let msg = format!("Uploading to cart — \"{label}\"…");
 
             if let Some(ref app) = app {
                 emit_explorer_progress_full(app, done_base, t_total, Some(msg.clone()), None, None);
@@ -275,9 +280,7 @@ pub fn run_headless_import_upload(
                     app,
                     0,
                     1,
-                    Some(format!(
-                        "Upload finished, but the Multi64 bridge could not be resumed: {e}"
-                    )),
+                    Some(format!("Upload finished. {e}")),
                     None,
                     None,
                 );
@@ -289,24 +292,25 @@ pub fn run_headless_import_upload(
     if notify_ok {
         let description = if summary.uploaded == 0 && summary.skipped > 0 {
             if summary.skipped == 1 {
-                "Nothing uploaded — that file is already on the SD card. Use --overwrite (-y) to replace it."
+                "Nothing uploaded — that file is already on the cart. Use --overwrite (-y) to replace it."
                     .to_string()
             } else {
                 format!(
-                    "Nothing uploaded — {} files are already on the SD card. Use --overwrite (-y) to replace them.",
+                    "Nothing uploaded — {} files are already on the cart. Use --overwrite (-y) to replace them.",
                     summary.skipped
                 )
             }
         } else if summary.skipped > 0 {
             format!(
-                "Upload finished: {} uploaded, {} skipped (already on the SD card).",
-                summary.uploaded, summary.skipped
+                "Uploaded {} to cart. {} skipped (already on the cart).",
+                count_files(summary.uploaded),
+                count_files(summary.skipped)
             )
         } else {
-            "Upload finished.".to_string()
+            format!("Uploaded {} to cart.", count_files(summary.uploaded))
         };
         let _ = rfd::MessageDialog::new()
-            .set_title("Xfer64 upload")
+            .set_title("Xfer64 — Quick upload")
             .set_description(description)
             .set_level(rfd::MessageLevel::Info)
             .show();

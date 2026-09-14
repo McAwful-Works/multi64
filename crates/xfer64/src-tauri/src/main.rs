@@ -11,7 +11,7 @@ fn main() {
                     #[cfg(windows)]
                     {
                         let _ = rfd::MessageDialog::new()
-                            .set_title("Xfer64 upload")
+                            .set_title("Xfer64 — Quick upload")
                             .set_description(
                                 "No files to upload.\n\nUse Send to or pick files first.",
                             )
@@ -34,7 +34,7 @@ fn main() {
                     #[cfg(windows)]
                     {
                         let _ = rfd::MessageDialog::new()
-                            .set_title("Xfer64 upload")
+                            .set_title("Xfer64 — Quick upload")
                             .set_description(format!("xfer64 upload:\n{e}"))
                             .set_level(rfd::MessageLevel::Error)
                             .show();
@@ -51,7 +51,7 @@ fn main() {
                 #[cfg(windows)]
                 {
                     let _ = rfd::MessageDialog::new()
-                        .set_title("Xfer64 upload")
+                        .set_title("Xfer64 — Quick upload")
                         .set_description(format!("xfer64 upload:\n{e}"))
                         .set_level(rfd::MessageLevel::Error)
                         .show();

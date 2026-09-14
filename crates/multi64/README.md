@@ -1,6 +1,6 @@
 # Multi64 (Windows)
 
-Desktop app for **`multi64d`**: COM port (with auto-detect), start/stop the daemon, health, optional tray. Any **L3** client can use the same WebSocket as the app — see [`daemon-api-v1.md`](../../docs/spec/daemon-api-v1.md).
+Desktop app for **`multi64d`**, which the UI calls the **bridge**: serial port (with Auto-detect), start and stop the bridge, health, optional tray. Any **L3** client can use the same WebSocket as the app — see [`daemon-api-v1.md`](../../docs/spec/daemon-api-v1.md).
 
 **Xfer64** (package **`xfer64`**) is a separate installer: SD over USB file manager — [`../xfer64/README.md`](../xfer64/README.md). Multi64 can bundle the Xfer64 installer (NSIS or MSI pairing — see **Release** below).
 
@@ -40,7 +40,7 @@ Settings → **Appearance**, in both apps. Changes apply immediately; there is n
 |--------|--------|
 | **Theme** | Dark · Light · **Match system** (default) · High contrast |
 | **Text size** | 90% · 100% · 115% · 130% |
-| **Motion** | Follow system setting · Reduce animation |
+| **Motion** | **Match system** (default) · Reduce animation |
 
 **Match system** follows the OS via `prefers-color-scheme`. **High contrast** is a darker, higher-contrast variant with solid borders; all four themes meet WCAG AA for text contrast.
 
@@ -54,23 +54,23 @@ These preferences live in **`localStorage`**, *not* in the settings file — the
 
 - Settings: `%APPDATA%\multi64\gui-settings.json`
 - **Cart** picks the cart `multi64d` is started for ([daemon API §5.1](../../docs/spec/daemon-api-v1.md) `--cart`): **Auto-detect** (default), **SummerCart64**, **EverDrive-64 X7 (experimental)** or **EverDrive-64 PRO (experimental)**. Neither EverDrive mapping has run against a cart ([X7 §4.5](../../docs/spec/l3-over-everdrive-x7.md), [PRO §8](../../docs/spec/l3-over-everdrive-pro.md)), so the option, the status panel, the tray and the daemon log all say *experimental*, and a running daemon is no evidence the cart link works. The PRO runs at its fixed 921600 baud, so **Baud** does not apply to it. Changing the cart restarts a running daemon. Settings files from before the Cart setting read as Auto-detect; a saved cart is kept.
-- **Auto-detect** decides at each start, then starts `multi64d` for the cart it found; the daemon itself has no auto mode. First it looks for a SummerCart64 by its USB descriptors, as **COM port → Auto** does, which sends nothing. Failing that, it sends cart test commands ([`multi64-cart-probe`](../cart-probe/README.md): SC64 `IDENTIFIER_GET`, the PRO's edlink handshake, the X-series `usb64` test) to the chosen COM port, or with the port on Auto to every serial port, USB devices first, until one answers. **Other devices on those ports receive those bytes**, a port another program holds cannot be probed, and the EverDrive checks have never been run against a cart. The status panel shows the cart it chose, marked *auto-detected*, and the log lists each port it tried.
-- **COM port → Auto** picks only a port whose USB descriptors identify a SummerCart64: FTDI `0403:6014` with an `SC64…` serial number or product string. Nothing is written to a port to find out. Other serial devices are never chosen, and with two carts plugged in neither is: the port stays unset, Settings and the status line say why, and the daemon does not start. Pick a port explicitly to use anything else.
-- **With a fixed EverDrive selected, Auto picks nothing.** The X7's FT245R (`0403:6001`) is a stock FTDI part with nothing cart-specific in its descriptors, and a PRO can only be recognised by its edlink handshake, which means writing to each port. A fixed cart never probes, and never hands an EverDrive the SC64's port: choose the EverDrive's COM port, or use **Auto-detect**.
-- **Autostart** (log in → open this app): uses [`auto-launch`](https://crates.io/crates/auto-launch); still starts **`multi64d`** as a child when “start daemon automatically” is on — not a Windows Service.
+- **Auto-detect** decides at each start, then starts `multi64d` for the cart it found; the daemon itself has no auto mode. First it looks for a SummerCart64 by its USB descriptors, as **Serial port → Auto-detect** does, which sends nothing. Failing that, it sends cart test commands ([`multi64-cart-probe`](../cart-probe/README.md): SC64 `IDENTIFIER_GET`, the PRO's edlink handshake, the X-series `usb64` test) to the chosen serial port, or with the port on Auto-detect to every serial port, USB devices first, until one answers. **Other devices on those ports receive those bytes**, a port another program holds cannot be probed, and the EverDrive checks have never been run against a cart. The status panel shows the cart it chose, marked *auto-detected*, and the log lists each port it tried.
+- **Serial port → Auto-detect** picks only a port whose USB descriptors identify a SummerCart64: FTDI `0403:6014` with an `SC64…` serial number or product string. Nothing is written to a port to find out. Other serial devices are never chosen, and with two carts plugged in neither is: the port stays unset, Settings and the status line say why, and the daemon does not start. Pick a port explicitly to use anything else.
+- **With a fixed EverDrive selected, Serial port → Auto-detect picks nothing.** The X7's FT245R (`0403:6001`) is a stock FTDI part with nothing cart-specific in its descriptors, and a PRO can only be recognised by its edlink handshake, which means writing to each port. A fixed cart never probes, and never hands an EverDrive the SC64's port: choose the EverDrive's serial port, or set **Cart** to **Auto-detect**.
+- **Autostart** (log in → open this app): uses [`auto-launch`](https://crates.io/crates/auto-launch); still starts **`multi64d`** as a child when **Start the bridge when Multi64 opens** is on — not a Windows Service.
 ### Tray
 
 **Double-click** the tray icon to raise the window. **Right-click** opens the menu:
 
 | Item | |
 |------|---|
-| `Daemon: …` | Status line, disabled. While running, names the port the daemon was actually started on (not what the settings would pick now), else the listen address; while stopped, says so when there is no cart port. Any cart other than the default SummerCart64 is named after it (`· EverDrive-64 X7 (experimental)`), again the one the running process was started for. Reflects whether the **process** is alive — the window shows finer-grained health, since a status line that polled `/health` would issue a blocking request on every update |
-| **Start / Stop daemon** | One item, whichever applies. Disabled with no serial port configured, because starting would fail; **Stop** stays enabled without one, since the port can disappear while the daemon runs |
-| **Restart daemon** | Disabled while stopped — that case is **Start** |
+| `Bridge: …` | Status line, disabled. While running, names the port the daemon was actually started on (not what the settings would pick now), else the listen address; while stopped, says so when there is no serial port. Any cart other than the default SummerCart64 is named after it (`· EverDrive-64 X7 (experimental)`), again the one the running process was started for. Reflects whether the **process** is alive — the window shows finer-grained health, since a status line that polled `/health` would issue a blocking request on every update |
+| **Start / Stop bridge** | One item, whichever applies. Disabled with no serial port configured, because starting would fail; **Stop** stays enabled without one, since the port can disappear while the daemon runs |
+| **Restart bridge** | Disabled while stopped — that case is **Start** |
 | **Open Xfer64** | Reads *Install Xfer64…* when only the bundled installer is present, and is greyed when neither is |
 | **Show window**, **Exit Multi64** | |
 
-The menu tracks state live: starting or stopping the daemon from the window updates the tray, and vice versa.
+The menu tracks state live: starting or stopping the bridge from the window updates the tray, and vice versa.
 
 **Left-click does not open the menu.** It cannot — the first click of a double-click would pop it, making the double-click unusable. This matches Windows convention, where left-click activates and right-click menus.
 

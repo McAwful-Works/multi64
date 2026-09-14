@@ -1,4 +1,4 @@
-import { userFacingErrorMessage } from "./user-error.js";
+import { countNoun, userFacingErrorMessage } from "./user-error.js";
 import { normalizeUsbPath, probeSavedCartFolderReachable } from "./saved-cart-path.js";
 
 const { invoke } = window.__TAURI__.core;
@@ -29,7 +29,7 @@ let uploadInFlight = false;
 const STATUS_READY =
   "Ready — use Upload here, or wait for the automatic upload.";
 const STATUS_NO_CART =
-  "SD card not available. Connect your flash cart (USB); we'll keep checking.";
+  "No cart found. Connect your flash cart over USB. Still checking for the cart…";
 
 /** Poll when cart was absent so plugging in refreshes the folder list and can start auto-upload. */
 const SD_RECONNECT_POLL_MS = 1500;
@@ -579,7 +579,7 @@ async function runUpload() {
   }
   uploadInFlight = true;
   setUploadingUi(true);
-  setUploadStatus("uploading", "Uploading to the SD card…");
+  setUploadStatus("uploading", "Uploading to cart…");
   const fill = document.getElementById("upload-picker-status-fill");
   const txt = document.getElementById("upload-picker-status-text");
   let unlisten = null;
@@ -596,9 +596,11 @@ async function runUpload() {
           fill.style.width = `${pct}%`;
         }
         if (txt) {
+          // One format for the whole upload: "Uploading to cart — "name" (42%)…". The backend's
+          // message carries the name; the trailing ellipsis moves after the percentage.
           const raw = typeof payload.message === "string" ? payload.message.trim() : "";
-          const pctStr = `${Math.round(pct)}%`;
-          txt.textContent = raw ? `${raw} (${pctStr})` : `Uploading to the SD card — ${pctStr}`;
+          const base = raw.replace(/…$/, "") || "Uploading to cart";
+          txt.textContent = `${base} (${Math.round(pct)}%)…`;
         }
       });
     }
@@ -616,15 +618,14 @@ async function runUpload() {
       if (uploaded === 0) {
         doneMsg =
           skipped === 1
-            ? "Nothing uploaded — that file is already on the SD card. Turn on \"Overwrite existing\" to replace it."
-            : `Nothing uploaded — ${skipped} files are already on the SD card. Turn on \"Overwrite existing\" to replace them.`;
+            ? "Nothing uploaded — that file is already on the cart. Turn on \"Overwrite existing\" to replace it."
+            : `Nothing uploaded — ${skipped} files are already on the cart. Turn on "Overwrite existing" to replace them.`;
       } else {
-        const noun = skipped === 1 ? "file was" : "files were";
-        doneMsg = `Upload finished. ${skipped} ${noun} skipped (already on the SD card).`;
+        doneMsg = `Uploaded ${countNoun(uploaded, "file")} to cart. ${countNoun(skipped, "file")} skipped (already on the cart).`;
       }
     } else {
       doneMode = "success";
-      doneMsg = "Upload finished.";
+      doneMsg = `Uploaded ${countNoun(uploaded, "file")} to cart.`;
     }
     setUploadStatus(doneMode, doneMsg);
   } catch (e) {

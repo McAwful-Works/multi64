@@ -29,12 +29,12 @@ fn sd_rw_timeout(sector_count: u32) -> Duration {
 /// SummerCart64 `sd_error_t` (first `u32` BE in `SD_CARD_OP` ERR payload) → short text for the UI.
 fn sd_card_op_user_message(code: u32) -> &'static str {
     match code {
-        1 => "No microSD card detected. Insert a card fully into the SC64 slot, then try again.",
+        1 => "No microSD card detected. Insert a card fully into the SummerCart64's SD slot, then try again.",
         2 => "The SD card is not ready yet. Wait a moment, or remove and reinsert the card.",
         3 => "The cartridge could not complete that SD request. Try again or reconnect USB.",
         4 => "SD access went out of range. The card may be damaged or use a layout this app cannot read.",
         5 => "That SD operation is not allowed right now. Wait for other activity to finish and try again.",
-        30 => "The SD card is locked because the N64 may still be using it. Turn the N64 power all the way off (not only reset), then try from the PC again. Powering only the cart from USB can leave the slot locked until the console is fully off.",
+        30 => "The SD card is locked because the N64 may still be using it. Turn the N64 power all the way off (not only reset), then try again. Powering only the cart from USB can leave the slot locked until the console is fully off.",
         _ => "The SD card reported an error. Try reinserting the card, or power-cycle the N64 and PC.",
     }
 }
@@ -42,7 +42,7 @@ fn sd_card_op_user_message(code: u32) -> &'static str {
 /// When we get ERR without a decodable `sd_error_t` payload.
 fn cmp_err_fallback(cmd_id: u8, _r: &CmpResponse) -> String {
     match cmd_id {
-        b'v' => "This serial port did not respond like a SummerCart64. Check the USB cable and COM port selection."
+        b'v' => "This serial port did not respond like a SummerCart64. Check the USB cable and the serial port you chose."
             .to_string(),
         b'i' => "The SD card slot returned an unexpected response. Try reinserting the microSD card or reconnecting USB."
             .to_string(),
@@ -52,7 +52,7 @@ fn cmp_err_fallback(cmd_id: u8, _r: &CmpResponse) -> String {
             .to_string(),
         b'm' => "Reading from cartridge memory failed. Try again or reconnect USB.".to_string(),
         b'M' => "Writing to cartridge memory failed. Try again or reconnect USB.".to_string(),
-        _ => "Communication with the device failed. Try reconnecting USB or choosing another COM port."
+        _ => "Communication with the device failed. Try reconnecting USB or choosing another serial port."
             .to_string(),
     }
 }
@@ -301,7 +301,7 @@ impl Sc64Link {
         }
         Err(io::Error::new(
             io::ErrorKind::TimedOut,
-            "The SummerCart64 did not respond in time. Check the USB cable and COM port, then try again.",
+            "The SummerCart64 did not respond in time. Check the USB cable and serial port, then try again.",
         ))
     }
 }

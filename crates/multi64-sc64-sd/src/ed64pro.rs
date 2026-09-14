@@ -64,7 +64,7 @@ impl<T: Transport> Ed64ProSdSession<T> {
 
     /// Volume label for the file list; the host does not know the card's file system.
     pub fn fs_label(&self) -> &'static str {
-        "EverDrive PRO"
+        "EverDrive-64 PRO"
     }
 
     /// List a directory (`/`, `/folder`, `folder`). Entry paths have no leading slash, like SC64.

@@ -361,7 +361,7 @@ fn resolve_multi64d_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
 
     Err(format!(
-        "multi64d.exe not found. Build it with `cargo build -p multi64d` using the same profile as the GUI (e.g. both debug or both release), then rebuild the GUI so `src-tauri/resources/multi64d.exe` is copied, or place multi64d.exe next to this exe. You can also set MULTI64D_EXE to the full path. Checked: {}",
+        "The bridge (multi64d.exe) was not found. Build it with `cargo build -p multi64d` using the same profile as Multi64 (e.g. both debug or both release), then rebuild Multi64 so `src-tauri/resources/multi64d.exe` is copied, or place multi64d.exe next to Multi64's exe. You can also set MULTI64D_EXE to the full path. Checked: {}",
         tried.join("; ")
     ))
 }
@@ -390,7 +390,7 @@ impl AutoPort {
         match self {
             AutoPort::Found(_) => None,
             AutoPort::NoCart => Some(
-                "No SummerCart64 found on USB. Plug in the cart or pick its COM port in \
+                "No SummerCart64 found on USB. Plug in the cart or pick its serial port in \
                  Settings; other serial devices are never chosen automatically."
                     .to_string(),
             ),
@@ -453,8 +453,8 @@ fn serial_port_options() -> SerialPortOptions {
 
 /// Why a fixed EverDrive cart has no port, worded like [`AutoPort::problem`].
 const EVERDRIVE_NEEDS_PORT: &str =
-    "Auto only recognises a SummerCart64 for a fixed Cart type. Pick the \
-     EverDrive's COM port in Settings, or set Cart to Auto-detect.";
+    "For a fixed Cart type, Auto-detect finds only a SummerCart64. Pick the \
+     EverDrive's serial port in Settings, or set Cart to Auto-detect.";
 
 /// What a start would do, decided without writing to any port.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -588,11 +588,11 @@ fn detect_cart(
     Err(match only {
         Some(port) => format!(
             "Auto-detect: no cart answered on {port}. Check the cart is plugged in and no other \
-             program is using the port, or choose its Cart type in Settings."
+             program is using the serial port, or choose its Cart type in Settings."
         ),
         None => format!(
             "Auto-detect: no cart answered on any serial port ({}). Plug in the cart, or close \
-             any program using its port.",
+             any program using its serial port.",
             candidates.join(", ")
         ),
     })
@@ -613,7 +613,7 @@ fn resolve_start(
         } => {
             if detected {
                 log(format!(
-                    "Auto-detect: SummerCart64 on {port}, recognised by its USB IDs (nothing sent)"
+                    "Auto-detect: SummerCart64 on {port}, recognized by its USB IDs (nothing sent)"
                 ));
             }
             Ok((cart, port, detected))
@@ -639,25 +639,26 @@ fn resolve_start(
     }
 }
 
-/// How the window and the log name a running daemon's cart.
+/// How the window, the tray and the log name a running daemon's cart. Auto-detect shows its
+/// result, not the setting's name again.
 fn running_cart_label(cart: DaemonCart, detected: bool) -> String {
     if detected {
-        format!("{} (auto-detected)", cart.label())
+        format!("Auto-detect: {}", cart.label())
     } else {
         cart.label().to_string()
     }
 }
 
-/// The status line for a stopped daemon: what Start would do, or why it cannot.
+/// Status → Note for a stopped daemon: what Start would do, or why it cannot. Empty when there is
+/// nothing to add to the Bridge row's "Stopped".
 fn stopped_message(plan: &StartPlan) -> String {
     match plan {
-        StartPlan::Ready { .. } => "Stopped".into(),
-        StartPlan::Probe(Some(port)) => format!("Stopped — Start will detect the cart on {port}"),
+        StartPlan::Ready { .. } => String::new(),
+        StartPlan::Probe(Some(port)) => format!("Start bridge will detect the cart on {port}"),
         StartPlan::Probe(None) => {
-            "Stopped — no SummerCart64 on USB; Start will look for a cart on each serial port"
-                .into()
+            "No SummerCart64 on USB; Start bridge will look for a cart on each serial port".into()
         }
-        StartPlan::Blocked(why) => format!("Stopped — {why}"),
+        StartPlan::Blocked(why) => why.clone(),
     }
 }
 
@@ -803,7 +804,7 @@ fn start_daemon(
             daemon,
             format!(
                 "{cart} support is experimental and has never been run against a cart: \
-                 a running daemon does not show that the cart link works."
+                 a running bridge does not show that the cart link works."
             ),
         );
     }
@@ -818,7 +819,9 @@ fn start_daemon(
     apply_multi64d_log_preset(&mut cmd, settings.multi64d_log_preset);
     command_no_window(&mut cmd);
 
-    let mut child = cmd.spawn().map_err(|e| format!("spawn multi64d: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Could not start the bridge: {e}"))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let d = Arc::clone(daemon);
@@ -956,10 +959,9 @@ fn daemon_status(state: &AppState) -> DaemonStatus {
         // Name what Start would do, or why it cannot. Without a saved port this enumerates on
         // every poll, which is cheap and only happens while stopped; it never probes a port.
         stopped_message(&start_plan(&settings))
-    } else if healthy {
-        "Running (multi64d responds)".into()
     } else {
-        "Process running but /health not OK yet".into()
+        // The Bridge and Health rows already say running and whether it responds.
+        String::new()
     };
     DaemonStatus {
         running,
@@ -1262,7 +1264,7 @@ fn launch_or_install_xfer64_blocking(app: &AppHandle) -> Result<(), String> {
     }
     let Some(installer_path) = resolve_xfer64_installer_path(app) else {
         return Err(
-            "Xfer64 installer is not bundled. Build xfer64, then build Multi64 (see crates/multi64/README.md: NSIS vs MSI pairing)."
+            "The Xfer64 installer is not bundled. Build Xfer64, then build Multi64 (see crates/multi64/README.md: NSIS vs MSI pairing)."
                 .into(),
         );
     };
@@ -1318,16 +1320,18 @@ struct TrayLabels {
 
 /// The note after the tray's status line. SC64 is the default and needs no mention; any other cart
 /// is named, so an experimental daemon is never mistaken for the proven one, and a stopped daemon on
-/// Auto-detect says so. A running daemon is named for what it was started with.
+/// Auto-detect says so. A running daemon is named for what it was started with, in the same words
+/// as the window's Cart row ([`running_cart_label`]).
 fn tray_cart_note(
     running: bool,
     spawned: DaemonCart,
+    detected: bool,
     setting: CartSetting,
-) -> Option<&'static str> {
+) -> Option<String> {
     if running {
-        (spawned != DaemonCart::Sc64).then_some(spawned.label())
+        (spawned != DaemonCart::Sc64).then(|| running_cart_label(spawned, detected))
     } else {
-        (setting != CartSetting::Sc64).then_some(setting.label())
+        (setting != CartSetting::Sc64).then(|| setting.label().to_string())
     }
 }
 
@@ -1342,23 +1346,23 @@ fn tray_labels(
     let cart_note = cart_note.map(|c| format!(" · {c}")).unwrap_or_default();
     let status = if running {
         match serial {
-            Some(port) => format!("Daemon: running on {port}"),
+            Some(port) => format!("Bridge: running on {port}"),
             // No configured or auto-detected port, but a live process: report where it
             // listens rather than claiming a port we cannot name.
-            None => format!("Daemon: running ({listen})"),
+            None => format!("Bridge: running ({listen})"),
         }
     } else if can_start {
-        "Daemon: stopped".to_string()
+        "Bridge: stopped".to_string()
     } else {
         // Start is greyed out below; say why, since the tray has no room for the full reason.
-        "Daemon: stopped (no cart port)".to_string()
+        "Bridge: stopped (no serial port)".to_string()
     };
     TrayLabels {
         status: format!("{status}{cart_note}"),
         toggle: if running {
-            "Stop daemon"
+            "Stop bridge"
         } else {
-            "Start daemon"
+            "Start bridge"
         },
         // Stopping always works; starting needs a port or a probe, and fails otherwise.
         toggle_enabled: running || can_start,
@@ -1411,9 +1415,9 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             let settings = state.settings.lock().clone();
             // `daemon_is_running` takes the daemon lock itself, so read the port after it returns.
             let running = daemon_is_running(&state.daemon);
-            let (spawned, spawned_cart) = {
+            let (spawned, spawned_cart, detected) = {
                 let inner = state.daemon.lock();
-                (inner.serial.clone(), inner.cart)
+                (inner.serial.clone(), inner.cart, inner.detected)
             };
             // A stopped daemon is described by what Start would do, which never probes a port.
             let plan = (!running).then(|| start_plan(&settings));
@@ -1423,13 +1427,19 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 settings.listen.clone(),
                 tray_serial(running, spawned, || plan.as_ref().and_then(StartPlan::port)),
                 can_start,
-                tray_cart_note(running, spawned_cart, settings.cart),
+                tray_cart_note(running, spawned_cart, detected, settings.cart),
             )
         }
         None => (false, DEFAULT_LISTEN.to_string(), None, false, None),
     };
 
-    let labels = tray_labels(running, serial.as_deref(), can_start, cart_note, &listen);
+    let labels = tray_labels(
+        running,
+        serial.as_deref(),
+        can_start,
+        cart_note.as_deref(),
+        &listen,
+    );
     // Disabled: a status line, not an action.
     let status = MenuItem::with_id(app, "status", &labels.status, false, None::<&str>)?;
     let toggle = MenuItem::with_id(
@@ -1442,7 +1452,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let restart = MenuItem::with_id(
         app,
         "restart",
-        "Restart daemon",
+        "Restart bridge",
         labels.restart_enabled,
         None::<&str>,
     )?;
@@ -1766,7 +1776,7 @@ mod tests {
         assert_eq!(running_cart_label(DaemonCart::Sc64, false), "SummerCart64");
         assert_eq!(
             running_cart_label(DaemonCart::Ed64Pro, true),
-            "EverDrive-64 PRO (experimental) (auto-detected)"
+            "Auto-detect: EverDrive-64 PRO (experimental)"
         );
     }
 
@@ -2057,16 +2067,11 @@ mod port_selection_tests {
 
     #[test]
     fn a_stopped_daemon_says_what_start_will_do() {
-        assert_eq!(
-            stopped_message(&ready(DaemonCart::Sc64, "COM4", true)),
-            "Stopped"
-        );
+        // Nothing to add to the Bridge row's "Stopped", so the Note stays empty.
+        assert_eq!(stopped_message(&ready(DaemonCart::Sc64, "COM4", true)), "");
         assert!(stopped_message(&StartPlan::Probe(Some("COM6".into()))).contains("on COM6"));
         assert!(stopped_message(&StartPlan::Probe(None)).contains("each serial port"));
-        assert_eq!(
-            stopped_message(&StartPlan::Blocked("why".into())),
-            "Stopped — why"
-        );
+        assert_eq!(stopped_message(&StartPlan::Blocked("why".into())), "why");
     }
 
     /// The frontend reads `autoWarning`; a rename on either side would silently drop the warning.
@@ -2092,8 +2097,8 @@ mod tray_tests {
     #[test]
     fn status_names_the_port_when_running() {
         let l = tray_labels(true, Some("COM4"), true, None, LISTEN);
-        assert_eq!(l.status, "Daemon: running on COM4");
-        assert_eq!(l.toggle, "Stop daemon");
+        assert_eq!(l.status, "Bridge: running on COM4");
+        assert_eq!(l.toggle, "Stop bridge");
     }
 
     #[test]
@@ -2101,26 +2106,31 @@ mod tray_tests {
         // A live daemon with no configured or auto-detected port: name where it listens rather
         // than a port we cannot identify.
         let l = tray_labels(true, None, true, None, LISTEN);
-        assert_eq!(l.status, "Daemon: running (127.0.0.1:38765)");
+        assert_eq!(l.status, "Bridge: running (127.0.0.1:38765)");
     }
 
     /// An experimental daemon is named in the tray, running or not; SC64 stays unadorned.
     #[test]
     fn the_cart_note_names_everything_but_a_running_sc64() {
         assert_eq!(
-            tray_cart_note(true, DaemonCart::Sc64, CartSetting::Auto),
+            tray_cart_note(true, DaemonCart::Sc64, true, CartSetting::Auto),
             None
         );
         assert_eq!(
-            tray_cart_note(true, DaemonCart::Ed64Pro, CartSetting::Auto),
+            tray_cart_note(true, DaemonCart::Ed64Pro, false, CartSetting::Ed64Pro).as_deref(),
             Some("EverDrive-64 PRO (experimental)")
         );
+        // Worded like the window's Cart row when Auto-detect chose the cart.
         assert_eq!(
-            tray_cart_note(false, DaemonCart::Sc64, CartSetting::Auto),
+            tray_cart_note(true, DaemonCart::Ed64Pro, true, CartSetting::Auto),
+            Some(running_cart_label(DaemonCart::Ed64Pro, true))
+        );
+        assert_eq!(
+            tray_cart_note(false, DaemonCart::Sc64, false, CartSetting::Auto).as_deref(),
             Some("Auto-detect")
         );
         assert_eq!(
-            tray_cart_note(false, DaemonCart::Ed64, CartSetting::Sc64),
+            tray_cart_note(false, DaemonCart::Ed64, false, CartSetting::Sc64),
             None
         );
         let l = tray_labels(
@@ -2132,7 +2142,7 @@ mod tray_tests {
         );
         assert_eq!(
             l.status,
-            "Daemon: running on COM6 · EverDrive-64 X7 (experimental)"
+            "Bridge: running on COM6 · EverDrive-64 X7 (experimental)"
         );
         let l = tray_labels(
             false,
@@ -2143,15 +2153,15 @@ mod tray_tests {
         );
         assert_eq!(
             l.status,
-            "Daemon: stopped (no cart port) · EverDrive-64 X7 (experimental)"
+            "Bridge: stopped (no serial port) · EverDrive-64 X7 (experimental)"
         );
     }
 
     #[test]
     fn stopped_shows_start_and_disables_restart() {
         let l = tray_labels(false, Some("COM4"), true, None, LISTEN);
-        assert_eq!(l.status, "Daemon: stopped");
-        assert_eq!(l.toggle, "Start daemon");
+        assert_eq!(l.status, "Bridge: stopped");
+        assert_eq!(l.toggle, "Start bridge");
         assert!(l.toggle_enabled, "a port is configured, so Start is usable");
         assert!(
             !l.restart_enabled,
@@ -2165,7 +2175,7 @@ mod tray_tests {
         let l = tray_labels(false, None, false, None, LISTEN);
         assert!(!l.toggle_enabled);
         // ...and the status line says why it is greyed out.
-        assert_eq!(l.status, "Daemon: stopped (no cart port)");
+        assert_eq!(l.status, "Bridge: stopped (no serial port)");
     }
 
     /// Auto-detect with no SC64 on USB has no port yet, but Start will probe for one.
@@ -2173,14 +2183,14 @@ mod tray_tests {
     fn auto_detect_can_start_before_a_port_is_known() {
         let l = tray_labels(false, None, true, Some("Auto-detect"), LISTEN);
         assert!(l.toggle_enabled);
-        assert_eq!(l.status, "Daemon: stopped · Auto-detect");
+        assert_eq!(l.status, "Bridge: stopped · Auto-detect");
     }
 
     #[test]
     fn stop_stays_enabled_even_without_a_port() {
         // The port can disappear while the daemon runs; stopping it must still be possible.
         let l = tray_labels(true, None, false, None, LISTEN);
-        assert_eq!(l.toggle, "Stop daemon");
+        assert_eq!(l.toggle, "Stop bridge");
         assert!(l.toggle_enabled);
         assert!(l.restart_enabled);
     }
@@ -2194,7 +2204,7 @@ mod tray_tests {
         });
         assert_eq!(serial.as_deref(), Some("COM4"));
         let l = tray_labels(true, serial.as_deref(), true, None, LISTEN);
-        assert_eq!(l.status, "Daemon: running on COM4");
+        assert_eq!(l.status, "Bridge: running on COM4");
     }
 
     #[test]
@@ -2211,7 +2221,7 @@ mod tray_tests {
     fn running_without_a_recorded_port_falls_back_to_listen() {
         let serial = tray_serial(true, None, || Some("COM4".into()));
         let l = tray_labels(true, serial.as_deref(), true, None, LISTEN);
-        assert_eq!(l.status, "Daemon: running (127.0.0.1:38765)");
+        assert_eq!(l.status, "Bridge: running (127.0.0.1:38765)");
     }
 
     #[test]

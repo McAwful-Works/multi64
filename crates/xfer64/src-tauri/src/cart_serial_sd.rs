@@ -147,11 +147,12 @@ impl ExplorerCartSerialState {
 }
 
 /// Shown when EverDrive is selected but no linear ROM address is configured for SD access.
-const ED64_BETA_SD_MSG: &str = "EverDrive needs a linear ROM address for experimental SD access. Open Settings → EverDrive SD (experimental), then Scan for SD base or enter an address. \
+/// The frontend sniffs for "EverDrive-64 X7 needs a linear ROM address" (`ED64_NO_BASE_ERR_PREFIX`).
+const ED64_BETA_SD_MSG: &str = "The EverDrive-64 X7 needs a linear ROM address for experimental SD access. Open Settings → EverDrive SD (experimental), then Scan for SD base or enter an address. \
 This mode reads cart memory rather than the SD card, so it is not expected to show your card's files.";
 
-const AUTO_DETECT_FAIL: &str = "Could not auto-detect the cart on this serial port. \
-Choose SummerCart64, EverDrive-64 PRO (experimental) or EverDrive-64 X7 (experimental) in Settings, or select another COM port.";
+const AUTO_DETECT_FAIL: &str = "No cart found on this serial port. \
+Choose SummerCart64, EverDrive-64 PRO (experimental) or EverDrive-64 X7 (experimental) in Settings, or choose another serial port.";
 
 /// Start of the error every write command returns for an EverDrive-64 PRO until the user consents.
 /// The frontend matches on it to ask, then retries; the CLI tells the user which flag to pass.
@@ -451,7 +452,7 @@ fn export_cart_file_to_pc_in_session(
     progress_total: u64,
 ) -> Result<(), String> {
     if dest.exists() && dest.is_dir() {
-        return Err("Cannot copy file over an existing folder on the PC.".into());
+        return Err("Cannot copy file over an existing folder on This PC.".into());
     }
     if dest.exists() && dest.is_file() && !overwrite {
         return Err("Destination exists and overwrite is false.".into());
@@ -481,13 +482,13 @@ fn cleanup_partial_import(
 ) -> String {
     if existed_before {
         return format!(
-            "{err} — \"{cart_dest_path}\" on the card was being overwritten and is now incomplete; copy it again to restore it."
+            "{err} — \"{cart_dest_path}\" on the cart was being overwritten and is now incomplete; copy it again to restore it."
         );
     }
     match session.remove_cart_path(cart_dest_path) {
         Ok(()) => err,
         Err(e) => format!(
-            "{err} — could not remove the incomplete \"{cart_dest_path}\" from the card ({e}); delete it manually before using it."
+            "{err} — could not remove the incomplete \"{cart_dest_path}\" from the cart ({e}); delete it manually before using it."
         ),
     }
 }
@@ -627,12 +628,17 @@ fn resolve_port_probed(
     };
     let port = auto_port.ok_or_else(|| {
         if is_auto(settings) {
-            "No matching cart port found: connect SC64/EverDrive or choose a COM port manually."
+            "No cart found. Connect a SummerCart64 or EverDrive over USB, or choose a serial port."
                 .to_string()
-        } else if is_ed64_beta_setting(settings) || cart_mode(settings) == "ed64_pro" {
-            "No serial port: plug in the EverDrive (USB) or choose a COM port.".to_string()
+        } else if is_ed64_beta_setting(settings) {
+            "No serial port found. Plug in the EverDrive-64 X7 over USB, or choose a serial port."
+                .to_string()
+        } else if cart_mode(settings) == "ed64_pro" {
+            "No serial port found. Plug in the EverDrive-64 PRO over USB, or choose a serial port."
+                .to_string()
         } else {
-            "No serial port: plug in your flash cart (USB) or choose a COM port.".to_string()
+            "No serial port found. Plug in your flash cart over USB, or choose a serial port."
+                .to_string()
         }
     })?;
     Ok((port, auto))
@@ -708,7 +714,7 @@ where
         ));
         return if out.is_ok() {
             Err(format!(
-                "SD session close failed (do not remove the card until this succeeds): {e}"
+                "Couldn't close the cart session — do not remove the SD card until this succeeds: {e}"
             ))
         } else {
             out
@@ -821,25 +827,25 @@ fn probe_status_blocking(
             resolved_port: port,
             mode,
             detected_kind: Some("ed64".to_string()),
-            message: Some("Manual: EverDrive (experimental)".to_string()),
+            message: Some("Manual: EverDrive-64 X7 (experimental)".to_string()),
         }),
         "ed64_pro" => Ok(UsbProbeStatus {
             resolved_port: port,
             mode,
             detected_kind: Some("ed64pro".to_string()),
-            message: Some("Manual: EverDrive PRO (experimental)".to_string()),
+            message: Some("Manual: EverDrive-64 PRO (experimental)".to_string()),
         }),
         "sc64" => Ok(UsbProbeStatus {
             resolved_port: port,
             mode,
             detected_kind: Some("sc64".to_string()),
-            message: Some("Manual: SC64".to_string()),
+            message: Some("Manual: SummerCart64".to_string()),
         }),
         "auto" => {
             // `resolve_port_probed` just probed this port; only a pinned COM port still needs one.
             let k = probe_with_cache(st, &port, !already_probed)?;
             let msg = if k == DetectedCartKind::Unknown {
-                Some("Not detected — pick a manual cart type in Settings.".to_string())
+                Some("Not detected — choose your cart in Settings.".to_string())
             } else {
                 None
             };
@@ -918,7 +924,7 @@ fn probe_ed64_linear_base_blocking(
     };
     if !allow {
         return Err(
-            "Connect an EverDrive, choose Auto-detect or EverDrive-64 X7 (experimental) in Settings, then try again."
+            "Connect an EverDrive-64 X7, choose Auto-detect or EverDrive-64 X7 (experimental) in Settings, then try again."
                 .into(),
         );
     }
@@ -1570,14 +1576,16 @@ pub async fn cart_serial_remove_cart(
     let dev = (*dev).clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
         let n = total as usize;
-        let start_msg = if n == 1 {
-            format!(
-                "Deleting from SD card — \"{}\"…",
-                path_label_for_progress_msg(paths.first().map(|s| s.as_str()).unwrap_or(""))
-            )
-        } else {
-            format!("Deleting from SD card — {n} items…")
+        // One format from the first item to the last, naming the item about to go.
+        let deleting_msg = |i: usize, p: &str| {
+            let label = path_label_for_progress_msg(p);
+            if n == 1 {
+                format!("Deleting from cart — \"{label}\"…")
+            } else {
+                format!("Deleting from cart — \"{label}\" ({} of {n})…", i + 1)
+            }
         };
+        let start_msg = deleting_msg(0, paths.first().map(|s| s.as_str()).unwrap_or(""));
         emit_explorer_progress_full(&app, 0, total as u64, Some(start_msg), None, None);
         let st = cart_serial_state_from_preferred(
             preferred_com,
@@ -1591,6 +1599,15 @@ pub async fn cart_serial_remove_cart(
                 if cancel.is_cancelled() {
                     return Err("Cancelled".into());
                 }
+                let msg = deleting_msg(i, p);
+                emit_explorer_progress_full(
+                    &app,
+                    i as u64,
+                    total as u64,
+                    Some(msg.clone()),
+                    None,
+                    None,
+                );
                 dev.log(format!("cart_serial_remove_cart: deleting {p:?}"));
                 let r = if dev.is_enabled() {
                     let d = dev.clone();
@@ -1602,13 +1619,6 @@ pub async fn cart_serial_remove_cart(
                 };
                 r.map_err(|e| format!("{p}: {e}"))?;
                 let done = i + 1;
-                let rem = n.saturating_sub(done);
-                let label = path_label_for_progress_msg(p);
-                let msg = if n == 1 {
-                    format!("Deleting from SD card — \"{label}\"…")
-                } else {
-                    format!("Deleting from SD card — \"{label}\" ({done} of {n}, {rem} left)")
-                };
                 // No refresh_cart here: this runs inside with_session, so the SD session still
                 // holds the COM port. A reload would try to open it a second time and fail,
                 // blanking the pane mid-delete. The caller reloads once the session is closed.

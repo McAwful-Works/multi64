@@ -211,11 +211,11 @@ pub fn build_cart_export_plan(
         let entry = list
             .into_iter()
             .find(|e| e.name == name)
-            .ok_or_else(|| format!("cart path not found: {raw}"))?;
+            .ok_or_else(|| format!("Not found on cart: {raw}"))?;
         let dest_top = to_pc_parent.join(&entry.name);
         if entry.is_dir {
             if dest_top.exists() && dest_top.is_file() {
-                return Err("Cannot copy cart folder over an existing file on the PC.".into());
+                return Err("Cannot copy cart folder over an existing file on This PC.".into());
             }
             if !dest_top.exists() {
                 out.push(InteractiveCopyStep {
@@ -231,7 +231,7 @@ pub fn build_cart_export_plan(
             append_cart_export_steps(session, &entry.path, &dest_top, &mut out)?;
         } else {
             if dest_top.exists() && dest_top.is_dir() {
-                return Err("Cannot copy file over an existing folder on the PC.".into());
+                return Err("Cannot copy file over an existing folder on This PC.".into());
             }
             let conflict = dest_top.exists() && dest_top.is_file();
             out.push(InteractiveCopyStep {
@@ -263,7 +263,7 @@ fn append_cart_export_steps(
         let dest = dest_dir.join(&e.name);
         if e.is_dir {
             if dest.exists() && dest.is_file() {
-                return Err("Cannot copy cart folder over an existing file on the PC.".into());
+                return Err("Cannot copy cart folder over an existing file on This PC.".into());
             }
             if !dest.exists() {
                 out.push(InteractiveCopyStep {
@@ -279,7 +279,7 @@ fn append_cart_export_steps(
             append_cart_export_steps(session, &e.path, &dest, out)?;
         } else {
             if dest.exists() && dest.is_dir() {
-                return Err("Cannot copy file over an existing folder on the PC.".into());
+                return Err("Cannot copy file over an existing folder on This PC.".into());
             }
             let conflict = dest.exists() && dest.is_file();
             out.push(InteractiveCopyStep {
