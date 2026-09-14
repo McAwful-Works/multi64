@@ -19,14 +19,14 @@
       </div>
       <div class="explorer-usb-row" id="usb-row">
         <label class="explorer-usb-label">
-          <span>COM port</span>
-          <select id="select-usb-com" aria-label="Serial port override"></select>
+          <span>Serial port</span>
+          <select id="select-usb-com" aria-label="Serial port"></select>
         </label>
         <span class="explorer-usb-loading" id="usb-loading" hidden aria-live="polite" aria-atomic="true">
           <span class="explorer-loading-spinner explorer-loading-spinner--sm" aria-hidden="true"></span>
           <span id="usb-loading-text">Scanning…</span>
         </span>
-        <span class="explorer-usb-hint" id="usb-hint">Auto-detect</span>
+        <span class="explorer-usb-hint" id="usb-hint"></span>
         <div class="app-actions" role="toolbar" aria-label="Xfer64">
           <button
             type="button"
@@ -82,34 +82,34 @@
     </header>
 
     <div class="explorer-body">
-      <section class="explorer-pane" id="pane-cart" aria-label="SD card">
+      <section class="explorer-pane" id="pane-cart" aria-label="Cart">
         <div class="explorer-pane-head">
-          <span class="explorer-pane-head-title">SD card</span>
-          <span class="explorer-pane-head-hint" id="explorer-pane-cart-hint">Auto</span>
+          <span class="explorer-pane-head-title">Cart</span>
+          <span class="explorer-pane-head-hint" id="explorer-pane-cart-hint">Auto-detect</span>
         </div>
         <div class="explorer-toolbar">
-          <button type="button" class="btn" data-action="back" data-pane="cart" title="Back" aria-label="Back (SD card)">←</button>
-          <button type="button" class="btn" data-action="up" data-pane="cart" title="Up" aria-label="Up (SD card)">↑</button>
-          <button type="button" class="btn" data-action="refresh" data-pane="cart" title="Refresh" aria-label="Refresh (SD card)">↻</button>
+          <button type="button" class="btn" data-action="back" data-pane="cart" title="Back" aria-label="Back (Cart)">←</button>
+          <button type="button" class="btn" data-action="up" data-pane="cart" title="Up" aria-label="Up (Cart)">↑</button>
+          <button type="button" class="btn" data-action="refresh" data-pane="cart" title="Refresh" aria-label="Refresh (Cart)">↻</button>
           <div class="explorer-address-wrap">
-            <select id="addr-cart-select" class="explorer-path-select" aria-label="Path on SD"></select>
+            <select id="addr-cart-select" class="explorer-path-select" aria-label="Path on cart"></select>
           </div>
         </div>
         <div class="explorer-toolbar-extras" aria-label="Cart actions">
-          <button type="button" class="btn btn-icon" id="btn-mkdir-cart" title="New folder" aria-label="New folder (SD card)">
+          <button type="button" class="btn btn-icon" id="btn-mkdir-cart" title="New folder" aria-label="New folder (Cart)">
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 10v6" />
               <path d="M9 13h6" />
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
             </svg>
           </button>
-          <button type="button" class="btn btn-icon" id="btn-rename-cart" title="Rename (F2)" aria-label="Rename (SD card)">
+          <button type="button" class="btn btn-icon" id="btn-rename-cart" title="Rename (F2)" aria-label="Rename (Cart)">
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 20h9" />
               <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
             </svg>
           </button>
-          <button type="button" class="btn btn-icon btn-icon-danger" id="btn-delete-cart" title="Delete selected" aria-label="Delete selected (SD card)" disabled>
+          <button type="button" class="btn btn-icon btn-icon-danger" id="btn-delete-cart" title="Delete selected" aria-label="Delete selected (Cart)" disabled>
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M3 6h18" />
               <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
@@ -122,7 +122,7 @@
             type="button"
             class="btn btn-icon explorer-show-hidden-btn"
             id="btn-show-hidden-cart"
-            aria-label="Show hidden files and folders (SD card)"
+            aria-label="Show hidden files and folders (Cart)"
             aria-pressed="false"
             title="Show hidden files and folders"
           >
@@ -184,7 +184,7 @@
                 class="btn btn-icon explorer-operation-cancel"
                 id="explorer-operation-cancel-cart"
                 title="Cancel"
-                aria-label="Cancel (SD card)"
+                aria-label="Cancel (Cart)"
               >
                 <svg
                   class="btn-icon-svg"
@@ -207,58 +207,57 @@
         </div>
       </section>
 
-      <aside class="explorer-actions" aria-label="Transfer between SD card and Windows">
+      <aside class="explorer-actions" aria-label="Transfer between cart and This PC">
         <div class="explorer-actions-inner">
           <button
             type="button"
             class="btn primary explorer-copy-btn"
             id="btn-copy-to-pc"
-            title="Export selected items to the Windows folder"
+            title="Export selected items to the current folder on This PC"
           >
             <span class="explorer-copy-line1">Export</span>
-            <span class="explorer-copy-line2">to Windows</span>
+            <span class="explorer-copy-line2">to This PC</span>
           </button>
           <button
             type="button"
             class="btn primary explorer-copy-btn"
             id="btn-copy-to-cart"
-            title="Import selected items into the current SD folder"
+            title="Import selected items into the current folder on the cart"
           >
             <span class="explorer-copy-line1">Import</span>
-            <span class="explorer-copy-line2">to SD card</span>
+            <span class="explorer-copy-line2">to cart</span>
           </button>
         </div>
       </aside>
 
-      <section class="explorer-pane" id="pane-pc" aria-label="Windows folder">
+      <section class="explorer-pane" id="pane-pc" aria-label="This PC">
         <div class="explorer-pane-head">
-          <span class="explorer-pane-head-title">Windows</span>
-          <span class="explorer-pane-head-hint">This PC</span>
+          <span class="explorer-pane-head-title">This PC</span>
         </div>
         <div class="explorer-toolbar">
-          <button type="button" class="btn" data-action="back" data-pane="pc" title="Back" aria-label="Back (Windows)">←</button>
-          <button type="button" class="btn" data-action="up" data-pane="pc" title="Up" aria-label="Up (Windows)">↑</button>
-          <button type="button" class="btn" data-action="refresh" data-pane="pc" title="Refresh" aria-label="Refresh (Windows)">↻</button>
+          <button type="button" class="btn" data-action="back" data-pane="pc" title="Back" aria-label="Back (This PC)">←</button>
+          <button type="button" class="btn" data-action="up" data-pane="pc" title="Up" aria-label="Up (This PC)">↑</button>
+          <button type="button" class="btn" data-action="refresh" data-pane="pc" title="Refresh" aria-label="Refresh (This PC)">↻</button>
           <div class="explorer-address-wrap">
-            <select id="addr-pc-select" class="explorer-path-select" aria-label="Path in Windows"></select>
+            <select id="addr-pc-select" class="explorer-path-select" aria-label="Path on This PC"></select>
             <button type="button" class="btn explorer-browse-btn" data-action="pick" data-pane="pc" title="Browse folder">…</button>
           </div>
         </div>
-        <div class="explorer-toolbar-extras" aria-label="Windows folder actions">
-          <button type="button" class="btn btn-icon" id="btn-mkdir-pc" title="New folder" aria-label="New folder (Windows)">
+        <div class="explorer-toolbar-extras" aria-label="This PC actions">
+          <button type="button" class="btn btn-icon" id="btn-mkdir-pc" title="New folder" aria-label="New folder (This PC)">
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 10v6" />
               <path d="M9 13h6" />
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
             </svg>
           </button>
-          <button type="button" class="btn btn-icon" id="btn-rename-pc" title="Rename (F2)" aria-label="Rename (Windows)">
+          <button type="button" class="btn btn-icon" id="btn-rename-pc" title="Rename (F2)" aria-label="Rename (This PC)">
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 20h9" />
               <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
             </svg>
           </button>
-          <button type="button" class="btn btn-icon btn-icon-danger" id="btn-delete-pc" title="Delete selected" aria-label="Delete selected (Windows)" disabled>
+          <button type="button" class="btn btn-icon btn-icon-danger" id="btn-delete-pc" title="Delete selected" aria-label="Delete selected (This PC)" disabled>
             <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M3 6h18" />
               <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
@@ -271,7 +270,7 @@
             type="button"
             class="btn btn-icon explorer-show-hidden-btn"
             id="btn-show-hidden-pc"
-            aria-label="Show hidden files and folders (Windows)"
+            aria-label="Show hidden files and folders (This PC)"
             aria-pressed="false"
             title="Show hidden files and folders"
           >
@@ -292,7 +291,7 @@
           </button>
         </div>
         <div class="explorer-table-wrap" id="table-wrap-pc" data-drop-pane="pc">
-          <table class="explorer-table" id="table-pc" aria-label="Windows file list">
+          <table class="explorer-table" id="table-pc" aria-label="This PC file list">
             <thead>
               <tr>
                 <th class="col-name" data-sort-key="name" aria-sort="ascending">Name</th>
@@ -333,7 +332,7 @@
                 class="btn btn-icon explorer-operation-cancel"
                 id="explorer-operation-cancel-pc"
                 title="Cancel"
-                aria-label="Cancel (Windows)"
+                aria-label="Cancel (This PC)"
               >
                 <svg
                   class="btn-icon-svg"
@@ -368,7 +367,7 @@
       <div id="explorer-context-menu-group-file" class="explorer-context-menu-group">
         <button type="button" class="explorer-context-item" role="menuitem" data-ctx="open">Open</button>
         <button type="button" class="explorer-context-item" role="menuitem" data-ctx="copy">
-          Copy to the other pane
+          Export to This PC
         </button>
         <button type="button" class="explorer-context-item" role="menuitem" data-ctx="delete">Delete</button>
         <button type="button" class="explorer-context-item" role="menuitem" data-ctx="rename">Rename</button>
@@ -478,7 +477,7 @@
               <section class="explorer-help-section" aria-labelledby="help-h-sc64">
                 <h3 class="explorer-help-section-title" id="help-h-sc64">Flash cart &amp; USB</h3>
                 <p>
-                  <strong>SummerCart64</strong> and <strong>EverDrive 64 X7</strong> connect over <strong>USB</strong> using a <strong>COM port</strong>—not like a USB thumb drive (there is no new drive letter in Windows). Xfer64 opens that port only while it lists or copies files, then lets it go. If something else is using the same port (for example the Multi64 app talking to the cart), close it first or you may see “port busy” errors.
+                  The <strong>SummerCart64</strong>, <strong>EverDrive-64 X7</strong> and <strong>EverDrive-64 PRO</strong> connect over <strong>USB</strong> using a <strong>serial port</strong> — not like a USB thumb drive (there is no new drive letter in Windows). Xfer64 opens that port only while it lists or copies files, then lets it go. The Multi64 bridge (<code>multi64d</code>) is paused while Xfer64 uses the cart and resumes afterward. If another app is using the same port, close it first or you may see "port busy" errors.
                 </p>
               </section>
               <section class="explorer-help-section" aria-labelledby="help-h-auto">
@@ -490,14 +489,14 @@
               <section class="explorer-help-section explorer-help-section--note" aria-labelledby="help-h-ed64pro">
                 <h3 class="explorer-help-section-title" id="help-h-ed64pro">EverDrive-64 PRO (experimental)</h3>
                 <p>
-                  The EverDrive-64 PRO serves its SD card to the PC directly, so Xfer64 can browse it, copy files both ways, create folders and delete. Support is ported from Krikzz's published sources and has <strong>never been tested on a real cart</strong>, so Xfer64 asks before the first write each time it runs. The PRO's USB link has no rename command, so renaming copies the item to its new name through the PC and then deletes the original. That takes as long as copying it off the cart and back, and cannot change only the letter case of a name.
+                  The EverDrive-64 PRO serves its SD card to This PC directly, so Xfer64 can browse it, copy files both ways, create folders and delete. Support is ported from Krikzz's published sources and has <strong>never been tested on a real cart</strong>, so Xfer64 asks before the first write each time it runs. The EverDrive-64 PRO's USB link has no rename command, so renaming copies the item to its new name through This PC and then deletes the original. That takes as long as copying it off the cart and back, and cannot change only the letter case of a name.
                 </p>
               </section>
               <section class="explorer-help-section explorer-help-section--note" aria-labelledby="help-h-ed64">
-                <h3 class="explorer-help-section-title" id="help-h-ed64">EverDrive (experimental)</h3>
+                <h3 class="explorer-help-section-title" id="help-h-ed64">EverDrive-64 X7 (experimental)</h3>
                 <p>
-                  EverDrive talks to the PC differently than SummerCart64. Browsing its SD card from this app is <strong>experimental</strong>: EverDrive's USB protocol has no SD command, so Xfer64 reads cart memory instead, and that is not expected to show your card's files. The settings are under <strong>EverDrive SD (experimental)</strong>; leave the address blank if you only need the serial port for other tools.
-                  For SD access over USB from Windows, use a <strong>SummerCart64</strong>, or <strong>Auto-detect</strong> with one connected.
+                  The EverDrive-64 X7 talks to This PC differently than the SummerCart64. Browsing its SD card from Xfer64 is <strong>experimental</strong>: its USB protocol has no SD command, so Xfer64 reads cart memory instead, and that is not expected to show your card's files. The settings are under <strong>EverDrive SD (experimental)</strong>; leave the address blank if you only need the serial port for other tools.
+                  For SD card access over USB, use a <strong>SummerCart64</strong>, or <strong>Auto-detect</strong> with one connected.
                 </p>
                 <details class="explorer-help-details">
                   <summary>Technical details</summary>
@@ -509,7 +508,7 @@
               <section class="explorer-help-section" aria-labelledby="help-h-tips">
                 <h3 class="explorer-help-section-title" id="help-h-tips">Tips</h3>
                 <p>
-                  If the SD card is write-protected, turn the N64 off before changing files on some carts. The right pane is a normal Windows folder.
+                  If the SD card is write-protected, turn the N64 off before changing files on some carts. The right pane, This PC, is a normal folder on your computer.
                 </p>
               </section>
             </div>
@@ -527,7 +526,7 @@
               <p class="explorer-about-productline">by Multi64</p>
               <p class="explorer-about-version" id="explorer-about-version">—</p>
               <p>
-                Copy and manage files between your flash cart’s SD card and a folder on Windows. USB is only used while listing or transferring.
+                Copy and manage files between your flash cart's SD card and a folder on This PC. USB is only used while listing or transferring.
               </p>
             </div>
           </div>
@@ -582,7 +581,7 @@
             <label class="field">
               <span>Motion</span>
               <select id="pref-motion">
-                <option value="system">Follow system setting</option>
+                <option value="system">Match system</option>
                 <option value="reduced">Reduce animation</option>
               </select>
             </label>
@@ -641,7 +640,7 @@
             <h3 class="dialog-section-title">Windows integration</h3>
             <p class="dialog-section-note">Acts immediately. Not part of Save settings.</p>
             <p class="hint">
-              Add <strong>Xfer64 upload</strong> to your user <strong>Send to</strong> menu (right-click a file → Send to). A small window opens so you can pick the SD folder before uploading—nothing runs in the background.
+              Add <strong>Quick upload</strong> to your user <strong>Send to</strong> menu (right-click a file → Send to → Xfer64 upload). A small window opens so you can pick the cart folder before uploading — nothing runs in the background.
             </p>
             <div class="row">
               <button type="button" class="btn" id="btn-sendto-upload">Add to Send to</button>
@@ -664,7 +663,7 @@
               <span>Developer mode (log USB / flash-cart SD sessions; separate log window)</span>
             </label>
             <p class="hint">
-              When enabled, the backend records serial session open/close and cart operations. Use the log window to watch in real time (similar to Multi64 GUI developer mode).
+              When enabled, the backend records serial session open/close and cart operations. Use the log window to watch in real time (similar to developer mode in Multi64).
             </p>
             <div class="row" id="explorer-dev-shell-row" hidden aria-hidden="true">
               <button type="button" class="btn primary" id="btn-open-dev-shell" disabled>
@@ -690,9 +689,9 @@
         <div class="explorer-modal-actions explorer-modal-actions--overwrite">
           <button type="button" class="btn" id="explorer-overwrite-cancel">Cancel</button>
           <button type="button" class="btn" id="explorer-overwrite-skip">Skip</button>
-          <button type="button" class="btn" id="explorer-overwrite-yes">Yes</button>
+          <button type="button" class="btn" id="explorer-overwrite-yes">Replace</button>
           <button type="button" class="btn" id="explorer-overwrite-skip-all">Skip all</button>
-          <button type="button" class="btn primary" id="explorer-overwrite-yes-all">Yes to all</button>
+          <button type="button" class="btn primary" id="explorer-overwrite-yes-all">Replace all</button>
         </div>
       </div>
     </div>

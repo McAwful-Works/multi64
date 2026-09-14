@@ -188,7 +188,7 @@ pub fn explorer_daemon_release_listen(listen: &str) -> Result<(), String> {
         .map_err(|e| format!("POST {url}: {e}"))?;
     let status = resp.status().as_u16();
     if status != 200 {
-        return Err(format!("multi64d release failed: HTTP {status}"));
+        return Err(format!("Couldn't pause the Multi64 bridge: HTTP {status}"));
     }
     Ok(())
 }
@@ -198,7 +198,7 @@ pub fn explorer_daemon_release_listen(listen: &str) -> Result<(), String> {
 pub async fn explorer_daemon_release(listen: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || explorer_daemon_release_listen(&listen))
         .await
-        .map_err(|e| format!("daemon release task: {e}"))?
+        .map_err(|e| format!("bridge release task: {e}"))?
 }
 
 pub fn explorer_daemon_resume_listen(listen: &str) -> Result<(), String> {
@@ -210,7 +210,9 @@ pub fn explorer_daemon_resume_listen(listen: &str) -> Result<(), String> {
     let status = resp.status().as_u16();
     if status != 200 {
         let hint = resp.body_mut().read_to_string().unwrap_or_default();
-        return Err(format!("multi64d resume failed: HTTP {status} {hint}"));
+        return Err(format!(
+            "Couldn't resume the Multi64 bridge: HTTP {status} {hint}"
+        ));
     }
     Ok(())
 }
@@ -220,7 +222,7 @@ pub fn explorer_daemon_resume_listen(listen: &str) -> Result<(), String> {
 pub async fn explorer_daemon_resume(listen: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || explorer_daemon_resume_listen(&listen))
         .await
-        .map_err(|e| format!("daemon resume task: {e}"))?
+        .map_err(|e| format!("bridge resume task: {e}"))?
 }
 
 #[cfg(test)]

@@ -72,16 +72,13 @@
           </button>
         </div>
       </div>
-      <p class="tagline">
-        Bridge for USB flash carts — <code>multi64d</code> runs while this window is open.
-        Game integrations (e.g. Archipelago) connect to the same WebSocket as other tools.
-      </p>
+      <p class="tagline">Bridges a USB flash cart to tools on this PC.</p>
     </header>
 
     <section class="card" id="status-card">
       <h2>Status</h2>
       <dl class="status-grid">
-        <dt>Daemon</dt>
+        <dt>Bridge</dt>
         <dd id="status-running">—</dd>
         <dt>Cart</dt>
         <dd id="status-cart">—</dd>
@@ -93,8 +90,8 @@
         <dd id="status-msg">—</dd>
       </dl>
       <div class="row">
-        <button type="button" id="btn-start" class="btn primary">Start daemon</button>
-        <button type="button" id="btn-stop" class="btn">Stop daemon</button>
+        <button type="button" id="btn-start" class="btn primary">Start bridge</button>
+        <button type="button" id="btn-stop" class="btn">Stop bridge</button>
         <button type="button" id="btn-refresh" class="btn">Refresh status</button>
       </div>
     </section>
@@ -102,8 +99,8 @@
     <section class="card">
       <h2>Xfer64</h2>
       <p class="hint">
-        A Multi64 product — separate app: two-pane file manager for SC64 SD (USB mass storage) ↔ Windows. The button runs the bundled
-        installer when Xfer64 is not installed, or opens it when it is.
+        Xfer64 is a separate app that copies files between the cart's SD card and This PC over USB. The button
+        runs the bundled installer when Xfer64 is not installed, or opens it when it is.
       </p>
       <div class="row">
         <button type="button" id="btn-open-explorer" class="btn primary">Xfer64</button>
@@ -114,9 +111,9 @@
     <section class="card dev-only" id="dev-panel" hidden>
       <h2>Developer</h2>
       <p class="hint">
-        Raw <code>multi64d</code> stdout/stderr. Choose verbosity under <strong>Settings → Daemon logging</strong>
-        (shown when Developer mode is on). Integrations (Archipelago, etc.) should use the daemon WebSocket — same
-        contract as <code>docs/spec/daemon-api-v1.md</code> in the repo.
+        Raw <code>multi64d</code> stdout/stderr. Choose verbosity under <strong>Settings → Bridge logging</strong>
+        (shown when Developer mode is on). Integrations should use the bridge's WebSocket, as described in
+        <code>docs/spec/daemon-api-v1.md</code> in the repo.
       </p>
       <pre id="daemon-log" class="log"></pre>
       <div class="row">
@@ -156,7 +153,7 @@
             <!-- Filled per cart by renderCartAndAuto in main.js. -->
             <p class="hint hint-warning" id="cart-hint" hidden></p>
             <label class="field">
-              <span>COM port</span>
+              <span>Serial port</span>
               <select id="serial-port"></select>
             </label>
             <p class="hint" id="auto-hint"></p>
@@ -177,11 +174,11 @@
             <h3 class="dialog-section-title">App behavior</h3>
             <label class="check">
               <input type="checkbox" id="auto-start-daemon" checked />
-              <span>Start <code>multi64d</code> automatically when this app opens</span>
+              <span>Start the bridge when Multi64 opens</span>
             </label>
             <label class="check">
               <input type="checkbox" id="autostart-app" />
-              <span>Start this app when Windows logs in</span>
+              <span>Start Multi64 when you sign in to Windows</span>
             </label>
             <label class="check">
               <input type="checkbox" id="tray-enabled" checked />
@@ -224,7 +221,7 @@
             <label class="field">
               <span>Motion</span>
               <select id="pref-motion">
-                <option value="system">Follow system setting</option>
+                <option value="system">Match system</option>
                 <option value="reduced">Reduce animation</option>
               </select>
             </label>
@@ -234,10 +231,10 @@
             <h3 class="dialog-section-title">Developer</h3>
             <label class="check">
               <input type="checkbox" id="developer-mode" />
-              <span>Developer mode (show daemon log)</span>
+              <span>Developer mode (show bridge log)</span>
             </label>
             <label class="field dev-only-setting" id="multi64d-log-preset-wrap" hidden>
-              <span>Daemon logging</span>
+              <span>Bridge logging</span>
               <select id="multi64d-log-preset" aria-describedby="multi64d-log-hint">
                 <option value="default">Default (info)</option>
                 <option value="debug">Debug (cart link + multi64d)</option>
@@ -246,8 +243,9 @@
               </select>
             </label>
             <p class="hint dev-only-setting" id="multi64d-log-hint" hidden>
-              Applies when the GUI starts <code>multi64d</code>. Use <strong>Serial trace</strong> to mirror
-              <code>--serial-trace</code> / <code>MULTI64D_SERIAL_TRACE</code> (stderr). Restart the daemon after changing.
+              Applies when Multi64 starts <code>multi64d</code>. Use <strong>Serial trace</strong> to mirror
+              <code>--serial-trace</code> / <code>MULTI64D_SERIAL_TRACE</code> (stderr). Saving restarts the bridge if
+              it is running.
             </p>
           </section>
         </div>
@@ -271,12 +269,12 @@
           <section class="dialog-section">
             <h3 class="dialog-section-title">What Multi64 does</h3>
             <p class="help-text">
-              Multi64 runs <code>multi64d</code>, a bridge between a USB flash cart and tools on this PC. Tools
-              connect to it over a local HTTP + WebSocket address, set under <strong>Settings → Listen</strong>.
+              Multi64 runs the bridge (<code>multi64d</code>) between a USB flash cart and tools on this PC. Tools
+              connect to the bridge over a local HTTP + WebSocket address, set under <strong>Settings → Listen</strong>.
             </p>
             <p class="help-text">
-              Only one program can use the cart's COM port at a time. Xfer64 pauses the bridge while it works with
-              the cart and resumes it afterwards.
+              Only one program can use the cart's serial port at a time. Xfer64 pauses the bridge while it works
+              with the cart and resumes it afterward.
             </p>
           </section>
 
@@ -284,33 +282,34 @@
             <h3 class="dialog-section-title">Carts</h3>
             <p class="help-text">
               With Cart on <strong>Auto-detect</strong>, Multi64 looks for a SummerCart64 by its USB IDs, without
-              sending anything to the cart. If none is found, <strong>Start daemon</strong> sends cart test commands
-              to the COM port — or to each serial port, when COM port is on Auto — until a cart answers.
+              sending anything to the cart. If none is found, <strong>Start bridge</strong> sends cart test commands
+              to the serial port — or to each serial port, when Serial port is on Auto-detect — until a cart
+              answers.
             </p>
             <p class="help-text">
-              SummerCart64 is the proven cart. The EverDrive-64 X7 and PRO are experimental: neither has been
-              tested on a real cart.
+              SummerCart64 is the proven cart. The EverDrive-64 X7 and EverDrive-64 PRO are experimental: neither
+              has been tested on a real cart.
             </p>
           </section>
 
           <section class="dialog-section">
             <h3 class="dialog-section-title">Starting and stopping</h3>
             <p class="help-text">
-              <strong>Start daemon</strong> and <strong>Stop daemon</strong> on the Status card control
-              <code>multi64d</code>. To start it whenever the app opens, turn on
-              <strong>Start multi64d automatically when this app opens</strong> in Settings.
+              <strong>Start bridge</strong> and <strong>Stop bridge</strong> on the Status card start and stop the
+              bridge. To start it whenever Multi64 opens, turn on
+              <strong>Start the bridge when Multi64 opens</strong> in Settings.
             </p>
             <p class="help-text">
               With the notification area (system tray) turned on, closing the window can hide Multi64 there instead
-              of exiting. Open it again, or start and stop the daemon, from the tray icon.
+              of exiting. Open it again, or start, stop and restart the bridge, from the tray icon.
             </p>
           </section>
 
           <section class="dialog-section">
             <h3 class="dialog-section-title">Xfer64</h3>
             <p class="help-text">
-              Xfer64 is a separate app for copying files between the cart's SD card and Windows. The Xfer64 card
-              installs it, or opens it once it is installed.
+              Xfer64 is a separate app that copies files between the cart's SD card and This PC over USB. The
+              Xfer64 card installs it, or opens it once it is installed.
             </p>
           </section>
         </div>

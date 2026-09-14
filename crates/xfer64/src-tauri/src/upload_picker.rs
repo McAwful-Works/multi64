@@ -6,7 +6,10 @@ use crate::cli_upload::{run_headless_import_upload, UploadImportSummary};
 use std::path::PathBuf;
 use tauri::{AppHandle, State};
 
-const ED64PRO_PICKER_WARNING: &str = "Writing to an EverDrive-64 PRO is experimental. Xfer64's support for it is ported from Krikzz's published sources and has never been tested on a real cart, so a write could fail partway or damage files on the SD card.\n\nBack up anything important on the card first.\n\nUpload to this cart anyway?";
+const ED64PRO_PICKER_WARNING: &str = "Writing to an EverDrive-64 PRO is experimental. Xfer64's support for it is ported from Krikzz's published sources and has never been tested on a real cart, so a write could fail partway or damage files on the SD card.\n\nBack up anything important on the SD card first.\n\nUpload to this cart anyway?";
+
+/// The confirm button names the action instead of a bare Yes / OK.
+const ED64PRO_ALLOW_WRITES: &str = "Allow writes";
 
 #[derive(Clone)]
 pub struct UploadPickerState {
@@ -57,11 +60,21 @@ pub async fn upload_picker_run(
             Err(e) if e.contains(ED64PRO_WRITE_CONSENT_MARKER) => {
                 let answer = rfd::MessageDialog::new()
                     .set_level(rfd::MessageLevel::Warning)
-                    .set_title("EverDrive-64 PRO: write to the SD card?")
+                    .set_title("Allow writes to the EverDrive-64 PRO?")
                     .set_description(ED64PRO_PICKER_WARNING)
-                    .set_buttons(rfd::MessageButtons::YesNo)
+                    .set_buttons(rfd::MessageButtons::OkCancelCustom(
+                        ED64PRO_ALLOW_WRITES.to_string(),
+                        "Cancel".to_string(),
+                    ))
                     .show();
-                if matches!(answer, rfd::MessageDialogResult::Yes) {
+                // Where the platform dialog cannot show custom labels it falls back to OK / Cancel,
+                // so accept either answer for the confirm button.
+                let allowed = match answer {
+                    rfd::MessageDialogResult::Ok => true,
+                    rfd::MessageDialogResult::Custom(ref label) => label == ED64PRO_ALLOW_WRITES,
+                    _ => false,
+                };
+                if allowed {
                     run(true)
                 } else {
                     Err("Cancelled".into())

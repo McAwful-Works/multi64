@@ -9,13 +9,13 @@ async function refreshStatus() {
     document.getElementById("status-healthy").textContent = s.healthy
       ? "OK"
       : s.running
-        ? "Waiting…"
+        ? "Not responding yet"
         : "—";
     document.getElementById("status-cart").textContent = s.cart || "—";
     document.getElementById("status-listen").textContent = s.listen || "—";
     document.getElementById("status-msg").textContent = s.message || "—";
     // Match the tray, which offers only the action that applies. Leaving both live means
-    // "Start daemon" on a running daemon, which reports a failure for a no-op.
+    // "Start bridge" on a running bridge, which reports a failure for a no-op.
     document.getElementById("btn-start").disabled = s.running;
     document.getElementById("btn-stop").disabled = !s.running;
   } catch (e) {
@@ -30,7 +30,7 @@ async function refreshStatus() {
 let lastAuto = { auto: null, autoWarning: null };
 
 const EVERDRIVE_AUTO_HINT =
-  "Auto only recognises a SummerCart64 for a fixed Cart type. Pick the EverDrive's COM port, or set Cart to Auto-detect.";
+  "For a fixed Cart type, Auto-detect finds only a SummerCart64. Pick the EverDrive's serial port, or set Cart to Auto-detect.";
 
 /** Cart values the backend accepts (`CartSetting`); anything else reads as the default, Auto-detect. */
 const CART_VALUES = ["auto", "sc64", "ed64", "ed64pro"];
@@ -43,9 +43,9 @@ function knownCart(v) {
 /** The Settings → Cart warning for each experimental cart. */
 const CART_HINTS = {
   ed64:
-    "Experimental: the EverDrive-64 X7 link has never been run against a cart, so a running daemon does not show that it works. Restarts the daemon when saved.",
+    "Experimental: the EverDrive-64 X7 link has never been run against a cart, so a running bridge does not show that it works. Saving restarts the bridge if it is running.",
   ed64pro:
-    "Experimental: the EverDrive-64 PRO link has never been run against a cart, so a running daemon does not show that it works. The PRO always runs at 921600 baud, so Baud does not apply. Restarts the daemon when saved.",
+    "Experimental: the EverDrive-64 PRO link has never been run against a cart, so a running bridge does not show that it works. The EverDrive-64 PRO always runs at 921600 baud, so Baud does not apply. Saving restarts the bridge if it is running.",
 };
 
 async function refreshPorts() {
@@ -86,12 +86,12 @@ function renderCartAndAuto() {
   const optAuto = sel.options[0];
   if (optAuto) {
     optAuto.textContent = everdrive
-      ? "Auto (not for EverDrive: pick a port)"
+      ? "Auto-detect: not for EverDrive, pick a serial port"
       : auto
-        ? `Auto (${auto})`
+        ? `Auto-detect: SummerCart64 on ${auto}`
         : cart === "auto"
-          ? "Auto (detect on start)"
-          : "Auto (no cart selected)";
+          ? "Auto-detect: when the bridge starts"
+          : "Auto-detect: no cart found";
   }
   const cartHint = document.getElementById("cart-hint");
   cartHint.hidden = !everdrive;
@@ -104,10 +104,12 @@ function renderCartAndAuto() {
     hint.classList.toggle("hint-warning", onAuto);
   } else if (cart === "auto" && !auto) {
     hint.textContent =
-      "No SummerCart64 found by its USB IDs. On Auto, Start sends cart test commands to each serial port until one answers.";
+      "No SummerCart64 found by its USB IDs. On Auto-detect, Start bridge sends cart test commands to each serial port until one answers.";
     hint.classList.toggle("hint-warning", onAuto);
   } else {
-    hint.textContent = auto ? `Auto uses the cart on ${auto}.` : autoWarning || "No cart found.";
+    hint.textContent = auto
+      ? `Auto-detect uses the SummerCart64 on ${auto}.`
+      : autoWarning || "Auto-detect: no cart found.";
     hint.classList.toggle("hint-warning", !auto);
   }
 }
@@ -292,7 +294,7 @@ function setHelpOpen(open) {
 }
 
 const EMPTY_LOG_HINT =
-  "(No log lines yet. Output from multi64d appears here only when this app starts the daemon; if the log stays empty after Start, check Status and Note.)";
+  "(No log lines yet. Output from multi64d appears here only when Multi64 starts the bridge. If the log stays empty after Start bridge, check Note on the Status card.)";
 
 /** Remove ANSI CSI sequences (e.g. tracing SGR `[2m` / `[33m` / `[0m`) so the log shows plain text. */
 function stripAnsi(s) {
@@ -316,11 +318,11 @@ async function updateXfer64Button() {
   const btn = document.getElementById("btn-open-explorer");
   try {
     const st = await invoke("get_xfer64_state");
-    btn.textContent = st.installed ? "Open Xfer64" : "Install Xfer64";
+    btn.textContent = st.installed ? "Open Xfer64" : "Install Xfer64…";
     btn.disabled = !st.installed && !st.installerAvailable;
     btn.title =
       btn.disabled && !st.installed
-        ? "Xfer64 installer was not bundled; build xfer64 before building the main GUI."
+        ? "The Xfer64 installer was not bundled. Build Xfer64 before building Multi64."
         : "";
   } catch (e) {
     btn.textContent = "Xfer64";
