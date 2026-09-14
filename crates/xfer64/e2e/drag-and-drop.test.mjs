@@ -79,16 +79,23 @@ function installTauriStub() {
   const listing = (entries) => ({ entries, total: entries.length, done: true, truncated: false, hasMore: false });
   const step = (over) => ({ srcPc: null, destPc: null, cartPath: null, bytes: 4, conflictIfExists: false, isDir: false, ...over });
 
+  // The settings file: `explorer_set_settings` replaces it, as the backend does, so a check can see
+  // what a save wrote come back on the next read.
+  let settings = {
+    developerMode: false, preferredCom: "", cartDevice: "auto", ed64RomLinearBase: null,
+    savedCartFolder: "", quickUploadCartPath: "", quickUploadOverwrite: false, autoDetect: true,
+  };
+
   const handlers = {
     fs_user_dirs: () => ({ home: "C:\\Users\\t", documents: "C:\\dl", desktop: "C:\\Users\\t\\Desktop" }),
-    explorer_get_settings: () => ({
-      developerMode: false, preferredCom: "", cartDevice: "auto", ed64RomLinearBase: null,
-      savedCartFolder: "", quickUploadCartPath: "", quickUploadOverwrite: false, autoDetect: true,
-    }),
+    explorer_get_settings: () => ({ ...settings }),
+    explorer_set_settings: (a) => { settings = { ...a.settings }; return null; },
     cart_serial_ed64_linear_hint_bases: () => [],
-    cart_serial_list_ports: () => [{ port: "COM3", label: "COM3" }],
-    cart_serial_suggest_port: () => "COM3",
-    cart_serial_probe_status: () => ({ ok: true, kind: "sc64", port: "COM3", message: "SummerCart64" }),
+    // Port names, as `serialport::available_ports` gives them.
+    cart_serial_list_ports: () => ["COM3", "COM4"],
+    // A check sets `__TAURI_NO_SUGGEST__` to play a cart whose port Auto-detect can't pick.
+    cart_serial_suggest_port: () => (window.__TAURI_NO_SUGGEST__ ? null : "COM3"),
+    cart_serial_probe_status: () => ({ resolvedPort: "COM3", mode: settings.cartDevice, detectedKind: "sc64", message: null }),
     cart_serial_list_dir_page: () => listing(cartEntries),
     fs_list_dir_page: () => listing(pcEntries),
     xfer64_app_version: () => "0.0.0-test",
@@ -519,6 +526,148 @@ await reset();
   await page.evaluate(() => document.querySelector('#table-cart th[data-sort-key="name"] button').click());
   check("a sort header is a column header holding a button, and aria-sort follows the sort",
     sort.role === null && sort.tabindex === null && sort.sort === "ascending" && sort.name === "none", JSON.stringify(sort));
+}
+
+// --- Cart and Serial port: app bar and Settings --------------------------
+const selects = () => page.evaluate(() => ({
+  appCart: document.getElementById("select-cart-device").value,
+  appPort: document.getElementById("select-usb-com").value,
+  cart: document.getElementById("explorer-cart-device").value,
+  port: document.getElementById("explorer-serial-port").value,
+  appPorts: [...document.getElementById("select-usb-com").options].map((o) => o.value),
+  ports: [...document.getElementById("explorer-serial-port").options].map((o) => o.value),
+  stored: localStorage.getItem("multi64.explorer.usbCom"),
+}));
+
+await reset();
+{
+  await page.selectOption("#select-cart-device", "sc64");
+  await page.waitForTimeout(400);
+  const seen = await cmds();
+  const saved = (await callsOf("explorer_set_settings")).map((c) => c.args.settings);
+  check("changing the app-bar Cart select saves the new cartDevice, keeping the other settings",
+    saved.length === 1 && saved[0].cartDevice === "sc64" && saved[0].developerMode === false && "savedCartFolder" in saved[0],
+    JSON.stringify(saved));
+  check("and drops the probe cache and reloads the cart pane",
+    seen.indexOf("cart_serial_invalidate_probe_cache") >= 0 &&
+      seen.lastIndexOf("cart_serial_list_dir_page") > seen.indexOf("explorer_set_settings"),
+    seen.join(","));
+}
+
+await reset();
+{
+  await page.evaluate(() => { window.__TAURI_DELAYS__ = { cart_serial_mkdir_cart: 900 }; });
+  await page.click(CART_FILE);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+Shift+N");
+  await page.waitForSelector("#explorer-modal-input:not([hidden])");
+  await page.waitForTimeout(100);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(150);
+  const during = await Promise.all(["#select-cart-device", "#select-usb-com"].map(controlState));
+  await page.waitForTimeout(1200);
+  const after = await Promise.all(["#select-cart-device", "#select-usb-com"].map(controlState));
+  await page.evaluate(() => { window.__TAURI_DELAYS__ = {}; });
+  check("both app-bar selects are disabled while the cart pane is busy, and say why",
+    during.every((s) => s.disabled && s.aria === "true" && s.title.includes(" — wait for")), JSON.stringify(during));
+  check("and enabled again when the operation ends",
+    after.every((s) => !s.disabled && s.aria === "false" && !s.title.includes(" — ")), JSON.stringify(after));
+  check("the cart folder was created", (await cmds()).includes("cart_serial_mkdir_cart"), (await cmds()).join(","));
+}
+
+await reset();
+{
+  await page.selectOption("#select-usb-com", "COM4");
+  await page.waitForTimeout(400);
+  const pinned = (await callsOf("cart_serial_set_preferred_com")).map((c) => c.args.port);
+  check("changing the app-bar Serial port stores it and tells the backend",
+    (await selects()).stored === "COM4" && pinned.at(-1) === "COM4", JSON.stringify(pinned));
+
+  await page.click("#btn-open-settings");
+  await page.waitForSelector("#explorer-settings-panel:not([hidden])");
+  await page.waitForTimeout(150);
+  const opened = await selects();
+  check("Settings opens with Cart and Serial port matching the app bar",
+    opened.cart === "sc64" && opened.cart === opened.appCart && opened.port === "COM4" && opened.port === opened.appPort &&
+      opened.ports.join() === opened.appPorts.join() && opened.ports.join() === ",COM3,COM4",
+    JSON.stringify(opened));
+
+  await page.selectOption("#explorer-serial-port", "COM3");
+  await page.click("#btn-close-settings");
+  const asked = await page.waitForSelector("#explorer-modal-root:not([hidden])", { timeout: 2000 }).then(() => true, () => false);
+  check("the unsaved-changes confirm fires for a Serial port-only edit", asked);
+  if (asked) {
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(100);
+  }
+
+  await page.selectOption("#explorer-cart-device", "ed64_pro");
+  await reset();
+  await page.click("#btn-save-explorer-settings");
+  await page.waitForSelector("#explorer-settings-panel", { state: "hidden" });
+  await page.waitForTimeout(600);
+  const saved = await selects();
+  const seen = await cmds();
+  const written = (await callsOf("explorer_set_settings")).map((c) => c.args.settings.cartDevice);
+  const pinnedAfter = (await callsOf("cart_serial_set_preferred_com")).map((c) => c.args.port);
+  check("saving Cart and Serial port in Settings updates both app-bar selects",
+    saved.appCart === "ed64_pro" && saved.appPort === "COM3" && written.at(-1) === "ed64_pro", JSON.stringify({ saved, written }));
+  check("and stores the port where the app bar does, and tells the backend",
+    saved.stored === "COM3" && pinnedAfter.at(-1) === "COM3", JSON.stringify({ stored: saved.stored, pinnedAfter }));
+  check("and reloads the cart pane once, after both are applied",
+    seen.filter((c) => c === "cart_serial_list_dir_page").length === 1 &&
+      seen.indexOf("cart_serial_list_dir_page") > seen.indexOf("cart_serial_set_preferred_com") &&
+      seen.indexOf("cart_serial_set_preferred_com") > seen.indexOf("cart_serial_invalidate_probe_cache"),
+    seen.join(","));
+}
+
+await reset();
+{
+  // With a cart chosen, Auto-detect takes the port the backend suggests; none means it can't pick.
+  const hint = () => page.evaluate(() => {
+    const el = document.getElementById("explorer-serial-port-hint");
+    return { hidden: el.hidden, text: el.textContent };
+  });
+  await page.click("#btn-open-settings");
+  await page.waitForSelector("#explorer-settings-panel:not([hidden])");
+  await page.selectOption("#explorer-serial-port", "");
+  await page.waitForTimeout(150);
+  const suggested = await hint();
+  await page.evaluate(() => { window.__TAURI_NO_SUGGEST__ = true; });
+  await page.selectOption("#explorer-serial-port", "COM4");
+  await page.selectOption("#explorer-serial-port", "");
+  await page.waitForTimeout(150);
+  const none = await hint();
+  await page.selectOption("#explorer-cart-device", "auto");
+  await page.waitForTimeout(150);
+  const onAuto = await hint();
+  await page.evaluate(() => { delete window.__TAURI_NO_SUGGEST__; });
+  check("the Serial port hint shows only when Auto-detect can't pick a port for the chosen cart",
+    suggested.hidden && !none.hidden && /can't pick a serial port for the EverDrive-64 PRO/.test(none.text) && onAuto.hidden,
+    JSON.stringify({ suggested, none, onAuto }));
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("#explorer-modal-root:not([hidden])");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("#explorer-settings-panel", { state: "hidden" });
+}
+
+{
+  // The app bar has to wrap, not scroll sideways, in a narrow window.
+  const overflow = {};
+  for (const width of [700, 900, 1000]) {
+    await page.setViewportSize({ width, height: 700 });
+    await page.waitForTimeout(100);
+    overflow[width] = await page.evaluate(() => {
+      const bar = document.querySelector(".explorer-appbar");
+      const past = [...bar.querySelectorAll("label, select, button, #usb-hint")]
+        .filter((el) => el.getBoundingClientRect().right > window.innerWidth + 0.5)
+        .map((el) => el.id || el.tagName);
+      return { scroll: bar.scrollWidth > bar.clientWidth, past };
+    });
+  }
+  await page.setViewportSize({ width: 1100, height: 700 });
+  check("the app bar wraps without overflowing at 700, 900 and 1000 px",
+    Object.values(overflow).every((o) => !o.scroll && o.past.length === 0), JSON.stringify(overflow));
 }
 
 check("the page logged no errors", consoleErrors.length === 0, consoleErrors.join(" | "));

@@ -390,7 +390,9 @@ body.explorer-modal-open {
   gap: 0.45rem;
   font-size: var(--font-sm);
   margin-left: auto;
-  flex-shrink: 0;
+  /* Shrinkable, so a row wider than the app bar wraps its own items rather than overflowing. */
+  flex-shrink: 1;
+  min-width: 0;
   justify-content: flex-end;
 }
 
