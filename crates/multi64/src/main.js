@@ -75,9 +75,10 @@ async function refreshPorts() {
 }
 
 /**
- * The Auto option text, the port hint and the cart warning all depend on the cart being edited,
- * so they re-render when it changes. The backend enforces the same rule: Auto never gives an
- * EverDrive a port, SC64's included.
+ * The Auto option text and both hints depend on the cart being edited, so they re-render when it
+ * changes. What Auto-detect found is about the cart, so it goes under Cart; the Serial port row
+ * only names the port, and speaks up when Auto cannot pick one for this cart. The backend enforces
+ * the same rule: Auto never gives an EverDrive a port, SC64's included.
  */
 function renderCartAndAuto() {
   const cart = knownCart(document.getElementById("cart").value);
@@ -87,33 +88,38 @@ function renderCartAndAuto() {
   const onAuto = sel.value === "";
   const optAuto = sel.options[0];
   if (optAuto) {
-    optAuto.textContent = everdrive
-      ? "Auto-detect: not for EverDrive, pick a serial port"
-      : auto
-        ? `Auto-detect: SummerCart64 on ${auto}`
-        : cart === "auto"
-          ? "Auto-detect: when the bridge starts"
-          : "Auto-detect: no cart found";
+    optAuto.textContent = everdrive ? "Auto-detect: pick a port for EverDrive" : auto ? `Auto-detect (${auto})` : "Auto-detect";
+  }
+
+  // Under Cart: what Auto-detect found, or the experimental warning for a chosen EverDrive.
+  let cartText = CART_HINTS[cart] || "";
+  if (cart === "auto" && !onAuto) {
+    // A port picked by hand is the only one Start looks at, whatever is on USB elsewhere.
+    cartText = `Start bridge identifies the cart on ${sel.value}.`;
+  } else if (cart === "auto") {
+    cartText = auto
+      ? `Found a SummerCart64 on ${auto}.`
+      : autoWarning
+        ? ""
+        : "No SummerCart64 found by its USB IDs. Start bridge tests each serial port until a cart answers.";
   }
   const cartHint = document.getElementById("cart-hint");
-  cartHint.hidden = !everdrive;
-  cartHint.textContent = CART_HINTS[cart] || "";
-  // Auto only picks a port that identifies as a cart, so with no pick the daemon will not start
-  // on Auto -- except under Auto-detect, which probes instead. Say which in the hint.
-  const hint = document.getElementById("auto-hint");
-  if (everdrive) {
-    hint.textContent = EVERDRIVE_AUTO_HINT;
-    hint.classList.toggle("hint-warning", onAuto);
-  } else if (cart === "auto" && !auto) {
-    hint.textContent =
-      "No SummerCart64 found by its USB IDs. On Auto-detect, Start bridge sends cart test commands to each serial port until one answers.";
-    hint.classList.toggle("hint-warning", onAuto);
-  } else {
-    hint.textContent = auto
-      ? `Auto-detect uses the SummerCart64 on ${auto}.`
-      : autoWarning || "Auto-detect: no cart found.";
-    hint.classList.toggle("hint-warning", !auto);
+  cartHint.textContent = cartText;
+  cartHint.hidden = !cartText;
+  cartHint.classList.toggle("hint-warning", everdrive);
+
+  // Under Serial port: only on Auto, and only when Auto cannot pick a port for this cart. A port
+  // picked by hand needs no hint. (Cart Auto-detect with nothing on USB is fine: Start probes.)
+  let portText = "";
+  if (onAuto) {
+    if (everdrive) portText = EVERDRIVE_AUTO_HINT;
+    else if (autoWarning) portText = autoWarning;
+    else if (cart === "sc64" && !auto) portText = "No SummerCart64 found. Plug it in, or pick its serial port.";
   }
+  const hint = document.getElementById("auto-hint");
+  hint.textContent = portText;
+  hint.hidden = !portText;
+  hint.classList.toggle("hint-warning", Boolean(portText));
 }
 
 function applySettingsToForm(s) {
