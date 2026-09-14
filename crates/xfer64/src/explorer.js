@@ -65,15 +65,13 @@ function daemonListenUrl() {
  * Pause multi64d (release COM) whenever it is running, run `fn`, then resume the daemon.
  * Uses `probe.up` (daemon `/health` OK), not COM matching — so we always interrupt when multi64d is active.
  * @param {() => Promise<unknown>} fn
- * @param {{ confirm?: boolean, actionPane?: "cart" | "pc" }} [opts]
+ * @param {{ confirm?: boolean }} [opts]
  *   - `confirm: false` (default) — no dialog before release/resume.
  *   - `confirm: true` — ask before releasing the daemon (copy/mkdir/rename).
- *   - `actionPane` — when set with `confirm: true`, clears pane action loading before the multi64d confirm dialog.
  * @returns {Promise<boolean>} `true` if the user cancelled the preflight dialog (only when `confirm` is true).
  */
 async function withCartDaemonYield(fn, opts = {}) {
   const confirm = opts.confirm === true;
-  const actionPane = opts.actionPane;
   const listen = daemonListenUrl();
   let probe;
   try {
@@ -87,7 +85,6 @@ async function withCartDaemonYield(fn, opts = {}) {
     return false;
   }
   if (confirm) {
-    if (actionPane) endPaneActionLoading(actionPane);
     const ok = await showExplorerConfirm(
       "The Multi64 bridge is using this cart on the same serial port.\n\nIt will pause while this finishes, then resume. Continue?",
       { title: "Pause the Multi64 bridge?", okLabel: "Continue" }
@@ -392,7 +389,7 @@ function hideOtherOperationPane(pane) {
   const other = pane === "cart" ? "pc" : "cart";
   const otherRoot = document.getElementById(`explorer-operation-${other}`);
   if (!otherRoot) return;
-  otherRoot.classList.add("hidden");
+  otherRoot.hidden = true;
   otherRoot.setAttribute("aria-hidden", "true");
   const otherFill = document.getElementById(`explorer-operation-fill-${other}`);
   if (otherFill) {
@@ -413,7 +410,7 @@ function showOperationProgress(message, pane, determinate = false) {
   const text = document.getElementById(`explorer-operation-text-${pane}`);
   const fill = document.getElementById(`explorer-operation-fill-${pane}`);
   if (!root || !text || !fill) return;
-  root.classList.remove("hidden");
+  root.hidden = false;
   root.setAttribute("aria-hidden", "false");
   root.classList.remove("explorer-operation--done", "explorer-operation--error");
   text.textContent = message;
@@ -429,11 +426,26 @@ function showOperationProgress(message, pane, determinate = false) {
 /** @type {{ cart: number, pc: number }} */
 const paneLoadingDepth = { cart: 0, pc: 0 };
 
-/** Ref-counted overlay for copy/delete/rename/mkdir (immediate shade, no folder-load delay). */
-const paneActionDepth = { cart: 0, pc: 0 };
-
 /** Avoid flashing the list overlay when directory listing returns almost immediately. */
 const PANE_SHADE_DELAY_MS = 120;
+
+/** An operation's overlay stays undrawn this long, so a quick rename or delete does not flash it. */
+const PANE_BUSY_SHOW_DELAY_MS = 300;
+
+/** Whether a pane's folder load has run long enough for its shade to be drawn. */
+const paneLoadingShown = { cart: false, pc: false };
+
+/**
+ * Operations running per pane (`beginBusy`), and whether their overlay is drawn yet.
+ * @type {Record<"cart" | "pc", { depth: number, shown: boolean, timer: ReturnType<typeof setTimeout> | null, text: string }>}
+ */
+const paneBusy = {
+  cart: { depth: 0, shown: false, timer: null, text: "" },
+  pc: { depth: 0, shown: false, timer: null, text: "" },
+};
+
+/** Whether the cart's last listing succeeded: Import is offered only for a cart that answered. */
+let cartReady = false;
 
 /**
  * Chunk size for `fs_list_dir_page` / `cart_serial_list_dir_page` (Rust caches full sorted list per path).
@@ -506,58 +518,101 @@ function clearPaneShadeDelayTimer(pane) {
 }
 
 /** @param {"cart" | "pc"} pane */
-function paneLoadingSetVisible(pane, visible, text = "Loading…") {
+function isPaneBusy(pane) {
+  return paneBusy[pane].depth > 0;
+}
+
+/**
+ * Draw a pane's list shade from its folder-load and busy state.
+ *
+ * A busy pane always has the shade in place, so input to the list is blocked from the first
+ * moment; it is drawn only once the busy delay has passed (until then it carries
+ * `explorer-table-shade--pending`). While busy, a folder load inside the operation does not draw
+ * its own shade — the operation's delay decides.
+ * @param {"cart" | "pc"} pane
+ */
+function syncPaneShade(pane) {
   const shade = document.getElementById(`table-shade-${pane}`);
   const textEl = document.getElementById(`table-shade-text-${pane}`);
   const wrapEl = document.getElementById(`table-wrap-${pane}`);
   if (!shade) return;
-  if (textEl) textEl.textContent = text;
-  shade.hidden = !visible;
+  const busy = paneBusy[pane];
+  const loading = paneLoadingDepth[pane] > 0 && paneLoadingShown[pane];
+  const visible = busy.depth > 0 ? busy.shown : loading;
+  if (textEl && visible) textEl.textContent = busy.depth > 0 ? busy.text : paneShadePendingText[pane];
+  shade.hidden = !visible && busy.depth === 0;
+  shade.classList.toggle("explorer-table-shade--pending", !visible);
   shade.setAttribute("aria-hidden", visible ? "false" : "true");
-  if (wrapEl) wrapEl.setAttribute("aria-busy", visible ? "true" : "false");
+  if (wrapEl) wrapEl.setAttribute("aria-busy", busy.depth > 0 || loading ? "true" : "false");
 }
 
 /** @param {"cart" | "pc"} pane */
 function beginPaneLoading(pane, text = "Reading folder…") {
   paneLoadingDepth[pane]++;
+  paneShadePendingText[pane] = text;
   if (paneLoadingDepth[pane] === 1) {
     clearPaneShadeDelayTimer(pane);
-    paneShadePendingText[pane] = text;
+    paneLoadingShown[pane] = false;
     paneShadeDelayTimer[pane] = setTimeout(() => {
       paneShadeDelayTimer[pane] = null;
-      if (paneLoadingDepth[pane] > 0 && paneActionDepth[pane] === 0) {
-        paneLoadingSetVisible(pane, true, paneShadePendingText[pane]);
+      if (paneLoadingDepth[pane] > 0) {
+        paneLoadingShown[pane] = true;
+        syncPaneShade(pane);
       }
     }, PANE_SHADE_DELAY_MS);
-  } else {
-    paneShadePendingText[pane] = text;
   }
 }
 
 /** @param {"cart" | "pc"} pane */
 function endPaneLoading(pane) {
-  clearPaneShadeDelayTimer(pane);
   paneLoadingDepth[pane] = Math.max(0, paneLoadingDepth[pane] - 1);
-  if (paneLoadingDepth[pane] === 0 && paneActionDepth[pane] === 0) paneLoadingSetVisible(pane, false);
-}
-
-/** @param {"cart" | "pc"} pane */
-function beginPaneActionLoading(pane, text = "Working…") {
-  clearPaneShadeDelayTimer(pane);
-  paneActionDepth[pane]++;
-  paneLoadingSetVisible(pane, true, text);
-}
-
-/** @param {"cart" | "pc"} pane */
-function endPaneActionLoading(pane) {
-  if (paneActionDepth[pane] === 0) return;
-  paneActionDepth[pane]--;
-  if (paneActionDepth[pane] > 0) return;
-  if (paneLoadingDepth[pane] > 0) {
-    paneLoadingSetVisible(pane, true, paneShadePendingText[pane]);
-  } else {
-    paneLoadingSetVisible(pane, false);
+  if (paneLoadingDepth[pane] === 0) {
+    clearPaneShadeDelayTimer(pane);
+    paneLoadingShown[pane] = false;
   }
+  syncPaneShade(pane);
+}
+
+/**
+ * Mark an operation as running on `pane`, and return the function that ends it.
+ *
+ * Input is blocked at once: the list shade goes in place, and row drags, double-clicks, drops,
+ * shortcuts and the pane's buttons refuse while `isPaneBusy(pane)`. The overlay itself is drawn
+ * only if the operation is still running after `PANE_BUSY_SHOW_DELAY_MS`, so a quick one shows
+ * nothing. Overlapping operations are counted; calling the returned `end()` again does nothing.
+ * @param {"cart" | "pc"} pane
+ * @param {string} [text] caption shown on the overlay
+ * @returns {() => void}
+ */
+function beginBusy(pane, text = "Working…") {
+  const busy = paneBusy[pane];
+  busy.depth++;
+  busy.text = text;
+  if (busy.depth === 1) {
+    busy.shown = false;
+    busy.timer = setTimeout(() => {
+      busy.timer = null;
+      if (busy.depth > 0) {
+        busy.shown = true;
+        syncPaneShade(pane);
+      }
+    }, PANE_BUSY_SHOW_DELAY_MS);
+  }
+  syncPaneShade(pane);
+  updateExplorerControls();
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    busy.depth = Math.max(0, busy.depth - 1);
+    if (busy.depth === 0) {
+      if (busy.timer != null) clearTimeout(busy.timer);
+      busy.timer = null;
+      busy.shown = false;
+    }
+    syncPaneShade(pane);
+    updateExplorerControls();
+  };
 }
 
 /** Hide the copy/delete progress strip without a completion toast (e.g. empty copy plan). */
@@ -566,7 +621,7 @@ function hideOperationProgressPane(pane) {
   const root = document.getElementById(`explorer-operation-${pane}`);
   const fill = document.getElementById(`explorer-operation-fill-${pane}`);
   if (!root || !fill) return;
-  root.classList.add("hidden");
+  root.hidden = true;
   root.setAttribute("aria-hidden", "true");
   fill.style.width = "0";
   fill.classList.remove("indeterminate");
@@ -670,7 +725,7 @@ function finishOperationProgress(message, isError = false, pane) {
   const text = document.getElementById(`explorer-operation-text-${pane}`);
   const fill = document.getElementById(`explorer-operation-fill-${pane}`);
   if (!root || !text || !fill) return;
-  root.classList.remove("hidden");
+  root.hidden = false;
   root.setAttribute("aria-hidden", "false");
   root.classList.toggle("explorer-operation--done", !isError);
   root.classList.toggle("explorer-operation--error", !!isError);
@@ -679,7 +734,7 @@ function finishOperationProgress(message, isError = false, pane) {
   fill.classList.remove("indeterminate");
   fill.style.width = "100%";
   operationHideTimer = setTimeout(() => {
-    root.classList.add("hidden");
+    root.hidden = true;
     root.setAttribute("aria-hidden", "true");
     fill.style.width = "0";
     fill.classList.remove("indeterminate");
@@ -790,21 +845,20 @@ async function runRenameCartFromPaths(fromPath, newNameTrimmed) {
   const parent = usbParentPath(normalizeUsbPath(fromPath));
   const toPath = cartRelPathForRename(parent, newNameTrimmed);
   if (!toPath) throw new Error("Invalid name");
-  beginPaneActionLoading("cart", "Preparing…");
+  const endBusy = beginBusy("cart", "Renaming…");
   try {
     const cancelled = await withCartDaemonYield(
       async () => {
-        endPaneActionLoading("cart");
         showOperationProgress(`Renaming on cart — "${newNameTrimmed}"…`, "cart");
         await invokeCartWrite("cart_serial_rename_cart", { from: normalizeUsbPath(fromPath), to: toPath });
         await loadCartPane();
       },
-      { confirm: true, actionPane: "cart" }
+      { confirm: true }
     );
     if (cancelled) return;
     finishOperationProgress(`Renamed to "${newNameTrimmed}".`, false, "cart");
   } finally {
-    endPaneActionLoading("cart");
+    endBusy();
   }
 }
 
@@ -815,10 +869,15 @@ async function runRenameCartFromPaths(fromPath, newNameTrimmed) {
 async function runRenamePcFromPaths(fromPath, newNameTrimmed) {
   const parent = dirnameWin(fromPath);
   const toPath = `${parent}${newNameTrimmed}`;
-  showOperationProgress(`Renaming on This PC — "${newNameTrimmed}"…`, "pc");
-  await invoke("fs_rename", { from: fromPath, to: toPath });
-  await loadPcPane();
-  finishOperationProgress(`Renamed to "${newNameTrimmed}".`, false, "pc");
+  const endBusy = beginBusy("pc", "Renaming…");
+  try {
+    showOperationProgress(`Renaming on This PC — "${newNameTrimmed}"…`, "pc");
+    await invoke("fs_rename", { from: fromPath, to: toPath });
+    await loadPcPane();
+    finishOperationProgress(`Renamed to "${newNameTrimmed}".`, false, "pc");
+  } finally {
+    endBusy();
+  }
 }
 
 function cancelInlineRenameRestoreDOMOnly() {
@@ -1154,23 +1213,22 @@ function isExplorerModalOpen() {
   const help = document.getElementById("explorer-help-modal");
   const props = document.getElementById("explorer-properties-modal");
   return (
-    (root != null && !root.classList.contains("hidden")) ||
-    (ow != null && !ow.classList.contains("hidden")) ||
-    (help != null && !help.classList.contains("hidden")) ||
-    (props != null && !props.classList.contains("hidden"))
+    (root != null && !root.hidden) ||
+    (ow != null && !ow.hidden) ||
+    (help != null && !help.hidden) ||
+    (props != null && !props.hidden)
   );
 }
 
 function isExplorerContextMenuVisible() {
   const menu = document.getElementById("explorer-context-menu");
-  return menu != null && !menu.classList.contains("hidden");
+  return menu != null && !menu.hidden;
 }
 
 function hideExplorerContextMenu() {
   const menu = document.getElementById("explorer-context-menu");
   if (!menu) return;
-  menu.classList.add("hidden");
-  menu.setAttribute("hidden", "");
+  menu.hidden = true;
   menu.setAttribute("aria-hidden", "true");
 }
 
@@ -1186,31 +1244,19 @@ function showExplorerContextMenu(pane, clientX, clientY, blankArea = false) {
   const fileGroup = document.getElementById("explorer-context-menu-group-file");
   const blankGroup = document.getElementById("explorer-context-menu-group-blank");
   if (fileGroup && blankGroup) {
-    if (blankArea) {
-      fileGroup.classList.add("hidden");
-      fileGroup.setAttribute("hidden", "");
-      fileGroup.setAttribute("aria-hidden", "true");
-      blankGroup.classList.remove("hidden");
-      blankGroup.removeAttribute("hidden");
-      blankGroup.setAttribute("aria-hidden", "false");
-      updateBlankContextMenuItems(pane);
-    } else {
-      blankGroup.classList.add("hidden");
-      blankGroup.setAttribute("hidden", "");
-      blankGroup.setAttribute("aria-hidden", "true");
-      fileGroup.classList.remove("hidden");
-      fileGroup.removeAttribute("hidden");
-      fileGroup.setAttribute("aria-hidden", "false");
-      updateExplorerContextMenuItems(menu, pane);
-    }
+    fileGroup.hidden = blankArea;
+    fileGroup.setAttribute("aria-hidden", blankArea ? "true" : "false");
+    blankGroup.hidden = !blankArea;
+    blankGroup.setAttribute("aria-hidden", blankArea ? "false" : "true");
+    if (blankArea) updateBlankContextMenuItems(pane);
+    else updateExplorerContextMenuItems(menu, pane);
   }
   menu.dataset.pane = pane;
   const copyBtn = menu.querySelector('[data-ctx="copy"]');
   if (copyBtn) {
     copyBtn.textContent = pane === "cart" ? "Export to This PC" : "Import to cart";
   }
-  menu.classList.remove("hidden");
-  menu.removeAttribute("hidden");
+  menu.hidden = false;
   menu.setAttribute("aria-hidden", "false");
   const pad = 6;
   menu.style.left = "0";
@@ -1233,24 +1279,18 @@ function showExplorerContextMenu(pane, clientX, clientY, blankArea = false) {
  */
 function updateExplorerContextMenuItems(menu, pane) {
   const sel = state[pane].selected;
-  const n = sel.size;
-  const single = n === 1;
+  const single = sel.size === 1;
   let onlyIsDir = false;
   if (single) {
     const onlyPath = [...sel][0];
     const entry = state[pane].listEntries.find((e) => e.path === onlyPath);
     onlyIsDir = entry ? entry.isDir : false;
   }
-  const copyBtn = menu.querySelector('[data-ctx="copy"]');
-  const delBtn = menu.querySelector('[data-ctx="delete"]');
-  const renBtn = menu.querySelector('[data-ctx="rename"]');
-  const openBtn = menu.querySelector('[data-ctx="open"]');
-  const propBtn = menu.querySelector('[data-ctx="properties"]');
-  if (copyBtn) copyBtn.disabled = n === 0;
-  if (delBtn) delBtn.disabled = n === 0;
-  if (renBtn) renBtn.disabled = !single;
-  if (openBtn) openBtn.disabled = !single || !onlyIsDir;
-  if (propBtn) propBtn.disabled = !single;
+  setMenuItemEnabled(menu.querySelector('[data-ctx="copy"]'), actionBlockedReason("transfer", pane));
+  setMenuItemEnabled(menu.querySelector('[data-ctx="delete"]'), actionBlockedReason("delete", pane));
+  setMenuItemEnabled(menu.querySelector('[data-ctx="rename"]'), actionBlockedReason("rename", pane));
+  setMenuItemEnabled(menu.querySelector('[data-ctx="open"]'), single && onlyIsDir ? "" : "select one folder");
+  setMenuItemEnabled(menu.querySelector('[data-ctx="properties"]'), single ? "" : "select one item");
 }
 
 /**
@@ -1258,11 +1298,24 @@ function updateExplorerContextMenuItems(menu, pane) {
  */
 function updateBlankContextMenuItems(pane) {
   const menu = document.getElementById("explorer-context-menu");
-  const nf = menu?.querySelector('[data-ctx="new-folder"]');
-  const fp = menu?.querySelector('[data-ctx="folder-properties"]');
   const noPcFolder = pane === "pc" && !normalizePath(state.pc.path || "");
-  if (nf) nf.disabled = noPcFolder;
-  if (fp) fp.disabled = noPcFolder;
+  setMenuItemEnabled(menu?.querySelector('[data-ctx="new-folder"]'), actionBlockedReason("mkdir", pane));
+  setMenuItemEnabled(
+    menu?.querySelector('[data-ctx="folder-properties"]'),
+    noPcFolder ? "choose a folder on This PC first" : ""
+  );
+}
+
+/**
+ * Enable or disable a context-menu item; the reason it is off, if any, is its tooltip.
+ * @param {Element | null | undefined} btn
+ * @param {string} reason from `actionBlockedReason`, or "" when the item can run
+ */
+function setMenuItemEnabled(btn, reason) {
+  if (!(btn instanceof HTMLButtonElement)) return;
+  btn.disabled = reason !== "";
+  btn.setAttribute("aria-disabled", reason ? "true" : "false");
+  btn.title = reason ? reason.charAt(0).toUpperCase() + reason.slice(1) : "";
 }
 
 /**
@@ -1333,7 +1386,7 @@ async function openExplorerPropertiesForPane(pane) {
   dd.textContent = "";
   dl.appendChild(dt);
   dl.appendChild(dd);
-  root.classList.remove("hidden");
+  root.hidden = false;
   root.setAttribute("aria-hidden", "false");
   document.body.classList.add("explorer-modal-open");
   try {
@@ -1369,7 +1422,7 @@ async function openExplorerPropertiesForCurrentFolder(pane) {
   dd.textContent = "";
   dl.appendChild(dt);
   dl.appendChild(dd);
-  root.classList.remove("hidden");
+  root.hidden = false;
   root.setAttribute("aria-hidden", "false");
   document.body.classList.add("explorer-modal-open");
   try {
@@ -1398,8 +1451,7 @@ async function openExplorerPropertiesForCurrentFolder(pane) {
         const errDt = document.createElement("dt");
         errDt.textContent = "Error";
         const errDd = document.createElement("dd");
-        errDd.textContent =
-          "Choose a folder on This PC first (Browse … next to the path).";
+        errDd.textContent = BROWSE_FIRST_MSG;
         dl.appendChild(errDt);
         dl.appendChild(errDd);
         document.getElementById("explorer-properties-close")?.focus();
@@ -1422,8 +1474,8 @@ async function openExplorerPropertiesForCurrentFolder(pane) {
 
 function closeExplorerPropertiesModal() {
   const root = document.getElementById("explorer-properties-modal");
-  if (!root || root.classList.contains("hidden")) return;
-  root.classList.add("hidden");
+  if (!root || root.hidden) return;
+  root.hidden = true;
   root.setAttribute("aria-hidden", "true");
   document.body.classList.remove("explorer-modal-open");
 }
@@ -1476,8 +1528,8 @@ function setupExplorerContextMenu() {
         return;
       }
       if (act === "delete") {
-        if (pane === "cart") void deleteSelectedCart(true);
-        else void deleteSelectedPc(true);
+        if (pane === "cart") void deleteSelectedCart();
+        else void deleteSelectedPc();
         return;
       }
       if (act === "rename") {
@@ -1497,7 +1549,7 @@ function setupExplorerContextMenu() {
   document.addEventListener(
     "mousedown",
     (ev) => {
-      if (!menu || menu.classList.contains("hidden")) return;
+      if (!menu || menu.hidden) return;
       if (menu.contains(/** @type {Node} */ (ev.target))) return;
       hideExplorerContextMenu();
     },
@@ -1513,6 +1565,7 @@ function onExplorerPaneContextMenu(ev, pane) {
   if (isExplorerSettingsOpen()) return;
   if (isExplorerModalOpen()) return;
   if (inlineRenameState) return;
+  if (isPaneBusy(pane)) return;
   const wrap = document.getElementById(`table-wrap-${pane}`);
   if (!wrap || !(ev.target instanceof Node) || !wrap.contains(ev.target)) return;
 
@@ -1539,7 +1592,7 @@ function setupExplorerPropertiesModal() {
   document.addEventListener(
     "keydown",
     (e) => {
-      if (e.key !== "Escape" || !root || root.classList.contains("hidden")) return;
+      if (e.key !== "Escape" || !root || root.hidden) return;
       e.preventDefault();
       e.stopPropagation();
       closeExplorerPropertiesModal();
@@ -1649,17 +1702,12 @@ function showFileReplaceModal(cfg) {
       return;
     }
 
+    // Replace — this one file — is always the primary action: it is focused on open and Enter
+    // activates it. Replace all and Skip all appear only when more files may follow.
     const nPlan = Number(cfg.totalInPlan);
     const singleFile = Number.isFinite(nPlan) && nPlan <= 1;
     btnSkipAll.hidden = singleFile;
     btnYesAll.hidden = singleFile;
-    if (singleFile) {
-      btnYes.classList.add("primary");
-      btnYesAll.classList.remove("primary");
-    } else {
-      btnYes.classList.remove("primary");
-      btnYesAll.classList.add("primary");
-    }
 
     hideNameTooltip();
     const step = cfg.step || {};
@@ -1689,7 +1737,7 @@ function showFileReplaceModal(cfg) {
       if (settled) return;
       settled = true;
       cleanup();
-      root.classList.add("hidden");
+      root.hidden = true;
       root.setAttribute("aria-hidden", "true");
       document.body.classList.remove("explorer-modal-open");
       if (prevFocus) prevFocus.focus();
@@ -1697,11 +1745,17 @@ function showFileReplaceModal(cfg) {
     };
 
     const onKeyDown = (e) => {
-      if (!root || root.classList.contains("hidden")) return;
+      if (!root || root.hidden) return;
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
         finish("cancel");
+      } else if (e.key === "Enter") {
+        // Enter on a focused button presses that button; anywhere else it is Replace.
+        if (e.target instanceof HTMLButtonElement && root.contains(e.target)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        finish("yes");
       }
     };
 
@@ -1720,7 +1774,7 @@ function showFileReplaceModal(cfg) {
     btnCancel.addEventListener("click", onCancel);
     backdrop?.addEventListener("click", onBackdrop);
 
-    root.classList.remove("hidden");
+    root.hidden = false;
     root.setAttribute("aria-hidden", "false");
     document.body.classList.add("explorer-modal-open");
     requestAnimationFrame(() => btnYes.focus());
@@ -1828,9 +1882,8 @@ function showExplorerModal(cfg) {
 
     const isPrompt = cfg.type === "prompt";
     const isAlert = cfg.type === "alert";
-    inputEl.classList.toggle("hidden", !isPrompt);
-    actionsEl.classList.toggle("explorer-modal-actions--alert", isAlert);
-    btnCancel.classList.toggle("hidden", isAlert);
+    inputEl.hidden = !isPrompt;
+    btnCancel.hidden = isAlert;
 
     const syncOkButtonForEmptyField = () => {
       if (cfg.disableOkIfEmpty !== true) return;
@@ -1870,7 +1923,7 @@ function showExplorerModal(cfg) {
       if (settled) return;
       settled = true;
       cleanup();
-      root.classList.add("hidden");
+      root.hidden = true;
       root.setAttribute("aria-hidden", "true");
       document.body.classList.remove("explorer-modal-open");
       if (prevFocus) prevFocus.focus();
@@ -1878,7 +1931,7 @@ function showExplorerModal(cfg) {
     };
 
     const onKeyDown = (e) => {
-      if (!root || root.classList.contains("hidden")) return;
+      if (!root || root.hidden) return;
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
@@ -1937,7 +1990,7 @@ function showExplorerModal(cfg) {
     btnCancel.addEventListener("click", onCancel);
     backdrop?.addEventListener("click", onBackdrop);
 
-    root.classList.remove("hidden");
+    root.hidden = false;
     root.setAttribute("aria-hidden", "false");
     document.body.classList.add("explorer-modal-open");
 
@@ -2003,7 +2056,7 @@ const ED64_SD_BASE_SCAN_STATUS_MSG = `${ED64_SD_BASE_SCAN_LABEL} (may take a min
 
 function isCartSdBaseScanProgressBarActive() {
   const root = document.getElementById("explorer-operation-cart");
-  if (!root || root.classList.contains("hidden")) return false;
+  if (!root || root.hidden) return false;
   const t = (document.getElementById("explorer-operation-text-cart")?.textContent || "").trim();
   return t.includes(ED64_SD_BASE_SCAN_LABEL);
 }
@@ -2015,6 +2068,7 @@ function isCartSdBaseScanProgressBarActive() {
  */
 async function loadCartPane(opts = {}) {
   beginPaneLoading("cart", "Reading cart…");
+  updateExplorerControls();
   try {
     const preserveSelection = opts.preserveSelection === true;
     const forceRefresh = opts.forceRefresh === true;
@@ -2039,6 +2093,7 @@ async function loadCartPane(opts = {}) {
         }
         abandonInlineRenameIfPane("cart");
         lastVirtualRange.cart = null;
+        cartReady = true;
         state.cart.listEntries = visible;
         if (preserveSelection && savedSel) {
           restorePaneSelectionAfterLoad("cart", visible, savedSel, savedAnchor, false);
@@ -2048,6 +2103,7 @@ async function loadCartPane(opts = {}) {
         if (statusMeta) statusMeta.textContent = `${countNoun(visible.length, "item")} · ${vol}`;
       } catch (err) {
         abandonInlineRenameIfPane("cart");
+        cartReady = false;
         state.cart.listEntries = [];
         lastVirtualRange.cart = null;
         tbody.replaceChildren();
@@ -2069,7 +2125,7 @@ async function loadCartPane(opts = {}) {
     if (cancelled) return;
   } finally {
     endPaneLoading("cart");
-    updateExplorerDeleteToolbarButtons();
+    updateExplorerControls();
   }
 }
 
@@ -2079,6 +2135,7 @@ async function loadCartPane(opts = {}) {
  */
 async function loadPcPane(opts = {}) {
   beginPaneLoading("pc", "Reading folder…");
+  updateExplorerControls();
   try {
     const preserveSelection = opts.preserveSelection === true;
     const forceRefresh = opts.forceRefresh === true;
@@ -2097,7 +2154,7 @@ async function loadPcPane(opts = {}) {
       lastVirtualRange.pc = null;
       tbody.replaceChildren();
       if (statusMeta) {
-        statusMeta.textContent = "Choose a folder on This PC (use Browse … next to the path).";
+        statusMeta.textContent = BROWSE_FIRST_MSG;
       }
       return;
     }
@@ -2128,7 +2185,7 @@ async function loadPcPane(opts = {}) {
     }
   } finally {
     endPaneLoading("pc");
-    updateExplorerDeleteToolbarButtons();
+    updateExplorerControls();
   }
 }
 
@@ -2167,6 +2224,7 @@ function onRowClick(pane, path, ev) {
     suppressNextRowClick = false;
     return;
   }
+  if (isPaneBusy(pane)) return;
 
   const sel = state[pane].selected;
   const prevSel = new Set(sel);
@@ -2241,7 +2299,7 @@ function bindRowPointerDrag(pane, tr, path) {
   tr.addEventListener("pointerdown", (ev) => {
     if (ev.button !== 0 || ev.pointerType === "touch") return;
     if (ev.target.closest(".explorer-name-input")) return;
-    if (isExplorerModalOpen()) return;
+    if (isExplorerModalOpen() || isPaneBusy(pane)) return;
     const wrap = document.getElementById(`table-wrap-${pane}`);
     if (!wrap) return;
     cancelPointerDrag();
@@ -2396,6 +2454,8 @@ function dropTargetAt(clientX, clientY) {
   if (!wrap) return null;
   const pane = wrap.dataset.dropPane;
   if (pane !== "cart" && pane !== "pc") return null;
+  // A pane with an operation running takes no drops.
+  if (isPaneBusy(pane)) return null;
   const dirRow = el.closest("tbody tr[data-is-dir='1']");
   return { pane, wrap, dirRow: dirRow || null, destPath: dirRow?.dataset?.path || null };
 }
@@ -2563,6 +2623,7 @@ function createEntryRowElement(pane, e) {
   tr.addEventListener("click", (ev) => onRowClick(pane, e.path, ev));
   tr.addEventListener("dblclick", (ev) => {
     ev.preventDefault();
+    if (isPaneBusy(pane)) return;
     cancelRenameNameClickArm();
     if (inlineRenameState) {
       cancelInlineRenameRestoreDOMOnly();
@@ -2633,7 +2694,7 @@ function renderExplorerPane(pane, depth = 0) {
   }
 
   lastVirtualRange[pane] = { start, end };
-  updateExplorerDeleteToolbarButtons();
+  updateExplorerControls();
 }
 
 /**
@@ -2758,18 +2819,19 @@ async function copyCartToPcPaths(paths, destOverride = null) {
       ? normalizePath(destOverride)
       : state.pc.path;
   if (!dest) {
-    finishOperationProgress("Choose a folder on This PC first (Browse … next to the path).", true, "pc");
+    finishOperationProgress(BROWSE_FIRST_MSG, true, "pc");
     return;
   }
   if (paths.length === 0) return;
   const action = copyActionLabel("export");
   const doneLabel = selectionLabel("cart", paths);
-  beginPaneActionLoading("cart", "Preparing…");
+  // Both panes: the cart's port is held for the whole copy, and the This PC folder is being written.
+  const endCartBusy = beginBusy("cart", `${action}…`);
+  const endPcBusy = beginBusy("pc", `${action}…`);
   try {
     let performed = false;
     const cancelled = await withCartDaemonYield(
       async () => {
-        endPaneActionLoading("cart");
         showOperationProgress(`${action}…`, "cart", false);
         try {
           await invoke("explorer_reset_cancel");
@@ -2791,7 +2853,7 @@ async function copyCartToPcPaths(paths, destOverride = null) {
           throw e;
         }
       },
-      { confirm: true, actionPane: "cart" }
+      { confirm: true }
     );
     if (cancelled) return;
     if (!performed) return;
@@ -2811,7 +2873,8 @@ async function copyCartToPcPaths(paths, destOverride = null) {
       finishOperationProgress(userFacingErrorMessage(e, { context: "cart" }), true, "cart");
     }
   } finally {
-    endPaneActionLoading("cart");
+    endCartBusy();
+    endPcBusy();
   }
 }
 
@@ -2823,12 +2886,13 @@ async function copyPcToCartPaths(paths, cartParentOverride = null) {
   if (paths.length === 0) return;
   const action = copyActionLabel("import");
   const doneLabel = selectionLabel("pc", paths);
-  beginPaneActionLoading("pc", "Preparing…");
+  // Both panes: the files are read from This PC, and the cart's port is held for the whole copy.
+  const endPcBusy = beginBusy("pc", `${action}…`);
+  const endCartBusy = beginBusy("cart", `${action}…`);
   try {
     let performed = false;
     const cancelled = await withCartDaemonYield(
       async () => {
-        endPaneActionLoading("pc");
         showOperationProgress(`${action}…`, "pc", false);
         try {
           await invoke("explorer_reset_cancel");
@@ -2850,7 +2914,7 @@ async function copyPcToCartPaths(paths, cartParentOverride = null) {
           throw e;
         }
       },
-      { confirm: true, actionPane: "pc" }
+      { confirm: true }
     );
     if (cancelled) return;
     if (!performed) return;
@@ -2869,7 +2933,8 @@ async function copyPcToCartPaths(paths, cartParentOverride = null) {
       finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
     }
   } finally {
-    endPaneActionLoading("pc");
+    endPcBusy();
+    endCartBusy();
   }
 }
 
@@ -2885,7 +2950,7 @@ async function copyPcToPcPaths(paths, destOverride = null) {
       ? normalizePath(destOverride)
       : state.pc.path;
   if (!dest) {
-    finishOperationProgress("Choose a folder on This PC first (Browse … next to the path).", true, "pc");
+    finishOperationProgress(BROWSE_FIRST_MSG, true, "pc");
     return;
   }
   // Dropping a file back into the folder it already sits in is a no-op, not a copy over itself.
@@ -2904,6 +2969,7 @@ async function copyPcToPcPaths(paths, destOverride = null) {
     return;
   }
   const doneLabel = selectionLabel("pc", srcs);
+  const endBusy = beginBusy("pc", `${copyActionLabel("fs")}…`);
   showOperationProgress(`${copyActionLabel("fs")}…`, "pc", false);
   try {
     await invoke("explorer_reset_cancel");
@@ -2927,6 +2993,8 @@ async function copyPcToPcPaths(paths, destOverride = null) {
       return;
     }
     finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
+  } finally {
+    endBusy();
   }
 }
 
@@ -3017,6 +3085,8 @@ function setupTableWrapMarquee(pane) {
 
   wrap.addEventListener("mousedown", (ev) => {
     if (ev.button !== 0) return;
+    // The busy shade sits inside the wrap, so a press on it would otherwise start a marquee.
+    if (isPaneBusy(pane)) return;
     if (ev.target.closest("thead")) return;
     if (ev.target.closest("tbody tr")) return;
 
@@ -3255,13 +3325,12 @@ async function stageCartPathsForDragOut(paths, key) {
   await discardStagingDir(cartDragStaged?.dir);
   const doneLabel = selectionLabel("cart", paths);
   const action = "Preparing to drag out";
-  beginPaneActionLoading("cart", "Preparing…");
+  const endBusy = beginBusy("cart", `${action}…`);
   let dir = null;
   let staged = false;
   try {
     const cancelled = await withCartDaemonYield(
       async () => {
-        endPaneActionLoading("cart");
         showOperationProgress(`${action}…`, "cart", false);
         try {
           await invoke("explorer_reset_cancel");
@@ -3281,7 +3350,7 @@ async function stageCartPathsForDragOut(paths, key) {
           throw e;
         }
       },
-      { confirm: true, actionPane: "cart" }
+      { confirm: true }
     );
     if (cancelled || !staged) {
       await discardStagingDir(dir);
@@ -3306,7 +3375,7 @@ async function stageCartPathsForDragOut(paths, key) {
     }
     finishOperationProgress(userFacingErrorMessage(e, { context: "cart" }), true, "cart");
   } finally {
-    endPaneActionLoading("cart");
+    endBusy();
   }
 }
 
@@ -3338,15 +3407,118 @@ function applySelectionDiffToDom(pane, prevSel) {
       if (tr) tr.classList.add("selected");
     }
   }
-  updateExplorerDeleteToolbarButtons();
+  updateExplorerControls();
 }
 
-/** Toolbar delete buttons reflect each pane’s selection (not the focused pane). */
-function updateExplorerDeleteToolbarButtons() {
-  const btnCart = document.getElementById("btn-delete-cart");
-  const btnPc = document.getElementById("btn-delete-pc");
-  if (btnCart) btnCart.disabled = state.cart.selected.size === 0;
-  if (btnPc) btnPc.disabled = state.pc.selected.size === 0;
+/** Status line and properties message when This PC has no folder chosen. */
+const BROWSE_FIRST_MSG = "Choose a folder on This PC first — use Browse folder next to the path.";
+
+/** Shown when a pane cannot act because an operation is already running on it. */
+const BUSY_REASON = "wait for the current operation to finish";
+
+/**
+ * True when Up has nowhere to go: "/" on the cart, a drive root (`C:\`) or share root on This PC.
+ * @param {"cart" | "pc"} pane
+ */
+function isPaneAtRoot(pane) {
+  if (pane === "cart") return !normalizeUsbPath(state.cart.path);
+  const p = normalizePath(state.pc.path).replace(/\\+$/, "");
+  if (!p) return true;
+  return /^[A-Za-z]:$/.test(p) || /^\\\\[^\\]+(\\[^\\]+)?$/.test(p);
+}
+
+/**
+ * Why a pane action cannot run right now, or "" when it can. Buttons show the reason in their
+ * tooltip; shortcuts and menu items for an action with a reason do nothing.
+ * @param {"rename" | "delete" | "transfer" | "mkdir" | "back" | "up" | "refresh"} action
+ *   `transfer` is Export on the cart pane and Import on the This PC pane.
+ * @param {"cart" | "pc"} pane
+ * @returns {string}
+ */
+function actionBlockedReason(action, pane) {
+  const other = pane === "cart" ? "pc" : "cart";
+  if (isPaneBusy(pane) || (action === "transfer" && isPaneBusy(other))) return BUSY_REASON;
+  const n = state[pane].selected.size;
+  const where = pane === "cart" ? "on the cart" : "on This PC";
+  switch (action) {
+    case "rename":
+      return n === 1 ? "" : "select one item";
+    case "delete":
+      return n > 0 ? "" : `select items ${where}`;
+    case "transfer":
+      if (n === 0) return `select items ${where}`;
+      if (pane === "cart" && !normalizePath(state.pc.path)) return "choose a folder on This PC first";
+      if (pane === "pc" && !cartReady) return "connect the cart first";
+      return "";
+    case "mkdir":
+      return pane === "pc" && !normalizePath(state.pc.path) ? "choose a folder on This PC first" : "";
+    case "back":
+      return state[pane].histIndex > 0 ? "" : "no previous folder";
+    case "up":
+      return isPaneAtRoot(pane) ? "already at the top folder" : "";
+    default:
+      return "";
+  }
+}
+
+/**
+ * Enable or disable a control, keeping `aria-disabled` and its tooltip in step. The `title` is
+ * set on the control itself: a disabled button does not get mouse events in every browser, but
+ * its own tooltip still shows.
+ * @param {HTMLButtonElement | HTMLSelectElement | null} el
+ * @param {string} reason from `actionBlockedReason`, or "" when the control can be used
+ * @param {{ title?: string, disabledTitle?: string, explain?: boolean }} [titles]
+ *   `title` is the tooltip while enabled; while disabled it is `disabledTitle` (default: `title`)
+ *   followed by " — reason", unless `explain` is false. With no `title` the tooltip is left alone.
+ */
+function setControlEnabled(el, reason, titles = {}) {
+  if (!el) return;
+  const disabled = reason !== "";
+  el.disabled = disabled;
+  el.setAttribute("aria-disabled", disabled ? "true" : "false");
+  if (titles.title === undefined) return;
+  if (!disabled) {
+    el.title = titles.title;
+    return;
+  }
+  const base = titles.disabledTitle ?? titles.title;
+  el.title = titles.explain === false ? base : `${base} — ${reason}`;
+}
+
+/**
+ * Every pane button, the path pickers and Export / Import, from each pane's selection, location
+ * and busy state. Called on every selection change, folder load, and operation start and end.
+ */
+function updateExplorerControls() {
+  for (const pane of /** @type {const} */ (["cart", "pc"])) {
+    const busyReason = isPaneBusy(pane) ? BUSY_REASON : "";
+    const q = (action) => document.querySelector(`.explorer-toolbar [data-action="${action}"][data-pane="${pane}"]`);
+    setControlEnabled(q("back"), actionBlockedReason("back", pane), { title: "Back (Alt+←)", explain: false });
+    setControlEnabled(q("up"), actionBlockedReason("up", pane), { title: "Up (Backspace)", explain: false });
+    setControlEnabled(q("refresh"), busyReason, { title: "Refresh (F5)" });
+    setControlEnabled(q("pick"), busyReason, { title: "Browse folder" });
+    setControlEnabled(document.getElementById(`addr-${pane}-select`), busyReason);
+    setControlEnabled(document.getElementById(`btn-mkdir-${pane}`), actionBlockedReason("mkdir", pane), {
+      title: "New folder (Ctrl+Shift+N)",
+    });
+    setControlEnabled(document.getElementById(`btn-rename-${pane}`), actionBlockedReason("rename", pane), {
+      title: "Rename (F2)",
+    });
+    setControlEnabled(document.getElementById(`btn-delete-${pane}`), actionBlockedReason("delete", pane), {
+      title: "Delete selected (Del)",
+    });
+    setControlEnabled(document.getElementById(`btn-show-hidden-${pane}`), busyReason, {
+      title: showHiddenForPane(pane) ? "Hide hidden files" : "Show hidden files",
+    });
+  }
+  setControlEnabled(document.getElementById("btn-copy-to-pc"), actionBlockedReason("transfer", "cart"), {
+    title: "Export selected items to the current folder on This PC (Ctrl+Shift+→)",
+    disabledTitle: "Export to This PC (Ctrl+Shift+→)",
+  });
+  setControlEnabled(document.getElementById("btn-copy-to-cart"), actionBlockedReason("transfer", "pc"), {
+    title: "Import selected items into the current folder on the cart (Ctrl+Shift+←)",
+    disabledTitle: "Import to cart (Ctrl+Shift+←)",
+  });
 }
 
 function isKeyboardBypassTarget(el) {
@@ -3424,32 +3596,28 @@ function activateSelectedFolder(pane) {
   navigate(pane, path, true);
 }
 
-async function deleteSelectedCart(alertIfEmpty) {
+async function deleteSelectedCart() {
   const paths = [...state.cart.selected];
-  if (paths.length === 0) {
-    if (alertIfEmpty) {
-      await showExplorerAlert("Select one or more items on the cart to delete.", { title: "Nothing selected" });
-    }
-    return;
-  }
+  // Only reachable with a selection: the button, menu item and Del are off without one.
+  if (paths.length === 0) return;
   const what = selectionLabel("cart", paths);
-  beginPaneActionLoading("cart", "Preparing…");
   let multi64dRunning = false;
+  const endProbeBusy = beginBusy("cart", "Deleting…");
   try {
     const p = await invoke("explorer_daemon_probe", { listen: daemonListenUrl() });
     multi64dRunning = p.up === true;
   } catch {
     multi64dRunning = false;
+  } finally {
+    endProbeBusy();
   }
   const deleteMsg = multi64dRunning
     ? `Delete ${what} from the cart?\n\nThe Multi64 bridge is using this cart — it will pause during the delete, then resume.`
     : `Delete ${what} from the cart?`;
-  endPaneActionLoading("cart");
   if (!(await showExplorerConfirm(deleteMsg, { title: "Delete from cart?", okLabel: "Delete" }))) return;
-  beginPaneActionLoading("cart", "Preparing…");
+  const endBusy = beginBusy("cart", "Deleting…");
   try {
     const cancelled = await withCartDaemonYield(async () => {
-      endPaneActionLoading("cart");
       // The backend names each item as it goes, in the same `Deleting from cart — "a" (1 of 3)…` shape.
       showOperationProgress("Deleting from cart…", "cart", false);
       await runWithProgress("cart", "Deleting from cart…", () =>
@@ -3472,28 +3640,20 @@ async function deleteSelectedCart(alertIfEmpty) {
       finishOperationProgress(userFacingErrorMessage(e, { context: "cart" }), true, "cart");
     }
   } finally {
-    endPaneActionLoading("cart");
+    endBusy();
   }
 }
 
-async function deleteSelectedPc(alertIfEmpty) {
+async function deleteSelectedPc() {
   const paths = [...state.pc.selected];
-  if (paths.length === 0) {
-    if (alertIfEmpty) {
-      await showExplorerAlert("Select one or more items on This PC to delete.", { title: "Nothing selected" });
-    }
-    return;
-  }
+  // Only reachable with a selection: the button, menu item and Del are off without one.
+  if (paths.length === 0) return;
   const what = selectionLabel("pc", paths);
-  beginPaneActionLoading("pc", "Preparing…");
-  await new Promise((r) => requestAnimationFrame(r));
-  endPaneActionLoading("pc");
   if (!(await showExplorerConfirm(`Delete ${what} from This PC?`, { title: "Delete from This PC?", okLabel: "Delete" })))
     return;
-  beginPaneActionLoading("pc", "Preparing…");
+  const endBusy = beginBusy("pc", "Deleting…");
   try {
     resetProgressCancel();
-    endPaneActionLoading("pc");
     const n = paths.length;
     /** One format from first item to last: `Deleting from This PC — "a" (1 of 3)…`. */
     const deletingMessage = (i) => {
@@ -3530,7 +3690,7 @@ async function deleteSelectedPc(alertIfEmpty) {
     await loadPcPane({ forceRefresh: true }).catch(() => {});
     finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
   } finally {
-    endPaneActionLoading("pc");
+    endBusy();
   }
 }
 
@@ -3540,36 +3700,36 @@ async function promptMkdirCart() {
   const path = cartRelPathForMkdir(name);
   if (!path) return;
   const display = name.trim();
-  beginPaneActionLoading("cart", "Preparing…");
+  const endBusy = beginBusy("cart", "Creating folder…");
   try {
     const cancelled = await withCartDaemonYield(
       async () => {
-        endPaneActionLoading("cart");
         showOperationProgress(`Creating folder on cart — "${display}"…`, "cart");
         await invokeCartWrite("cart_serial_mkdir_cart", { path });
         await loadCartPane();
       },
-      { confirm: true, actionPane: "cart" }
+      { confirm: true }
     );
     if (cancelled) return;
     finishOperationProgress(`Created "${display}".`, false, "cart");
   } catch (e) {
     finishOperationProgress(userFacingErrorMessage(e, { context: "cart" }), true, "cart");
   } finally {
-    endPaneActionLoading("cart");
+    endBusy();
   }
 }
 
 async function promptMkdirPc() {
   const parent = state.pc.path;
   if (!parent) {
-    finishOperationProgress("Choose a folder on This PC first (Browse … next to the path).", true, "pc");
+    finishOperationProgress(BROWSE_FIRST_MSG, true, "pc");
     return;
   }
   const name = await showExplorerPrompt("Name the new folder:", PROMPT_MKDIR_OPTS);
   if (!name || !name.trim()) return;
   const path = `${parent.replace(/[/\\]+$/, "")}\\${name.trim()}`;
   const display = name.trim();
+  const endBusy = beginBusy("pc", "Creating folder…");
   showOperationProgress(`Creating folder on This PC — "${display}"…`, "pc");
   try {
     await invoke("fs_mkdir", { path });
@@ -3577,15 +3737,15 @@ async function promptMkdirPc() {
     finishOperationProgress(`Created "${display}".`, false, "pc");
   } catch (e) {
     finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
+  } finally {
+    endBusy();
   }
 }
 
 async function promptRenameCart() {
   if (inlineRenameState) cancelInlineRenameRestoreDOMOnly();
-  if (state.cart.selected.size !== 1) {
-    finishOperationProgress("Select a single item to rename.", true, "cart");
-    return;
-  }
+  // Only reachable with one item selected: the button, menu item and F2 are off otherwise.
+  if (state.cart.selected.size !== 1) return;
   const fromPath = normalizeUsbPath([...state.cart.selected][0]);
   const baseName = basenameForMessage(fromPath);
   const name = await showExplorerPrompt("New name:", { ...PROMPT_RENAME_OPTS, defaultValue: baseName });
@@ -3599,10 +3759,8 @@ async function promptRenameCart() {
 
 async function promptRenamePc() {
   if (inlineRenameState) cancelInlineRenameRestoreDOMOnly();
-  if (state.pc.selected.size !== 1) {
-    finishOperationProgress("Select a single item to rename.", true, "pc");
-    return;
-  }
+  // Only reachable with one item selected: the button, menu item and F2 are off otherwise.
+  if (state.pc.selected.size !== 1) return;
   const fromPath = [...state.pc.selected][0];
   const baseName = basenameForMessage(fromPath);
   const name = await showExplorerPrompt("New name:", { ...PROMPT_RENAME_OPTS, defaultValue: baseName });
@@ -3647,94 +3805,97 @@ function setupExplorerKeyboard() {
       if (isKeyboardBypassTarget(ev.target)) return;
       const pane = focusedPane;
       const key = ev.key;
-      if (key === "Delete") {
+      // Every shortcut below is swallowed, then runs only if its action can: one that cannot (nothing
+      // selected, already at the top, an operation running) does nothing, the same as its disabled
+      // button. `null` means the action has no condition beyond the pane being idle.
+      const run = (action, fn) => {
         ev.preventDefault();
-        if (pane === "cart") void deleteSelectedCart(false);
-        else void deleteSelectedPc(false);
+        const blocked = action === null ? isPaneBusy(pane) : actionBlockedReason(action, pane) !== "";
+        if (!blocked) fn();
+      };
+      if (key === "Delete") {
+        run("delete", () => void (pane === "cart" ? deleteSelectedCart() : deleteSelectedPc()));
         return;
       }
       if (key === "Backspace") {
-        ev.preventDefault();
-        void goUp(pane);
+        run("up", () => void goUp(pane));
         return;
       }
       if (key === "F5") {
-        ev.preventDefault();
-        if (pane === "cart") {
-          void refreshUsbComPorts();
-          void loadCartPane({ forceRefresh: true });
-        } else void loadPcPane({ forceRefresh: true });
+        run("refresh", () => {
+          if (pane === "cart") {
+            void refreshUsbComPorts();
+            void loadCartPane({ forceRefresh: true });
+          } else void loadPcPane({ forceRefresh: true });
+        });
         return;
       }
       if (key === "F2") {
-        ev.preventDefault();
         if (inlineRenameState) {
+          ev.preventDefault();
           inlineRenameState.input.focus();
           selectFilenameStemInInput(inlineRenameState.input);
           return;
         }
-        if (pane === "cart") void promptRenameCart();
-        else void promptRenamePc();
+        run("rename", () => void (pane === "cart" ? promptRenameCart() : promptRenamePc()));
         return;
       }
       if ((ev.ctrlKey || ev.metaKey) && key === "a" && !ev.shiftKey && !ev.altKey) {
-        ev.preventDefault();
-        selectAllInPane(pane);
+        run(null, () => selectAllInPane(pane));
         return;
       }
       if (key === "ArrowDown") {
-        ev.preventDefault();
-        moveSelectionArrow(pane, 1, ev.shiftKey);
+        run(null, () => moveSelectionArrow(pane, 1, ev.shiftKey));
         return;
       }
       if (key === "ArrowUp") {
-        ev.preventDefault();
-        moveSelectionArrow(pane, -1, ev.shiftKey);
+        run(null, () => moveSelectionArrow(pane, -1, ev.shiftKey));
         return;
       }
       if (key === "Home") {
-        ev.preventDefault();
-        moveSelectionEdge(pane, false);
+        run(null, () => moveSelectionEdge(pane, false));
         return;
       }
       if (key === "End") {
-        ev.preventDefault();
-        moveSelectionEdge(pane, true);
+        run(null, () => moveSelectionEdge(pane, true));
         return;
       }
       if (key === "Enter") {
-        ev.preventDefault();
-        activateSelectedFolder(pane);
+        run(null, () => activateSelectedFolder(pane));
         return;
       }
       if (key === "Escape") {
-        hideNameTooltip();
-        const prevSel = new Set(state[pane].selected);
-        state[pane].selected.clear();
-        state[pane].anchorPath = null;
-        applySelectionDiffToDom(pane, prevSel);
-        ev.preventDefault();
+        run(null, () => {
+          hideNameTooltip();
+          const prevSel = new Set(state[pane].selected);
+          state[pane].selected.clear();
+          state[pane].anchorPath = null;
+          applySelectionDiffToDom(pane, prevSel);
+        });
         return;
       }
       if (ev.altKey && key === "ArrowLeft") {
-        ev.preventDefault();
-        goBack(pane);
+        run("back", () => goBack(pane));
         return;
       }
       if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && key.toLowerCase() === "n") {
-        ev.preventDefault();
-        if (pane === "cart") void promptMkdirCart();
-        else void promptMkdirPc();
+        run("mkdir", () => void (pane === "cart" ? promptMkdirCart() : promptMkdirPc()));
         return;
       }
       if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && key === "ArrowRight") {
-        ev.preventDefault();
-        if (pane === "cart") void copyCartToPcPaths([...state.cart.selected]);
+        if (pane !== "cart") {
+          ev.preventDefault();
+          return;
+        }
+        run("transfer", () => void copyCartToPcPaths([...state.cart.selected]));
         return;
       }
       if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && key === "ArrowLeft") {
-        ev.preventDefault();
-        if (pane === "pc") void copyPcToCartPaths([...state.pc.selected]);
+        if (pane !== "pc") {
+          ev.preventDefault();
+          return;
+        }
+        run("transfer", () => void copyPcToCartPaths([...state.pc.selected]));
         return;
       }
     },
@@ -3743,6 +3904,8 @@ function setupExplorerKeyboard() {
 }
 
 function navigate(pane, path, pushHist) {
+  // Navigating would reload the pane under a running operation (and, on the cart, reopen its port).
+  if (isPaneBusy(pane)) return;
   let p;
   if (pane === "cart") {
     p = normalizeUsbPath(path);
@@ -3772,8 +3935,8 @@ function navigate(pane, path, pushHist) {
 }
 
 function goBack(pane) {
+  if (actionBlockedReason("back", pane)) return;
   const s = state[pane];
-  if (s.histIndex <= 0) return;
   s.histIndex--;
   s.path = s.history[s.histIndex];
   if (pane === "cart") void loadCartPane();
@@ -3781,8 +3944,8 @@ function goBack(pane) {
 }
 
 async function goUp(pane) {
+  if (actionBlockedReason("up", pane)) return;
   const s = state[pane];
-  if (!s.path) return;
   if (pane === "cart") {
     const parent = usbParentPath(s.path);
     navigate("cart", parent, true);
@@ -4334,7 +4497,7 @@ function setExplorerHelpOpen(open) {
   const root = document.getElementById("explorer-help-modal");
   const opener = document.getElementById("btn-explorer-help");
   if (!root) return;
-  root.classList.toggle("hidden", !open);
+  root.hidden = !open;
   root.setAttribute("aria-hidden", open ? "false" : "true");
   document.body.classList.toggle("explorer-modal-open", open);
   if (open) {
@@ -4380,7 +4543,7 @@ function setupExplorerHelpModal() {
   document.addEventListener(
     "keydown",
     (e) => {
-      if (e.key !== "Escape" || !root || root.classList.contains("hidden")) return;
+      if (e.key !== "Escape" || !root || root.hidden) return;
       e.preventDefault();
       e.stopPropagation();
       setExplorerHelpOpen(false);
@@ -4394,6 +4557,10 @@ function setupExplorerSettings() {
     void loadExplorerSettings().then(() => setExplorerSettingsOpen(true));
   });
   document.getElementById("btn-close-settings")?.addEventListener("click", () => {
+    void requestCloseExplorerSettings();
+  });
+  // Cancel is the close icon in words: it asks before discarding unsaved edits.
+  document.getElementById("btn-cancel-settings")?.addEventListener("click", () => {
     void requestCloseExplorerSettings();
   });
   document.getElementById("explorer-settings-backdrop")?.addEventListener("click", () => {
@@ -4624,53 +4791,49 @@ async function init() {
     });
   });
 
+  // These buttons are disabled whenever `actionBlockedReason` gives a reason, and say why in their
+  // tooltip; the checks here only guard against a click racing a state change.
   document.getElementById("btn-copy-to-pc")?.addEventListener("click", async () => {
-    const paths = [...state.cart.selected];
-    if (paths.length === 0) {
-      await showExplorerAlert(
-        "Select one or more items on the cart to export.\n\nTip: Ctrl+click, Shift+click, or drag to select multiple items.",
-        { title: "Nothing selected" }
-      );
-      return;
-    }
-    await copyCartToPcPaths(paths);
+    if (actionBlockedReason("transfer", "cart")) return;
+    await copyCartToPcPaths([...state.cart.selected]);
   });
 
   document.getElementById("btn-copy-to-cart")?.addEventListener("click", async () => {
-    const paths = [...state.pc.selected];
-    if (paths.length === 0) {
-      await showExplorerAlert(
-        "Select one or more items on This PC to import.\n\nTip: Ctrl+click, Shift+click, or drag to select multiple items.",
-        { title: "Nothing selected" }
-      );
-      return;
-    }
-    await copyPcToCartPaths(paths);
+    if (actionBlockedReason("transfer", "pc")) return;
+    await copyPcToCartPaths([...state.pc.selected]);
   });
 
   document.getElementById("btn-delete-cart")?.addEventListener("click", async () => {
-    await deleteSelectedCart(true);
+    if (actionBlockedReason("delete", "cart")) return;
+    await deleteSelectedCart();
   });
 
   document.getElementById("btn-delete-pc")?.addEventListener("click", async () => {
-    await deleteSelectedPc(true);
+    if (actionBlockedReason("delete", "pc")) return;
+    await deleteSelectedPc();
   });
 
   document.getElementById("btn-mkdir-cart")?.addEventListener("click", async () => {
+    if (actionBlockedReason("mkdir", "cart")) return;
     await promptMkdirCart();
   });
 
   document.getElementById("btn-mkdir-pc")?.addEventListener("click", async () => {
+    if (actionBlockedReason("mkdir", "pc")) return;
     await promptMkdirPc();
   });
 
   document.getElementById("btn-rename-cart")?.addEventListener("click", async () => {
+    if (actionBlockedReason("rename", "cart")) return;
     await promptRenameCart();
   });
 
   document.getElementById("btn-rename-pc")?.addEventListener("click", async () => {
+    if (actionBlockedReason("rename", "pc")) return;
     await promptRenamePc();
   });
+
+  updateExplorerControls();
 
   setupTableWrapMarquee("cart");
   setupTableWrapMarquee("pc");

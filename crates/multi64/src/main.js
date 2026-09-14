@@ -356,6 +356,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     setSettingsOpen(true);
   });
   document.getElementById("btn-close-settings").addEventListener("click", requestCloseSettings);
+  document.getElementById("btn-cancel-settings").addEventListener("click", requestCloseSettings);
   document.getElementById("settings-backdrop").addEventListener("click", requestCloseSettings);
 
   document.getElementById("btn-discard-keep").addEventListener("click", keepEditingSettings);

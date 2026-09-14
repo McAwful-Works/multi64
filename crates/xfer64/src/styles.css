@@ -465,7 +465,7 @@ code {
        <div class="dialog-panel">
          <div class="dialog-header">
            <h2 class="dialog-title" id="…">Title</h2>
-           <div class="dialog-header-actions">…primary action, then the close icon button…</div>
+           <div class="dialog-header-actions">…the close icon button…</div>
          </div>
          <div class="dialog-body">
            <section class="dialog-section">
@@ -474,7 +474,7 @@ code {
              …fields…
            </section>
          </div>
-         <div class="dialog-footer">…buttons, when the actions belong at the bottom…</div>
+         <div class="dialog-footer">…Cancel, then the primary action last (right-aligned)…</div>
        </div>
      </div>
 

@@ -11,6 +11,12 @@ Tauri. A drop on the SD card pane has to reach `build_cart_import_plan` with the
 its parent; the first cart drag-out has to open a staging directory and *not* start an OS drag; the
 second has to drag the staged copy and not export again.
 
+The same run also checks the explorer's controls: Rename, Delete, Export and Import stay disabled
+(with a tooltip saying why) until there is a selection they can act on, F2 and Delete do nothing
+without one, the show-hidden toggle reports `aria-pressed`, and an operation blocks its pane at once
+but draws its busy overlay only after 300 ms. The stub's `window.__TAURI_DELAYS__` slows a named
+command down so that last one can be watched.
+
 ```sh
 npm install
 npx playwright install chromium   # once per machine

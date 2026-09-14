@@ -129,7 +129,6 @@
         <div class="dialog-header">
           <h2 class="dialog-title" id="settings-title">Settings</h2>
           <div class="dialog-header-actions">
-            <button type="button" id="btn-save" class="btn primary">Save settings</button>
             <button type="button" class="btn btn-icon" id="btn-close-settings" aria-label="Close settings" title="Close (Esc)">
               <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
             </button>
@@ -249,6 +248,11 @@
             </p>
           </section>
         </div>
+
+        <div class="dialog-footer">
+          <button type="button" id="btn-cancel-settings" class="btn">Cancel</button>
+          <button type="button" id="btn-save" class="btn primary">Save settings</button>
+        </div>
       </div>
     </div>
 
@@ -339,8 +343,8 @@
           <p class="dialog-message" id="discard-message">Your changes to Settings have not been saved.</p>
         </div>
         <div class="dialog-footer">
-          <button type="button" id="btn-discard-keep" class="btn primary">Keep editing</button>
           <button type="button" id="btn-discard-confirm" class="btn">Discard</button>
+          <button type="button" id="btn-discard-keep" class="btn primary">Keep editing</button>
         </div>
       </div>
     </div>
