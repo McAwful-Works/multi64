@@ -57,7 +57,7 @@ which is the most likely way to reintroduce a contrast failure.
 
 ## 3. `appearance.js`
 
-One module, **duplicated verbatim in both apps** (`crates/multi64/src/` and `crates/xfer64/src/`).
+One script, **duplicated verbatim in both apps** (`crates/multi64/src/` and `crates/xfer64/src/`).
 There is no shared frontend directory: `frontendDist` points at each app's own `src`, so a file
 cannot be referenced across crates. **Edit one, copy to the other.** Nothing enforces this.
 
@@ -67,7 +67,7 @@ Three constraints, each of which has already caused a bug:
   `const { invoke } = window.__TAURI__.core`, which throws outside the app shell and kills the
   whole file. Appearance binding lived there once and silently did nothing in a browser.
   Keeping this module Tauri-free is also what makes it testable without building the app.
-- **It must load non-deferred in `<head>`,** ahead of the app scripts. It applies the stored theme
+- **It must load non-deferred in `<head>`,** ahead of the app scripts, as a classic `<script>`: `type="module"` is always deferred, however it is placed. It applies the stored theme
   before the first paint; deferring it produces a visible flash of the wrong theme.
 - **Preferences live in `localStorage`, not the settings file.** They must be readable
   *synchronously* at load, and a Tauri `invoke` is async. `readAppearance` treats a throw as

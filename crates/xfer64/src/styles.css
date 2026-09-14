@@ -103,6 +103,7 @@
     --control-primary-bg: #0b57d0;
     --control-primary-bg-hover: #0842a0;
     --control-primary-border: #0b57d0;
+    --control-primary-text: #ffffff;
     --shadow-rgb: 60, 64, 67;
     --accent-rgb: 11, 87, 208;
     --danger: #c5221f;
@@ -218,6 +219,12 @@ html {
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must beat any author `display` (`.field { display: flex }` and the like),
+   or a control the script hides stays on screen. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   padding: 1rem 1.25rem 2rem;
@@ -329,7 +336,7 @@ body.settings-open {
   cursor: pointer;
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: var(--control-bg-hover);
 }
 
@@ -339,8 +346,20 @@ body.settings-open {
   color: var(--control-primary-text);
 }
 
-.btn.primary:hover {
+.btn.primary:hover:not(:disabled) {
   background: var(--control-primary-bg-hover);
+}
+
+/* Disabled controls must look inert. `.btn` sets its own colours, which override the browser's
+   greyed-out look, so without this a disabled button keeps full colour, hover and pointer. */
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.check:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .field {

@@ -642,6 +642,7 @@ function finishOperationProgress(message, isError = false, pane) {
   root.setAttribute("aria-hidden", "false");
   root.classList.toggle("explorer-operation--done", !isError);
   root.classList.toggle("explorer-operation--error", !!isError);
+  root.classList.remove("explorer-operation--cancelled");
   text.textContent = message;
   fill.classList.remove("indeterminate");
   fill.style.width = "100%";
@@ -650,9 +651,22 @@ function finishOperationProgress(message, isError = false, pane) {
     root.setAttribute("aria-hidden", "true");
     fill.style.width = "0";
     fill.classList.remove("indeterminate");
-    root.classList.remove("explorer-operation--done", "explorer-operation--error");
+    root.classList.remove(
+      "explorer-operation--done",
+      "explorer-operation--error",
+      "explorer-operation--cancelled",
+    );
     operationHideTimer = null;
   }, OP_HIDE_MS);
+}
+
+/** Finish the operation strip for a cancellation: shown in amber, since nothing finished. */
+function finishOperationCancelled(message, pane) {
+  finishOperationProgress(message, false, pane);
+  const root = document.getElementById(`explorer-operation-${pane}`);
+  if (!root) return;
+  root.classList.remove("explorer-operation--done");
+  root.classList.add("explorer-operation--cancelled");
 }
 
 function normalizePath(p) {
@@ -2736,12 +2750,12 @@ async function copyCartToPcPaths(paths, destOverride = null) {
   } catch (e) {
     if (e && e.userCancelledCopy) {
       await loadBothPanes({ forceRefresh: true });
-      finishOperationProgress("Cancelled.", false, "cart");
+      finishOperationCancelled("Cancelled.", "cart");
       return;
     }
     if (isCancelledBackendError(e)) {
       await loadBothPanes({ forceRefresh: true });
-      finishOperationProgress(cancelMessageFor(e), false, "cart");
+      finishOperationCancelled(cancelMessageFor(e), "cart");
     } else {
       // A failure partway through still copied earlier files; refresh so the panes match disk.
       await loadBothPanes({ forceRefresh: true }).catch(() => {});
@@ -2802,12 +2816,12 @@ async function copyPcToCartPaths(paths, cartParentOverride = null) {
   } catch (e) {
     if (e && e.userCancelledCopy) {
       await loadBothPanes({ forceRefresh: true });
-      finishOperationProgress("Cancelled.", false, "pc");
+      finishOperationCancelled("Cancelled.", "pc");
       return;
     }
     if (isCancelledBackendError(e)) {
       await loadBothPanes({ forceRefresh: true });
-      finishOperationProgress(cancelMessageFor(e), false, "pc");
+      finishOperationCancelled(cancelMessageFor(e), "pc");
     } else {
       await loadBothPanes({ forceRefresh: true }).catch(() => {});
       finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
@@ -2864,11 +2878,11 @@ async function copyPcToPcPaths(paths, destOverride = null) {
     // A failure partway through still copied earlier files; refresh so the pane matches disk.
     await loadPcPane({ forceRefresh: true }).catch(() => {});
     if (e && e.userCancelledCopy) {
-      finishOperationProgress("Cancelled.", false, "pc");
+      finishOperationCancelled("Cancelled.", "pc");
       return;
     }
     if (isCancelledBackendError(e)) {
-      finishOperationProgress(cancelMessageFor(e), false, "pc");
+      finishOperationCancelled(cancelMessageFor(e), "pc");
       return;
     }
     finishOperationProgress(userFacingErrorMessage(e, { context: "pc" }), true, "pc");
@@ -3241,11 +3255,11 @@ async function stageCartPathsForDragOut(paths, key) {
   } catch (e) {
     await discardStagingDir(dir);
     if (e && e.userCancelledCopy) {
-      finishOperationProgress("Cancelled.", false, "cart");
+      finishOperationCancelled("Cancelled.", "cart");
       return;
     }
     if (isCancelledBackendError(e)) {
-      finishOperationProgress(cancelMessageFor(e), false, "cart");
+      finishOperationCancelled(cancelMessageFor(e), "cart");
       return;
     }
     finishOperationProgress(userFacingErrorMessage(e, { context: "cart" }), true, "cart");
@@ -3414,7 +3428,7 @@ async function deleteSelectedCart(alertIfEmpty) {
     if (isCancelledBackendError(e)) {
       state.cart.selected.clear();
       await loadCartPane();
-      finishOperationProgress(cancelMessageFor(e), false, "cart");
+      finishOperationCancelled(cancelMessageFor(e), "cart");
     } else {
       // Deletes run one at a time, so a failure partway through still removed earlier items.
       state.cart.selected.clear();
@@ -3459,7 +3473,7 @@ async function deleteSelectedPc(alertIfEmpty) {
       if (progressCancelRequested) {
         state.pc.selected.clear();
         await loadPcPane();
-        finishOperationProgress("Cancelled.", false, "pc");
+        finishOperationCancelled("Cancelled.", "pc");
         return;
       }
       await invoke("fs_remove", { path: paths[i] });
@@ -3970,7 +3984,7 @@ async function runEd64LinearBaseScan() {
     if (isCancelledBackendError(e)) {
       scanCancelled = true;
       if (status) status.textContent = "Cancelled.";
-      finishOperationProgress("Scan cancelled.", false, "cart");
+      finishOperationCancelled("Scan cancelled.", "cart");
       return false;
     }
     if (status) status.textContent = "";
