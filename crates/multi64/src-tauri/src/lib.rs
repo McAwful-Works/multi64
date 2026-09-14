@@ -56,6 +56,8 @@ pub enum DaemonCart {
     Sc64,
     /// EverDrive-64 X7: experimental, never run against a cart (`l3-over-everdrive-x7.md` §4.5).
     Ed64,
+    /// EverDrive-64 PRO: experimental, never run against a cart (`l3-over-everdrive-pro.md` §8).
+    Ed64Pro,
 }
 
 impl DaemonCart {
@@ -64,6 +66,7 @@ impl DaemonCart {
         match self {
             DaemonCart::Sc64 => "sc64",
             DaemonCart::Ed64 => "ed64",
+            DaemonCart::Ed64Pro => "ed64pro",
         }
     }
 
@@ -72,6 +75,7 @@ impl DaemonCart {
         match self {
             DaemonCart::Sc64 => "SummerCart64",
             DaemonCart::Ed64 => "EverDrive-64 X7 (experimental)",
+            DaemonCart::Ed64Pro => "EverDrive-64 PRO (experimental)",
         }
     }
 }
@@ -83,8 +87,8 @@ pub enum Multi64dLogPreset {
     /// `RUST_LOG` unset → tracing default `info` (same as upstream).
     #[default]
     Default,
-    /// Both L2 pipes (`multi64_sc64_l2`, `multi64_ed64_l2`) + `multi64d` at debug, without
-    /// per-read serial trace.
+    /// Every cart's L2 pipe (`multi64_sc64_l2`, `multi64_ed64_l2`, `multi64_ed64pro_l2`) + `multi64d`
+    /// at debug, without per-read serial trace.
     Debug,
     /// `--serial-trace`: `trace!` on each non-empty cart read (`multi64_sc64_l2=trace`).
     SerialTrace,
@@ -101,7 +105,7 @@ fn apply_multi64d_log_preset(cmd: &mut Command, preset: Multi64dLogPreset) {
         Multi64dLogPreset::Debug => {
             cmd.env(
                 "RUST_LOG",
-                "multi64_sc64_l2=debug,multi64_ed64_l2=debug,multi64d=debug,tower_http=warn,info",
+                "multi64_sc64_l2=debug,multi64_ed64_l2=debug,multi64_ed64pro_l2=debug,multi64d=debug,tower_http=warn,info",
             );
         }
         Multi64dLogPreset::SerialTrace => {
@@ -444,7 +448,8 @@ const EVERDRIVE_NEEDS_PORT: &str =
 /// Auto never picks a port for an EverDrive. It judges from USB descriptors alone, and the X7's
 /// FT245R (`0403:6001`) is a stock FTDI part with nothing cart-specific to match; finding it by
 /// writing to ports would disturb whatever else is plugged in. Handing it an SC64's port instead
-/// would run the EverDrive framing against the wrong cart.
+/// would run the EverDrive framing against the wrong cart. The PRO is no different: Xfer64 finds one
+/// by its edlink handshake, but that means writing to every port it tries.
 fn resolve_serial(
     saved: Option<&str>,
     cart: DaemonCart,
@@ -602,12 +607,18 @@ fn start_daemon(
             settings.listen
         ),
     );
-    if settings.cart == DaemonCart::Ed64 {
+    let unproven = match settings.cart {
+        DaemonCart::Sc64 => None,
+        DaemonCart::Ed64 => Some("EverDrive-64 X7"),
+        DaemonCart::Ed64Pro => Some("EverDrive-64 PRO"),
+    };
+    if let Some(cart) = unproven {
         push_log(
             daemon,
-            "EverDrive-64 X7 support is experimental and has never been run against a cart: \
-             a running daemon does not show that the cart link works."
-                .to_string(),
+            format!(
+                "{cart} support is experimental and has never been run against a cart: \
+                 a running daemon does not show that the cart link works."
+            ),
         );
     }
 
@@ -1472,13 +1483,17 @@ mod tests {
             r#"{"serialPort":"COM6","baud":115200,"listen":"127.0.0.1:38765","cart":"ed64"}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.cart, DaemonCart::Ed64);
+        let json =
+            r#"{"serialPort":"COM8","baud":115200,"listen":"127.0.0.1:38765","cart":"ed64pro"}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.cart, DaemonCart::Ed64Pro);
     }
 
     /// The settings file and `--cart` must use multi64d's own names, or the daemon refuses to
     /// start (clap rejects an unknown value) or reads a config it does not understand.
     #[test]
     fn cart_names_match_multi64d() {
-        for cart in [DaemonCart::Sc64, DaemonCart::Ed64] {
+        for cart in [DaemonCart::Sc64, DaemonCart::Ed64, DaemonCart::Ed64Pro] {
             let json = serde_json::to_string(&cart).unwrap();
             let daemon: multi64d::CartKind = serde_json::from_str(&json)
                 .unwrap_or_else(|e| panic!("multi64d does not know {json}: {e}"));
@@ -1505,6 +1520,14 @@ mod tests {
         );
         assert_eq!(flag(&ed64, "--cart"), "ed64");
         assert_eq!(flag(&ed64, "--baud"), "57600");
+        let pro = daemon_args(
+            "COM8",
+            &Settings {
+                cart: DaemonCart::Ed64Pro,
+                ..Settings::default()
+            },
+        );
+        assert_eq!(flag(&pro, "--cart"), "ed64pro");
     }
 
     /// start_minimized is meaningless without a tray to restore from.
@@ -1708,6 +1731,11 @@ mod port_selection_tests {
             panic!("auto must not run with a saved port")
         });
         assert_eq!(got, Ok("COM6".into()));
+        let err = resolve_serial(None, DaemonCart::Ed64Pro, || {
+            panic!("finding a PRO would mean writing to ports")
+        })
+        .unwrap_err();
+        assert!(err.contains("EverDrive"), "{err}");
     }
 
     /// No cart on Auto is an error carrying the reason, not some other port.
@@ -1767,6 +1795,11 @@ mod tray_tests {
         assert_eq!(
             l.status,
             "Daemon: stopped (no cart port) · EverDrive-64 X7 (experimental)"
+        );
+        let l = tray_labels(true, Some("COM8"), DaemonCart::Ed64Pro, "127.0.0.1:38765");
+        assert_eq!(
+            l.status,
+            "Daemon: running on COM8 · EverDrive-64 PRO (experimental)"
         );
         let l = tray_labels(true, Some("COM4"), DaemonCart::Sc64, "127.0.0.1:38765");
         assert_eq!(l.status, "Daemon: running on COM4");

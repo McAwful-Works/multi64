@@ -4037,7 +4037,7 @@ async function updateCartDeviceSettingsHint() {
     }
   } else if (v === "ed64_pro") {
     hintEl.textContent =
-      "Experimental: SD file access through the EverDrive-64 PRO's USB link, ported from Krikzz's sources and never tested on a cart. Renaming is not available, and Xfer64 asks before the first write.";
+      "Experimental: SD file access through the EverDrive-64 PRO's USB link, ported from Krikzz's sources and never tested on a cart. Renaming copies the item and then deletes the original, and Xfer64 asks before the first write.";
   } else if (v === "sc64") {
     hintEl.textContent = "Full USB SD file access over serial (FAT or exFAT) for SummerCart64.";
   } else {

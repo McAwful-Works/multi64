@@ -1,0 +1,16 @@
+[package]
+name = "ed64pro-echo-test"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "E2E: send L3 bytes to multi64_test.z64 (RAW_ECHO) over the EverDrive-64 PRO link (experimental; never run against a cart)"
+
+[[bin]]
+name = "ed64pro-echo-test"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+multi64-ed64pro-l2 = { path = "../ed64pro-l2" }
+multi64-ed64pro-link = { path = "../ed64pro-link" }

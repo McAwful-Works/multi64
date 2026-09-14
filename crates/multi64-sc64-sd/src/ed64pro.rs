@@ -11,7 +11,8 @@ use multi64_ed64pro_link::{
     dir_option, open_mode, Ed64Pro, Error as LinkError, FileInfo, Transport,
 };
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 /// Bytes per file-read or file-write transfer. Small enough to finish well inside the link's 2 s
@@ -215,12 +216,47 @@ impl<T: Transport> Ed64ProSdSession<T> {
         Ok(())
     }
 
-    /// Unsupported: neither source defines a rename command for the PRO.
-    pub fn rename_cart(&self, _from: &str, _to: &str) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Renaming is not available on the EverDrive-64 PRO: its USB link has no rename command.",
-        ))
+    /// Rename a file or folder within its folder, by copying it to the new name and deleting the
+    /// original: neither Krikzz source defines a rename command for the PRO.
+    ///
+    /// Each file goes through a temporary file on the PC, since the link holds one open file at a
+    /// time, and is deleted from the cart only once its copy is written and has the right size. An
+    /// interrupted rename therefore leaves every file under at least one of the two names, though a
+    /// folder can be left split between them. It takes as long as downloading and re-uploading the
+    /// entry, and a name differing only in letter case is refused: FAT names ignore case, so the copy
+    /// would land on the original.
+    pub fn rename_cart(&self, from: &str, to: &str) -> io::Result<()> {
+        let (parent_from, name_from) = cart_path_parts(from);
+        let (parent_to, name_to) = cart_path_parts(to);
+        if parent_from != parent_to {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "rename must stay within the same folder",
+            ));
+        }
+        if name_from.is_empty() || name_to.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "empty path segment",
+            ));
+        }
+        if name_from == name_to {
+            return Ok(());
+        }
+        if name_from.eq_ignore_ascii_case(&name_to) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "The EverDrive-64 PRO renames by copying, so it cannot change only the letter case of a name.",
+            ));
+        }
+        let source = self.find_entry(from)?.ok_or_else(not_found)?;
+        if self.find_entry(to)?.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{name_to} already exists on the cart"),
+            ));
+        }
+        self.move_entry(&source, &join(&pro_path(&parent_from), &name_to))
     }
 
     // -- helpers ------------------------------------------------------------------------------
@@ -399,6 +435,42 @@ impl<T: Transport> Ed64ProSdSession<T> {
         }
     }
 
+    /// Move an entry to `dest`, where nothing exists yet: copy it, then delete the original. A
+    /// folder moves child by child, so each file is deleted as soon as its own copy is in place.
+    fn move_entry(&self, e: &SessionEntry, dest: &str) -> io::Result<()> {
+        if e.is_dir {
+            self.dev()?.dir_make(dest).map_err(link_err)?;
+            for child in self.list_dir(&e.path)? {
+                self.move_entry(&child, &join(dest, &child.name))?;
+            }
+        } else {
+            self.copy_file_within_cart(e, dest)?;
+        }
+        self.dev()?.delete(&e.path).map_err(link_err)
+    }
+
+    /// Copy a cart file to a new cart path through a temporary file on the PC, and check the copy's
+    /// size before reporting success. A failed copy is deleted; the original is never touched.
+    fn copy_file_within_cart(&self, e: &SessionEntry, dest: &str) -> io::Result<()> {
+        let temp = HostTemp::new();
+        let copied = self
+            .copy_file_to_host(&e.path, &temp.0, &mut |_| true)
+            .and_then(|()| self.write_file_from_pc(&temp.0, dest, &mut |_| true))
+            .and_then(|()| match self.find_entry(dest)? {
+                Some(c) if !c.is_dir && c.size == e.size => Ok(()),
+                _ => Err(io::Error::other(format!(
+                    "the copy of {} on the cart does not match the original, which was kept",
+                    e.path
+                ))),
+            });
+        if copied.is_err() {
+            if let Ok(mut dev) = self.dev() {
+                let _ = dev.delete(dest);
+            }
+        }
+        copied
+    }
+
     fn remove_entry(&self, e: &SessionEntry, trace: &mut dyn FnMut(&str)) -> io::Result<()> {
         if e.is_dir {
             for child in self.list_dir(&e.path)? {
@@ -468,12 +540,30 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     Ok(filled)
 }
 
+/// A path under the system temp directory for one file in transit, removed on drop.
+struct HostTemp(PathBuf);
+
+impl HostTemp {
+    fn new() -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        Self(std::env::temp_dir().join(format!(
+            "multi64-ed64pro-rename-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        )))
+    }
+}
+
+impl Drop for HostTemp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use multi64_ed64pro_link::fake::FakeEd64Pro;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn session(fake: FakeEd64Pro) -> Ed64ProSdSession<FakeEd64Pro> {
         Ed64ProSdSession::from_device(Ed64Pro::connect(fake).expect("handshake")).expect("fs init")
@@ -693,11 +783,57 @@ mod tests {
     }
 
     #[test]
-    fn rename_is_unsupported() {
-        let s = session(FakeEd64Pro::new().with_file("a.z64", b"a"));
-        assert_eq!(
-            s.rename_cart("a.z64", "b.z64").unwrap_err().kind(),
-            io::ErrorKind::Unsupported
+    fn rename_copies_a_file_then_deletes_the_original() {
+        let data = pattern(CHUNK * 2 + 3);
+        let s = session(
+            FakeEd64Pro::new()
+                .with_file("roms/old.z64", &data)
+                .with_file("roms/other.z64", b"o"),
         );
+        s.rename_cart("/roms/old.z64", "/roms/new.z64").unwrap();
+        let fake = fake_of(s);
+        assert_eq!(fake.file("roms/new.z64").unwrap(), data.as_slice());
+        assert!(!fake.exists("roms/old.z64"));
+        assert_eq!(fake.file("roms/other.z64").unwrap(), b"o");
+    }
+
+    #[test]
+    fn rename_moves_a_whole_folder() {
+        let s = session(
+            FakeEd64Pro::new()
+                .with_file("saves/a.eep", b"save-a")
+                .with_file("saves/deep/b.srm", &pattern(CHUNK + 1))
+                .with_dir("saves/empty"),
+        );
+        s.rename_cart("saves", "backup").unwrap();
+        let fake = fake_of(s);
+        assert_eq!(fake.file("backup/a.eep").unwrap(), b"save-a");
+        assert_eq!(fake.file("backup/deep/b.srm").unwrap(), pattern(CHUNK + 1));
+        assert!(fake.is_dir("backup/empty"));
+        assert!(!fake.exists("saves"));
+    }
+
+    #[test]
+    fn rename_refuses_what_a_copy_cannot_do_and_leaves_the_cart_alone() {
+        let s = session(
+            FakeEd64Pro::new()
+                .with_file("roms/a.z64", b"a")
+                .with_file("roms/taken.z64", b"t"),
+        );
+        let kind = |from: &str, to: &str| s.rename_cart(from, to).unwrap_err().kind();
+        assert_eq!(kind("roms/a.z64", "a.z64"), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            kind("roms/a.z64", "roms/A.Z64"),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            kind("roms/a.z64", "roms/TAKEN.z64"),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(kind("roms/nope.z64", "roms/b.z64"), io::ErrorKind::NotFound);
+        s.rename_cart("roms/a.z64", "roms/a.z64").unwrap();
+        let fake = fake_of(s);
+        assert_eq!(fake.file("roms/a.z64").unwrap(), b"a");
+        assert_eq!(fake.file("roms/taken.z64").unwrap(), b"t");
     }
 }

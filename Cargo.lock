@@ -1233,6 +1233,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ed64pro-echo-test"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "multi64-ed64pro-l2",
+ "multi64-ed64pro-link",
+]
+
+[[package]]
+name = "ed64pro-l3-framing-e2e"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "multi64-ed64pro-l2",
+ "multi64-ed64pro-link",
+ "multi64-l3",
+]
+
+[[package]]
 name = "embed-resource"
 version = "3.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

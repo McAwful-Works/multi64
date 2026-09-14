@@ -120,8 +120,9 @@ Write §3's sequence to `FIFODATA` and poll `SYSSTAT` bit 0 with a bounded wait.
 | `multi64d` | `--cart ed64pro` selects it ([daemon API §5.1](./daemon-api-v1.md#51-flags)). The PRO runs at its fixed 921600 baud; `--baud` does not apply. |
 | [`n64/test-rom`](../../n64/README.md) | `ed64pro.c` implements §6; `cart_link.c` detects a PRO before libdragon's `usb_initialize` and routes the test ROM's USB traffic to it. The ROM shows an on-screen **UNVALIDATED** warning on a PRO. |
 | [`n64/agent`](../../n64/agent/README.md) | `make CART=ed64pro` builds the in-game agent around its own `ed64pro.c`: §6 without libdragon, under the agent's PI rules, reassembling L3 frames across ticks. |
-
-The Multi64 app does not offer the PRO yet, and no `ed64pro` variant of the serial e2e tools exists: through `multi64d`, any L3 client is the test harness.
+| [`crates/multi64`](../../crates/multi64/README.md) | Settings → **Cart** → *EverDrive-64 PRO (experimental)* starts the daemon with `--cart ed64pro`. Auto never picks a PRO's port: recognising one means writing the edlink handshake to each port. |
+| [`crates/ed64pro-echo-test`](../../crates/ed64pro-echo-test) | **`ed64pro-echo-test`**: raw L3 bytes against the test ROM's **RAW_ECHO**, straight over `Ed64ProL2Pipe`, after printing what the handshake reported. Never run on a cart. |
+| [`crates/ed64pro-l3-framing-e2e`](../../crates/ed64pro-l3-framing-e2e) | **`ed64pro-l3-framing-e2e`**: whole L3 frames against **RAW_ECHO**; `--large` spans several FIFO writes and so probes §5. Never run on a cart. |
 
 ---
 
@@ -142,8 +143,8 @@ For someone **with** a PRO:
 
 1. **The host link alone.** Xfer64's *EverDrive-64 PRO (experimental)* mode, or edlink itself, confirms the port, driver and handshake before any ROM is involved.
 2. **Boot the test ROM.** "EverDrive PRO: UNVALIDATED host mapping" means §6.2 passed. "usb init failed" or the X7 warning means it did not; record `EDID` and `SYSSTAT`.
-3. **RAW_ECHO through `multi64d --cart ed64pro`.** Send small L3 frames from any L3 client and compare what comes back.
-4. **Large frames.** Probe §5 with frames up to the L3 payload cap.
+3. **RAW_ECHO over the link alone.** `ed64pro-echo-test`, then `ed64pro-l3-framing-e2e`. Then the same through `multi64d --cart ed64pro` from any L3 client.
+4. **Large frames.** `ed64pro-l3-framing-e2e --large`, then frames up to the L3 payload cap, to probe §5.
 5. **M64T and MEM_AGENT modes.**
 
 Record the firmware version and OS for each result.

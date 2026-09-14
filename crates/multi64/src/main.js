@@ -30,7 +30,23 @@ async function refreshStatus() {
 let lastAuto = { auto: null, autoWarning: null };
 
 const EVERDRIVE_AUTO_HINT =
-  "Auto only recognises a SummerCart64. Pick the EverDrive's COM port — its USB adapter has nothing cart-specific to detect.";
+  "Auto only recognises a SummerCart64. Pick the EverDrive's COM port — Auto does not write to ports to find one.";
+
+/** Cart values the backend accepts (`DaemonCart`); anything else reads as the proven default. */
+const CART_VALUES = ["sc64", "ed64", "ed64pro"];
+
+/** @param {unknown} v */
+function knownCart(v) {
+  return CART_VALUES.includes(v) ? v : "sc64";
+}
+
+/** The Settings → Cart warning for each experimental cart. */
+const CART_HINTS = {
+  ed64:
+    "Experimental: the EverDrive-64 X7 link has never been run against a cart, so a running daemon does not show that it works. Restarts the daemon when saved.",
+  ed64pro:
+    "Experimental: the EverDrive-64 PRO link has never been run against a cart, so a running daemon does not show that it works. The PRO always runs at 921600 baud, so Baud does not apply. Restarts the daemon when saved.",
+};
 
 async function refreshPorts() {
   // One call, one port enumeration: asking for the list and the auto pick separately enumerated
@@ -62,7 +78,8 @@ async function refreshPorts() {
  * EverDrive a port, SC64's included.
  */
 function renderCartAndAuto() {
-  const everdrive = document.getElementById("cart").value === "ed64";
+  const cart = knownCart(document.getElementById("cart").value);
+  const everdrive = cart !== "sc64";
   const { auto, autoWarning } = lastAuto;
   const sel = document.getElementById("serial-port");
   const onAuto = sel.value === "";
@@ -74,7 +91,9 @@ function renderCartAndAuto() {
         ? `Auto (${auto})`
         : "Auto (no cart selected)";
   }
-  document.getElementById("cart-hint").hidden = !everdrive;
+  const cartHint = document.getElementById("cart-hint");
+  cartHint.hidden = !everdrive;
+  cartHint.textContent = CART_HINTS[cart] || "";
   // Auto only picks a port that identifies as a cart, so with no pick the daemon will not start
   // on Auto. Say why in a warning rather than leaving a hint that reads as fine.
   const hint = document.getElementById("auto-hint");
@@ -89,7 +108,7 @@ function renderCartAndAuto() {
 
 function applySettingsToForm(s) {
   // Anything unrecognised reads as the proven default rather than leaving the select blank.
-  document.getElementById("cart").value = s.cart === "ed64" ? "ed64" : "sc64";
+  document.getElementById("cart").value = knownCart(s.cart);
   document.getElementById("baud").value = String(s.baud ?? 115200);
   document.getElementById("listen").value = s.listen || "127.0.0.1:38765";
   document.getElementById("auto-start-daemon").checked = s.autoStartDaemon !== false;
@@ -112,7 +131,7 @@ function readSettingsFromForm() {
   const raw = serialSel.value;
   return {
     serialPort: raw === "" ? null : raw,
-    cart: document.getElementById("cart").value === "ed64" ? "ed64" : "sc64",
+    cart: knownCart(document.getElementById("cart").value),
     baud: parseInt(document.getElementById("baud").value, 10) || 115200,
     listen: document.getElementById("listen").value.trim() || "127.0.0.1:38765",
     autoStartDaemon: document.getElementById("auto-start-daemon").checked,

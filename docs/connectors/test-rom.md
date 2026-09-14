@@ -79,5 +79,6 @@ Raw L3 loopback tests (**test ROM RAW_ECHO** mode — default at boot) use **ser
 |---------|----------|
 | SummerCart64 (reference) | `sc64-l3-framing-e2e`, `sc64-echo-test` |
 | EverDrive X7 (when `multi64-ed64-l2` works) | `ed64-l3-framing-e2e`, `ed64-echo-test` |
+| EverDrive-64 PRO (when `multi64-ed64pro-l2` works) | `ed64pro-l3-framing-e2e`, `ed64pro-echo-test` |
 
 The **`sc64-*`** crate names reflect the **reference** L2 implementation today.
