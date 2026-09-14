@@ -1,0 +1,17 @@
+[package]
+name = "multi64-cart-probe"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Tell a SummerCart64, EverDrive-64 PRO and EverDrive-64 X7 apart on a serial port: USB descriptors first, then identity probes"
+readme = "README.md"
+
+[lib]
+name = "multi64_cart_probe"
+path = "src/lib.rs"
+
+[dependencies]
+multi64-sc64-link = { path = "../sc64-link" }
+multi64-ed64pro-link = { path = "../ed64pro-link" }
+serialport = "4"

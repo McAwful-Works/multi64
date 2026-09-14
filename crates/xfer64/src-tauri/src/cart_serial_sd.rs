@@ -314,9 +314,11 @@ fn suggest_port(settings: &ExplorerSettingsSnapshot) -> Option<String> {
             let matches = if mode == "ed64_beta" || mode == "ed64_pro" {
                 usb_looks_ed64(&prod, &man)
             } else if mode == "sc64" {
-                usb_looks_sc64(&prod, &man)
+                usb_looks_sc64(&prod, &man) || multi64_cart_probe::usb_is_sc64(u)
             } else {
-                usb_looks_ed64(&prod, &man) || usb_looks_sc64(&prod, &man)
+                usb_looks_ed64(&prod, &man)
+                    || usb_looks_sc64(&prod, &man)
+                    || multi64_cart_probe::usb_is_sc64(u)
             };
             if matches {
                 return Some(p.port_name.clone());
@@ -350,6 +352,12 @@ fn detect_best_auto_port(
             if let serialport::SerialPortType::UsbPort(u) = &p.port_type {
                 let prod = u.product.as_deref().unwrap_or("").to_ascii_lowercase();
                 let man = u.manufacturer.as_deref().unwrap_or("").to_ascii_lowercase();
+                // Windows reports an SC64 as "USB Serial Port" by FTDI; only its `SC64…` serial
+                // number identifies it. A descriptor match goes first, and is then recognised
+                // without opening the port (see `cart_probe`), so it works while multi64d holds it.
+                if multi64_cart_probe::usb_is_sc64(u) {
+                    score += 100;
+                }
                 if usb_looks_sc64(&prod, &man) {
                     score += 40;
                 }
@@ -378,12 +386,17 @@ fn detect_best_auto_port(
     Ok(suggest_port(settings))
 }
 
-/// Exposed for Xfer64 ↔ multi64d coordination ([`crate::daemon`]).
-pub fn resolve_com_port(
-    st: &ExplorerCartSerialState,
-    settings: &ExplorerSettingsSnapshot,
-) -> Result<String, String> {
-    resolve_port(st, settings)
+/// The COM port pinned in Settings or on the command line, without probing anything.
+///
+/// For Xfer64 ↔ multi64d coordination ([`crate::daemon`]), which must not resolve Auto: that probes
+/// ports, and cannot work while multi64d holds the cart's port.
+pub fn pinned_com_port(st: &ExplorerCartSerialState) -> Option<String> {
+    st.preferred_com
+        .lock()
+        .ok()
+        .and_then(|p| p.clone())
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
 }
 
 /// Ensures cart session close runs on panic (SD teardown + serial flush), not only on normal return.
@@ -596,6 +609,17 @@ fn resolve_port_probed(
         }
     }
     let auto = is_auto(settings);
+    // A running multi64d already knows the cart and its port: ask it before probing any port.
+    if auto {
+        if let Some((port, kind)) =
+            crate::daemon::daemon_cart_hint(&crate::daemon::default_listen())
+        {
+            if let Ok(mut g) = st.probe_cache.lock() {
+                *g = Some((port.clone(), kind));
+            }
+            return Ok((port, true));
+        }
+    }
     let auto_port = if auto {
         detect_best_auto_port(st, settings)?
     } else {

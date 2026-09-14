@@ -198,6 +198,9 @@ struct RootResponse<'a> {
     /// open the port.
     #[serde(rename = "serialActive")]
     serial_active: bool,
+    /// The `--cart` mapping the daemon was started for (`sc64`, `ed64`, `ed64pro`), so a tool that
+    /// shares the cart (Xfer64) need not probe ports to learn it.
+    cart: &'a str,
 }
 
 /// Full HTTP + WebSocket [`Router`] including `/ws`.
@@ -274,6 +277,7 @@ async fn root_metadata_only() -> impl IntoResponse {
         websocket_path: "/ws",
         serial: String::new(),
         serial_active: false,
+        cart: "",
     })
     .unwrap_or_else(|_| b"{}".to_vec());
     ([(header::CONTENT_TYPE, "application/json")], body)
@@ -303,6 +307,7 @@ async fn root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         websocket_path: "/ws",
         serial,
         serial_active,
+        cart: state.serial_cfg.cart.as_str(),
     })
     .unwrap_or_else(|_| b"{}".to_vec());
     ([(header::CONTENT_TYPE, "application/json")], body)
