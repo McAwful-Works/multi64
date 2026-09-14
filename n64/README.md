@@ -80,6 +80,22 @@ cargo run -p multi64-test-connector -- ping
 cargo run -p multi64-test-connector -- listen
 ```
 
+### Hardware record
+
+Runs of the committed `multi64_test.z64` on real carts, newest first. Add one when the ROM changes or a cart is tried for the first time, with the cart's firmware and the host OS.
+
+| Date | Cart | ROM | Host | Result |
+|------|------|-----|------|--------|
+| 2026-09-13 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | built from `52098ce`; SHA-256 `68b0544013c1622abe03dedf5a13cb95a8288d1d59421e0b2dbd565c6a884ba3` | Windows 11 Pro 10.0.26200; host tools and `multi64d` from `c7b13bb` | **Pass** |
+
+**2026-09-13, SummerCart64.** The first run since the ROM's USB traffic moved behind `test-rom/cart_link.c`, which probes for an EverDrive-64 PRO before libdragon's `usb_initialize`. The ROM went onto the SD card with `sc64-sd-e2e --upload` and was read back byte for byte with `--verify`.
+
+- **Boot:** normal, with no UNVALIDATED line, so the PRO probe does not misfire on an SC64.
+- **RAW_ECHO:** `sc64-echo-test` (12 bytes) and `sc64-l3-framing-e2e --large` (a small `DATA` frame, a `HEARTBEAT`, and an 8,308-byte frame across USB chunks) both pass.
+- **M64T_PROTO:** `scripts/test_rom_connector_e2e.sh` passes all 13 steps. `rumble` answered status `0x01`, not supported on the port, with no Rumble Pak inserted; `sram-info` reports size 0, as built.
+- **Cart-originated large sends:** **B** delivered repeated 8,192-byte `STRESS_LARGE` payloads to `multi64-test-connector listen`, with no errors.
+- **Not run:** BENCH, CTRL_POLL, MEM_AGENT, and an SRAM build.
+
 ---
 
 ## Python WebSocket smoke

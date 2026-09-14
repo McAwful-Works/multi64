@@ -51,7 +51,7 @@ With **`multi64d`** running and the test ROM in **M64T_PROTO** or **BENCH**, run
 
 Environment (optional): **`MULTI64_WS_URL`** (default `ws://127.0.0.1:38765/ws`), **`MULTI64_RECV_TIMEOUT_SECS`** (passed through to **`--recv-timeout-secs`**).
 
-The script runs **`ping`**, **`version`**, **`echo`**, **`req-controller`**, **`rumble`** (port **0**, **60** frames), **`display-text`**, **`session-open`**, **`eeprom-info`**, **`eeprom-read`**, **`eeprom-write`**, **`sram-info`**, **`session-close`**, then **`listen`** for two seconds. **`sram-info`** still succeeds when the ROM was built for EEPROM only (size **0**). GitHub **CI** does not run this (no cart); it only builds and tests the Rust workspace.
+The script runs **`ping`**, **`version`**, **`echo`**, **`req-controller`**, **`rumble`** (port **0**, **60** frames), **`display-text`**, **`session-open`**, **`eeprom-info`**, **`eeprom-read`**, **`eeprom-write`**, **`sram-info`**, **`session-close`**, then **`listen`** for two seconds. **`sram-info`** still succeeds when the ROM was built for EEPROM only (size **0**). GitHub **CI** does not run this (no cart); it only builds and tests the Rust workspace. The latest hardware run is recorded in [`n64/README.md`](../../n64/README.md#hardware-record).
 
 ## Examples
 
