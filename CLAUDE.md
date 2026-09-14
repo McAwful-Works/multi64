@@ -30,6 +30,16 @@ assert which backend command each drag gesture reaches. They prove the frontend 
 feature: everything the OS owns (whether Windows accepts a drag, whether `tauri://drag-*` fires) is
 still Windows-and-a-cart territory. See [`crates/xfer64/e2e/README.md`](crates/xfer64/e2e/README.md).
 
+And one more, also Ubuntu only — the cart agent's reassembly test, the only CI job that compiles N64 code
+(for the PC, not the console). It needs a host `gcc` or `clang` and `make`, nothing from the N64 toolchain:
+
+```sh
+make -C n64/agent host-test
+```
+
+It builds `n64/agent/agent.c` once per EverDrive cart against a fake driver, under ASan and UBSan,
+and checks that L3 frames arriving in pieces are reassembled. It proves that logic, not either driver.
+
 Targeted testing:
 
 ```sh

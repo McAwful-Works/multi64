@@ -5,6 +5,7 @@
 #   make symbols                  exported symbols, and what the object leaves undefined
 #   make CART=ed64                build/ed64/m64p_agent.o, for an EverDrive-64 X7 (experimental)
 #   make CART=ed64pro             build/ed64pro/m64p_agent.o, for an EverDrive-64 PRO (experimental)
+#   make host-test                the EverDrive builds' L3 reassembly, compiled and run on the PC
 #
 # For a game with no buildable source, link a flat image at a fixed address instead:
 # templates/link-flat.sh. See docs/integration/cart-agent.md.
@@ -55,7 +56,7 @@ CPPFLAGS = $(EXTRA_CPPFLAGS) $(CART_DEFINE) -I. -I$(PROTO)
 OBJECTS = $(BUILD)/agent.o $(CART_OBJECTS) $(BUILD)/mem_proto.o
 
 all: $(BUILD)/m64p_agent.o
-.PHONY: all clean symbols
+.PHONY: all clean symbols host-test
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -88,6 +89,20 @@ symbols: $(BUILD)/m64p_agent.o
 	@$(NM) $< | grep -E ' [TDB] '
 	@echo "--- undefined (must be empty)"
 	@$(NM) -u $<
+
+# The EverDrive builds' L3 reassembly, compiled for the PC and run under ASan and UBSan, once per
+# cart, with tests/reassembly_test.c standing in for the driver. Needs a host gcc or clang, not
+# the N64 toolchain. CI runs it; it says nothing about either driver on a cart.
+HOSTCC ?= cc
+HOST_CFLAGS ?= -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -Wall -Wextra
+HOST_TEST_SOURCES = tests/reassembly_test.c agent.c $(PROTO)/mem_proto.c
+
+host-test:
+	mkdir -p build/host
+	$(HOSTCC) $(HOST_CFLAGS) -DAGENT_CART_ED64 -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64
+	build/host/reassembly-ed64
+	$(HOSTCC) $(HOST_CFLAGS) -DAGENT_CART_ED64PRO -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64pro
+	build/host/reassembly-ed64pro
 
 clean:
 	rm -rf build
