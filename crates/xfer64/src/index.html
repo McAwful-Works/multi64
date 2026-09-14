@@ -18,6 +18,15 @@
         </div>
       </div>
       <div class="explorer-usb-row" id="usb-row">
+        <label class="explorer-usb-label" for="select-cart-device">
+          <span>Cart</span>
+          <select id="select-cart-device" aria-describedby="usb-hint">
+            <option value="auto">Auto-detect</option>
+            <option value="sc64">SummerCart64</option>
+            <option value="ed64_beta">EverDrive-64 X7 (experimental)</option>
+            <option value="ed64_pro">EverDrive-64 PRO (experimental)</option>
+          </select>
+        </label>
         <label class="explorer-usb-label" for="select-usb-com">
           <span>Serial port</span>
           <select id="select-usb-com" aria-describedby="usb-hint"></select>
@@ -527,7 +536,7 @@
               <section class="explorer-help-section" aria-labelledby="help-h-auto">
                 <h3 class="explorer-help-section-title" id="help-h-auto">Auto-detect</h3>
                 <p>
-                  In <strong>Settings</strong>, <strong>Auto-detect (recommended)</strong> tries to figure out which cart is plugged in. If it guesses wrong, pick <strong>SummerCart64</strong>, <strong>EverDrive-64 PRO (experimental)</strong> or <strong>EverDrive-64 X7 (experimental)</strong> yourself.
+                  With <strong>Cart</strong> set to <strong>Auto-detect</strong>, in the app bar or in <strong>Settings</strong>, Xfer64 tries to figure out which cart is plugged in. If it guesses wrong, pick <strong>SummerCart64</strong>, <strong>EverDrive-64 PRO (experimental)</strong> or <strong>EverDrive-64 X7 (experimental)</strong> yourself.
                 </p>
               </section>
               <section class="explorer-help-section explorer-help-section--note" aria-labelledby="help-h-ed64pro">
@@ -662,9 +671,9 @@
             </label>
           </section>
           <section class="dialog-section">
-            <h3 class="dialog-section-title">Cart device</h3>
+            <h3 class="dialog-section-title">Cart</h3>
             <label class="field">
-              <span>USB flash cart</span>
+              <span>Cart</span>
               <select id="explorer-cart-device" aria-describedby="explorer-cart-device-hint">
                 <option value="auto">Auto-detect (recommended)</option>
                 <option value="sc64">SummerCart64</option>
@@ -673,6 +682,12 @@
               </select>
             </label>
             <p class="hint" id="explorer-cart-device-hint"></p>
+            <label class="field">
+              <span>Serial port</span>
+              <select id="explorer-serial-port" aria-describedby="explorer-serial-port-hint"></select>
+            </label>
+            <!-- Only when Auto-detect can't pick a port for the chosen cart; see updateSerialPortSettingsHint. -->
+            <p class="hint hint-warning" id="explorer-serial-port-hint" hidden></p>
           </section>
           <section
             class="dialog-section"

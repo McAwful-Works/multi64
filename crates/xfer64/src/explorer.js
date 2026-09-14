@@ -3728,6 +3728,14 @@ function updateExplorerControls() {
     title: "Import selected items into the current folder on the cart (Ctrl+Shift+←)",
     disabledTitle: "Import to cart (Ctrl+Shift+←)",
   });
+  // Switching cart or port mid-operation would fight the operation for the serial port.
+  const cartBusyReason = isPaneBusy("cart") ? BUSY_REASON : "";
+  setControlEnabled(document.getElementById("select-cart-device"), cartBusyReason, {
+    title: "Which cart is plugged in",
+  });
+  setControlEnabled(document.getElementById("select-usb-com"), cartBusyReason, {
+    title: "Which serial port the cart is on",
+  });
 }
 
 function isKeyboardBypassTarget(el) {
@@ -4181,6 +4189,26 @@ let usbSerialPortsSnapshot = "";
 let usbSerialPollInFlight = false;
 
 /**
+ * Fill a serial port select: "Auto-detect" (or "No serial ports" when there are none), then each
+ * port. The app bar and Settings both use it, so the two lists cannot differ.
+ * @param {HTMLSelectElement} sel
+ * @param {string[]} ports
+ */
+function fillSerialPortOptions(sel, ports) {
+  sel.innerHTML = "";
+  const opt0 = document.createElement("option");
+  opt0.value = "";
+  opt0.textContent = ports.length ? "Auto-detect" : "No serial ports";
+  sel.appendChild(opt0);
+  for (const p of ports) {
+    const o = document.createElement("option");
+    o.value = p;
+    o.textContent = p;
+    sel.appendChild(o);
+  }
+}
+
+/**
  * Repopulate the COM dropdown. Pass `ports` when the list was already fetched (e.g. hotplug poll).
  * @param {string[] | undefined} [portsOpt]
  */
@@ -4193,18 +4221,14 @@ async function refreshUsbComPorts(portsOpt) {
     const ports = portsOpt ?? (await invoke("cart_serial_list_ports"));
     usbSerialPortsSnapshot = serialPortsSnapshot(ports);
     const saved = localStorage.getItem(LS_USB_COM) || "";
-    sel.innerHTML = "";
-    const opt0 = document.createElement("option");
-    opt0.value = "";
-    opt0.textContent = ports.length ? "Auto-detect" : "No serial ports";
-    sel.appendChild(opt0);
-    for (const p of ports) {
-      const o = document.createElement("option");
-      o.value = p;
-      o.textContent = p;
-      sel.appendChild(o);
-    }
+    fillSerialPortOptions(sel, ports);
     if (saved && [...sel.options].some((o) => o.value === saved)) sel.value = saved;
+    // Settings' copy is refilled when Settings opens; leave an open form's edit alone.
+    const settingsSel = document.getElementById("explorer-serial-port");
+    if (settingsSel instanceof HTMLSelectElement && !isExplorerSettingsOpen()) {
+      fillSerialPortOptions(settingsSel, ports);
+      settingsSel.value = sel.value;
+    }
   } finally {
     if (needFetch) endUsbLoading();
   }
@@ -4536,6 +4560,118 @@ function applyCartDeviceUi(opts = {}) {
   }
 }
 
+/**
+ * Switch to cart type `value`. The app bar's Cart select and Settings' Save both come through
+ * here, so the two cannot drift: save it, keep both Cart selects on it, and on a real change drop
+ * the probe cache and any staged drag copies (they may be from another card), then refresh the hint
+ * and reload the cart pane. Choosing the EverDrive-64 X7 with no SD base offers the scan.
+ * @param {string} value `auto`, `sc64`, `ed64_beta` or `ed64_pro`
+ * @param {{ previous?: string, reload?: boolean, offerScan?: boolean }} [opts]
+ *   `previous`: the cart type before this change, when the caller has already saved `value` with
+ *   other settings (Save settings does, in one write). Omitted, the saved settings are read and only
+ *   `cartDevice` is written.
+ *   `reload` (default true): false leaves the hint refresh and cart pane reload to the caller, so a
+ *   Save that also changes the serial port reloads once.
+ *   `offerScan` (default true): false when the caller decides on the scan offer itself.
+ * @returns {Promise<boolean>} whether the cart type changed
+ */
+async function applyCartDevice(value, opts = {}) {
+  const next = normalizeCartDeviceSetting(value);
+  let previous = opts.previous;
+  if (previous === undefined) {
+    const prev = await invoke("explorer_get_settings");
+    previous = normalizeCartDeviceSetting(prev.cartDevice);
+    if (previous !== next) {
+      const settings = { ...prev, cartDevice: next };
+      await invoke("explorer_set_settings", { settings });
+      lastExplorerSettingsCommit = buildExplorerSettingsCommit(settings);
+    }
+  }
+  const changed = normalizeCartDeviceSetting(previous) !== next;
+  explorerSettingsCartDeviceAtLoad = next;
+  for (const id of ["select-cart-device", "explorer-cart-device"]) {
+    const sel = document.getElementById(id);
+    if (sel instanceof HTMLSelectElement) sel.value = next;
+  }
+  if (changed) {
+    await invoke("cart_serial_invalidate_probe_cache");
+    await forgetStagedCartDrag();
+  }
+  applyCartDeviceUi({ skipUsbRefresh: true });
+  if (changed && opts.reload !== false) {
+    await refreshUsbDetectHint();
+    await loadCartPane({ forceRefresh: true });
+  }
+  if (changed && next === "ed64_beta" && opts.offerScan !== false) {
+    // After the reload, and outside any dialog, like Save settings does.
+    setTimeout(() => void maybeOfferEd64AutoScan(), 0);
+  }
+  return changed;
+}
+
+/**
+ * Switch to serial port `value` ("" is Auto-detect). The app bar's Serial port select and Settings'
+ * Save both come through here: keep the app bar on it, remember it for the next run, drop staged
+ * drag copies, tell the backend, then refresh the hint and reload the cart pane.
+ * @param {string} value
+ * @param {{ reload?: boolean }} [opts] `reload: false` leaves the hint refresh and reload to the caller.
+ */
+async function applySerialPort(value, opts = {}) {
+  const sel = document.getElementById("select-usb-com");
+  // A port unplugged meanwhile shows as Auto-detect, exactly as at startup, and is picked again
+  // when it comes back.
+  if (sel instanceof HTMLSelectElement) {
+    sel.value = [...sel.options].some((o) => o.value === value) ? value : "";
+  }
+  localStorage.setItem(LS_USB_COM, value);
+  await forgetStagedCartDrag();
+  await syncPreferredComToBackend();
+  if (opts.reload !== false) {
+    await refreshUsbDetectHint();
+    await loadCartPane({ forceRefresh: true });
+  }
+}
+
+/** Drops a stale answer when the hint is asked for again before the backend replied. */
+let serialPortHintSeq = 0;
+
+/**
+ * Settings' Serial port hint. It speaks only when Auto-detect can't pick a port for the chosen cart;
+ * what was found belongs under Cart. With Cart on Auto-detect the backend probes every port, so
+ * choosing one is detection itself and needs no hint here. With a cart chosen it does not probe: it
+ * takes the port whose USB name matches that cart, or the only USB serial port
+ * (`cart_serial_suggest_port`), and that can find nothing.
+ *
+ * The backend answers for the saved cart, so an unsaved Cart edit shows no hint rather than a guess.
+ */
+async function updateSerialPortSettingsHint() {
+  const hintEl = document.getElementById("explorer-serial-port-hint");
+  if (!hintEl) return;
+  const cart = normalizeCartDeviceSetting(document.getElementById("explorer-cart-device")?.value);
+  const portSel = document.getElementById("explorer-serial-port");
+  const onAuto = (portSel?.value ?? "") === "";
+  const seq = ++serialPortHintSeq;
+  let text = "";
+  if (cart !== "auto" && onAuto && cart === explorerSettingsCartDeviceAtLoad) {
+    let suggested = null;
+    let known = true;
+    try {
+      suggested = await invoke("cart_serial_suggest_port");
+    } catch {
+      known = false;
+    }
+    if (seq !== serialPortHintSeq) return;
+    if (known && !suggested) {
+      const noPorts = portSel instanceof HTMLSelectElement && portSel.options.length <= 1;
+      text = noPorts
+        ? `No serial ports found. Plug in the ${cartFullName(cart)} over USB.`
+        : `Auto-detect can't pick a serial port for the ${cartFullName(cart)}: no port identifies as one by its USB name. Choose its serial port.`;
+    }
+  }
+  hintEl.textContent = text;
+  hintEl.hidden = text === "";
+}
+
 function isExplorerSettingsOpen() {
   const panel = document.getElementById("explorer-settings-panel");
   return panel != null && !panel.hidden;
@@ -4582,6 +4718,7 @@ let explorerSettingsFormSnapshot = null;
 function readExplorerSettingsForm() {
   return JSON.stringify({
     cartDevice: document.getElementById("explorer-cart-device")?.value ?? "",
+    serialPort: document.getElementById("explorer-serial-port")?.value ?? "",
     developerMode: document.getElementById("explorer-developer-mode")?.checked ?? false,
     ed64LinearBase: document.getElementById("explorer-ed64-linear-base")?.value ?? "",
   });
@@ -4672,12 +4809,22 @@ async function loadExplorerSettings() {
     if (cd) {
       cd.value = nextCommit.cartDevice;
     }
+    const appBarCart = document.getElementById("select-cart-device");
+    if (appBarCart instanceof HTMLSelectElement) appBarCart.value = nextCommit.cartDevice;
+    // Serial port is not in the settings file: Settings shows what the app bar is using.
+    const appBarPort = document.getElementById("select-usb-com");
+    const portSel = document.getElementById("explorer-serial-port");
+    if (appBarPort instanceof HTMLSelectElement && portSel instanceof HTMLSelectElement) {
+      portSel.innerHTML = appBarPort.innerHTML;
+      portSel.value = appBarPort.value;
+    }
     const baseEl = document.getElementById("explorer-ed64-linear-base");
     if (baseEl) {
       baseEl.value = formatEd64LinearBaseForInput(s.ed64RomLinearBase);
     }
     explorerSettingsFormSnapshot = readExplorerSettingsForm();
     updateExplorerDevShellButton();
+    void updateSerialPortSettingsHint();
     applyCartDeviceUi({ skipUsbRefresh });
     await refreshExplorerSendToUploadButton();
   } catch (e) {
@@ -4799,6 +4946,10 @@ function setupExplorerSettings() {
   document.getElementById("explorer-cart-device")?.addEventListener("change", () => {
     updateEd64AdvancedSectionVisibility();
     void updateCartDeviceSettingsHint();
+    void updateSerialPortSettingsHint();
+  });
+  document.getElementById("explorer-serial-port")?.addEventListener("change", () => {
+    void updateSerialPortSettingsHint();
   });
   document.getElementById("btn-ed64-probe-linear-base")?.addEventListener("click", async () => {
     await runEd64LinearBaseScan();
@@ -4825,8 +4976,10 @@ function setupExplorerSettings() {
   });
   document.getElementById("btn-save-explorer-settings")?.addEventListener("click", async () => {
     const developerMode = document.getElementById("explorer-developer-mode")?.checked ?? false;
-    const cartDevice = document.getElementById("explorer-cart-device")?.value || "auto";
-    const cartDeviceChanged = cartDevice !== explorerSettingsCartDeviceAtLoad;
+    const cartDevice = normalizeCartDeviceSetting(document.getElementById("explorer-cart-device")?.value);
+    const previousCartDevice = explorerSettingsCartDeviceAtLoad;
+    const serialPort = document.getElementById("explorer-serial-port")?.value ?? "";
+    const serialPortChanged = serialPort !== (document.getElementById("select-usb-com")?.value ?? "");
     /** True when EverDrive is saved with no linear base — offer scan after Settings closes (not behind the panel). */
     let offerEd64ScanAfterSave = false;
     try {
@@ -4848,24 +5001,25 @@ function setupExplorerSettings() {
       }
       await invoke("explorer_set_settings", { settings });
       lastExplorerSettingsCommit = buildExplorerSettingsCommit(settings);
-      if (cartDeviceChanged) {
-        await invoke("cart_serial_invalidate_probe_cache");
-        await forgetStagedCartDrag();
-      }
     } catch (e) {
       await showExplorerAlert(userFacingErrorMessage(e, { context: "general" }));
       return;
     }
+    // Before closing: closing reloads the form from the saved settings, which now hold this cart.
     explorerSettingsCartDeviceAtLoad = cartDevice;
     setExplorerSettingsOpen(false);
     try {
       if (developerMode) {
         await invoke("explorer_open_dev_shell");
       }
-      applyCartDeviceUi({ skipUsbRefresh: true });
-      if (cartDeviceChanged) {
-        await refreshUsbDetectHint();
-        await loadCartPane({ forceRefresh: true });
+      // Cart first, then the port; the cart pane reloads once even when both changed.
+      await applyCartDevice(cartDevice, {
+        previous: previousCartDevice,
+        reload: !serialPortChanged,
+        offerScan: false,
+      });
+      if (serialPortChanged) {
+        await applySerialPort(serialPort);
       }
     } catch (e) {
       await showExplorerAlert(userFacingErrorMessage(e, { context: "general" }));
@@ -4986,13 +5140,30 @@ async function init() {
     navigate("pc", v, true);
   });
 
+  // Both app-bar selects apply at once, through the same helpers as Save settings. They are disabled
+  // while the cart pane is busy; the checks here only guard against a change racing that.
+  document.getElementById("select-cart-device")?.addEventListener("change", async () => {
+    const sel = /** @type {HTMLSelectElement} */ (document.getElementById("select-cart-device"));
+    if (isPaneBusy("cart")) {
+      sel.value = explorerSettingsCartDeviceAtLoad;
+      return;
+    }
+    try {
+      await applyCartDevice(sel.value);
+    } catch (e) {
+      sel.value = explorerSettingsCartDeviceAtLoad;
+      await showExplorerAlert(userFacingErrorMessage(e, { context: "general" }));
+    }
+  });
+
   document.getElementById("select-usb-com")?.addEventListener("change", async () => {
-    const v = document.getElementById("select-usb-com").value;
-    localStorage.setItem(LS_USB_COM, v);
-    await forgetStagedCartDrag();
-    await syncPreferredComToBackend();
-    await refreshUsbDetectHint();
-    await loadCartPane({ forceRefresh: true });
+    const sel = /** @type {HTMLSelectElement} */ (document.getElementById("select-usb-com"));
+    if (isPaneBusy("cart")) {
+      const saved = localStorage.getItem(LS_USB_COM) || "";
+      sel.value = [...sel.options].some((o) => o.value === saved) ? saved : "";
+      return;
+    }
+    await applySerialPort(sel.value);
   });
 
   document.querySelectorAll("[data-action]").forEach((btn) => {
