@@ -22,6 +22,7 @@ members = [
     "crates/ed64pro-l2",
     "crates/ed64pro-echo-test",
     "crates/ed64pro-l3-framing-e2e",
+    "crates/cart-probe",
     "crates/multi64-test-connector-gui/src-tauri",
 ]
 

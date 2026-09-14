@@ -1,6 +1,7 @@
 //! Multi64 — manages `multi64d`, tray, settings (Windows-first).
 
 use auto_launch::{AutoLaunch, AutoLaunchBuilder};
+use multi64_cart_probe::{usb_is_sc64, DetectedCart};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
@@ -35,9 +36,10 @@ pub struct Settings {
     pub developer_mode: bool,
     #[serde(default)]
     pub multi64d_log_preset: Multi64dLogPreset,
-    /// Which cart `multi64d` talks to (`--cart`). Files written before this existed mean SC64.
+    /// Which cart `multi64d` is started for: a fixed one, or Auto-detect at each start. Files
+    /// written before this existed mean Auto-detect.
     #[serde(default)]
-    pub cart: DaemonCart,
+    pub cart: CartSetting,
 }
 
 fn default_true() -> bool {
@@ -76,6 +78,51 @@ impl DaemonCart {
             DaemonCart::Sc64 => "SummerCart64",
             DaemonCart::Ed64 => "EverDrive-64 X7 (experimental)",
             DaemonCart::Ed64Pro => "EverDrive-64 PRO (experimental)",
+        }
+    }
+}
+
+impl From<DetectedCart> for DaemonCart {
+    fn from(found: DetectedCart) -> Self {
+        match found {
+            DetectedCart::Sc64 => DaemonCart::Sc64,
+            DetectedCart::Ed64 => DaemonCart::Ed64,
+            DetectedCart::Ed64Pro => DaemonCart::Ed64Pro,
+        }
+    }
+}
+
+/// The Settings → **Cart** choice: a fixed cart, or Auto-detect.
+///
+/// The fixed names are the daemon's own `--cart` values (see [`DaemonCart`]). `auto` never reaches
+/// the daemon, which is always started for the cart detection found.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CartSetting {
+    /// Find the cart at each start: a SummerCart64 by its USB descriptors, which sends nothing, else
+    /// by probing ports with `multi64-cart-probe`. The default.
+    #[default]
+    Auto,
+    Sc64,
+    Ed64,
+    Ed64Pro,
+}
+
+impl CartSetting {
+    /// The cart this setting fixes, or `None` for Auto-detect.
+    fn fixed(self) -> Option<DaemonCart> {
+        match self {
+            CartSetting::Auto => None,
+            CartSetting::Sc64 => Some(DaemonCart::Sc64),
+            CartSetting::Ed64 => Some(DaemonCart::Ed64),
+            CartSetting::Ed64Pro => Some(DaemonCart::Ed64Pro),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self.fixed() {
+            Some(cart) => cart.label(),
+            None => "Auto-detect",
         }
     }
 }
@@ -138,7 +185,7 @@ impl Default for Settings {
             tray_enabled: true,
             developer_mode: false,
             multi64d_log_preset: Multi64dLogPreset::Default,
-            cart: DaemonCart::Sc64,
+            cart: CartSetting::Auto,
         }
     }
 }
@@ -150,8 +197,9 @@ pub struct DaemonStatus {
     pub healthy: bool,
     pub listen: String,
     pub message: String,
-    /// While running, the cart the live process was started for; while stopped, the next start's.
-    pub cart: &'static str,
+    /// While running, the cart the live process was started for, noting when Auto-detect chose it;
+    /// while stopped, the Cart setting.
+    pub cart: String,
 }
 
 #[derive(Default)]
@@ -166,6 +214,8 @@ struct DaemonInner {
     /// The cart `child` was spawned for. Only meaningful while `serial` is set, for the same
     /// reason: a cart changed in Settings is what the next start uses, not what is running.
     cart: DaemonCart,
+    /// Whether Auto-detect chose `cart`, as opposed to the Cart setting naming it.
+    detected: bool,
     logs: Vec<String>,
 }
 
@@ -316,35 +366,6 @@ fn resolve_multi64d_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     ))
 }
 
-/// FTDI FT232H, the USB bridge on a SummerCart64.
-///
-/// A stock FTDI part that also turns up in unrelated adapters, so the VID/PID is only half of the
-/// match; see [`usb_is_sc64`].
-const SC64_USB_VID: u16 = 0x0403;
-const SC64_USB_PID: u16 = 0x6014;
-/// The cart programs its FTDI serial number as `SC64…` and its product string as `SC64`.
-const SC64_USB_TAG: &str = "SC64";
-
-/// Whether a USB serial device is a SummerCart64, judged from its descriptors alone.
-///
-/// Deliberately writes nothing: until proven otherwise the port belongs to some other device,
-/// opening it can reset that device (many adapters toggle DTR on open), and the cart's own port
-/// may already be held by `multi64d`.
-///
-/// Windows reports the FTDI serial with the interface letter appended (`SC64XXXXXXA`) and the
-/// driver's description (`USB Serial Port`) as the product, so there the serial prefix is what
-/// matches; other platforms read the product string from the descriptor.
-fn usb_is_sc64(usb: &serialport::UsbPortInfo) -> bool {
-    let tagged = |s: &Option<String>| {
-        s.as_deref()
-            .and_then(|s| s.get(..SC64_USB_TAG.len()))
-            .is_some_and(|head| head.eq_ignore_ascii_case(SC64_USB_TAG))
-    };
-    usb.vid == SC64_USB_VID
-        && usb.pid == SC64_USB_PID
-        && (tagged(&usb.serial_number) || tagged(&usb.product))
-}
-
 /// What auto-selection found among the enumerated ports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AutoPort {
@@ -406,13 +427,6 @@ fn pick_auto(ports: &[serialport::SerialPortInfo]) -> AutoPort {
     }
 }
 
-fn auto_port() -> AutoPort {
-    // A failed enumeration found no cart; reporting that beats failing the caller.
-    serialport::available_ports()
-        .map(|ports| pick_auto(&ports))
-        .unwrap_or(AutoPort::NoCart)
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SerialPortOptions {
@@ -437,43 +451,214 @@ fn serial_port_options() -> SerialPortOptions {
     }
 }
 
-/// Why Auto has no port for an EverDrive, worded like [`AutoPort::problem`].
+/// Why a fixed EverDrive cart has no port, worded like [`AutoPort::problem`].
 const EVERDRIVE_NEEDS_PORT: &str =
-    "Auto only recognises a SummerCart64. Pick the EverDrive's COM port in Settings.";
+    "Auto only recognises a SummerCart64 for a fixed Cart type. Pick the \
+     EverDrive's COM port in Settings, or set Cart to Auto-detect.";
 
-/// The saved port if there is one, else the auto pick. `Err` says why there is no port.
+/// What a start would do, decided without writing to any port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StartPlan {
+    /// The cart and port are known. `detected` when Auto-detect chose the cart (by USB descriptors).
+    Ready {
+        cart: DaemonCart,
+        port: String,
+        detected: bool,
+    },
+    /// Auto-detect has to ask: on this port, or on every serial port when `None`.
+    Probe(Option<String>),
+    /// Start cannot work; the reason is worded for the status line and the daemon log.
+    Blocked(String),
+}
+
+impl StartPlan {
+    /// The port the plan names, if any.
+    fn port(&self) -> Option<String> {
+        match self {
+            StartPlan::Ready { port, .. } => Some(port.clone()),
+            StartPlan::Probe(port) => port.clone(),
+            StartPlan::Blocked(_) => None,
+        }
+    }
+}
+
+/// Plan a start from the saved port and Cart setting. `ports` runs only when the plan depends on
+/// what is plugged in, so a fixed cart with a saved port never costs an enumeration.
 ///
-/// `auto` runs only without a saved port, so a pinned port never costs an enumeration.
-///
-/// Auto never picks a port for an EverDrive. It judges from USB descriptors alone, and the X7's
-/// FT245R (`0403:6001`) is a stock FTDI part with nothing cart-specific to match; finding it by
-/// writing to ports would disturb whatever else is plugged in. Handing it an SC64's port instead
-/// would run the EverDrive framing against the wrong cart. The PRO is no different: Xfer64 finds one
-/// by its edlink handshake, but that means writing to every port it tries.
-fn resolve_serial(
+/// - **A fixed cart** uses the saved port, else Auto's pick, which only ever finds a SummerCart64:
+///   the X7's FT245R (`0403:6001`) is a stock FTDI part, and a PRO can only be recognised by
+///   writing to it. Handing an EverDrive an SC64's port would run its framing against the wrong
+///   cart, so a fixed EverDrive with no saved port is blocked.
+/// - **Auto-detect** takes a SummerCart64 recognised by its USB descriptors (the saved port, or the
+///   unique one on Auto) without sending anything, and otherwise plans a probe. Two SC64s on Auto
+///   are still a guess, so they block rather than probe.
+fn plan_start(
     saved: Option<&str>,
-    cart: DaemonCart,
-    auto: impl FnOnce() -> AutoPort,
-) -> Result<String, String> {
-    if let Some(port) = saved.filter(|s| !s.is_empty()) {
-        return Ok(port.to_string());
-    }
-    if cart != DaemonCart::Sc64 {
-        return Err(EVERDRIVE_NEEDS_PORT.to_string());
-    }
-    let auto = auto();
-    match auto.problem() {
-        Some(problem) => Err(problem),
-        None => auto.port().ok_or_else(|| "no serial port".to_string()),
+    cart: CartSetting,
+    ports: impl FnOnce() -> Vec<serialport::SerialPortInfo>,
+) -> StartPlan {
+    let saved = saved.map(str::trim).filter(|s| !s.is_empty());
+    match (cart.fixed(), saved) {
+        (Some(cart), Some(port)) => StartPlan::Ready {
+            cart,
+            port: port.to_string(),
+            detected: false,
+        },
+        (Some(DaemonCart::Sc64), None) => match pick_auto(&ports()) {
+            AutoPort::Found(port) => StartPlan::Ready {
+                cart: DaemonCart::Sc64,
+                port,
+                detected: false,
+            },
+            other => StartPlan::Blocked(other.problem().unwrap_or_default()),
+        },
+        (Some(_), None) => StartPlan::Blocked(EVERDRIVE_NEEDS_PORT.to_string()),
+        (None, Some(port)) => {
+            let sc64 = ports().iter().any(|p| {
+                p.port_name.eq_ignore_ascii_case(port)
+                    && matches!(&p.port_type, serialport::SerialPortType::UsbPort(usb) if usb_is_sc64(usb))
+            });
+            if sc64 {
+                StartPlan::Ready {
+                    cart: DaemonCart::Sc64,
+                    port: port.to_string(),
+                    detected: true,
+                }
+            } else {
+                StartPlan::Probe(Some(port.to_string()))
+            }
+        }
+        (None, None) => match pick_auto(&ports()) {
+            AutoPort::Found(port) => StartPlan::Ready {
+                cart: DaemonCart::Sc64,
+                port,
+                detected: true,
+            },
+            AutoPort::NoCart => StartPlan::Probe(None),
+            ambiguous => StartPlan::Blocked(ambiguous.problem().unwrap_or_default()),
+        },
     }
 }
 
-fn serial_for(settings: &Settings) -> Result<String, String> {
-    resolve_serial(settings.serial_port.as_deref(), settings.cart, auto_port)
+/// [`plan_start`] against the ports plugged in now.
+fn start_plan(settings: &Settings) -> StartPlan {
+    plan_start(settings.serial_port.as_deref(), settings.cart, || {
+        serialport::available_ports().unwrap_or_default()
+    })
 }
 
-fn effective_serial(settings: &Settings) -> Option<String> {
-    serial_for(settings).ok()
+/// Auto-detect by asking: `only` that port, or every port until one answers as a cart.
+///
+/// Every port given to `probe` receives its test commands. Across all ports, USB serial devices go
+/// first and each group in name order, so the result does not depend on enumeration order; the
+/// first cart to answer wins. `log` gets each outcome.
+fn detect_cart(
+    only: Option<&str>,
+    ports: &[serialport::SerialPortInfo],
+    mut probe: impl FnMut(&str) -> Option<DetectedCart>,
+    mut log: impl FnMut(String),
+) -> Result<(DaemonCart, String), String> {
+    let candidates: Vec<String> = match only {
+        Some(port) => vec![port.to_string()],
+        None => {
+            let mut ranked: Vec<(bool, String)> = ports
+                .iter()
+                .map(|p| {
+                    let usb = matches!(p.port_type, serialport::SerialPortType::UsbPort(_));
+                    (!usb, p.port_name.clone())
+                })
+                .collect();
+            ranked.sort();
+            ranked.into_iter().map(|(_, name)| name).collect()
+        }
+    };
+    if candidates.is_empty() {
+        return Err("Auto-detect: no serial ports found. Plug in the cart.".to_string());
+    }
+    for port in &candidates {
+        match probe(port) {
+            Some(found) => {
+                let cart = DaemonCart::from(found);
+                log(format!("Auto-detect: {} answered on {port}", cart.label()));
+                return Ok((cart, port.clone()));
+            }
+            None => log(format!("Auto-detect: no cart answered on {port}")),
+        }
+    }
+    Err(match only {
+        Some(port) => format!(
+            "Auto-detect: no cart answered on {port}. Check the cart is plugged in and no other \
+             program is using the port, or choose its Cart type in Settings."
+        ),
+        None => format!(
+            "Auto-detect: no cart answered on any serial port ({}). Plug in the cart, or close \
+             any program using its port.",
+            candidates.join(", ")
+        ),
+    })
+}
+
+/// The cart and port for a start, probing when Auto-detect needs to, and whether Auto-detect
+/// chose the cart. Probing writes to ports and can take seconds per port: call it off the UI
+/// thread, and after stopping any daemon that holds the port.
+fn resolve_start(
+    settings: &Settings,
+    mut log: impl FnMut(String),
+) -> Result<(DaemonCart, String, bool), String> {
+    match start_plan(settings) {
+        StartPlan::Ready {
+            cart,
+            port,
+            detected,
+        } => {
+            if detected {
+                log(format!(
+                    "Auto-detect: SummerCart64 on {port}, recognised by its USB IDs (nothing sent)"
+                ));
+            }
+            Ok((cart, port, detected))
+        }
+        StartPlan::Blocked(why) => Err(why),
+        StartPlan::Probe(only) => {
+            log(match &only {
+                Some(port) => format!(
+                    "Auto-detect: {port} is not a SummerCart64 by its USB IDs; sending cart test commands to it"
+                ),
+                None => "Auto-detect: no SummerCart64 on USB; sending cart test commands to each serial port"
+                    .to_string(),
+            });
+            let ports = serialport::available_ports().unwrap_or_default();
+            let (cart, port) = detect_cart(
+                only.as_deref(),
+                &ports,
+                multi64_cart_probe::probe_port,
+                &mut log,
+            )?;
+            Ok((cart, port, true))
+        }
+    }
+}
+
+/// How the window and the log name a running daemon's cart.
+fn running_cart_label(cart: DaemonCart, detected: bool) -> String {
+    if detected {
+        format!("{} (auto-detected)", cart.label())
+    } else {
+        cart.label().to_string()
+    }
+}
+
+/// The status line for a stopped daemon: what Start would do, or why it cannot.
+fn stopped_message(plan: &StartPlan) -> String {
+    match plan {
+        StartPlan::Ready { .. } => "Stopped".into(),
+        StartPlan::Probe(Some(port)) => format!("Stopped — Start will detect the cart on {port}"),
+        StartPlan::Probe(None) => {
+            "Stopped — no SummerCart64 on USB; Start will look for a cart on each serial port"
+                .into()
+        }
+        StartPlan::Blocked(why) => format!("Stopped — {why}"),
+    }
 }
 
 fn daemon_health_url(listen: &str) -> String {
@@ -564,7 +749,7 @@ fn kill_daemon_locked(daemon: &Arc<Mutex<DaemonInner>>) {
 
 /// Spawn-time arguments for `multi64d`. Pure, so what reaches the daemon is testable without
 /// spawning it.
-fn daemon_args(serial: &str, settings: &Settings) -> Vec<String> {
+fn daemon_args(serial: &str, cart: DaemonCart, settings: &Settings) -> Vec<String> {
     vec![
         "--serial".into(),
         serial.into(),
@@ -574,7 +759,7 @@ fn daemon_args(serial: &str, settings: &Settings) -> Vec<String> {
         "--baud".into(),
         settings.baud.to_string(),
         "--cart".into(),
-        settings.cart.arg().into(),
+        cart.arg().into(),
         "--listen".into(),
         settings.listen.clone(),
         "--no-print-ports".into(),
@@ -588,11 +773,12 @@ fn start_daemon(
 ) -> Result<(), String> {
     let _ops = DAEMON_OPS.lock();
     kill_daemon_locked(daemon);
-    let serial = serial_for(settings)?;
     {
         let mut inner = daemon.lock();
         inner.logs.clear();
     }
+    // After the kill, so the port the old daemon held is free to probe.
+    let (cart, serial, detected) = resolve_start(settings, |line| push_log(daemon, line))?;
     let log_label = match settings.multi64d_log_preset {
         Multi64dLogPreset::Default => "default",
         Multi64dLogPreset::Debug => "debug",
@@ -603,11 +789,11 @@ fn start_daemon(
         daemon,
         format!(
             "Starting multi64d on {serial} for {} ({}) [logging: {log_label}]",
-            settings.cart.label(),
+            running_cart_label(cart, detected),
             settings.listen
         ),
     );
-    let unproven = match settings.cart {
+    let unproven = match cart {
         DaemonCart::Sc64 => None,
         DaemonCart::Ed64 => Some("EverDrive-64 X7"),
         DaemonCart::Ed64Pro => Some("EverDrive-64 PRO"),
@@ -625,7 +811,7 @@ fn start_daemon(
     let daemon_path = resolve_multi64d_path(app)?;
     let mut cmd = Command::new(&daemon_path);
     cmd.env("NO_COLOR", "1")
-        .args(daemon_args(&serial, settings))
+        .args(daemon_args(&serial, cart, settings))
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .stdin(Stdio::null());
@@ -642,7 +828,8 @@ fn start_daemon(
     let mut inner = daemon.lock();
     inner.child = Some(child);
     inner.serial = Some(serial);
-    inner.cart = settings.cart;
+    inner.cart = cart;
+    inner.detected = detected;
     drop(inner);
     let _ = app.emit("daemon-changed", ());
     Ok(())
@@ -759,18 +946,16 @@ fn daemon_status(state: &AppState) -> DaemonStatus {
     let running = daemon_is_running(&state.daemon);
     // Read after `daemon_is_running` returns: it takes the daemon lock itself.
     let cart = if running {
-        state.daemon.lock().cart
+        let inner = state.daemon.lock();
+        running_cart_label(inner.cart, inner.detected)
     } else {
-        settings.cart
+        settings.cart.label().to_string()
     };
     let healthy = running && check_health(&listen);
     let message = if !running {
-        // Name why Start cannot work. Without a saved port this enumerates on every poll, which
-        // is cheap and only happens while stopped.
-        match serial_for(&settings) {
-            Ok(_) => "Stopped".into(),
-            Err(why) => format!("Stopped — {why}"),
-        }
+        // Name what Start would do, or why it cannot. Without a saved port this enumerates on
+        // every poll, which is cheap and only happens while stopped; it never probes a port.
+        stopped_message(&start_plan(&settings))
     } else if healthy {
         "Running (multi64d responds)".into()
     } else {
@@ -781,7 +966,7 @@ fn daemon_status(state: &AppState) -> DaemonStatus {
         healthy,
         listen,
         message,
-        cart: cart.label(),
+        cart,
     }
 }
 
@@ -1131,13 +1316,30 @@ struct TrayLabels {
     restart_enabled: bool,
 }
 
-fn tray_labels(running: bool, serial: Option<&str>, cart: DaemonCart, listen: &str) -> TrayLabels {
-    // SC64 is the default and needs no mention; any other cart is named, so an experimental
-    // daemon is never mistaken for the proven one.
-    let cart_note = match cart {
-        DaemonCart::Sc64 => String::new(),
-        other => format!(" · {}", other.label()),
-    };
+/// The note after the tray's status line. SC64 is the default and needs no mention; any other cart
+/// is named, so an experimental daemon is never mistaken for the proven one, and a stopped daemon on
+/// Auto-detect says so. A running daemon is named for what it was started with.
+fn tray_cart_note(
+    running: bool,
+    spawned: DaemonCart,
+    setting: CartSetting,
+) -> Option<&'static str> {
+    if running {
+        (spawned != DaemonCart::Sc64).then_some(spawned.label())
+    } else {
+        (setting != CartSetting::Sc64).then_some(setting.label())
+    }
+}
+
+/// `can_start` is whether Start can work at all: Auto-detect can start with no port known yet.
+fn tray_labels(
+    running: bool,
+    serial: Option<&str>,
+    can_start: bool,
+    cart_note: Option<&str>,
+    listen: &str,
+) -> TrayLabels {
+    let cart_note = cart_note.map(|c| format!(" · {c}")).unwrap_or_default();
     let status = if running {
         match serial {
             Some(port) => format!("Daemon: running on {port}"),
@@ -1145,7 +1347,7 @@ fn tray_labels(running: bool, serial: Option<&str>, cart: DaemonCart, listen: &s
             // listens rather than claiming a port we cannot name.
             None => format!("Daemon: running ({listen})"),
         }
-    } else if serial.is_some() {
+    } else if can_start {
         "Daemon: stopped".to_string()
     } else {
         // Start is greyed out below; say why, since the tray has no room for the full reason.
@@ -1158,8 +1360,8 @@ fn tray_labels(running: bool, serial: Option<&str>, cart: DaemonCart, listen: &s
         } else {
             "Start daemon"
         },
-        // Stopping always works; starting needs a port, and `start_daemon` fails without one.
-        toggle_enabled: running || serial.is_some(),
+        // Stopping always works; starting needs a port or a probe, and fails otherwise.
+        toggle_enabled: running || can_start,
         // Restarting a stopped daemon is just Start, which is the item above.
         restart_enabled: running,
     }
@@ -1204,7 +1406,7 @@ fn xfer64_label(state: Option<&Xfer64State>) -> (&'static str, bool) {
 /// runs on every `daemon-changed` event. "Running" here means the child process is alive; the
 /// window shows the finer-grained health.
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let (running, listen, serial, cart) = match app.try_state::<AppState>() {
+    let (running, listen, serial, can_start, cart_note) = match app.try_state::<AppState>() {
         Some(state) => {
             let settings = state.settings.lock().clone();
             // `daemon_is_running` takes the daemon lock itself, so read the port after it returns.
@@ -1213,19 +1415,21 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 let inner = state.daemon.lock();
                 (inner.serial.clone(), inner.cart)
             };
-            // Same rule as the port: a running daemon is named for what it was started with.
-            let cart = if running { spawned_cart } else { settings.cart };
+            // A stopped daemon is described by what Start would do, which never probes a port.
+            let plan = (!running).then(|| start_plan(&settings));
+            let can_start = !matches!(plan, Some(StartPlan::Blocked(_)));
             (
                 running,
                 settings.listen.clone(),
-                tray_serial(running, spawned, || effective_serial(&settings)),
-                cart,
+                tray_serial(running, spawned, || plan.as_ref().and_then(StartPlan::port)),
+                can_start,
+                tray_cart_note(running, spawned_cart, settings.cart),
             )
         }
-        None => (false, DEFAULT_LISTEN.to_string(), None, DaemonCart::Sc64),
+        None => (false, DEFAULT_LISTEN.to_string(), None, false, None),
     };
 
-    let labels = tray_labels(running, serial.as_deref(), cart, &listen);
+    let labels = tray_labels(running, serial.as_deref(), can_start, cart_note, &listen);
     // Disabled: a status line, not an action.
     let status = MenuItem::with_id(app, "status", &labels.status, false, None::<&str>)?;
     let toggle = MenuItem::with_id(
@@ -1352,30 +1556,37 @@ pub fn run() {
                             app.exit(0);
                         }
                         "show" => show_main_window(app),
+                        // Off the event loop: starting can probe serial ports for seconds.
                         "toggle" => {
-                            let Some(s) = app.try_state::<AppState>() else {
-                                return;
-                            };
-                            if daemon_is_running(&s.daemon) {
-                                kill_daemon(&s.daemon);
-                            } else {
-                                let settings = s.settings.lock().clone();
-                                if let Err(e) = start_daemon(app, &s.daemon, &settings) {
-                                    push_log(&s.daemon, format!("Start failed: {e}"));
+                            let app = app.clone();
+                            tauri::async_runtime::spawn_blocking(move || {
+                                let Some(s) = app.try_state::<AppState>() else {
+                                    return;
+                                };
+                                if daemon_is_running(&s.daemon) {
+                                    kill_daemon(&s.daemon);
+                                } else {
+                                    let settings = s.settings.lock().clone();
+                                    if let Err(e) = start_daemon(&app, &s.daemon, &settings) {
+                                        push_log(&s.daemon, format!("Start failed: {e}"));
+                                    }
                                 }
-                            }
-                            let _ = app.emit("daemon-changed", ());
+                                let _ = app.emit("daemon-changed", ());
+                            });
                         }
                         "restart" => {
-                            let Some(s) = app.try_state::<AppState>() else {
-                                return;
-                            };
-                            kill_daemon(&s.daemon);
-                            let settings = s.settings.lock().clone();
-                            if let Err(e) = start_daemon(app, &s.daemon, &settings) {
-                                push_log(&s.daemon, format!("Restart failed: {e}"));
-                            }
-                            let _ = app.emit("daemon-changed", ());
+                            let app = app.clone();
+                            tauri::async_runtime::spawn_blocking(move || {
+                                let Some(s) = app.try_state::<AppState>() else {
+                                    return;
+                                };
+                                kill_daemon(&s.daemon);
+                                let settings = s.settings.lock().clone();
+                                if let Err(e) = start_daemon(&app, &s.daemon, &settings) {
+                                    push_log(&s.daemon, format!("Restart failed: {e}"));
+                                }
+                                let _ = app.emit("daemon-changed", ());
+                            });
                         }
                         "xfer64" => {
                             let app = app.clone();
@@ -1410,8 +1621,13 @@ pub fn run() {
             }
 
             if settings_for_setup.auto_start_daemon {
-                match serial_for(&settings_for_setup) {
-                    Ok(_) => {
+                match start_plan(&settings_for_setup) {
+                    // Skipping the auto-start used to leave no trace; the log now says why.
+                    StartPlan::Blocked(why) => {
+                        push_log(&daemon_for_setup, format!("multi64d not started: {why}"))
+                    }
+                    // A thread of its own: Auto-detect may probe ports for seconds.
+                    _ => {
                         let h = handle.clone();
                         let d = Arc::clone(&daemon_for_setup);
                         let s = settings_for_setup.clone();
@@ -1423,8 +1639,6 @@ pub fn run() {
                             let _ = h.emit("daemon-changed", ());
                         });
                     }
-                    // Skipping the auto-start used to leave no trace; the log now says why.
-                    Err(why) => push_log(&daemon_for_setup, format!("multi64d not started: {why}")),
                 }
             }
 
@@ -1472,8 +1686,8 @@ mod tests {
         assert_eq!(s.multi64d_log_preset, Multi64dLogPreset::Default);
         assert_eq!(
             s.cart,
-            DaemonCart::Sc64,
-            "files predating the setting meant SC64"
+            CartSetting::Auto,
+            "files predating the setting auto-detect"
         );
     }
 
@@ -1482,11 +1696,11 @@ mod tests {
         let json =
             r#"{"serialPort":"COM6","baud":115200,"listen":"127.0.0.1:38765","cart":"ed64"}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(s.cart, DaemonCart::Ed64);
+        assert_eq!(s.cart, CartSetting::Ed64);
         let json =
             r#"{"serialPort":"COM8","baud":115200,"listen":"127.0.0.1:38765","cart":"ed64pro"}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(s.cart, DaemonCart::Ed64Pro);
+        assert_eq!(s.cart, CartSetting::Ed64Pro);
     }
 
     /// The settings file and `--cart` must use multi64d's own names, or the daemon refuses to
@@ -1507,27 +1721,53 @@ mod tests {
             let at = args.iter().position(|a| a == name).expect(name);
             args[at + 1].clone()
         };
-        let sc64 = daemon_args("COM4", &Settings::default());
+        let sc64 = daemon_args("COM4", DaemonCart::Sc64, &Settings::default());
         assert_eq!(flag(&sc64, "--cart"), "sc64");
         assert_eq!(flag(&sc64, "--serial"), "COM4");
-        let ed64 = daemon_args(
-            "COM6",
-            &Settings {
-                cart: DaemonCart::Ed64,
-                baud: 57600,
-                ..Settings::default()
-            },
-        );
+        let slow = Settings {
+            baud: 57600,
+            ..Settings::default()
+        };
+        let ed64 = daemon_args("COM6", DaemonCart::Ed64, &slow);
         assert_eq!(flag(&ed64, "--cart"), "ed64");
         assert_eq!(flag(&ed64, "--baud"), "57600");
-        let pro = daemon_args(
-            "COM8",
-            &Settings {
-                cart: DaemonCart::Ed64Pro,
-                ..Settings::default()
-            },
-        );
+        let pro = daemon_args("COM8", DaemonCart::Ed64Pro, &Settings::default());
         assert_eq!(flag(&pro, "--cart"), "ed64pro");
+    }
+
+    /// `auto` is a Multi64 setting, never a daemon argument; the fixed values are the daemon's.
+    #[test]
+    fn cart_settings_map_onto_daemon_carts() {
+        assert_eq!(CartSetting::default(), CartSetting::Auto);
+        assert_eq!(CartSetting::Auto.fixed(), None);
+        assert_eq!(CartSetting::Auto.label(), "Auto-detect");
+        assert_eq!(
+            serde_json::to_string(&CartSetting::Auto).unwrap(),
+            "\"auto\""
+        );
+        for (setting, cart) in [
+            (CartSetting::Sc64, DaemonCart::Sc64),
+            (CartSetting::Ed64, DaemonCart::Ed64),
+            (CartSetting::Ed64Pro, DaemonCart::Ed64Pro),
+        ] {
+            assert_eq!(setting.fixed(), Some(cart));
+            assert_eq!(
+                serde_json::to_string(&setting).unwrap(),
+                serde_json::to_string(&cart).unwrap()
+            );
+        }
+        assert_eq!(DaemonCart::from(DetectedCart::Sc64), DaemonCart::Sc64);
+        assert_eq!(DaemonCart::from(DetectedCart::Ed64Pro).arg(), "ed64pro");
+        assert_eq!(DaemonCart::from(DetectedCart::Ed64).arg(), "ed64");
+    }
+
+    #[test]
+    fn a_running_cart_says_when_auto_detect_chose_it() {
+        assert_eq!(running_cart_label(DaemonCart::Sc64, false), "SummerCart64");
+        assert_eq!(
+            running_cart_label(DaemonCart::Ed64Pro, true),
+            "EverDrive-64 PRO (experimental) (auto-detected)"
+        );
     }
 
     /// start_minimized is meaningless without a tray to restore from.
@@ -1670,29 +1910,6 @@ mod port_selection_tests {
     }
 
     #[test]
-    fn the_tag_match_ignores_case_and_survives_short_or_non_ascii_strings() {
-        assert!(usb_is_sc64(&UsbPortInfo {
-            vid: 0x0403,
-            pid: 0x6014,
-            serial_number: Some("sc64xxxxxxa".into()),
-            manufacturer: None,
-            product: None,
-        }));
-        for odd in ["", "SC", "SCβ4", "βSC64"] {
-            assert!(
-                !usb_is_sc64(&UsbPortInfo {
-                    vid: 0x0403,
-                    pid: 0x6014,
-                    serial_number: Some(odd.into()),
-                    manufacturer: None,
-                    product: Some(odd.into()),
-                }),
-                "{odd:?} must not match (or panic on a char boundary)"
-            );
-        }
-    }
-
-    #[test]
     fn two_carts_is_ambiguous_rather_than_a_guess() {
         let ports = [sc64_windows("COM8"), ch340("COM5"), sc64_windows("COM4")];
         let got = pick_auto(&ports);
@@ -1701,53 +1918,155 @@ mod port_selection_tests {
         assert!(problem.contains("COM4, COM8"), "{problem}");
     }
 
+    fn pci(name: &str) -> SerialPortInfo {
+        SerialPortInfo {
+            port_name: name.to_string(),
+            port_type: SerialPortType::PciPort,
+        }
+    }
+
+    fn ready(cart: DaemonCart, port: &str, detected: bool) -> StartPlan {
+        StartPlan::Ready {
+            cart,
+            port: port.to_string(),
+            detected,
+        }
+    }
+
     #[test]
     fn a_saved_port_wins_without_enumerating() {
-        let got = resolve_serial(Some("COM5"), DaemonCart::Sc64, || {
-            panic!("auto must not run with a saved port")
+        let got = plan_start(Some("COM5"), CartSetting::Sc64, || {
+            panic!("a fixed cart with a saved port must not enumerate")
         });
-        assert_eq!(got, Ok("COM5".into()));
+        assert_eq!(got, ready(DaemonCart::Sc64, "COM5", false));
     }
 
     #[test]
     fn an_empty_saved_port_means_auto() {
-        let got = resolve_serial(Some(""), DaemonCart::Sc64, || {
-            AutoPort::Found("COM4".into())
-        });
-        assert_eq!(got, Ok("COM4".into()));
-        let got = resolve_serial(None, DaemonCart::Sc64, || AutoPort::Found("COM4".into()));
-        assert_eq!(got, Ok("COM4".into()));
+        let got = plan_start(Some(""), CartSetting::Sc64, || vec![sc64_windows("COM4")]);
+        assert_eq!(got, ready(DaemonCart::Sc64, "COM4", false));
+        let got = plan_start(None, CartSetting::Sc64, || vec![sc64_windows("COM4")]);
+        assert_eq!(got, ready(DaemonCart::Sc64, "COM4", false));
     }
 
-    /// Auto cannot identify an EverDrive, and must not hand it an SC64's port either.
+    /// Auto cannot identify an EverDrive, and must not hand a fixed EverDrive an SC64's port.
     #[test]
-    fn an_everdrive_on_auto_is_an_error_without_enumerating() {
-        let err = resolve_serial(None, DaemonCart::Ed64, || {
-            panic!("an EverDrive must not fall back to the SC64 auto pick")
-        })
-        .unwrap_err();
-        assert!(err.contains("EverDrive"), "{err}");
-        let got = resolve_serial(Some("COM6"), DaemonCart::Ed64, || {
-            panic!("auto must not run with a saved port")
+    fn a_fixed_everdrive_without_a_port_is_blocked_without_enumerating() {
+        for cart in [CartSetting::Ed64, CartSetting::Ed64Pro] {
+            let got = plan_start(None, cart, || {
+                panic!("an EverDrive must not fall back to the SC64 auto pick")
+            });
+            assert!(
+                matches!(&got, StartPlan::Blocked(why) if why.contains("Auto-detect")),
+                "{got:?}"
+            );
+        }
+        let got = plan_start(Some("COM6"), CartSetting::Ed64, || {
+            panic!("a saved port needs no enumeration")
         });
-        assert_eq!(got, Ok("COM6".into()));
-        let err = resolve_serial(None, DaemonCart::Ed64Pro, || {
-            panic!("finding a PRO would mean writing to ports")
-        })
-        .unwrap_err();
-        assert!(err.contains("EverDrive"), "{err}");
+        assert_eq!(got, ready(DaemonCart::Ed64, "COM6", false));
     }
 
     /// No cart on Auto is an error carrying the reason, not some other port.
     #[test]
-    fn no_cart_on_auto_is_an_error_with_the_reason() {
-        let err = resolve_serial(None, DaemonCart::Sc64, || AutoPort::NoCart).unwrap_err();
-        assert_eq!(Some(err), AutoPort::NoCart.problem());
-        let err = resolve_serial(None, DaemonCart::Sc64, || {
-            AutoPort::Ambiguous(vec!["COM4".into(), "COM8".into()])
-        })
+    fn a_fixed_sc64_with_no_cart_on_auto_is_blocked_with_the_reason() {
+        let got = plan_start(None, CartSetting::Sc64, || vec![ch340("COM5")]);
+        assert_eq!(got, StartPlan::Blocked(AutoPort::NoCart.problem().unwrap()));
+        let got = plan_start(None, CartSetting::Sc64, || {
+            vec![sc64_windows("COM4"), sc64_windows("COM8")]
+        });
+        assert!(matches!(&got, StartPlan::Blocked(why) if why.contains("More than one")));
+    }
+
+    /// The common case sends nothing: an SC64 recognised by its descriptors.
+    #[test]
+    fn auto_detect_takes_an_sc64_by_its_usb_ids_without_probing() {
+        let got = plan_start(None, CartSetting::Auto, || {
+            vec![ch340("COM5"), sc64_windows("COM4")]
+        });
+        assert_eq!(got, ready(DaemonCart::Sc64, "COM4", true));
+        let got = plan_start(Some("com4"), CartSetting::Auto, || {
+            vec![sc64_windows("COM4")]
+        });
+        assert_eq!(got, ready(DaemonCart::Sc64, "com4", true));
+    }
+
+    #[test]
+    fn auto_detect_probes_a_saved_port_that_is_not_an_sc64_and_only_that_port() {
+        let got = plan_start(Some("COM6"), CartSetting::Auto, || vec![ch340("COM5")]);
+        assert_eq!(got, StartPlan::Probe(Some("COM6".into())));
+        assert_eq!(got.port().as_deref(), Some("COM6"));
+    }
+
+    #[test]
+    fn auto_detect_without_an_sc64_probes_every_port_but_two_sc64s_still_block() {
+        let got = plan_start(None, CartSetting::Auto, || vec![ch340("COM5")]);
+        assert_eq!(got, StartPlan::Probe(None));
+        assert_eq!(got.port(), None);
+        let got = plan_start(None, CartSetting::Auto, || {
+            vec![sc64_windows("COM4"), sc64_windows("COM8")]
+        });
+        assert!(matches!(got, StartPlan::Blocked(_)));
+    }
+
+    #[test]
+    fn detect_tries_usb_ports_first_in_name_order_and_stops_at_the_first_cart() {
+        let ports = [pci("COM1"), ch340("COM7"), ch340("COM3")];
+        let mut tried = Vec::new();
+        let mut logged = Vec::new();
+        let got = detect_cart(
+            None,
+            &ports,
+            |port| {
+                tried.push(port.to_string());
+                (port == "COM7").then_some(DetectedCart::Ed64Pro)
+            },
+            |line| logged.push(line),
+        );
+        assert_eq!(got, Ok((DaemonCart::Ed64Pro, "COM7".to_string())));
+        assert_eq!(tried, ["COM3", "COM7"], "COM1 is not USB and comes last");
+        assert_eq!(logged.len(), 2);
+        assert!(logged[1].contains("EverDrive-64 PRO"), "{logged:?}");
+    }
+
+    #[test]
+    fn detect_names_every_port_it_tried_when_nothing_answers() {
+        let ports = [pci("COM1"), ch340("COM3")];
+        let err = detect_cart(None, &ports, |_| None, |_| {}).unwrap_err();
+        assert!(err.contains("COM3, COM1"), "{err}");
+        let err = detect_cart(None, &[], |_| panic!("no ports to probe"), |_| {}).unwrap_err();
+        assert!(err.contains("no serial ports"), "{err}");
+    }
+
+    #[test]
+    fn detect_on_a_saved_port_probes_only_that_port() {
+        let mut tried = Vec::new();
+        let err = detect_cart(
+            Some("COM9"),
+            &[ch340("COM3")],
+            |port| {
+                tried.push(port.to_string());
+                None
+            },
+            |_| {},
+        )
         .unwrap_err();
-        assert!(err.contains("More than one"), "{err}");
+        assert_eq!(tried, ["COM9"]);
+        assert!(err.contains("COM9"), "{err}");
+    }
+
+    #[test]
+    fn a_stopped_daemon_says_what_start_will_do() {
+        assert_eq!(
+            stopped_message(&ready(DaemonCart::Sc64, "COM4", true)),
+            "Stopped"
+        );
+        assert!(stopped_message(&StartPlan::Probe(Some("COM6".into()))).contains("on COM6"));
+        assert!(stopped_message(&StartPlan::Probe(None)).contains("each serial port"));
+        assert_eq!(
+            stopped_message(&StartPlan::Blocked("why".into())),
+            "Stopped — why"
+        );
     }
 
     /// The frontend reads `autoWarning`; a rename on either side would silently drop the warning.
@@ -1768,9 +2087,11 @@ mod port_selection_tests {
 mod tray_tests {
     use super::*;
 
+    const LISTEN: &str = "127.0.0.1:38765";
+
     #[test]
     fn status_names_the_port_when_running() {
-        let l = tray_labels(true, Some("COM4"), DaemonCart::Sc64, "127.0.0.1:38765");
+        let l = tray_labels(true, Some("COM4"), true, None, LISTEN);
         assert_eq!(l.status, "Daemon: running on COM4");
         assert_eq!(l.toggle, "Stop daemon");
     }
@@ -1779,35 +2100,56 @@ mod tray_tests {
     fn status_falls_back_to_listen_when_the_port_is_unknown() {
         // A live daemon with no configured or auto-detected port: name where it listens rather
         // than a port we cannot identify.
-        let l = tray_labels(true, None, DaemonCart::Sc64, "127.0.0.1:38765");
+        let l = tray_labels(true, None, true, None, LISTEN);
         assert_eq!(l.status, "Daemon: running (127.0.0.1:38765)");
     }
 
     /// An experimental daemon is named in the tray, running or not; SC64 stays unadorned.
     #[test]
-    fn status_names_an_everdrive_cart() {
-        let l = tray_labels(true, Some("COM6"), DaemonCart::Ed64, "127.0.0.1:38765");
+    fn the_cart_note_names_everything_but_a_running_sc64() {
+        assert_eq!(
+            tray_cart_note(true, DaemonCart::Sc64, CartSetting::Auto),
+            None
+        );
+        assert_eq!(
+            tray_cart_note(true, DaemonCart::Ed64Pro, CartSetting::Auto),
+            Some("EverDrive-64 PRO (experimental)")
+        );
+        assert_eq!(
+            tray_cart_note(false, DaemonCart::Sc64, CartSetting::Auto),
+            Some("Auto-detect")
+        );
+        assert_eq!(
+            tray_cart_note(false, DaemonCart::Ed64, CartSetting::Sc64),
+            None
+        );
+        let l = tray_labels(
+            true,
+            Some("COM6"),
+            true,
+            Some("EverDrive-64 X7 (experimental)"),
+            LISTEN,
+        );
         assert_eq!(
             l.status,
             "Daemon: running on COM6 · EverDrive-64 X7 (experimental)"
         );
-        let l = tray_labels(false, None, DaemonCart::Ed64, "127.0.0.1:38765");
+        let l = tray_labels(
+            false,
+            None,
+            false,
+            Some("EverDrive-64 X7 (experimental)"),
+            LISTEN,
+        );
         assert_eq!(
             l.status,
             "Daemon: stopped (no cart port) · EverDrive-64 X7 (experimental)"
         );
-        let l = tray_labels(true, Some("COM8"), DaemonCart::Ed64Pro, "127.0.0.1:38765");
-        assert_eq!(
-            l.status,
-            "Daemon: running on COM8 · EverDrive-64 PRO (experimental)"
-        );
-        let l = tray_labels(true, Some("COM4"), DaemonCart::Sc64, "127.0.0.1:38765");
-        assert_eq!(l.status, "Daemon: running on COM4");
     }
 
     #[test]
     fn stopped_shows_start_and_disables_restart() {
-        let l = tray_labels(false, Some("COM4"), DaemonCart::Sc64, "127.0.0.1:38765");
+        let l = tray_labels(false, Some("COM4"), true, None, LISTEN);
         assert_eq!(l.status, "Daemon: stopped");
         assert_eq!(l.toggle, "Start daemon");
         assert!(l.toggle_enabled, "a port is configured, so Start is usable");
@@ -1818,18 +2160,26 @@ mod tray_tests {
     }
 
     #[test]
-    fn start_is_disabled_without_a_port() {
-        // `start_daemon` fails with no serial port, so the item must not invite the click.
-        let l = tray_labels(false, None, DaemonCart::Sc64, "127.0.0.1:38765");
+    fn start_is_disabled_when_it_cannot_work() {
+        // `start_daemon` fails without a port or a probe, so the item must not invite the click.
+        let l = tray_labels(false, None, false, None, LISTEN);
         assert!(!l.toggle_enabled);
         // ...and the status line says why it is greyed out.
         assert_eq!(l.status, "Daemon: stopped (no cart port)");
     }
 
+    /// Auto-detect with no SC64 on USB has no port yet, but Start will probe for one.
+    #[test]
+    fn auto_detect_can_start_before_a_port_is_known() {
+        let l = tray_labels(false, None, true, Some("Auto-detect"), LISTEN);
+        assert!(l.toggle_enabled);
+        assert_eq!(l.status, "Daemon: stopped · Auto-detect");
+    }
+
     #[test]
     fn stop_stays_enabled_even_without_a_port() {
         // The port can disappear while the daemon runs; stopping it must still be possible.
-        let l = tray_labels(true, None, DaemonCart::Sc64, "127.0.0.1:38765");
+        let l = tray_labels(true, None, false, None, LISTEN);
         assert_eq!(l.toggle, "Stop daemon");
         assert!(l.toggle_enabled);
         assert!(l.restart_enabled);
@@ -1843,7 +2193,7 @@ mod tray_tests {
             panic!("a running daemon must not re-resolve its port")
         });
         assert_eq!(serial.as_deref(), Some("COM4"));
-        let l = tray_labels(true, serial.as_deref(), DaemonCart::Sc64, "127.0.0.1:38765");
+        let l = tray_labels(true, serial.as_deref(), true, None, LISTEN);
         assert_eq!(l.status, "Daemon: running on COM4");
     }
 
@@ -1860,7 +2210,7 @@ mod tray_tests {
     #[test]
     fn running_without_a_recorded_port_falls_back_to_listen() {
         let serial = tray_serial(true, None, || Some("COM4".into()));
-        let l = tray_labels(true, serial.as_deref(), DaemonCart::Sc64, "127.0.0.1:38765");
+        let l = tray_labels(true, serial.as_deref(), true, None, LISTEN);
         assert_eq!(l.status, "Daemon: running (127.0.0.1:38765)");
     }
 

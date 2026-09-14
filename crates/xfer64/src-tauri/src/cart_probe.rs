@@ -1,18 +1,13 @@
-//! Serial probes that tell the carts apart when the user selects **Auto** in Settings, in order:
+//! Tells the carts apart when the user selects **Auto** in Settings, over [`multi64_cart_probe`]:
 //!
-//! 1. SummerCart64 `IDENTIFIER_GET`;
-//! 2. the **EverDrive-64 PRO**'s edlink handshake, which checks a status key, protocol ID and device ID
-//!    ([`docs/spec/ed64-pro-usb-host.md`](../../../docs/spec/ed64-pro-usb-host.md) §4);
-//! 3. the X-series `usb64` `cmd` + `t` test ([`docs/spec/l3-over-everdrive-x7.md`](../../../docs/spec/l3-over-everdrive-x7.md) §8).
-//!
-//! The PRO goes before the X-series because its handshake is the stronger identity check — and edlink
-//! itself sends that handshake to every port it scans.
+//! 1. a SummerCart64 by its USB descriptors, which writes nothing and still works while `multi64d`
+//!    holds the port;
+//! 2. otherwise the wire probes, in order: SummerCart64 `IDENTIFIER_GET`, the **EverDrive-64 PRO**'s
+//!    edlink handshake ([`docs/spec/ed64-pro-usb-host.md`](../../../docs/spec/ed64-pro-usb-host.md)
+//!    §4), then the X-series `usb64` `cmd` + `t` test
+//!    ([`docs/spec/l3-over-everdrive-x7.md`](../../../docs/spec/l3-over-everdrive-x7.md) §8).
 
-use multi64_sc64_sd::Sc64Link;
-use serialport::{ClearBuffer, SerialPort};
-use std::io;
-use std::io::Write;
-use std::time::{Duration, Instant};
+use multi64_cart_probe::DetectedCart;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DetectedCartKind {
@@ -34,81 +29,53 @@ impl DetectedCartKind {
     }
 }
 
-/// SC64 `IDENTIFIER_GET`, then the EverDrive-64 PRO handshake, then the X-series `usb64` test.
-pub fn probe_serial_cart(port: &str) -> DetectedCartKind {
-    if probe_sc64_identify(port) {
-        return DetectedCartKind::Sc64;
-    }
-    if probe_ed64pro_handshake(port) {
-        return DetectedCartKind::Ed64Pro;
-    }
-    if probe_ed64_test_connection(port) {
-        return DetectedCartKind::Ed64Beta;
-    }
-    DetectedCartKind::Unknown
-}
-
-fn probe_sc64_identify(port: &str) -> bool {
-    let mut link = match Sc64Link::open(port, 115200) {
-        Ok(l) => l,
-        Err(_) => return false,
-    };
-    link.identify().is_ok()
-}
-
-/// The full edlink connection sequence at 921600 baud; succeeds only for an EverDrive-64 PRO.
-fn probe_ed64pro_handshake(port: &str) -> bool {
-    multi64_ed64pro_link::Ed64Pro::open(port).is_ok()
-}
-
-fn probe_ed64_test_connection(port: &str) -> bool {
-    let mut port_handle = match serialport::new(port, 115200)
-        .timeout(Duration::from_millis(100))
-        .open()
-    {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    let _ = port_handle.clear(ClearBuffer::Input);
-    let mut pkt = [0u8; 16];
-    pkt[0..3].copy_from_slice(b"cmd");
-    pkt[3] = b't';
-    if port_handle.write_all(&pkt).is_err() {
-        return false;
-    }
-    let _ = port_handle.flush();
-    match read_ed64_response(&mut *port_handle) {
-        Ok(buf) => buf.len() >= 4 && matches!(buf[3], b'k' | b'r'),
-        Err(_) => false,
-    }
-}
-
-fn read_ed64_response(port: &mut dyn SerialPort) -> io::Result<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut scratch = [0u8; 256];
-    let start = Instant::now();
-    let total_timeout = Duration::from_millis(2000);
-    while start.elapsed() < total_timeout && out.len() < 512 {
-        match port.read(&mut scratch) {
-            Ok(0) => std::thread::sleep(Duration::from_millis(1)),
-            Ok(n) => {
-                out.extend_from_slice(&scratch[..n]);
-                if out.len() >= 4 && matches!(out[3], b'k' | b'r') {
-                    let t0 = Instant::now();
-                    while t0.elapsed() < Duration::from_millis(80) && out.len() < 512 {
-                        match port.read(&mut scratch) {
-                            Ok(0) => break,
-                            Ok(n) => out.extend_from_slice(&scratch[..n]),
-                            Err(e) if e.kind() == io::ErrorKind::TimedOut => break,
-                            Err(e) => return Err(e),
-                        }
-                    }
-                    break;
-                }
-            }
-            Err(e) if e.kind() == io::ErrorKind::TimedOut => {}
-            Err(e) => return Err(e),
+impl From<Option<DetectedCart>> for DetectedCartKind {
+    fn from(found: Option<DetectedCart>) -> Self {
+        match found {
+            Some(DetectedCart::Sc64) => DetectedCartKind::Sc64,
+            Some(DetectedCart::Ed64Pro) => DetectedCartKind::Ed64Pro,
+            Some(DetectedCart::Ed64) => DetectedCartKind::Ed64Beta,
+            None => DetectedCartKind::Unknown,
         }
     }
-    Ok(out)
+}
+
+/// Whether `port` enumerates as a SummerCart64, judged from its USB descriptors alone.
+pub fn port_is_sc64_by_usb(port: &str) -> bool {
+    serialport::available_ports()
+        .map(|ports| {
+            ports.iter().any(|p| {
+                p.port_name.eq_ignore_ascii_case(port)
+                    && matches!(
+                        &p.port_type,
+                        serialport::SerialPortType::UsbPort(usb) if multi64_cart_probe::usb_is_sc64(usb)
+                    )
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// The SC64 descriptor match, then the wire probes.
+///
+/// The descriptor match comes first so an SC64 is found without opening its port: while
+/// `multi64d` holds it, opening fails and the wire probes would report nothing.
+pub fn probe_serial_cart(port: &str) -> DetectedCartKind {
+    if port_is_sc64_by_usb(port) {
+        return DetectedCartKind::Sc64;
+    }
+    multi64_cart_probe::probe_port(port).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detected_carts_keep_xfer64s_names() {
+        let kind = |found| DetectedCartKind::from(found).as_str();
+        assert_eq!(kind(Some(DetectedCart::Sc64)), "sc64");
+        assert_eq!(kind(Some(DetectedCart::Ed64Pro)), "ed64pro");
+        assert_eq!(kind(Some(DetectedCart::Ed64)), "ed64");
+        assert_eq!(kind(None), "unknown");
+    }
 }

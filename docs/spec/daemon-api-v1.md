@@ -27,10 +27,13 @@ Default listen address: **`127.0.0.1:38765`** (configurable via `--listen` / `MU
 | `websocket_path` | string | Path for the WebSocket upgrade (e.g. `"/ws"`). |
 | `serial` | string | Configured serial device path (e.g. `COM3`); empty in the metadata-only test router. |
 | `serialActive` | boolean | `true` **only** while the daemon holds an open serial link. `false` after **`POST /v1/serial/release`** until **`POST /v1/serial/resume`**, and also `false` while the link is **faulted** (§1.3). |
+| `cart` | string | The cart mapping the daemon was started for, as `--cart` names it (§5.1): `sc64`, `ed64` or `ed64pro`. Empty in the metadata-only test router. Daemons older than this field omit it; clients MUST treat a missing or unrecognised value as unknown. It is configuration, like `serial`: it says which mapping the daemon speaks, not that a cart of that kind is attached. |
 
 ### 1.2 Serial yield (Xfer64)
 
 Only one process can open the cart’s COM port at a time. Tools such as **Xfer64** may **`GET /`** (compare `serial` to the port they need and check `serialActive`), then **`POST /v1/serial/release`** before opening the port locally, and **`POST /v1/serial/resume`** when finished.
+
+A tool that needs to know which cart is attached MAY take `serial` and `cart` from **`GET /`** instead of probing ports, which cannot work anyway while the daemon holds the port. Xfer64's **Auto** setting does, as long as the `serial` port is still enumerated, and probes ports as before when the daemon is not running, omits `cart`, or names a port that is gone.
 
 | Endpoint | Success body |
 |----------|----------------|

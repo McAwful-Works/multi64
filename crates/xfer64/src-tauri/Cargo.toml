@@ -24,6 +24,7 @@ rfd = "0.17"
 multi64-sc64-sd = { path = "../../multi64-sc64-sd", features = ["ed64", "ed64pro"] }
 multi64-ed64-link = { path = "../../multi64-ed64-link" }
 multi64-ed64pro-link = { path = "../../ed64pro-link" }
+multi64-cart-probe = { path = "../../cart-probe" }
 serialport = "4"
 ureq = { version = "3", default-features = false }
 tauri-plugin-drag = "2.1.1"

@@ -22,6 +22,7 @@ async fn get_root_returns_service_json() {
     assert_eq!(v["websocket_path"], "/ws");
     assert!(v["version"].as_str().is_some());
     assert_eq!(v["serial"], "");
+    assert_eq!(v["cart"], "");
     assert_eq!(v["serialActive"], false);
 }
 
@@ -148,6 +149,10 @@ async fn root_reports_serial_inactive_while_link_is_faulted() {
     let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["serial"], "COM_TEST");
+    assert!(
+        matches!(v["cart"].as_str(), Some("sc64" | "ed64" | "ed64pro")),
+        "GET / names the cart: {v}"
+    );
     assert_eq!(v["serialActive"], false);
 }
 

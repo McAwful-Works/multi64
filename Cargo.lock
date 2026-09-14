@@ -2688,6 +2688,7 @@ dependencies = [
  "anyhow",
  "auto-launch",
  "dirs",
+ "multi64-cart-probe",
  "multi64d",
  "parking_lot",
  "serde",
@@ -2699,6 +2700,15 @@ dependencies = [
  "tauri-plugin-single-instance",
  "ureq",
  "winreg 0.56.0",
+]
+
+[[package]]
+name = "multi64-cart-probe"
+version = "0.0.0"
+dependencies = [
+ "multi64-ed64pro-link",
+ "multi64-sc64-link",
+ "serialport",
 ]
 
 [[package]]
@@ -6877,6 +6887,7 @@ name = "xfer64"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "multi64-cart-probe",
  "multi64-ed64-link",
  "multi64-ed64pro-link",
  "multi64-sc64-sd",

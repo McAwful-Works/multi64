@@ -172,7 +172,7 @@ No other N64-side change is expected. If validation turns one up, record it here
 | [`n64/test-rom`](../../n64/README.md) | Already uses libdragon `<usb.h>`, which supports both carts. Boots on `CART_SC64` and `CART_EVERDRIVE`, with an on-screen **UNVALIDATED** warning on the latter (§5). |
 | `multi64d` | `--cart ed64` selects `Ed64L2Pipe` ([daemon API §5.1](./daemon-api-v1.md)). Experimental: wired in and host-tested, but it has never carried L3 to a cart. |
 | [`n64/agent`](../../n64/agent/README.md) | `make CART=ed64` builds the in-game agent around `ed64.c`: the console side of §4 without libdragon, under the agent's PI rules. Never run on a cart. |
-| [`crates/multi64`](../../crates/multi64/README.md) | Settings → **Cart** → *EverDrive-64 X7 (experimental)* starts the daemon with `--cart ed64`. Auto never picks an X7's port: its FT245R has no cart-specific USB descriptor. |
+| [`crates/multi64`](../../crates/multi64/README.md) | Settings → **Cart** → *EverDrive-64 X7 (experimental)* starts the daemon with `--cart ed64`. Its default, *Auto-detect*, finds an X7 only by sending the `usb64` test (§8) to ports, since its FT245R has no cart-specific USB descriptor ([`multi64-cart-probe`](../../crates/cart-probe/README.md)). |
 
 ---
 
