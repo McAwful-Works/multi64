@@ -17,7 +17,7 @@ it; this is that code, written to be dropped into a ROM its authors did not desi
 | **Stack** | about 300 bytes at the deepest point, measured |
 | **RAM** | about 21 KB: 4.2–4.7 KB code, 0–1.1 KB data (both depend on compiler and flags), 16.4 KB BSS |
 | **Symbols** | none undefined. Nothing from libultra, libdragon, the C library or the game |
-| **Cart** | SummerCart64 only |
+| **Cart** | SummerCart64. EverDrive-64 X7 and PRO builds exist (`CART=ed64`, `CART=ed64pro`) and have **never run on a cart**; see §6 |
 
 The per-frame rule is not style. M64P promises that every region in one request is read at
 one consistent point in the frame and that a write lands between frames. That property comes
@@ -46,7 +46,8 @@ already in place. See [`mem_proto.h`](../../n64/test-rom/mem_proto.h).
 ## 3. What it does to the machine
 
 An injected agent touches the PI bus while the game is using it. These rules are in
-[`sc64.c`](../../n64/agent/sc64.c), and each one was paid for.
+[`sc64.c`](../../n64/agent/sc64.c), and each one was paid for. The EverDrive drivers follow them
+through [`pi_io.c`](../../n64/agent/pi_io.c).
 
 - **It never writes the PI control registers** (`DRAM_ADDR`, `CART_ADDR`, `RD_LEN`, `WR_LEN`).
   Those belong to whatever DMA the game has in flight. Data moves by CPU load and store through
@@ -85,6 +86,7 @@ cd n64/agent
 make                           # build/m64p_agent.o with libdragon's mips64-elf
 make PREFIX=mips64-ultra-elf-  # with a libultra toolchain
 make symbols                   # sizes, exports, undefined (must be empty)
+make CART=ed64pro              # an EverDrive build (experimental; see §6)
 ```
 
 The default flags are `-mabi=32 -G0 -mno-gpopt -mno-abicalls -fno-pic -march=vr4300`: o32, no
@@ -118,3 +120,33 @@ claim has rotted and the ROM will call through garbage.
 implementation. A downstream project that vendors the agent should copy `n64/agent/*.c`, `*.h`
 and `n64/test-rom/mem_proto.*`, record the multi64 commit they came from, and re-copy rather
 than edit. A local fix to `mem_proto` is a fork of the protocol.
+
+## 6. EverDrive builds (experimental)
+
+**Neither has run on a cart.** They exist so that the first person with an EverDrive has something
+to test. Nothing about them counts as support.
+
+| Build | Driver | Wire | RAM, flat image |
+|---|---|---|---|
+| default | `sc64.c` | [l3-over-sc64.md](../spec/l3-over-sc64.md) | 20,664 B |
+| `CART=ed64` | `ed64.c` + `pi_io.c` | [l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4: `DMA@` messages through the cart's 512-byte USB window | 22,992 B |
+| `CART=ed64pro` | `ed64pro.c` + `pi_io.c` | [l3-over-everdrive-pro.md](../spec/l3-over-everdrive-pro.md): the cart FIFO | 22,052 B |
+
+What differs from the SC64 build:
+
+- **The driver is chosen when you build.** Nothing probes for the cart at run time, because probing
+  one cart's registers on another is exactly the hazard found between libdragon and the PRO. Build
+  for the cart the game will run on; an X7 build writes X7 registers. The default build compiles none
+  of the EverDrive code and stays byte-identical to the one that has run on hardware.
+- **Frames are reassembled.** An SC64 packet carries a whole L3 frame. The EverDrive hosts send
+  512-byte messages (X7) or 1024-byte FIFO writes (PRO), so these builds collect bytes across
+  receives and ticks, find frames by their magic, and discard a partial frame that has waited 60
+  ticks, so a lost piece cannot swallow the host's retry.
+- **Nothing is staged in ROM space.** libdragon's X7 driver copies received packets to the top of the
+  ROM window; this one reads straight out of the cart's USB window. The PRO needs no staging.
+- **A reply holds the tick while it is sent.** The X7 driver waits for the cart after each 512-byte
+  block, the PRO driver after each 1024-byte block. Every wait is bounded.
+- **The X7 driver writes `SYSCFG = 0` at init**, as libdragon does. Whether that is harmless inside a
+  commercial game is unverified.
+
+The host side is `multi64d --cart ed64` or `--cart ed64pro`.
