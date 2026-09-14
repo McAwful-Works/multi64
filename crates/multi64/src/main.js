@@ -75,10 +75,11 @@ async function refreshPorts() {
 }
 
 /**
- * The Auto option text and both hints depend on the cart being edited, so they re-render when it
- * changes. What Auto-detect found is about the cart, so it goes under Cart; the Serial port row
- * only names the port, and speaks up when Auto cannot pick one for this cart. The backend enforces
- * the same rule: Auto never gives an EverDrive a port, SC64's included.
+ * Both hints depend on the cart being edited, so they re-render when it changes. The Auto options
+ * read plain "Auto-detect" in both dropdowns; what Auto found is said in the hints. What was found
+ * is about the cart, so it goes under Cart; the Serial port hint names the port only when Cart does
+ * not, and warns when Auto cannot pick one for this cart. The backend enforces the same rule: Auto
+ * never gives an EverDrive a port, SC64's included.
  */
 function renderCartAndAuto() {
   const cart = knownCart(document.getElementById("cart").value);
@@ -88,7 +89,7 @@ function renderCartAndAuto() {
   const onAuto = sel.value === "";
   const optAuto = sel.options[0];
   if (optAuto) {
-    optAuto.textContent = everdrive ? "Auto-detect: pick a port for EverDrive" : auto ? `Auto-detect (${auto})` : "Auto-detect";
+    optAuto.textContent = "Auto-detect";
   }
 
   // Under Cart: what Auto-detect found, or the experimental warning for a chosen EverDrive.
@@ -108,18 +109,27 @@ function renderCartAndAuto() {
   cartHint.hidden = !cartText;
   cartHint.classList.toggle("hint-warning", everdrive);
 
-  // Under Serial port: only on Auto, and only when Auto cannot pick a port for this cart. A port
-  // picked by hand needs no hint. (Cart Auto-detect with nothing on USB is fine: Start probes.)
+  // Under Serial port: only on Auto. It warns when Auto cannot pick a port for this cart, and names
+  // the port Auto picked when Cart is set to SummerCart64 (on Auto-detect, the Cart hint names it).
+  // A port picked by hand needs no hint. (Cart Auto-detect with nothing on USB is fine: Start probes.)
   let portText = "";
+  let portWarn = false;
   if (onAuto) {
-    if (everdrive) portText = EVERDRIVE_AUTO_HINT;
-    else if (autoWarning) portText = autoWarning;
-    else if (cart === "sc64" && !auto) portText = "No SummerCart64 found. Plug it in, or pick its serial port.";
+    if (everdrive) {
+      portText = EVERDRIVE_AUTO_HINT;
+      portWarn = true;
+    } else if (autoWarning) {
+      portText = autoWarning;
+      portWarn = true;
+    } else if (cart === "sc64") {
+      portText = auto ? `Uses ${auto}.` : "No SummerCart64 found. Plug it in, or pick its serial port.";
+      portWarn = !auto;
+    }
   }
   const hint = document.getElementById("auto-hint");
   hint.textContent = portText;
   hint.hidden = !portText;
-  hint.classList.toggle("hint-warning", Boolean(portText));
+  hint.classList.toggle("hint-warning", portWarn);
 }
 
 function applySettingsToForm(s) {
