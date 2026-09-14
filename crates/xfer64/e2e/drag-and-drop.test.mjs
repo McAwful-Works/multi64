@@ -6,7 +6,8 @@
  * as-is and `window.__TAURI__` is replaced with a stub that records every `invoke`, so a drag is
  * judged by the calls it produces — no cart, no serial port, no Tauri. The run also checks the
  * explorer's control states (disabled with nothing selected, the show-hidden toggle, the delayed
- * busy overlay), which need the same stubbed page.
+ * busy overlay) and keyboard access (dialog focus trap, Escape and focus return, the context menu's
+ * arrow keys, sort headers), which need the same stubbed page.
  *
  * What it cannot see: anything the OS owns. Whether Windows accepts the drag we start, whether
  * `tauri://drag-*` fires at all, and whether a real Explorer drop carries the paths we expect are
@@ -390,6 +391,134 @@ await reset();
   check("the overlay is drawn once the operation passes 300 ms", !later.hidden && !later.pending, JSON.stringify(later));
   check("and removed when it ends, with the pane usable again", after.hidden && !after.refreshDisabled, JSON.stringify(after));
   check("the folder was created", (await cmds()).includes("fs_mkdir"), (await cmds()).join(","));
+}
+
+// --- dialogs and the context menu from the keyboard ----------------------
+const activeId = () => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName || "");
+const isHidden = (id) => page.evaluate((i) => document.getElementById(i).hidden, id);
+
+await reset();
+{
+  await page.click("#btn-open-settings");
+  await page.waitForSelector("#explorer-settings-panel:not([hidden])");
+  await page.waitForTimeout(100);
+  const opened = await activeId();
+  check("Settings opens with focus on its close button", opened === "btn-close-settings", opened);
+
+  await page.focus("#btn-save-explorer-settings");
+  await page.keyboard.press("Tab");
+  const wrapped = await activeId();
+  await page.keyboard.press("Shift+Tab");
+  const wrappedBack = await activeId();
+  check("focus trap: Tab from the last Settings control wraps to the first, Shift+Tab wraps back",
+    wrapped === "btn-close-settings" && wrappedBack === "btn-save-explorer-settings",
+    JSON.stringify({ wrapped, wrappedBack }));
+
+  // An unsaved edit makes Escape ask first, so the confirm opens on top of Settings.
+  await page.click("#explorer-developer-mode");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("#explorer-modal-root:not([hidden])");
+  const confirmFocus = await activeId();
+  await page.keyboard.press("Tab");
+  const confirmTab = await activeId();
+  check("a dialog opened from Settings starts on its primary button and traps Tab itself",
+    confirmFocus === "explorer-modal-ok" && confirmTab === "explorer-modal-cancel",
+    JSON.stringify({ confirmFocus, confirmTab }));
+
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(100);
+  const afterEsc = await page.evaluate(() => ({
+    confirm: !document.getElementById("explorer-modal-root").hidden,
+    settings: !document.getElementById("explorer-settings-panel").hidden,
+    focus: document.activeElement?.id,
+  }));
+  check("Escape closes only the top dialog, and focus returns into the one underneath",
+    !afterEsc.confirm && afterEsc.settings && afterEsc.focus === "explorer-developer-mode", JSON.stringify(afterEsc));
+
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("#explorer-modal-root:not([hidden])");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("#explorer-settings-panel", { state: "hidden" });
+  await page.waitForTimeout(100);
+  const closed = await activeId();
+  check("discarding closes Settings and returns focus to the Settings button", closed === "btn-open-settings", closed);
+}
+
+{
+  await page.click("#btn-explorer-help");
+  await page.waitForSelector("#explorer-help-modal:not([hidden])");
+  const opened = await activeId();
+  await page.keyboard.press("Tab");
+  const wrapped = await activeId();
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(100);
+  const after = { hidden: await isHidden("explorer-help-modal"), focus: await activeId() };
+  check("Help opens on Close, Tab wraps inside it, and Escape returns focus to the Help button",
+    opened === "explorer-help-close" && wrapped === "explorer-help-tab-setup" && after.hidden && after.focus === "btn-explorer-help",
+    JSON.stringify({ opened, wrapped, after }));
+}
+
+{
+  await page.click(CART_FILE);
+  await page.waitForTimeout(100);
+  await page.keyboard.press("Shift+F10");
+  await page.waitForSelector("#explorer-context-menu:not([hidden])");
+  const enabled = await page.evaluate(() =>
+    [...document.querySelectorAll('#explorer-context-menu [role="menuitem"]')]
+      .filter((b) => !b.disabled && !b.closest("[hidden]"))
+      .map((b) => b.dataset.ctx));
+  const item = () => page.evaluate(() => document.activeElement?.dataset?.ctx || "");
+  const seen = { first: await item() };
+  await page.keyboard.press("ArrowUp");
+  seen.upWraps = await item();
+  await page.keyboard.press("ArrowDown");
+  seen.downWraps = await item();
+  await page.keyboard.press("ArrowDown");
+  seen.down = await item();
+  await page.keyboard.press("End");
+  seen.end = await item();
+  await page.keyboard.press("Home");
+  seen.home = await item();
+  check("Shift+F10 opens the row's menu on its first enabled item, skipping disabled ones",
+    enabled.length > 1 && !enabled.includes("open") && seen.first === enabled[0], JSON.stringify({ enabled, seen }));
+  check("arrow keys in the context menu move between enabled items and wrap; Home and End reach the ends",
+    seen.upWraps === enabled.at(-1) && seen.downWraps === enabled[0] && seen.down === enabled[1] &&
+      seen.end === enabled.at(-1) && seen.home === enabled[0],
+    JSON.stringify({ enabled, seen }));
+
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(100);
+  const escaped = { hidden: await isHidden("explorer-context-menu"), focus: await activeId() };
+  check("Escape closes the context menu and returns focus to the list it opened from",
+    escaped.hidden && escaped.focus === "table-wrap-cart", JSON.stringify(escaped));
+
+  await page.keyboard.press("ContextMenu");
+  await page.waitForSelector("#explorer-context-menu:not([hidden])");
+  await page.keyboard.press("End");
+  const last = await item();
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("#explorer-properties-modal:not([hidden])");
+  await page.waitForTimeout(150);
+  const propsFocus = await activeId();
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(100);
+  const propsAfter = { hidden: await isHidden("explorer-properties-modal"), focus: await activeId() };
+  check("Enter runs a menu item: Properties opens on Close, and Escape returns focus to the list",
+    last === "properties" && propsFocus === "explorer-properties-close" && propsAfter.hidden && propsAfter.focus === "table-wrap-cart",
+    JSON.stringify({ last, propsFocus, propsAfter }));
+}
+
+{
+  const sort = await page.evaluate(() => {
+    const th = document.querySelector('#table-cart th[data-sort-key="size"]');
+    const btn = th.querySelector("button.explorer-sort-btn");
+    btn.click();
+    return { role: th.getAttribute("role"), tabindex: th.getAttribute("tabindex"), sort: th.getAttribute("aria-sort"),
+      name: document.querySelector('#table-cart th[data-sort-key="name"]').getAttribute("aria-sort") };
+  });
+  await page.evaluate(() => document.querySelector('#table-cart th[data-sort-key="name"] button').click());
+  check("a sort header is a column header holding a button, and aria-sort follows the sort",
+    sort.role === null && sort.tabindex === null && sort.sort === "ascending" && sort.name === "none", JSON.stringify(sort));
 }
 
 check("the page logged no errors", consoleErrors.length === 0, consoleErrors.join(" | "));

@@ -18,9 +18,9 @@
         </div>
       </div>
       <div class="explorer-usb-row" id="usb-row">
-        <label class="explorer-usb-label">
+        <label class="explorer-usb-label" for="select-usb-com">
           <span>Serial port</span>
-          <select id="select-usb-com" aria-label="Serial port"></select>
+          <select id="select-usb-com" aria-describedby="usb-hint"></select>
         </label>
         <span class="explorer-usb-loading" id="usb-loading" hidden aria-live="polite" aria-atomic="true">
           <span class="explorer-loading-spinner explorer-loading-spinner--sm" aria-hidden="true"></span>
@@ -161,10 +161,10 @@
           <table class="explorer-table" id="table-cart" aria-label="Cart file list">
             <thead>
               <tr>
-                <th class="col-name" data-sort-key="name" aria-sort="ascending">Name</th>
-                <th class="col-size" data-sort-key="size" aria-sort="none">Size</th>
-                <th class="col-date" data-sort-key="modified" aria-sort="none">Modified</th>
-                <th class="col-type" data-sort-key="type" aria-sort="none">Type</th>
+                <th class="col-name" data-sort-key="name" aria-sort="ascending"><button type="button" class="explorer-sort-btn">Name</button></th>
+                <th class="col-size" data-sort-key="size" aria-sort="none"><button type="button" class="explorer-sort-btn">Size</button></th>
+                <th class="col-date" data-sort-key="modified" aria-sort="none"><button type="button" class="explorer-sort-btn">Modified</button></th>
+                <th class="col-type" data-sort-key="type" aria-sort="none"><button type="button" class="explorer-sort-btn">Type</button></th>
               </tr>
             </thead>
             <tbody id="tbody-cart"></tbody>
@@ -335,10 +335,10 @@
           <table class="explorer-table" id="table-pc" aria-label="This PC file list">
             <thead>
               <tr>
-                <th class="col-name" data-sort-key="name" aria-sort="ascending">Name</th>
-                <th class="col-size" data-sort-key="size" aria-sort="none">Size</th>
-                <th class="col-date" data-sort-key="modified" aria-sort="none">Modified</th>
-                <th class="col-type" data-sort-key="type" aria-sort="none">Type</th>
+                <th class="col-name" data-sort-key="name" aria-sort="ascending"><button type="button" class="explorer-sort-btn">Name</button></th>
+                <th class="col-size" data-sort-key="size" aria-sort="none"><button type="button" class="explorer-sort-btn">Size</button></th>
+                <th class="col-date" data-sort-key="modified" aria-sort="none"><button type="button" class="explorer-sort-btn">Modified</button></th>
+                <th class="col-type" data-sort-key="type" aria-sort="none"><button type="button" class="explorer-sort-btn">Type</button></th>
               </tr>
             </thead>
             <tbody id="tbody-pc"></tbody>
@@ -404,6 +404,7 @@
       class="explorer-context-menu"
       role="menu"
       aria-hidden="true"
+      tabindex="-1"
       hidden
     >
       <div id="explorer-context-menu-group-file" class="explorer-context-menu-group">
