@@ -197,8 +197,8 @@ pub struct DaemonStatus {
     pub healthy: bool,
     pub listen: String,
     pub message: String,
-    /// While running, the cart the live process was started for, noting when Auto-detect chose it;
-    /// while stopped, the Cart setting.
+    /// While running, the cart the live process was started for and the port it holds; while
+    /// stopped, the Cart setting.
     pub cart: String,
 }
 
@@ -214,8 +214,6 @@ struct DaemonInner {
     /// The cart `child` was spawned for. Only meaningful while `serial` is set, for the same
     /// reason: a cart changed in Settings is what the next start uses, not what is running.
     cart: DaemonCart,
-    /// Whether Auto-detect chose `cart`, as opposed to the Cart setting naming it.
-    detected: bool,
     logs: Vec<String>,
 }
 
@@ -639,14 +637,10 @@ fn resolve_start(
     }
 }
 
-/// How the window, the tray and the log name a running daemon's cart. Auto-detect shows its
-/// result, not the setting's name again.
-fn running_cart_label(cart: DaemonCart, detected: bool) -> String {
-    if detected {
-        format!("Auto-detect: {}", cart.label())
-    } else {
-        cart.label().to_string()
-    }
+/// How the window's Cart row names a running daemon's cart: the cart and the port the live process
+/// holds. Whether Auto-detect chose it is not repeated there; the start log says so.
+fn running_cart_label(cart: DaemonCart, serial: &str) -> String {
+    format!("{} on {serial}", cart.label())
 }
 
 /// Status → Note for a stopped daemon: what Start would do, or why it cannot. Empty when there is
@@ -789,8 +783,13 @@ fn start_daemon(
     push_log(
         daemon,
         format!(
-            "Starting multi64d on {serial} for {} ({}) [logging: {log_label}]",
-            running_cart_label(cart, detected),
+            "Starting multi64d on {serial} for {}{} ({}) [logging: {log_label}]",
+            cart.label(),
+            if detected {
+                ", found by Auto-detect"
+            } else {
+                ""
+            },
             settings.listen
         ),
     );
@@ -832,7 +831,6 @@ fn start_daemon(
     inner.child = Some(child);
     inner.serial = Some(serial);
     inner.cart = cart;
-    inner.detected = detected;
     drop(inner);
     let _ = app.emit("daemon-changed", ());
     Ok(())
@@ -950,7 +948,10 @@ fn daemon_status(state: &AppState) -> DaemonStatus {
     // Read after `daemon_is_running` returns: it takes the daemon lock itself.
     let cart = if running {
         let inner = state.daemon.lock();
-        running_cart_label(inner.cart, inner.detected)
+        match inner.serial.as_deref() {
+            Some(serial) => running_cart_label(inner.cart, serial),
+            None => inner.cart.label().to_string(),
+        }
     } else {
         settings.cart.label().to_string()
     };
@@ -1320,16 +1321,11 @@ struct TrayLabels {
 
 /// The note after the tray's status line. SC64 is the default and needs no mention; any other cart
 /// is named, so an experimental daemon is never mistaken for the proven one, and a stopped daemon on
-/// Auto-detect says so. A running daemon is named for what it was started with, in the same words
-/// as the window's Cart row ([`running_cart_label`]).
-fn tray_cart_note(
-    running: bool,
-    spawned: DaemonCart,
-    detected: bool,
-    setting: CartSetting,
-) -> Option<String> {
+/// Auto-detect says so. A running daemon is named for what it was started with, by the cart's name
+/// alone: the status line before it already names the port.
+fn tray_cart_note(running: bool, spawned: DaemonCart, setting: CartSetting) -> Option<String> {
     if running {
-        (spawned != DaemonCart::Sc64).then(|| running_cart_label(spawned, detected))
+        (spawned != DaemonCart::Sc64).then(|| spawned.label().to_string())
     } else {
         (setting != CartSetting::Sc64).then(|| setting.label().to_string())
     }
@@ -1415,9 +1411,9 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             let settings = state.settings.lock().clone();
             // `daemon_is_running` takes the daemon lock itself, so read the port after it returns.
             let running = daemon_is_running(&state.daemon);
-            let (spawned, spawned_cart, detected) = {
+            let (spawned, spawned_cart) = {
                 let inner = state.daemon.lock();
-                (inner.serial.clone(), inner.cart, inner.detected)
+                (inner.serial.clone(), inner.cart)
             };
             // A stopped daemon is described by what Start would do, which never probes a port.
             let plan = (!running).then(|| start_plan(&settings));
@@ -1427,7 +1423,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 settings.listen.clone(),
                 tray_serial(running, spawned, || plan.as_ref().and_then(StartPlan::port)),
                 can_start,
-                tray_cart_note(running, spawned_cart, detected, settings.cart),
+                tray_cart_note(running, spawned_cart, settings.cart),
             )
         }
         None => (false, DEFAULT_LISTEN.to_string(), None, false, None),
@@ -1772,11 +1768,14 @@ mod tests {
     }
 
     #[test]
-    fn a_running_cart_says_when_auto_detect_chose_it() {
-        assert_eq!(running_cart_label(DaemonCart::Sc64, false), "SummerCart64");
+    fn a_running_cart_is_named_with_its_port() {
         assert_eq!(
-            running_cart_label(DaemonCart::Ed64Pro, true),
-            "Auto-detect: EverDrive-64 PRO (beta)"
+            running_cart_label(DaemonCart::Sc64, "COM4"),
+            "SummerCart64 on COM4"
+        );
+        assert_eq!(
+            running_cart_label(DaemonCart::Ed64Pro, "COM6"),
+            "EverDrive-64 PRO (beta) on COM6"
         );
     }
 
@@ -2113,24 +2112,24 @@ mod tray_tests {
     #[test]
     fn the_cart_note_names_everything_but_a_running_sc64() {
         assert_eq!(
-            tray_cart_note(true, DaemonCart::Sc64, true, CartSetting::Auto),
+            tray_cart_note(true, DaemonCart::Sc64, CartSetting::Auto),
             None
         );
         assert_eq!(
-            tray_cart_note(true, DaemonCart::Ed64Pro, false, CartSetting::Ed64Pro).as_deref(),
+            tray_cart_note(true, DaemonCart::Ed64Pro, CartSetting::Ed64Pro).as_deref(),
             Some("EverDrive-64 PRO (beta)")
         );
-        // Worded like the window's Cart row when Auto-detect chose the cart.
+        // Chosen by Auto-detect or not, the note is the cart's name; the status line names the port.
         assert_eq!(
-            tray_cart_note(true, DaemonCart::Ed64Pro, true, CartSetting::Auto),
-            Some(running_cart_label(DaemonCart::Ed64Pro, true))
+            tray_cart_note(true, DaemonCart::Ed64Pro, CartSetting::Auto).as_deref(),
+            Some("EverDrive-64 PRO (beta)")
         );
         assert_eq!(
-            tray_cart_note(false, DaemonCart::Sc64, false, CartSetting::Auto).as_deref(),
+            tray_cart_note(false, DaemonCart::Sc64, CartSetting::Auto).as_deref(),
             Some("Auto-detect")
         );
         assert_eq!(
-            tray_cart_note(false, DaemonCart::Ed64, false, CartSetting::Sc64),
+            tray_cart_note(false, DaemonCart::Ed64, CartSetting::Sc64),
             None
         );
         let l = tray_labels(
