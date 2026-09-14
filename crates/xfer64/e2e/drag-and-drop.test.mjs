@@ -4,7 +4,9 @@
  * The real thing only exists on Windows against a cart, so this covers the half that is ours:
  * which backend command each gesture reaches, and with what arguments. `src/index.html` is served
  * as-is and `window.__TAURI__` is replaced with a stub that records every `invoke`, so a drag is
- * judged by the calls it produces — no cart, no serial port, no Tauri.
+ * judged by the calls it produces — no cart, no serial port, no Tauri. The run also checks the
+ * explorer's control states (disabled with nothing selected, the show-hidden toggle, the delayed
+ * busy overlay), which need the same stubbed page.
  *
  * What it cannot see: anything the OS owns. Whether Windows accepts the drag we start, whether
  * `tauri://drag-*` fires at all, and whether a real Explorer drop carries the paths we expect are
@@ -104,6 +106,9 @@ function installTauriStub() {
       invoke: async (cmd, args) => {
         // The Channel passed to start_drag is not JSON; record a marker instead of serialising it.
         calls.push({ cmd, args: JSON.parse(JSON.stringify(args ?? {}, (k, v) => (k === "onEvent" ? "<channel>" : v))) });
+        // A check can slow one command down to watch what the UI does while it runs.
+        const delay = window.__TAURI_DELAYS__?.[cmd];
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
         return handlers[cmd] ? handlers[cmd](args || {}) : null;
       },
       Channel: class { set onmessage(fn) { this._fn = fn; } },
@@ -177,6 +182,57 @@ const CART_FILE_2 = '#tbody-cart tr[data-path="/mk64.z64"]';
 const CART_FOLDER = '#tbody-cart tr[data-path="/roms"]';
 const PC_FILE = '#tbody-pc tr[data-path$="banjo.z64"]';
 const PC_FOLDER = '#tbody-pc tr[data-path$="patches"]';
+
+/** A control's enabled state as the user and assistive tech see it. */
+const controlState = (selector) => page.evaluate((s) => {
+  const el = document.querySelector(s);
+  return { disabled: el.disabled, aria: el.getAttribute("aria-disabled"), title: el.title };
+}, selector);
+
+// --- controls that cannot act are off ------------------------------------
+{
+  const idle = await Promise.all(["#btn-rename-cart", "#btn-delete-pc", "#btn-copy-to-pc", "#btn-copy-to-cart"].map(controlState));
+  check("with nothing selected, Rename, Delete, Export and Import are disabled and say why",
+    idle.every((s) => s.disabled && s.aria === "true" && s.title.includes(" — ")), JSON.stringify(idle));
+  const up = await controlState('[data-action="up"][data-pane="cart"]');
+  const back = await controlState('[data-action="back"][data-pane="cart"]');
+  check("Up and Back are disabled at the cart root with no history", up.disabled && back.disabled, JSON.stringify({ up, back }));
+
+  await page.keyboard.press("F2");
+  await page.keyboard.press("Delete");
+  await page.waitForTimeout(150);
+  const quiet = await page.evaluate(() => ({
+    modal: !document.getElementById("explorer-modal-root").hidden,
+    status: !document.getElementById("explorer-operation-cart").hidden,
+  }));
+  check("F2 and Delete with nothing selected do nothing", !quiet.modal && !quiet.status, JSON.stringify(quiet));
+
+  await page.click(CART_FILE);
+  await page.waitForTimeout(100);
+  const picked = await Promise.all(["#btn-rename-cart", "#btn-delete-cart", "#btn-copy-to-pc"].map(controlState));
+  check("selecting a cart file enables Rename, Delete and Export",
+    picked.every((s) => !s.disabled && s.aria === "false" && !s.title.includes(" — ")), JSON.stringify(picked));
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(100);
+  check("and clearing the selection disables them again", (await controlState("#btn-delete-cart")).disabled);
+
+  const toggle = "#btn-show-hidden-pc";
+  const pressed = () => page.evaluate((s) => {
+    const b = document.querySelector(s);
+    return { pressed: b.getAttribute("aria-pressed"), title: b.title };
+  }, toggle);
+  const before = await pressed();
+  await page.click(toggle);
+  await page.waitForTimeout(150);
+  const on = await pressed();
+  await page.click(toggle);
+  await page.waitForTimeout(150);
+  const off = await pressed();
+  check("the show-hidden toggle reports its state and names what a click does",
+    before.pressed === "false" && before.title === "Show hidden files" &&
+      on.pressed === "true" && on.title === "Hide hidden files" && off.pressed === "false",
+    JSON.stringify({ before, on, off }));
+}
 
 // --- pane to pane --------------------------------------------------------
 await reset();
@@ -302,6 +358,38 @@ await reset();
   check("the ghost goes when the drag ends", seen.ghostAfter === 0 && !seen.draggingAfter, JSON.stringify(seen));
   check("Escape abandons the drag without copying",
     !(await cmds()).some((c) => c.startsWith("build_")), (await cmds()).join(","));
+}
+
+// --- the busy overlay ----------------------------------------------------
+await reset();
+{
+  await page.evaluate(() => { window.__TAURI_DELAYS__ = { fs_mkdir: 900 }; });
+  await page.click(PC_FILE);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+Shift+N");
+  await page.waitForSelector("#explorer-modal-input:not([hidden])");
+  await page.waitForTimeout(100);
+  await page.keyboard.press("Enter");
+  const busyState = () => page.evaluate(() => {
+    const shade = document.getElementById("table-shade-pc");
+    return {
+      hidden: shade.hidden,
+      pending: shade.classList.contains("explorer-table-shade--pending"),
+      refreshDisabled: document.querySelector('[data-action="refresh"][data-pane="pc"]').disabled,
+    };
+  });
+  await page.waitForTimeout(100);
+  const early = await busyState();
+  await page.waitForTimeout(400);
+  const later = await busyState();
+  await page.waitForTimeout(900);
+  const after = await busyState();
+  await page.evaluate(() => { window.__TAURI_DELAYS__ = {}; });
+  check("an operation blocks its pane at once but draws no overlay yet",
+    !early.hidden && early.pending && early.refreshDisabled, JSON.stringify(early));
+  check("the overlay is drawn once the operation passes 300 ms", !later.hidden && !later.pending, JSON.stringify(later));
+  check("and removed when it ends, with the pane usable again", after.hidden && !after.refreshDisabled, JSON.stringify(after));
+  check("the folder was created", (await cmds()).includes("fs_mkdir"), (await cmds()).join(","));
 }
 
 check("the page logged no errors", consoleErrors.length === 0, consoleErrors.join(" | "));

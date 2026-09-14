@@ -24,19 +24,11 @@ body.explorer-modal-open {
   padding: 1rem;
 }
 
-.explorer-modal-root.hidden {
-  display: none !important;
-}
-
 .explorer-modal-backdrop {
   position: absolute;
   inset: 0;
   background: rgba(var(--shadow-rgb), 0.55);
   backdrop-filter: blur(3px);
-}
-
-.explorer-modal-panel--wide {
-  max-width: 32rem;
 }
 
 .explorer-modal-panel {
@@ -49,6 +41,12 @@ body.explorer-modal-open {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: 0 12px 40px rgba(var(--shadow-rgb), 0.45);
+}
+
+/* After the base rule, which it overrides at equal specificity: File exists needs the width to
+   keep its five buttons on one row. */
+.explorer-modal-panel--wide {
+  max-width: 32rem;
 }
 
 .explorer-modal-title {
@@ -78,20 +76,13 @@ body.explorer-modal-open {
   border-radius: var(--radius-md);
 }
 
-.explorer-modal-input.hidden,
-.explorer-modal-cancel.hidden {
-  display: none !important;
-}
-
+/* Every explorer modal (alert, confirm, prompt, file exists, Help, Properties) right-aligns its
+   buttons, with the primary action last, like the shared .dialog-footer. */
 .explorer-modal-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
   justify-content: flex-end;
-}
-
-.explorer-modal-actions--alert {
-  justify-content: center;
 }
 
 .explorer-modal-actions--overwrite {
@@ -129,14 +120,6 @@ body.explorer-modal-open {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: 0 8px 28px rgba(var(--shadow-rgb), 0.4);
-}
-
-.explorer-context-menu.hidden {
-  display: none !important;
-}
-
-.explorer-context-menu-group.hidden {
-  display: none !important;
 }
 
 .explorer-context-item {
@@ -341,6 +324,42 @@ body.explorer-modal-open {
   min-height: 0;
 }
 
+.explorer-help-setup .explorer-help-section .explorer-help-shortcuts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 0.85rem;
+  align-items: baseline;
+  margin: 0.55rem 0 0;
+  font-size: var(--font-sm);
+  line-height: 1.4;
+}
+
+.explorer-help-shortcuts dt {
+  margin: 0;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.explorer-help-shortcuts dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.explorer-help-body kbd {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 0.05rem 0.35rem;
+  font-family: inherit;
+  font-size: var(--font-xs);
+  line-height: 1.35;
+  text-align: center;
+  color: var(--text);
+  background: var(--control-surface);
+  border: 1px solid var(--control-surface-border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+}
+
 .explorer-help-panel[hidden] {
   display: none !important;
 }
@@ -449,10 +468,17 @@ body.explorer-modal-open {
   backdrop-filter: blur(2px);
   pointer-events: auto;
   cursor: wait;
+  opacity: 1;
+  /* Collapsed to 1ms by the base reduced-motion rule. */
+  transition: opacity 0.15s ease-out;
 }
 
-.explorer-table-shade[hidden] {
-  display: none !important;
+/* Busy but not yet shown (`beginBusy` in explorer.js): the shade is in place so it blocks input
+   at once, but draws nothing until the operation has run for a moment. Opacity does not affect
+   hit testing, so clicks still land on the shade. */
+.explorer-table-shade.explorer-table-shade--pending {
+  opacity: 0;
+  cursor: default;
 }
 
 .explorer-table-shade-inner {
@@ -612,13 +638,12 @@ body.explorer-modal-open {
   margin-left: auto;
 }
 
-.explorer-show-hidden-btn .btn-icon-svg {
-  opacity: 0.42;
-  color: var(--muted);
-}
-
-.explorer-show-hidden-btn[aria-pressed="true"] .btn-icon-svg {
-  opacity: 1;
+/* A toggle button that is on. Off is a plain .btn at full strength, so it cannot be mistaken for a
+   disabled one; on takes the accent border and the selected-row fill. */
+.btn[aria-pressed="true"],
+.btn[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.18);
   color: var(--accent);
 }
 
@@ -1016,10 +1041,6 @@ body.explorer-dragging .explorer-table tbody tr {
   gap: 0.2rem;
   transition: opacity 0.2s ease, visibility 0.2s ease;
   box-sizing: border-box;
-}
-
-.explorer-operation-inline.hidden {
-  display: none;
 }
 
 .explorer-operation-main {
