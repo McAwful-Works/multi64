@@ -17,6 +17,7 @@
   /* Black as a triple so overlays and shadows can vary alpha without repeating the colour. */
   --shadow-rgb: 0, 0, 0;
   --warning-text: #e8c07a;
+  --danger-text: #f5b4ae;
   font-family:
     "Segoe UI",
     system-ui,
@@ -48,6 +49,7 @@
   --control-primary-text: #ffffff;
   --shadow-rgb: 60, 64, 67;
   --warning-text: #a15c00;
+  --danger-text: #a50e0e;
   /* In light the "highlight" hairline must darken, not lighten. */
 }
 
@@ -69,8 +71,10 @@
     --control-primary-bg: #0b57d0;
     --control-primary-bg-hover: #0842a0;
     --control-primary-border: #0b57d0;
+    --control-primary-text: #ffffff;
     --shadow-rgb: 60, 64, 67;
     --warning-text: #a15c00;
+    --danger-text: #a50e0e;
     /* In light the "highlight" hairline must darken, not lighten. */
   }
 }
@@ -93,6 +97,7 @@
   --control-primary-text: #ffffff;
   --shadow-rgb: 0, 0, 0;
   --warning-text: #ffd479;
+  --danger-text: #ffc4bf;
 }
 
 /* ---------------------------------------------------------------------------
@@ -148,6 +153,12 @@ html {
 
 * {
   box-sizing: border-box;
+}
+
+/* The `hidden` attribute must beat any author `display` (`.field { display: flex }` and the like),
+   or a control the script hides stays on screen. */
+[hidden] {
+  display: none !important;
 }
 
 body {
@@ -261,7 +272,7 @@ body.settings-open {
   cursor: pointer;
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: var(--control-bg-hover);
 }
 
@@ -271,8 +282,20 @@ body.settings-open {
   color: var(--control-primary-text);
 }
 
-.btn.primary:hover {
+.btn.primary:hover:not(:disabled) {
   background: var(--control-primary-bg-hover);
+}
+
+/* Disabled controls must look inert. `.btn` sets its own colours, which override the browser's
+   greyed-out look, so without this a disabled button keeps full colour, hover and pointer. */
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.check:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .field {
@@ -298,9 +321,18 @@ body.settings-open {
   max-width: 100%;
 }
 
-/* Two classes so it wins over `.hint` regardless of order. */
+/* Two classes so they win over `.hint` regardless of order. */
 .hint.hint-warning {
   color: var(--warning-text);
+}
+
+.hint.hint-error {
+  color: var(--danger-text);
+}
+
+/* An error under a card's button row. */
+.hint.card-error {
+  margin: 0.6rem 0 0;
 }
 
 .hint {
@@ -454,6 +486,11 @@ body.settings-open {
 
 .settings-body .settings-section:first-of-type {
   margin-top: 0;
+}
+
+/* A button row between fields ("Refresh ports") gets the same gap below as a field. */
+.settings-section .row {
+  margin-bottom: 0.75rem;
 }
 
 .settings-section-title {

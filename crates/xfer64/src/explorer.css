@@ -21,7 +21,9 @@ body.explorer-modal-open {
 .explorer-modal-root {
   position: fixed;
   inset: 0;
-  z-index: 10000;
+  /* Above the Settings backdrop and panel (12000/12001): an alert raised from Settings must not
+     open behind it. */
+  z-index: 13000;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1199,6 +1201,15 @@ body.explorer-dragging .explorer-table tbody tr {
 
 .explorer-operation--done .explorer-operation-text {
   color: var(--success-text);
+}
+
+/* Cancelled: nothing finished, so not the green of success. */
+.explorer-operation--cancelled .explorer-operation-fill {
+  background: linear-gradient(90deg, rgba(var(--warning-rgb), 0.65), rgba(var(--warning-rgb), 1));
+}
+
+.explorer-operation--cancelled .explorer-operation-text {
+  color: var(--warning-text);
 }
 
 /* Settings (multi64 GUI–style overlay) */

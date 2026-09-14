@@ -190,10 +190,24 @@ function updateStartMinimizedGate() {
   }
 }
 
+/**
+ * Show `message` in an inline error line beside what failed, or hide the line when it is empty.
+ *
+ * Errors used to go to Status → Note, which sits behind the open Settings dialog and is
+ * overwritten by the next status poll two seconds later.
+ */
+function showInlineError(id, message) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = message || "";
+  el.hidden = !message;
+}
+
 function setSettingsOpen(open) {
   const panel = document.getElementById("settings-panel");
   const backdrop = document.getElementById("settings-backdrop");
   const opener = document.getElementById("btn-open-settings");
+  showInlineError("settings-error", "");
   panel.hidden = !open;
   backdrop.hidden = !open;
   opener.setAttribute("aria-expanded", open ? "true" : "false");
@@ -260,12 +274,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btn-refresh").addEventListener("click", refreshStatus);
 
   document.getElementById("btn-open-explorer").addEventListener("click", async () => {
+    showInlineError("xfer64-error", "");
     try {
       await invoke("launch_or_install_xfer64");
       await updateXfer64Button();
     } catch (e) {
       console.error("launch_or_install_xfer64:", e);
-      document.getElementById("status-msg").textContent = String(e);
+      showInlineError("xfer64-error", String(e));
     }
   });
 
@@ -316,6 +331,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("btn-save").addEventListener("click", async () => {
+    showInlineError("settings-error", "");
     try {
       const settings = readSettingsFromForm();
       await invoke("set_settings", { settings });
@@ -326,7 +342,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       setSettingsOpen(false);
     } catch (e) {
       console.error("set_settings:", e);
-      document.getElementById("status-msg").textContent = String(e);
+      showInlineError("settings-error", `Settings were not saved: ${e}`);
     }
   });
   document.getElementById("btn-log-clear").addEventListener("click", async () => {

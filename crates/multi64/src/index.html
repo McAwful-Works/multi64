@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Multi64</title>
     <link rel="stylesheet" href="styles.css" />
-    <script type="module" src="appearance.js"></script>
+    <script src="appearance.js"></script>
     <script type="module" src="/main.js" defer></script>
   </head>
   <body>
@@ -57,6 +57,7 @@
       <div class="row">
         <button type="button" id="btn-open-explorer" class="btn primary">Xfer64</button>
       </div>
+      <p class="hint hint-error card-error" id="xfer64-error" role="alert" hidden></p>
     </section>
 
     <section class="card dev-only" id="dev-panel" hidden>
@@ -85,6 +86,7 @@
         </div>
 
         <div class="settings-body">
+        <p class="hint hint-error" id="settings-error" role="alert" hidden></p>
         <section class="settings-section">
           <h3 class="settings-section-title">Serial &amp; network</h3>
           <label class="field">

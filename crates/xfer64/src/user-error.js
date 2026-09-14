@@ -3,11 +3,15 @@
  * @typedef {"cart" | "pc" | "general"} UserErrorContext
  */
 
+/**
+ * "Press F5" only where F5 refreshes: the cart and Windows panes of the main window. `general` is
+ * also used by the upload picker and by dialogs, where F5 does nothing.
+ */
 const FALLBACK_BY_CONTEXT = {
   cart:
     "Couldn't refresh the SD card. Check the USB connection and try again, or press F5.",
   pc: "Couldn't refresh this folder. Try again, or press F5.",
-  general: "Something went wrong. Try again, or press F5.",
+  general: "Something went wrong. Try again.",
 };
 
 /** @param {unknown} err */
