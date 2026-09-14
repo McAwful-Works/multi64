@@ -4528,8 +4528,8 @@ async function refreshUsbDetectHint() {
  * @param {string} kind `sc64`, `ed64_beta` / `ed64`, or `ed64_pro` / `ed64pro`
  */
 function cartFullName(kind) {
-  if (kind === "ed64_beta" || kind === "ed64") return "EverDrive-64 X7 (experimental)";
-  if (kind === "ed64_pro" || kind === "ed64pro") return "EverDrive-64 PRO (experimental)";
+  if (kind === "ed64_beta" || kind === "ed64") return "EverDrive-64 X7 (beta)";
+  if (kind === "ed64_pro" || kind === "ed64pro") return "EverDrive-64 PRO (beta)";
   return "SummerCart64";
 }
 
@@ -4538,8 +4538,8 @@ function cartFullName(kind) {
  * @param {string} kind same values as `cartFullName`
  */
 function cartPaneBadge(kind) {
-  if (kind === "ed64_beta" || kind === "ed64") return "X7 (experimental)";
-  if (kind === "ed64_pro" || kind === "ed64pro") return "PRO (experimental)";
+  if (kind === "ed64_beta" || kind === "ed64") return "X7 (beta)";
+  if (kind === "ed64_pro" || kind === "ed64pro") return "PRO (beta)";
   return "SC64";
 }
 

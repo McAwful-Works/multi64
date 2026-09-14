@@ -23,8 +23,8 @@
           <select id="select-cart-device" aria-describedby="usb-hint">
             <option value="auto">Auto-detect</option>
             <option value="sc64">SummerCart64</option>
-            <option value="ed64_beta">EverDrive-64 X7 (experimental)</option>
-            <option value="ed64_pro">EverDrive-64 PRO (experimental)</option>
+            <option value="ed64_beta">EverDrive-64 X7 (beta)</option>
+            <option value="ed64_pro">EverDrive-64 PRO (beta)</option>
           </select>
         </label>
         <label class="explorer-usb-label" for="select-usb-com">
@@ -536,17 +536,17 @@
               <section class="explorer-help-section" aria-labelledby="help-h-auto">
                 <h3 class="explorer-help-section-title" id="help-h-auto">Auto-detect</h3>
                 <p>
-                  With <strong>Cart</strong> set to <strong>Auto-detect</strong>, in the app bar or in <strong>Settings</strong>, Xfer64 tries to figure out which cart is plugged in. If it guesses wrong, pick <strong>SummerCart64</strong>, <strong>EverDrive-64 PRO (experimental)</strong> or <strong>EverDrive-64 X7 (experimental)</strong> yourself.
+                  With <strong>Cart</strong> set to <strong>Auto-detect</strong>, in the app bar or in <strong>Settings</strong>, Xfer64 tries to figure out which cart is plugged in. If it guesses wrong, pick <strong>SummerCart64</strong>, <strong>EverDrive-64 PRO (beta)</strong> or <strong>EverDrive-64 X7 (beta)</strong> yourself.
                 </p>
               </section>
               <section class="explorer-help-section explorer-help-section--note" aria-labelledby="help-h-ed64pro">
-                <h3 class="explorer-help-section-title" id="help-h-ed64pro">EverDrive-64 PRO (experimental)</h3>
+                <h3 class="explorer-help-section-title" id="help-h-ed64pro">EverDrive-64 PRO (beta)</h3>
                 <p>
                   The EverDrive-64 PRO serves its SD card to This PC directly, so Xfer64 can browse it, copy files both ways, create folders and delete. Support is ported from Krikzz's published sources and has <strong>never been tested on a real cart</strong>, so Xfer64 asks before the first write each time it runs. The EverDrive-64 PRO's USB link has no rename command, so renaming copies the item to its new name through This PC and then deletes the original. That takes as long as copying it off the cart and back, and cannot change only the letter case of a name.
                 </p>
               </section>
               <section class="explorer-help-section explorer-help-section--note" aria-labelledby="help-h-ed64">
-                <h3 class="explorer-help-section-title" id="help-h-ed64">EverDrive-64 X7 (experimental)</h3>
+                <h3 class="explorer-help-section-title" id="help-h-ed64">EverDrive-64 X7 (beta)</h3>
                 <p>
                   The EverDrive-64 X7 talks to This PC differently than the SummerCart64. Browsing its SD card from Xfer64 is <strong>experimental</strong>: its USB protocol has no SD command, so Xfer64 reads cart memory instead, and that is not expected to show your card's files. The settings are under <strong>EverDrive SD (experimental)</strong>; leave the address blank if you only need the serial port for other tools.
                   For SD card access over USB, use a <strong>SummerCart64</strong>, or <strong>Auto-detect</strong> with one connected.
@@ -677,8 +677,8 @@
               <select id="explorer-cart-device" aria-describedby="explorer-cart-device-hint">
                 <option value="auto">Auto-detect (recommended)</option>
                 <option value="sc64">SummerCart64</option>
-                <option value="ed64_beta">EverDrive-64 X7 (experimental)</option>
-                <option value="ed64_pro">EverDrive-64 PRO (experimental)</option>
+                <option value="ed64_beta">EverDrive-64 X7 (beta)</option>
+                <option value="ed64_pro">EverDrive-64 PRO (beta)</option>
               </select>
             </label>
             <p class="hint" id="explorer-cart-device-hint"></p>
@@ -697,7 +697,7 @@
           >
             <h3 class="dialog-section-title">EverDrive SD (experimental)</h3>
             <p class="hint">
-              Experimental and read-only. Xfer64 reads cart memory here rather than the SD card, so this is not expected to list your card's files. Used only while <strong>EverDrive-64 X7 (experimental)</strong> is selected above.
+              Experimental and read-only. Xfer64 reads cart memory here rather than the SD card, so this is not expected to list your card's files. Used only while <strong>EverDrive-64 X7 (beta)</strong> is selected above.
             </p>
             <label class="field">
               <span>Linear ROM address</span>
