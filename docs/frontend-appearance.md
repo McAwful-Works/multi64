@@ -91,3 +91,25 @@ plain HTTP and driving it:
 
 Note that a hidden browser pane does not lay out, so measurements taken while it is hidden are
 meaningless — element sizes come back unchanged no matter what you set.
+
+## 5. The shared base: `styles.css` and the size tokens
+
+`crates/multi64/src/styles.css` and `crates/xfer64/src/styles.css` are the **same file**. `shared_styles_css_is_identical_in_both_apps` in the `multi64` crate fails when they differ, so edit one and copy it to the other. It holds everything the two apps must agree on:
+
+- **The palette** (§1–2).
+- **The scale tokens:** `--font-xs`, `--font-sm`, `--font-md`, `--font-lg` and `--font-title` for text; `--radius-sm`, `--radius-md` and `--radius-lg` for corners; `--z-dialog` and `--z-dialog-top` for stacking.
+- **The single focus ring, the reduced-motion rules and the `[hidden]` rule.**
+- **The shared components:**
+  - buttons: `.btn`, `.btn.primary`, `.btn-icon`;
+  - fields: `.field`, `.input`, `.check`, `.hint`;
+  - the header brand block: `.app-brand…`, `.app-actions`;
+  - the dialog used by Settings, Help and confirmations: `.dialog…`. A markup sketch sits beside its rules.
+
+App-only rules live in the app's own sheet: Multi64's `app.css`, and Xfer64's `explorer.css` (which imports `styles.css`) and `upload-picker.css`.
+
+Three rules keep it that way:
+
+- **No `font-size` or `border-radius` literal in an app sheet.** Use a token. Sizes relative to the parent (`em`) are fine.
+- **No component-level focus styles.** The global ring is the only one. Where `overflow` would clip it, adjust `outline-offset` and nothing else.
+- **A shared component changes in `styles.css`, in both copies.** Never override it in one app's sheet to make that app look different.
+

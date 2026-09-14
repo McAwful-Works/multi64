@@ -5,26 +5,77 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Multi64</title>
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="app.css" />
     <script src="appearance.js"></script>
     <script type="module" src="/main.js" defer></script>
   </head>
   <body>
     <header class="header">
       <div class="header-top">
-        <div class="header-titles">
-          <div class="brand">
-            <img class="brand-mark" src="brand-mark.svg" alt="" width="34" height="34" />
-            <h1>Multi64</h1>
+        <div class="app-brand">
+          <img class="app-brand-mark" src="brand-mark.svg" alt="" width="28" height="28" />
+          <div class="app-brand-text">
+            <h1 class="app-title">Multi64</h1>
+            <span class="app-productline">USB flash cart bridge</span>
           </div>
-          <p class="tagline">
-            Bridge for USB flash carts — <code>multi64d</code> runs while this window is open.
-            Game integrations (e.g. Archipelago) connect to the same WebSocket as other tools.
-          </p>
         </div>
-        <button type="button" id="btn-open-settings" class="btn btn-settings" aria-expanded="false" aria-controls="settings-panel">
-          Settings
-        </button>
+        <div class="app-actions">
+          <button
+            type="button"
+            class="btn btn-icon"
+            id="btn-open-settings"
+            aria-label="Settings"
+            title="Settings"
+            aria-expanded="false"
+            aria-controls="settings-panel"
+          >
+            <svg
+              class="btn-icon-svg"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+              />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="btn btn-icon"
+            id="btn-open-help"
+            aria-label="Help"
+            title="Help"
+            aria-controls="help-panel"
+          >
+            <svg
+              class="btn-icon-svg"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+          </button>
+        </div>
       </div>
+      <p class="tagline">
+        Bridge for USB flash carts — <code>multi64d</code> runs while this window is open.
+        Game integrations (e.g. Archipelago) connect to the same WebSocket as other tools.
+      </p>
     </header>
 
     <section class="card" id="status-card">
@@ -74,119 +125,223 @@
       </div>
     </section>
 
-    <div id="settings-backdrop" class="settings-backdrop" hidden aria-hidden="true"></div>
-    <div id="settings-panel" class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
-      <div class="settings-panel-inner">
-        <div class="settings-header">
-          <h2 id="settings-title">Settings</h2>
-          <div class="settings-header-actions">
+    <!-- Settings -->
+    <div id="settings-backdrop" class="dialog-backdrop" hidden aria-hidden="true"></div>
+    <div id="settings-panel" class="dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+      <div class="dialog-panel">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="settings-title">Settings</h2>
+          <div class="dialog-header-actions">
             <button type="button" id="btn-save" class="btn primary">Save settings</button>
-            <button type="button" id="btn-close-settings" class="btn btn-close" aria-label="Close settings">×</button>
+            <button type="button" class="btn btn-icon" id="btn-close-settings" aria-label="Close settings" title="Close (Esc)">
+              <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
           </div>
         </div>
 
-        <div class="settings-body">
-        <p class="hint hint-error" id="settings-error" role="alert" hidden></p>
-        <section class="settings-section">
-          <h3 class="settings-section-title">Serial &amp; network</h3>
-          <label class="field">
-            <span>Cart</span>
-            <select id="cart" aria-describedby="cart-hint">
-              <option value="auto">Auto-detect</option>
-              <option value="sc64">SummerCart64</option>
-              <option value="ed64">EverDrive-64 X7 (experimental)</option>
-              <option value="ed64pro">EverDrive-64 PRO (experimental)</option>
-            </select>
-          </label>
-          <!-- Filled per cart by renderCartAndAuto in main.js. -->
-          <p class="hint hint-warning" id="cart-hint" hidden></p>
-          <label class="field">
-            <span>COM port</span>
-            <select id="serial-port"></select>
-          </label>
-          <p class="hint" id="auto-hint"></p>
-          <div class="row">
-            <button type="button" id="btn-ports" class="btn">Refresh ports</button>
-          </div>
-          <label class="field">
-            <span>Baud</span>
-            <input type="number" id="baud" min="9600" step="1" value="115200" />
-          </label>
-          <label class="field">
-            <span>Listen (HTTP + WebSocket)</span>
-            <input type="text" id="listen" value="127.0.0.1:38765" spellcheck="false" />
-          </label>
-        </section>
+        <div class="dialog-body">
+          <p class="hint hint-error" id="settings-error" role="alert" hidden></p>
 
-        <section class="settings-section">
-          <h3 class="settings-section-title">App behavior</h3>
-          <label class="check">
-            <input type="checkbox" id="auto-start-daemon" checked />
-            <span>Start <code>multi64d</code> automatically when this app opens</span>
-          </label>
-          <label class="check">
-            <input type="checkbox" id="autostart-app" />
-            <span>Start this app when Windows logs in</span>
-          </label>
-          <label class="check">
-            <input type="checkbox" id="tray-enabled" checked />
-            <span>Use notification area (system tray)</span>
-          </label>
-          <label class="check">
-            <input type="checkbox" id="minimize-tray" checked />
-            <span>Minimize to tray when closing the window (instead of exiting)</span>
-          </label>
-          <label class="check">
-            <input type="checkbox" id="start-minimized" />
-            <span>Start with the window hidden (open from the tray)</span>
-          </label>
-          <p class="hint" id="start-minimized-hint">
-            Off by default — the main window opens normally unless you turn this on. Requires the tray icon above.
-          </p>
-          <label class="field">
-            <span>Theme</span>
-            <select id="pref-theme">
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
-              <option value="system">Match system</option>
-              <option value="contrast">High contrast</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Text size</span>
-            <select id="pref-scale">
-              <option value="0.9">Smaller (90%)</option>
-              <option value="1">Default (100%)</option>
-              <option value="1.15">Larger (115%)</option>
-              <option value="1.3">Largest (130%)</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Motion</span>
-            <select id="pref-motion">
-              <option value="system">Follow system setting</option>
-              <option value="reduced">Reduce animation</option>
-            </select>
-          </label>
-          <p class="hint">Appearance applies immediately and is remembered on this PC.</p>
-          <label class="check">
-            <input type="checkbox" id="developer-mode" />
-            <span>Developer mode (show daemon log)</span>
-          </label>
-          <label class="field dev-only-setting" id="multi64d-log-preset-wrap" hidden>
-            <span>Daemon logging</span>
-            <select id="multi64d-log-preset" aria-describedby="multi64d-log-hint">
-              <option value="default">Default (info)</option>
-              <option value="debug">Debug (cart link + multi64d)</option>
-              <option value="serialTrace">Serial trace (each cart read)</option>
-              <option value="verbose">Verbose (debug + serial trace)</option>
-            </select>
-          </label>
-          <p class="hint dev-only-setting" id="multi64d-log-hint" hidden>
-            Applies when the GUI starts <code>multi64d</code>. Use <strong>Serial trace</strong> to mirror
-            <code>--serial-trace</code> / <code>MULTI64D_SERIAL_TRACE</code> (stderr). Restart the daemon after changing.
-          </p>
-        </section>
+          <section class="dialog-section">
+            <h3 class="dialog-section-title">Serial &amp; network</h3>
+            <label class="field">
+              <span>Cart</span>
+              <select id="cart" aria-describedby="cart-hint">
+                <option value="auto">Auto-detect</option>
+                <option value="sc64">SummerCart64</option>
+                <option value="ed64">EverDrive-64 X7 (experimental)</option>
+                <option value="ed64pro">EverDrive-64 PRO (experimental)</option>
+              </select>
+            </label>
+            <!-- Filled per cart by renderCartAndAuto in main.js. -->
+            <p class="hint hint-warning" id="cart-hint" hidden></p>
+            <label class="field">
+              <span>COM port</span>
+              <select id="serial-port"></select>
+            </label>
+            <p class="hint" id="auto-hint"></p>
+            <div class="row">
+              <button type="button" id="btn-ports" class="btn">Refresh ports</button>
+            </div>
+            <label class="field">
+              <span>Baud</span>
+              <input type="number" id="baud" min="9600" step="1" value="115200" />
+            </label>
+            <label class="field">
+              <span>Listen (HTTP + WebSocket)</span>
+              <input type="text" id="listen" value="127.0.0.1:38765" spellcheck="false" />
+            </label>
+          </section>
+
+          <section class="dialog-section">
+            <h3 class="dialog-section-title">App behavior</h3>
+            <label class="check">
+              <input type="checkbox" id="auto-start-daemon" checked />
+              <span>Start <code>multi64d</code> automatically when this app opens</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="autostart-app" />
+              <span>Start this app when Windows logs in</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="tray-enabled" checked />
+              <span>Use notification area (system tray)</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="minimize-tray" checked />
+              <span>Minimize to tray when closing the window (instead of exiting)</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="start-minimized" />
+              <span>Start with the window hidden (open from the tray)</span>
+            </label>
+            <p class="hint" id="start-minimized-hint">
+              Off by default — the main window opens normally unless you turn this on. Requires the tray icon above.
+            </p>
+          </section>
+
+          <section class="dialog-section">
+            <h3 class="dialog-section-title">Appearance</h3>
+            <p class="dialog-section-note">Applies immediately. Not part of Save settings.</p>
+            <label class="field">
+              <span>Theme</span>
+              <select id="pref-theme">
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+                <option value="system">Match system</option>
+                <option value="contrast">High contrast</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Text size</span>
+              <select id="pref-scale">
+                <option value="0.9">Smaller (90%)</option>
+                <option value="1">Default (100%)</option>
+                <option value="1.15">Larger (115%)</option>
+                <option value="1.3">Largest (130%)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Motion</span>
+              <select id="pref-motion">
+                <option value="system">Follow system setting</option>
+                <option value="reduced">Reduce animation</option>
+              </select>
+            </label>
+          </section>
+
+          <section class="dialog-section">
+            <h3 class="dialog-section-title">Developer</h3>
+            <label class="check">
+              <input type="checkbox" id="developer-mode" />
+              <span>Developer mode (show daemon log)</span>
+            </label>
+            <label class="field dev-only-setting" id="multi64d-log-preset-wrap" hidden>
+              <span>Daemon logging</span>
+              <select id="multi64d-log-preset" aria-describedby="multi64d-log-hint">
+                <option value="default">Default (info)</option>
+                <option value="debug">Debug (cart link + multi64d)</option>
+                <option value="serialTrace">Serial trace (each cart read)</option>
+                <option value="verbose">Verbose (debug + serial trace)</option>
+              </select>
+            </label>
+            <p class="hint dev-only-setting" id="multi64d-log-hint" hidden>
+              Applies when the GUI starts <code>multi64d</code>. Use <strong>Serial trace</strong> to mirror
+              <code>--serial-trace</code> / <code>MULTI64D_SERIAL_TRACE</code> (stderr). Restart the daemon after changing.
+            </p>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <!-- Help -->
+    <div id="help-backdrop" class="dialog-backdrop" hidden aria-hidden="true"></div>
+    <div id="help-panel" class="dialog" role="dialog" aria-modal="true" aria-labelledby="help-title" hidden>
+      <div class="dialog-panel dialog-panel--wide">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="help-title">Help</h2>
+          <div class="dialog-header-actions">
+            <button type="button" class="btn btn-icon" id="btn-close-help" aria-label="Close help" title="Close (Esc)">
+              <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="dialog-body">
+          <section class="dialog-section">
+            <h3 class="dialog-section-title">What Multi64 does</h3>
+            <p class="help-text">
+              Multi64 runs <code>multi64d</code>, a bridge between a USB flash cart and tools on this PC. Tools
+              connect to it over a local HTTP + WebSocket address, set under <strong>Settings → Listen</strong>.
+            </p>
+            <p class="help-text">
+              Only one program can use the cart's COM port at a time. Xfer64 pauses the bridge while it works with
+              the cart and resumes it afterwards.
+            </p>
+          </section>
+
+          <section class="dialog-section">
+            <h3 class="dialog-section-title">Carts</h3>
+            <p class="help-text">
+              With Cart on <strong>Auto-detect</strong>, Multi64 looks for a SummerCart64 by its USB IDs, without
+              sending anything to the cart. If none is found, <strong>Start daemon</strong> sends cart test commands
+              to the COM port — or to each serial port, when COM port is on Auto — until a cart answers.
+            </p>
+            <p class="help-text">
+              SummerCart64 is the proven cart. The EverDrive-64 X7 and PRO are experimental: neither has been
+              tested on a real cart.
+            </p>
+          </section>
+
+          <section class="dialog-section">
+            <h3 class="dialog-section-title">Starting and stopping</h3>
+            <p class="help-text">
+              <strong>Start daemon</strong> and <strong>Stop daemon</strong> on the Status card control
+              <code>multi64d</code>. To start it whenever the app opens, turn on
+              <strong>Start multi64d automatically when this app opens</strong> in Settings.
+            </p>
+            <p class="help-text">
+              With the notification area (system tray) turned on, closing the window can hide Multi64 there instead
+              of exiting. Open it again, or start and stop the daemon, from the tray icon.
+            </p>
+          </section>
+
+          <section class="dialog-section">
+            <h3 class="dialog-section-title">Xfer64</h3>
+            <p class="help-text">
+              Xfer64 is a separate app for copying files between the cart's SD card and Windows. The Xfer64 card
+              installs it, or opens it once it is installed.
+            </p>
+          </section>
+        </div>
+
+        <div class="dialog-footer">
+          <button type="button" id="btn-help-done" class="btn primary">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Discard unsaved Settings edits: opens above Settings -->
+    <div id="discard-backdrop" class="dialog-backdrop dialog--top" hidden aria-hidden="true"></div>
+    <div
+      id="discard-panel"
+      class="dialog dialog--top"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="discard-title"
+      aria-describedby="discard-message"
+      hidden
+    >
+      <div class="dialog-panel">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="discard-title">Discard unsaved changes?</h2>
+        </div>
+        <div class="dialog-body">
+          <p class="dialog-message" id="discard-message">Your changes to Settings have not been saved.</p>
+        </div>
+        <div class="dialog-footer">
+          <button type="button" id="btn-discard-keep" class="btn primary">Keep editing</button>
+          <button type="button" id="btn-discard-confirm" class="btn">Discard</button>
         </div>
       </div>
     </div>

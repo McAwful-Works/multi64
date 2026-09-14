@@ -1477,7 +1477,7 @@ function setupExplorerContextMenu() {
  * @param {"cart" | "pc"} pane
  */
 function onExplorerPaneContextMenu(ev, pane) {
-  if (document.body.classList.contains("explorer-settings-open")) return;
+  if (isExplorerSettingsOpen()) return;
   if (isExplorerModalOpen()) return;
   if (inlineRenameState) return;
   const wrap = document.getElementById(`table-wrap-${pane}`);
@@ -3826,7 +3826,7 @@ const USB_SERIAL_VISIBILITY_BURST_DELAYS_MS = [500, 1500];
 async function pollUsbSerialPortsOnChange() {
   if (document.visibilityState !== "visible") return;
   if (isExplorerModalOpen()) return;
-  if (document.documentElement.classList.contains("explorer-settings-open")) return;
+  if (isExplorerSettingsOpen()) return;
   if (usbSerialPollInFlight) return;
   usbSerialPollInFlight = true;
   try {
@@ -4034,6 +4034,7 @@ async function updateCartDeviceSettingsHint() {
   const v = cd?.value || "auto";
   const hintEl = document.getElementById("explorer-cart-device-hint");
   if (!hintEl) return;
+  hintEl.classList.toggle("hint-warning", v === "ed64_beta" || v === "ed64_pro");
   if (v === "ed64_beta") {
     try {
       const s = await invoke("explorer_get_settings");
@@ -4138,6 +4139,11 @@ function applyCartDeviceUi(opts = {}) {
   }
 }
 
+function isExplorerSettingsOpen() {
+  const panel = document.getElementById("explorer-settings-panel");
+  return panel != null && !panel.hidden;
+}
+
 function setExplorerSettingsOpen(open) {
   const panel = document.getElementById("explorer-settings-panel");
   const backdrop = document.getElementById("explorer-settings-backdrop");
@@ -4147,13 +4153,51 @@ function setExplorerSettingsOpen(open) {
   backdrop.hidden = !open;
   opener?.setAttribute("aria-expanded", open ? "true" : "false");
   backdrop.setAttribute("aria-hidden", open ? "false" : "true");
-  document.documentElement.classList.toggle("explorer-settings-open", open);
-  document.body.classList.toggle("explorer-settings-open", open);
+  document.documentElement.classList.toggle("dialog-open", open);
+  document.body.classList.toggle("dialog-open", open);
   if (open) {
     document.getElementById("btn-close-settings")?.focus();
   } else {
     void loadExplorerSettings().then(() => opener?.focus());
   }
+}
+
+/**
+ * The Settings values that Save settings writes, as last filled in by `loadExplorerSettings()`.
+ * Appearance and Send to act immediately, so they are not part of it.
+ * @type {string | null}
+ */
+let explorerSettingsFormSnapshot = null;
+
+function readExplorerSettingsForm() {
+  return JSON.stringify({
+    cartDevice: document.getElementById("explorer-cart-device")?.value ?? "",
+    developerMode: document.getElementById("explorer-developer-mode")?.checked ?? false,
+    ed64LinearBase: document.getElementById("explorer-ed64-linear-base")?.value ?? "",
+  });
+}
+
+function explorerSettingsHaveUnsavedEdits() {
+  return explorerSettingsFormSnapshot !== null && readExplorerSettingsForm() !== explorerSettingsFormSnapshot;
+}
+
+/** True while the discard confirm is up, so a second close gesture does not stack another. */
+let explorerSettingsDiscardPending = false;
+
+/** Close button, backdrop and Esc: ask before throwing away unsaved edits. Save closes directly. */
+async function requestCloseExplorerSettings() {
+  if (!isExplorerSettingsOpen() || explorerSettingsDiscardPending) return;
+  if (explorerSettingsHaveUnsavedEdits()) {
+    explorerSettingsDiscardPending = true;
+    let discard = false;
+    try {
+      discard = await showExplorerConfirm("Discard unsaved changes to Settings?");
+    } finally {
+      explorerSettingsDiscardPending = false;
+    }
+    if (!discard) return;
+  }
+  setExplorerSettingsOpen(false);
 }
 
 /** True while Add/Remove Send to is running — do not clear busy from overlapping refresh() calls. */
@@ -4219,6 +4263,7 @@ async function loadExplorerSettings() {
     if (baseEl) {
       baseEl.value = formatEd64LinearBaseForInput(s.ed64RomLinearBase);
     }
+    explorerSettingsFormSnapshot = readExplorerSettingsForm();
     updateExplorerDevShellButton();
     applyCartDeviceUi({ skipUsbRefresh });
     await refreshExplorerSendToUploadButton();
@@ -4326,10 +4371,10 @@ function setupExplorerSettings() {
     void loadExplorerSettings().then(() => setExplorerSettingsOpen(true));
   });
   document.getElementById("btn-close-settings")?.addEventListener("click", () => {
-    setExplorerSettingsOpen(false);
+    void requestCloseExplorerSettings();
   });
   document.getElementById("explorer-settings-backdrop")?.addEventListener("click", () => {
-    setExplorerSettingsOpen(false);
+    void requestCloseExplorerSettings();
   });
   document.getElementById("explorer-developer-mode")?.addEventListener("change", updateExplorerDevShellButton);
   document.getElementById("explorer-cart-device")?.addEventListener("change", () => {
@@ -4417,9 +4462,10 @@ function setupExplorerSettings() {
     }
   });
   document.addEventListener("keydown", (e) => {
-    const panel = document.getElementById("explorer-settings-panel");
-    if (e.key === "Escape" && panel && !panel.hidden) {
-      setExplorerSettingsOpen(false);
+    // An alert or confirm raised from Settings sits above it and handles its own Esc.
+    if (e.key === "Escape" && isExplorerSettingsOpen() && !isExplorerModalOpen()) {
+      e.preventDefault();
+      void requestCloseExplorerSettings();
     }
   });
 }
