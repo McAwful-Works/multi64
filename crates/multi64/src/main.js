@@ -40,10 +40,8 @@ function knownCart(v) {
   return CART_VALUES.includes(v) ? v : "auto";
 }
 
-/** The Settings → Cart note for everything but a fixed SummerCart64. */
+/** The Settings → Cart warning for each experimental cart. */
 const CART_HINTS = {
-  auto:
-    "Auto-detect finds a SummerCart64 by its USB IDs without sending anything. Otherwise Start sends cart test commands to the COM port below, or on Auto to every serial port, until a cart answers: other devices on those ports receive them, and the EverDrive checks have never been run against a cart.",
   ed64:
     "Experimental: the EverDrive-64 X7 link has never been run against a cart, so a running daemon does not show that it works. Restarts the daemon when saved.",
   ed64pro:
@@ -96,7 +94,7 @@ function renderCartAndAuto() {
           : "Auto (no cart selected)";
   }
   const cartHint = document.getElementById("cart-hint");
-  cartHint.hidden = cart === "sc64";
+  cartHint.hidden = !everdrive;
   cartHint.textContent = CART_HINTS[cart] || "";
   // Auto only picks a port that identifies as a cart, so with no pick the daemon will not start
   // on Auto -- except under Auto-detect, which probes instead. Say which in the hint.
