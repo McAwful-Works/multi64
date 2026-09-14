@@ -49,6 +49,8 @@ These are **not** alternate L3 specs; they hit **USB serial** on a cart. **`mult
 | Raw L3 vs ROM **RAW_ECHO** | `sc64-echo-test` | `ed64-echo-test` (runs; §4 framing unvalidated) |
 | L3 framing vs **RAW_ECHO** | `sc64-l3-framing-e2e` | `ed64-l3-framing-e2e` (runs; §4 framing unvalidated) |
 
+For the **EverDrive-64 PRO**, `ed64pro-echo-test` and `ed64pro-l3-framing-e2e` fill both e2e roles ([`l3-over-everdrive-pro.md`](l3-over-everdrive-pro.md) §9); opening the link runs the edlink handshake, so there is no separate smoke tool. Neither has run on a cart.
+
 ---
 
 ## Maintenance

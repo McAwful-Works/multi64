@@ -199,7 +199,7 @@ A ROM sends to the host with `ed_usb_wr`, an `EPO` from LINK to the **USB** endp
 |-----------|------|
 | [`crates/ed64pro-link`](../../crates/ed64pro-link/README.md) | **`multi64-ed64pro-link`**: `Ed64Pro` implements §2–§9. Tests use a scripted transport that checks exact request bytes; never run against a cart. |
 | `fake` feature of `multi64-ed64pro-link` | `FakeEd64Pro`: an in-memory cart that decodes this document's bytes, for host-only tests. It agrees with this document by construction, so it cannot catch errors in it. |
-| [`crates/multi64-sc64-sd`](../../crates/multi64-sc64-sd) (`ed64pro` feature) | `Ed64ProSdSession`: a file-level `CartSession` over §7 — list, copy both ways, mkdir, recursive delete. No rename, since §7 has none. |
+| [`crates/multi64-sc64-sd`](../../crates/multi64-sc64-sd) (`ed64pro` feature) | `Ed64ProSdSession`: a file-level `CartSession` over §7 — list, copy both ways, mkdir, recursive delete, and rename as copy-then-delete, since §7 has no rename command. |
 | [`crates/xfer64`](../../crates/xfer64/README.md) | Cart mode `ed64_pro`; Auto-detect tries §4 after SC64. Writes need the user's consent each run. |
 | [`crates/ed64pro-l2`](../../crates/ed64pro-l2/README.md) | **`multi64-ed64pro-l2`**: the L3 stream over §8 and §9, as [`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md) specifies. Selected by `multi64d --cart ed64pro`. |
 | [`n64/test-rom`](../../n64/README.md) | `ed64pro.c`: the console side of that mapping — detection, FIFO receive, USB send. |

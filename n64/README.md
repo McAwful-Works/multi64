@@ -69,7 +69,7 @@ cargo run -p sc64-echo-test -- --port COM3
 
 **EverDrive X7:** same ROM — the committed binary boots on an EverDrive and shows an on-screen **UNVALIDATED** warning; use **`ed64-l3-framing-e2e`** / **`ed64-echo-test`**. [`multi64-ed64-l2`](../crates/ed64-l2/README.md) implements **`Ed64L2Pipe`**, but the mapping is **unvalidated on hardware** — these are the tools that would validate it. Start with **`ed64-smoke`** to confirm the port, then see [`l3-over-everdrive-x7.md`](../docs/spec/l3-over-everdrive-x7.md) §4.5.
 
-**EverDrive-64 PRO:** same ROM. libdragon's `usb.h` does not know the PRO, so `test-rom/cart_link.c` detects one first and routes USB traffic through `test-rom/ed64pro.c`; the ROM then shows an on-screen **UNVALIDATED** warning. Host side: `multi64d --cart ed64pro`. Never run on a cart — see [`l3-over-everdrive-pro.md`](../docs/spec/l3-over-everdrive-pro.md) §8 and §9.
+**EverDrive-64 PRO:** same ROM. libdragon's `usb.h` does not know the PRO, so `test-rom/cart_link.c` detects one first and routes USB traffic through `test-rom/ed64pro.c`; the ROM then shows an on-screen **UNVALIDATED** warning. Host side: `ed64pro-echo-test` and `ed64pro-l3-framing-e2e` over the link alone, then `multi64d --cart ed64pro`. Never run on a cart — see [`l3-over-everdrive-pro.md`](../docs/spec/l3-over-everdrive-pro.md) §8 and §9.
 
 ### `multi64d` + M64T / BENCH
 

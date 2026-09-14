@@ -74,6 +74,7 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 | `multi64-ed64pro-l2` | L3 over the EverDrive-64 **PRO**'s FIFO and USB link ([`l3-over-everdrive-pro.md`](docs/spec/l3-over-everdrive-pro.md)) — this repo's own design, **never run against a cart** |
 | `ed64-smoke` | **`usb64`** `cmd`/`t` smoke ([spec §8](docs/spec/l3-over-everdrive-x7.md)); not L3 |
 | `ed64-echo-test`, `ed64-l3-framing-e2e` | Same roles as SC64 e2e tools; runnable, but drive **unvalidated** framing at a cart |
+| `ed64pro-echo-test`, `ed64pro-l3-framing-e2e` | The same roles over the PRO link; runnable, but **never run against a cart** |
 
 **Compare carts:** [`docs/README.md` — Flash carts (L2)](docs/README.md#flash-carts-l2-backends)
 

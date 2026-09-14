@@ -66,6 +66,8 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [crates/ed64-smoke](crates/ed64-smoke) | **`ed64-smoke`** — EverDrive **`usb64`**-style `cmd`/`t` smoke (not L3; see `l3-over-everdrive-x7.md` §8) |
 | [crates/ed64-echo-test](crates/ed64-echo-test) | **`ed64-echo-test`** — raw L3 loopback e2e over **`Ed64L2Pipe`** (runs; framing **unvalidated on hardware**) |
 | [crates/ed64-l3-framing-e2e](crates/ed64-l3-framing-e2e) | **`ed64-l3-framing-e2e`** — L3 framing e2e over **`Ed64L2Pipe`** (runs; framing **unvalidated on hardware**) |
+| [crates/ed64pro-echo-test](crates/ed64pro-echo-test) | **`ed64pro-echo-test`** — raw L3 loopback e2e over **`Ed64ProL2Pipe`** (runs; **never run against a cart**) |
+| [crates/ed64pro-l3-framing-e2e](crates/ed64pro-l3-framing-e2e) | **`ed64pro-l3-framing-e2e`** — L3 framing e2e over **`Ed64ProL2Pipe`** (runs; **never run against a cart**) |
 
 ### Tauri apps
 

@@ -53,7 +53,7 @@ Only one process can hold the cart serial device. **`multi64d`** exposes `POST /
 | [`partition.rs`](../../crates/multi64-sc64-sd/src/partition.rs) | Partition discovery, FAT/exFAT sessions (`Sc64SdSession`, `Ed64SdSession`). |
 | [`cart_session.rs`](../../crates/multi64-sc64-sd/src/cart_session.rs) | [`CartSession`](../../crates/multi64-sc64-sd/src/cart_session.rs): unified explorer API. |
 | [`ed64_linear.rs`](../../crates/multi64-sc64-sd/src/ed64_linear.rs) | EverDrive: `RomRead` at `rom_linear_base + LBA×512` (optional feature). Reads cart ROM memory, not the SD card — see [`ed64-sd-usb-host.md`](./ed64-sd-usb-host.md#why-romread-is-not-sd-access). |
-| [`ed64pro.rs`](../../crates/multi64-sc64-sd/src/ed64pro.rs) | EverDrive-64 PRO (optional `ed64pro` feature): a file-level session over edlink Gen3 — no sector reads, no host FAT mount. Rename is unsupported. Experimental; see [`ed64-pro-usb-host.md`](./ed64-pro-usb-host.md). |
+| [`ed64pro.rs`](../../crates/multi64-sc64-sd/src/ed64pro.rs) | EverDrive-64 PRO (optional `ed64pro` feature): a file-level session over edlink Gen3 — no sector reads, no host FAT mount. Rename copies, checks the copy's size, then deletes the original, since the link has no rename command. Experimental; see [`ed64-pro-usb-host.md`](./ed64-pro-usb-host.md). |
 
 ### Wire layer (`crates/multi64-ed64-link`)
 

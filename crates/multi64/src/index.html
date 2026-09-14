@@ -92,13 +92,11 @@
             <select id="cart" aria-describedby="cart-hint">
               <option value="sc64">SummerCart64</option>
               <option value="ed64">EverDrive-64 X7 (experimental)</option>
+              <option value="ed64pro">EverDrive-64 PRO (experimental)</option>
             </select>
           </label>
-          <p class="hint hint-warning" id="cart-hint" hidden>
-            Experimental: the EverDrive-64 X7 link has never been run against a cart, so a running daemon does not
-            show that it works. X7 only — the EverDrive-64 PRO uses a different USB protocol and is not supported
-            here. Restarts the daemon when saved.
-          </p>
+          <!-- Filled per cart by renderCartAndAuto in main.js. -->
+          <p class="hint hint-warning" id="cart-hint" hidden></p>
           <label class="field">
             <span>COM port</span>
             <select id="serial-port"></select>
