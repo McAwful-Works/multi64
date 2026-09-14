@@ -17,6 +17,12 @@ without one, the show-hidden toggle reports `aria-pressed`, and an operation blo
 but draws its busy overlay only after 300 ms. The stub's `window.__TAURI_DELAYS__` slows a named
 command down so that last one can be watched.
 
+And the keyboard: each dialog opens on the control it should, Tab and Shift+Tab wrap inside the
+topmost one, Escape closes only that one and focus returns to what opened it (or into the dialog
+underneath), Shift+F10 and the ContextMenu key open the context menu, arrow keys, Home and End move
+through its enabled items, and sort headers are column headers holding a button with `aria-sort`.
+Chromium's focus handling stands in for WebView2's here; they share an engine, not a guarantee.
+
 ```sh
 npm install
 npx playwright install chromium   # once per machine

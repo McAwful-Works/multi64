@@ -826,23 +826,46 @@ body.explorer-dragging .explorer-table tbody tr {
   min-width: 0;
 }
 
+/* A sortable header keeps its column-header role (so `aria-sort` on it is valid) and holds a real
+   button, which takes the header's padding so the whole cell is the click target. */
 .explorer-table th[data-sort-key] {
+  padding: 0;
   cursor: pointer;
   user-select: none;
 }
 
-.explorer-table th[data-sort-key]::after {
+.explorer-sort-btn {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0.35rem 0.6rem;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+/* The header clips overflow, so the shared focus ring is drawn inside the button. */
+.explorer-sort-btn:focus-visible {
+  outline-offset: -2px;
+}
+
+.explorer-sort-btn::after {
   content: "";
   margin-left: 0.35rem;
   font-size: var(--font-xs);
   opacity: 0.75;
 }
 
-.explorer-table th[data-sort-key][aria-sort="ascending"]::after {
+.explorer-table th[data-sort-key][aria-sort="ascending"] .explorer-sort-btn::after {
   content: "▲";
 }
 
-.explorer-table th[data-sort-key][aria-sort="descending"]::after {
+.explorer-table th[data-sort-key][aria-sort="descending"] .explorer-sort-btn::after {
   content: "▼";
 }
 

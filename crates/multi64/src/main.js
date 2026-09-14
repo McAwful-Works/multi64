@@ -1,25 +1,27 @@
 const { invoke } = window.__TAURI__.core;
 
+/** Set text only when it changed, so the 2 s status poll does not re-announce the status region. */
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el.textContent !== text) el.textContent = text;
+}
+
 async function refreshStatus() {
   try {
     const s = await invoke("get_daemon_status");
-    document.getElementById("status-running").textContent = s.running
-      ? "Running"
-      : "Stopped";
-    document.getElementById("status-healthy").textContent = s.healthy
-      ? "OK"
-      : s.running
-        ? "Not responding yet"
-        : "—";
-    document.getElementById("status-cart").textContent = s.cart || "—";
-    document.getElementById("status-listen").textContent = s.listen || "—";
-    document.getElementById("status-msg").textContent = s.message || "—";
+    setText("status-running", s.running ? "Running" : "Stopped");
+    setText("status-healthy", s.healthy ? "OK" : s.running ? "Not responding yet" : "—");
+    setText("status-cart", s.cart || "—");
+    setText("status-listen", s.listen || "—");
+    setText("status-msg", s.message || "—");
+    // A bridge that is running now (e.g. started from the tray) makes an earlier start error stale.
+    if (s.running) showInlineError("status-error", "");
     // Match the tray, which offers only the action that applies. Leaving both live means
     // "Start bridge" on a running bridge, which reports a failure for a no-op.
     document.getElementById("btn-start").disabled = s.running;
     document.getElementById("btn-stop").disabled = !s.running;
   } catch (e) {
-    document.getElementById("status-msg").textContent = String(e);
+    setText("status-msg", String(e));
     // Status is unknown, so neither action can be ruled out; leave both usable.
     document.getElementById("btn-start").disabled = false;
     document.getElementById("btn-stop").disabled = false;
@@ -225,10 +227,57 @@ function settingsHaveUnsavedEdits() {
   return settingsSnapshot !== null && JSON.stringify(readSettingsFromForm()) !== settingsSnapshot;
 }
 
+/** Controls a keyboard user can reach inside `root`: shown, enabled, and not `tabindex="-1"`. */
+function focusableIn(root) {
+  return [...root.querySelectorAll("button, [href], input, select, textarea, [tabindex]")].filter(
+    (el) => !el.disabled && el.tabIndex >= 0 && !el.closest("[hidden]") && el.getClientRects().length > 0,
+  );
+}
+
+/** The open dialog on top. The discard confirm opens above Settings; Help and Settings never stack. */
+function topDialog() {
+  return (
+    ["discard-panel", "help-panel", "settings-panel"]
+      .map((id) => document.getElementById(id))
+      .find((el) => !el.hidden) || null
+  );
+}
+
+/** Tab and Shift+Tab cycle inside the top dialog, so nothing behind it can take focus. */
+function trapDialogTab(e) {
+  const dialog = topDialog();
+  if (!dialog) return;
+  const items = focusableIn(dialog);
+  if (items.length === 0) {
+    e.preventDefault();
+    return;
+  }
+  const first = items[0];
+  const last = items[items.length - 1];
+  const inside = dialog.contains(document.activeElement);
+  if (e.shiftKey && (!inside || document.activeElement === first)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (!inside || document.activeElement === last)) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+/** Give focus back to what had it before a dialog opened, or to `fallbackId` if that is gone. */
+function returnFocus(saved, fallbackId) {
+  const usable = saved instanceof HTMLElement && saved.isConnected && focusableIn(document.body).includes(saved);
+  (usable ? saved : document.getElementById(fallbackId)).focus();
+}
+
+/** What had focus before Settings opened. */
+let settingsReturnFocus = null;
+
 function setSettingsOpen(open) {
   const panel = document.getElementById("settings-panel");
   const backdrop = document.getElementById("settings-backdrop");
   const opener = document.getElementById("btn-open-settings");
+  if (open && panel.hidden) settingsReturnFocus = document.activeElement;
   showInlineError("settings-error", "");
   panel.hidden = !open;
   backdrop.hidden = !open;
@@ -245,7 +294,10 @@ function setSettingsOpen(open) {
     });
   } else {
     // Discard unsaved edits; only "Save settings" calls set_settings on the backend.
-    void loadSettings().then(() => opener.focus());
+    void loadSettings().then(() => {
+      returnFocus(settingsReturnFocus, opener.id);
+      settingsReturnFocus = null;
+    });
   }
 }
 
@@ -286,11 +338,21 @@ function discardSettingsEdits() {
   setSettingsOpen(false);
 }
 
+/** What had focus before Help opened. */
+let helpReturnFocus = null;
+
 function setHelpOpen(open) {
-  document.getElementById("help-panel").hidden = !open;
+  const panel = document.getElementById("help-panel");
+  if (open && panel.hidden) helpReturnFocus = document.activeElement;
+  panel.hidden = !open;
   document.getElementById("help-backdrop").hidden = !open;
   syncDialogOpen();
-  document.getElementById(open ? "btn-close-help" : "btn-open-help").focus();
+  if (open) {
+    document.getElementById("btn-close-help").focus();
+  } else {
+    returnFocus(helpReturnFocus, "btn-open-help");
+    helpReturnFocus = null;
+  }
 }
 
 const EMPTY_LOG_HINT =
@@ -368,8 +430,12 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btn-help-done").addEventListener("click", () => setHelpOpen(false));
   document.getElementById("help-backdrop").addEventListener("click", () => setHelpOpen(false));
 
-  // Esc closes the top dialog only: the discard confirm, else Help, else Settings.
+  // Esc closes the top dialog only: the discard confirm, else Help, else Settings. Tab stays inside it.
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Tab") {
+      trapDialogTab(e);
+      return;
+    }
     if (e.key !== "Escape") return;
     if (!document.getElementById("discard-panel").hidden) {
       keepEditingSettings();
@@ -386,6 +452,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("cart").addEventListener("change", renderCartAndAuto);
   document.getElementById("serial-port").addEventListener("change", renderCartAndAuto);
   document.getElementById("btn-start").addEventListener("click", async () => {
+    showInlineError("status-error", "");
     try {
       await invoke("daemon_start");
       await refreshStatus();
@@ -397,10 +464,12 @@ window.addEventListener("DOMContentLoaded", async () => {
       await refreshLog();
       document.getElementById("status-running").textContent = "Stopped";
       document.getElementById("status-healthy").textContent = "—";
-      document.getElementById("status-msg").textContent = msg;
+      // Its own line: Note is rewritten by the next status poll, which would erase the error.
+      showInlineError("status-error", msg);
     }
   });
   document.getElementById("btn-stop").addEventListener("click", async () => {
+    showInlineError("status-error", "");
     await invoke("daemon_stop");
     await refreshStatus();
     await refreshLog();

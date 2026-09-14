@@ -1134,7 +1134,7 @@ function updatePaneSortHeaderIndicators(pane) {
     const k = th.getAttribute("data-sort-key");
     const active = k === key;
     th.setAttribute("aria-sort", active ? (dir === "asc" ? "ascending" : "descending") : "none");
-    th.setAttribute(
+    (th.querySelector(".explorer-sort-btn") || th).setAttribute(
       "title",
       `${th.textContent?.trim() || "Column"}${active ? ` (${dir === "asc" ? "ascending" : "descending"})` : ""}`
     );
@@ -1163,18 +1163,10 @@ function setupExplorerSortHeaders() {
     const tableId = pane === "cart" ? "table-cart" : "table-pc";
     const table = document.getElementById(tableId);
     if (!table) continue;
+    // The `th` keeps its column-header role, which is what makes its `aria-sort` valid; the button
+    // inside it is what a click, Enter or Space presses.
     for (const th of table.querySelectorAll("thead th[data-sort-key]")) {
-      th.setAttribute("tabindex", "0");
-      th.setAttribute("role", "button");
-      th.addEventListener("click", () => {
-        const key = th.getAttribute("data-sort-key");
-        if (key === "name" || key === "size" || key === "modified" || key === "type") {
-          setPaneSort(pane, key);
-        }
-      });
-      th.addEventListener("keydown", (ev) => {
-        if (ev.key !== "Enter" && ev.key !== " ") return;
-        ev.preventDefault();
+      th.querySelector(".explorer-sort-btn")?.addEventListener("click", () => {
         const key = th.getAttribute("data-sort-key");
         if (key === "name" || key === "size" || key === "modified" || key === "type") {
           setPaneSort(pane, key);
@@ -1207,6 +1199,128 @@ function hideNameTooltip() {
 const MODAL_TITLE_DEFAULT = "Xfer64";
 const MODAL_OK_LABEL_DEFAULT = "OK";
 
+const FOCUSABLE_SELECTOR =
+  'a[href], button, input:not([type="hidden"]), select, textarea, summary, [tabindex]';
+
+/**
+ * The elements Tab can reach inside `root`, in document order: rendered, not disabled, not inside a
+ * `[hidden]` ancestor, and `tabindex` not negative.
+ * @param {Element} root
+ * @returns {HTMLElement[]}
+ */
+function focusableIn(root) {
+  return /** @type {HTMLElement[]} */ ([...root.querySelectorAll(FOCUSABLE_SELECTOR)]).filter(
+    (el) =>
+      !el.matches(":disabled") &&
+      el.tabIndex >= 0 &&
+      !el.closest("[hidden], [inert]") &&
+      el.getClientRects().length > 0 &&
+      getComputedStyle(el).visibility !== "hidden"
+  );
+}
+
+/**
+ * Open dialogs, bottom first. Only the last one takes Tab and Escape.
+ * @type {{ panel: HTMLElement, onEscape: () => void, prevFocus: HTMLElement | null, initialFocus: () => HTMLElement | null, fallbackFocus: () => HTMLElement | null }[]}
+ */
+const dialogFocusStack = [];
+
+/** @param {HTMLElement | null | (() => HTMLElement | null) | undefined} target */
+function resolveFocusTarget(target) {
+  return typeof target === "function" ? target() : target ?? null;
+}
+
+/** Focus `el` and report whether it took focus (it may be hidden, disabled or detached). */
+function tryFocus(el) {
+  if (!el || !el.isConnected) return false;
+  el.focus();
+  return document.activeElement === el;
+}
+
+/** @param {KeyboardEvent} e */
+function onDialogStackKeyDown(e) {
+  const top = dialogFocusStack[dialogFocusStack.length - 1];
+  if (!top) return;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+    top.onEscape();
+    return;
+  }
+  if (e.key !== "Tab" || e.ctrlKey || e.altKey || e.metaKey) return;
+  const items = focusableIn(top.panel);
+  const active = document.activeElement;
+  if (items.length === 0) {
+    e.preventDefault();
+    tryFocus(top.panel);
+    return;
+  }
+  const first = items[0];
+  const last = items[items.length - 1];
+  const inside = active instanceof Node && top.panel.contains(active);
+  if (e.shiftKey) {
+    // Leave the browser's own order alone unless it would carry focus out of the dialog.
+    const hasEarlier = inside && active !== first && items.some((el) => el.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING);
+    if (!hasEarlier) {
+      e.preventDefault();
+      last.focus();
+    }
+  } else {
+    const hasLater = inside && active !== last && items.some((el) => el.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_PRECEDING);
+    if (!hasLater) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+}
+
+let dialogStackListenerInstalled = false;
+
+/**
+ * Make `panel` the topmost dialog: focus moves into it, Tab and Shift+Tab stay inside it, and Escape
+ * runs `onEscape` (what its Cancel or close does). Call the returned `release` when it closes: focus
+ * goes back to what had it before, or to `fallbackFocus`, or into the dialog underneath.
+ * @param {HTMLElement} panel the `role="dialog"` element
+ * @param {{ initialFocus?: HTMLElement | null | (() => HTMLElement | null), onEscape: () => void, fallbackFocus?: HTMLElement | null | (() => HTMLElement | null) }} opts
+ * @returns {(opts?: { restoreFocus?: boolean }) => void} release
+ */
+function trapDialogFocus(panel, opts) {
+  if (!dialogStackListenerInstalled) {
+    dialogStackListenerInstalled = true;
+    document.addEventListener("keydown", onDialogStackKeyDown, true);
+  }
+  const active = document.activeElement;
+  const entry = {
+    panel,
+    onEscape: opts.onEscape,
+    prevFocus: active instanceof HTMLElement && active !== document.body && !panel.contains(active) ? active : null,
+    initialFocus: () => resolveFocusTarget(opts.initialFocus) || focusableIn(panel)[0] || panel,
+    fallbackFocus: () => resolveFocusTarget(opts.fallbackFocus),
+  };
+  dialogFocusStack.push(entry);
+  tryFocus(entry.initialFocus());
+  let released = false;
+  return ({ restoreFocus = true } = {}) => {
+    if (released) return;
+    released = true;
+    const i = dialogFocusStack.indexOf(entry);
+    if (i >= 0) dialogFocusStack.splice(i, 1);
+    if (!restoreFocus || i !== dialogFocusStack.length) return;
+    const under = dialogFocusStack[dialogFocusStack.length - 1];
+    const allowed = (el) => el != null && (!under || under.panel.contains(el));
+    const prev = entry.prevFocus;
+    if (allowed(prev) && tryFocus(prev)) return;
+    const fallback = entry.fallbackFocus();
+    if (allowed(fallback) && tryFocus(fallback)) return;
+    if (under) tryFocus(under.initialFocus());
+  };
+}
+
+/** True while any dialog (Settings included) holds focus. */
+function isAnyExplorerDialogOpen() {
+  return dialogFocusStack.length > 0;
+}
+
 function isExplorerModalOpen() {
   const root = document.getElementById("explorer-modal-root");
   const ow = document.getElementById("explorer-overwrite-modal");
@@ -1225,11 +1339,90 @@ function isExplorerContextMenuVisible() {
   return menu != null && !menu.hidden;
 }
 
-function hideExplorerContextMenu() {
+/** What had focus when the context menu opened (the list, usually); it gets focus back. */
+let contextMenuReturnFocus = /** @type {HTMLElement | null} */ (null);
+
+/**
+ * @param {{ restoreFocus?: boolean }} [opts] `restoreFocus`: return focus to where the menu opened
+ *   from. A click elsewhere closes it without, so the click's own target keeps focus.
+ */
+function hideExplorerContextMenu({ restoreFocus = false } = {}) {
   const menu = document.getElementById("explorer-context-menu");
   if (!menu) return;
+  const wasOpen = !menu.hidden;
   menu.hidden = true;
   menu.setAttribute("aria-hidden", "true");
+  const target = contextMenuReturnFocus;
+  contextMenuReturnFocus = null;
+  if (restoreFocus && wasOpen && !tryFocus(target)) {
+    tryFocus(document.getElementById(`table-wrap-${menu.dataset.pane || focusedPane}`));
+  }
+}
+
+/** @param {HTMLElement} menu @returns {HTMLButtonElement[]} the items that can run, in order */
+function contextMenuItems(menu) {
+  return /** @type {HTMLButtonElement[]} */ ([...menu.querySelectorAll('[role="menuitem"]')]).filter(
+    (el) => !el.disabled && !el.closest("[hidden]")
+  );
+}
+
+/**
+ * Keys while the context menu is open: arrows, Home and End move between enabled items (wrapping),
+ * Enter and Space run one, Escape and Tab close it. Nothing else reaches the lists behind it.
+ * @param {KeyboardEvent} ev
+ */
+function onExplorerContextMenuKeyDown(ev) {
+  const menu = document.getElementById("explorer-context-menu");
+  if (!menu) return;
+  const items = contextMenuItems(menu);
+  const i = items.indexOf(/** @type {HTMLButtonElement} */ (document.activeElement));
+  const key = ev.key;
+  if (key === "Escape" || key === "Tab") {
+    ev.preventDefault();
+    hideExplorerContextMenu({ restoreFocus: true });
+    return;
+  }
+  if (key === "ArrowDown" || key === "ArrowUp" || key === "Home" || key === "End") {
+    ev.preventDefault();
+    if (!items.length) return;
+    let next;
+    if (key === "Home") next = 0;
+    else if (key === "End") next = items.length - 1;
+    else if (key === "ArrowDown") next = i < 0 ? 0 : (i + 1) % items.length;
+    else next = i < 0 ? items.length - 1 : (i - 1 + items.length) % items.length;
+    items[next].focus();
+    return;
+  }
+  if (key === "Enter" || key === " ") {
+    ev.preventDefault();
+    if (i >= 0) items[i].click();
+    return;
+  }
+  if (key === "ContextMenu" || key === "F10") ev.preventDefault();
+}
+
+/**
+ * Shift+F10 or the ContextMenu key: the menu for the selected row of the active list, or the list's
+ * own menu when nothing is selected, placed by the row instead of a pointer.
+ * @param {"cart" | "pc"} pane
+ */
+function openExplorerContextMenuFromKeyboard(pane) {
+  if (isExplorerSettingsOpen() || isExplorerModalOpen() || inlineRenameState || isPaneBusy(pane)) return;
+  const wrap = document.getElementById(`table-wrap-${pane}`);
+  if (!wrap) return;
+  focusedPane = pane;
+  cancelRenameNameClickArm();
+  const sel = state[pane].selected;
+  if (sel.size > 0) {
+    const anchor = state[pane].anchorPath;
+    const path = anchor && sel.has(anchor) ? anchor : [...sel][0];
+    ensurePathVisibleInPane(pane, path);
+    const r = (findRowInPaneDom(pane, path) || wrap).getBoundingClientRect();
+    showExplorerContextMenu(pane, r.left + 24, r.bottom, false);
+    return;
+  }
+  const r = wrap.getBoundingClientRect();
+  showExplorerContextMenu(pane, r.left + 24, r.top + 24, true);
 }
 
 /**
@@ -1241,6 +1434,13 @@ function hideExplorerContextMenu() {
 function showExplorerContextMenu(pane, clientX, clientY, blankArea = false) {
   const menu = document.getElementById("explorer-context-menu");
   if (!menu) return;
+  if (menu.hidden) {
+    const active = document.activeElement;
+    contextMenuReturnFocus =
+      active instanceof HTMLElement && active !== document.body && !menu.contains(active)
+        ? active
+        : document.getElementById(`table-wrap-${pane}`);
+  }
   const fileGroup = document.getElementById("explorer-context-menu-group-file");
   const blankGroup = document.getElementById("explorer-context-menu-group-blank");
   if (fileGroup && blankGroup) {
@@ -1271,6 +1471,8 @@ function showExplorerContextMenu(pane, clientX, clientY, blankArea = false) {
   if (top < pad) top = pad;
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
+  // The first item that can run takes focus; the menu itself when none can.
+  (contextMenuItems(menu)[0] || menu).focus();
 }
 
 /**
@@ -1386,9 +1588,7 @@ async function openExplorerPropertiesForPane(pane) {
   dd.textContent = "";
   dl.appendChild(dt);
   dl.appendChild(dd);
-  root.hidden = false;
-  root.setAttribute("aria-hidden", "false");
-  document.body.classList.add("explorer-modal-open");
+  showExplorerPropertiesModal(pane);
   try {
     if (pane === "cart") {
       const info = await invoke("cart_serial_path_info", { path: normalizeUsbPath(path) });
@@ -1406,7 +1606,28 @@ async function openExplorerPropertiesForPane(pane) {
     dl.appendChild(errDt);
     dl.appendChild(errDd);
   }
-  document.getElementById("explorer-properties-close")?.focus();
+}
+
+/** @type {((opts?: { restoreFocus?: boolean }) => void) | null} */
+let releasePropertiesFocus = null;
+
+/**
+ * Show the Properties dialog (its contents are filled in by the caller) and move focus to Close.
+ * @param {"cart" | "pc"} pane the pane it describes; focus falls back to that list when it closes
+ */
+function showExplorerPropertiesModal(pane) {
+  const root = document.getElementById("explorer-properties-modal");
+  const panel = root?.querySelector('[role="dialog"]');
+  if (!root || !(panel instanceof HTMLElement)) return;
+  root.hidden = false;
+  root.setAttribute("aria-hidden", "false");
+  document.body.classList.add("explorer-modal-open");
+  if (releasePropertiesFocus) return;
+  releasePropertiesFocus = trapDialogFocus(panel, {
+    initialFocus: document.getElementById("explorer-properties-close"),
+    onEscape: () => closeExplorerPropertiesModal(),
+    fallbackFocus: document.getElementById(`table-wrap-${pane}`),
+  });
 }
 
 /** Properties for the folder shown in the path bar (not a selected row). */
@@ -1422,9 +1643,7 @@ async function openExplorerPropertiesForCurrentFolder(pane) {
   dd.textContent = "";
   dl.appendChild(dt);
   dl.appendChild(dd);
-  root.hidden = false;
-  root.setAttribute("aria-hidden", "false");
-  document.body.classList.add("explorer-modal-open");
+  showExplorerPropertiesModal(pane);
   try {
     if (pane === "cart") {
       const path = normalizeUsbPath(state.cart.path);
@@ -1454,7 +1673,6 @@ async function openExplorerPropertiesForCurrentFolder(pane) {
         errDd.textContent = BROWSE_FIRST_MSG;
         dl.appendChild(errDt);
         dl.appendChild(errDd);
-        document.getElementById("explorer-properties-close")?.focus();
         return;
       }
       const info = await invoke("fs_path_info", { path });
@@ -1469,7 +1687,6 @@ async function openExplorerPropertiesForCurrentFolder(pane) {
     dl.appendChild(errDt);
     dl.appendChild(errDd);
   }
-  document.getElementById("explorer-properties-close")?.focus();
 }
 
 function closeExplorerPropertiesModal() {
@@ -1478,6 +1695,9 @@ function closeExplorerPropertiesModal() {
   root.hidden = true;
   root.setAttribute("aria-hidden", "true");
   document.body.classList.remove("explorer-modal-open");
+  const release = releasePropertiesFocus;
+  releasePropertiesFocus = null;
+  release?.();
 }
 
 /** True when the default browser context menu should stay (text fields, selects, etc.). */
@@ -1517,7 +1737,8 @@ function setupExplorerContextMenu() {
     btn.addEventListener("click", () => {
       const pane = /** @type {"cart" | "pc"} */ (menu.dataset.pane || focusedPane);
       const act = /** @type {HTMLElement} */ (btn).dataset.ctx;
-      hideExplorerContextMenu();
+      // Focus goes back to the list first, so a dialog the item opens returns focus there too.
+      hideExplorerContextMenu({ restoreFocus: true });
       if (act === "open") {
         activateSelectedFolder(pane);
         return;
@@ -1589,16 +1810,7 @@ function setupExplorerPropertiesModal() {
   const btnClose = document.getElementById("explorer-properties-close");
   btnClose?.addEventListener("click", () => closeExplorerPropertiesModal());
   backdrop?.addEventListener("click", () => closeExplorerPropertiesModal());
-  document.addEventListener(
-    "keydown",
-    (e) => {
-      if (e.key !== "Escape" || !root || root.hidden) return;
-      e.preventDefault();
-      e.stopPropagation();
-      closeExplorerPropertiesModal();
-    },
-    true
-  );
+  // Escape is handled by trapDialogFocus while the dialog is open.
 }
 
 /**
@@ -1721,7 +1933,8 @@ function showFileReplaceModal(cfg) {
     msgEl.textContent = `A file with this name already exists:\n\n${targetLine}\n\nReplace it, skip it, or cancel the ${operation}?`;
 
     let settled = false;
-    const prevFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    /** @type {((opts?: { restoreFocus?: boolean }) => void) | null} */
+    let releaseFocus = null;
 
     const cleanup = () => {
       document.removeEventListener("keydown", onKeyDown, true);
@@ -1740,17 +1953,14 @@ function showFileReplaceModal(cfg) {
       root.hidden = true;
       root.setAttribute("aria-hidden", "true");
       document.body.classList.remove("explorer-modal-open");
-      if (prevFocus) prevFocus.focus();
+      releaseFocus?.();
       resolve(v);
     };
 
+    // Escape and Tab belong to trapDialogFocus; Enter is this dialog's own.
     const onKeyDown = (e) => {
       if (!root || root.hidden) return;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        finish("cancel");
-      } else if (e.key === "Enter") {
+      if (e.key === "Enter") {
         // Enter on a focused button presses that button; anywhere else it is Replace.
         if (e.target instanceof HTMLButtonElement && root.contains(e.target)) return;
         e.preventDefault();
@@ -1777,7 +1987,11 @@ function showFileReplaceModal(cfg) {
     root.hidden = false;
     root.setAttribute("aria-hidden", "false");
     document.body.classList.add("explorer-modal-open");
-    requestAnimationFrame(() => btnYes.focus());
+    const panel = root.querySelector('[role="dialog"]');
+    releaseFocus = trapDialogFocus(panel instanceof HTMLElement ? panel : root, {
+      initialFocus: btnYes,
+      onEscape: onCancel,
+    });
   });
 }
 
@@ -1913,8 +2127,8 @@ function showExplorerModal(cfg) {
     }
 
     let settled = false;
-    /** @type {HTMLElement | null} */
-    const prevFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    /** @type {((opts?: { restoreFocus?: boolean }) => void) | null} */
+    let releaseFocus = null;
 
     /** @type {() => void} */
     let cleanup = () => {};
@@ -1926,19 +2140,14 @@ function showExplorerModal(cfg) {
       root.hidden = true;
       root.setAttribute("aria-hidden", "true");
       document.body.classList.remove("explorer-modal-open");
-      if (prevFocus) prevFocus.focus();
+      releaseFocus?.();
       resolve(value);
     };
 
+    // Escape and Tab belong to trapDialogFocus; Enter is this dialog's own.
     const onKeyDown = (e) => {
       if (!root || root.hidden) return;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        if (cfg.type === "alert") finish(undefined);
-        else if (cfg.type === "confirm") finish(false);
-        else finish(null);
-      } else if (e.key === "Enter") {
+      if (e.key === "Enter") {
         e.preventDefault();
         e.stopPropagation();
         if (cfg.type === "alert") finish(undefined);
@@ -1994,15 +2203,15 @@ function showExplorerModal(cfg) {
     root.setAttribute("aria-hidden", "false");
     document.body.classList.add("explorer-modal-open");
 
-    requestAnimationFrame(() => {
-      if (isPrompt) {
-        inputEl.focus();
-        if (cfg.selectFilenameStem === true) selectFilenameStemInInput(inputEl);
-        else inputEl.select();
-      } else {
-        btnOk.focus();
-      }
+    const panel = root.querySelector('[role="dialog"]');
+    releaseFocus = trapDialogFocus(panel instanceof HTMLElement ? panel : root, {
+      initialFocus: isPrompt ? inputEl : btnOk,
+      onEscape: onCancel,
     });
+    if (isPrompt) {
+      if (cfg.selectFilenameStem === true) selectFilenameStemInInput(inputEl);
+      else inputEl.select();
+    }
   });
 }
 
@@ -3794,17 +4003,20 @@ function setupExplorerKeyboard() {
   document.addEventListener(
     "keydown",
     (ev) => {
-      if (isExplorerModalOpen()) return;
+      // Settings included: nothing behind an open dialog reacts to the keyboard.
+      if (isAnyExplorerDialogOpen() || isExplorerModalOpen()) return;
       if (isExplorerContextMenuVisible()) {
-        if (ev.key === "Escape") {
-          hideExplorerContextMenu();
-          ev.preventDefault();
-        }
+        onExplorerContextMenuKeyDown(ev);
         return;
       }
       if (isKeyboardBypassTarget(ev.target)) return;
       const pane = focusedPane;
       const key = ev.key;
+      if (key === "ContextMenu" || (key === "F10" && ev.shiftKey && !ev.ctrlKey && !ev.altKey)) {
+        ev.preventDefault();
+        openExplorerContextMenuFromKeyboard(pane);
+        return;
+      }
       // Every shortcut below is swallowed, then runs only if its action can: one that cannot (nothing
       // selected, already at the top, an operation running) does nothing, the same as its disabled
       // button. `null` means the action has no condition beyond the pane being idle.
@@ -3861,6 +4073,8 @@ function setupExplorerKeyboard() {
         return;
       }
       if (key === "Enter") {
+        // Enter on a focused button presses that button; only elsewhere does it open the folder.
+        if (ev.target instanceof Element && ev.target.closest("button, a[href], summary")) return;
         run(null, () => activateSelectedFolder(pane));
         return;
       }
@@ -4327,6 +4541,9 @@ function isExplorerSettingsOpen() {
   return panel != null && !panel.hidden;
 }
 
+/** @type {((opts?: { restoreFocus?: boolean }) => void) | null} */
+let releaseSettingsFocus = null;
+
 function setExplorerSettingsOpen(open) {
   const panel = document.getElementById("explorer-settings-panel");
   const backdrop = document.getElementById("explorer-settings-backdrop");
@@ -4339,9 +4556,19 @@ function setExplorerSettingsOpen(open) {
   document.documentElement.classList.toggle("dialog-open", open);
   document.body.classList.toggle("dialog-open", open);
   if (open) {
-    document.getElementById("btn-close-settings")?.focus();
+    if (!releaseSettingsFocus) {
+      releaseSettingsFocus = trapDialogFocus(panel, {
+        initialFocus: document.getElementById("btn-close-settings"),
+        // Escape is the close icon: it asks before discarding unsaved edits.
+        onEscape: () => void requestCloseExplorerSettings(),
+        fallbackFocus: opener,
+      });
+    }
   } else {
-    void loadExplorerSettings().then(() => opener?.focus());
+    const release = releaseSettingsFocus;
+    releaseSettingsFocus = null;
+    release?.();
+    void loadExplorerSettings();
   }
 }
 
@@ -4493,6 +4720,9 @@ function setHelpTab(tabId) {
   if (tabId === "about") void ensureHelpAboutVersion();
 }
 
+/** @type {((opts?: { restoreFocus?: boolean }) => void) | null} */
+let releaseHelpFocus = null;
+
 function setExplorerHelpOpen(open) {
   const root = document.getElementById("explorer-help-modal");
   const opener = document.getElementById("btn-explorer-help");
@@ -4503,9 +4733,18 @@ function setExplorerHelpOpen(open) {
   if (open) {
     setHelpTab("setup");
     void ensureHelpAboutVersion();
-    document.getElementById("explorer-help-tab-setup")?.focus();
+    const panel = root.querySelector('[role="dialog"]');
+    if (!releaseHelpFocus && panel instanceof HTMLElement) {
+      releaseHelpFocus = trapDialogFocus(panel, {
+        initialFocus: document.getElementById("explorer-help-close"),
+        onEscape: () => setExplorerHelpOpen(false),
+        fallbackFocus: opener,
+      });
+    }
   } else {
-    opener?.focus();
+    const release = releaseHelpFocus;
+    releaseHelpFocus = null;
+    release?.();
   }
 }
 
@@ -4539,17 +4778,7 @@ function setupExplorerHelpModal() {
       tabs[next].focus();
     }
   });
-
-  document.addEventListener(
-    "keydown",
-    (e) => {
-      if (e.key !== "Escape" || !root || root.hidden) return;
-      e.preventDefault();
-      e.stopPropagation();
-      setExplorerHelpOpen(false);
-    },
-    true
-  );
+  // Escape is handled by trapDialogFocus while the dialog is open.
 }
 
 function setupExplorerSettings() {
@@ -4652,13 +4881,7 @@ function setupExplorerSettings() {
       await showExplorerAlert(userFacingErrorMessage(e, { context: "general" }));
     }
   });
-  document.addEventListener("keydown", (e) => {
-    // An alert or confirm raised from Settings sits above it and handles its own Esc.
-    if (e.key === "Escape" && isExplorerSettingsOpen() && !isExplorerModalOpen()) {
-      e.preventDefault();
-      void requestCloseExplorerSettings();
-    }
-  });
+  // Escape is handled by trapDialogFocus, which gives it to the topmost dialog only.
 }
 
 async function init() {

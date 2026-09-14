@@ -87,23 +87,24 @@
         <dt>Listen</dt>
         <dd id="status-listen">—</dd>
         <dt>Note</dt>
-        <dd id="status-msg">—</dd>
+        <dd id="status-msg" role="status">—</dd>
       </dl>
       <div class="row">
         <button type="button" id="btn-start" class="btn primary">Start bridge</button>
         <button type="button" id="btn-stop" class="btn">Stop bridge</button>
         <button type="button" id="btn-refresh" class="btn">Refresh status</button>
       </div>
+      <p class="hint hint-error card-error" id="status-error" role="alert" hidden></p>
     </section>
 
     <section class="card">
       <h2>Xfer64</h2>
-      <p class="hint">
+      <p class="hint" id="xfer64-card-hint">
         Xfer64 is a separate app that copies files between the cart's SD card and This PC over USB. The button
         runs the bundled installer when Xfer64 is not installed, or opens it when it is.
       </p>
       <div class="row">
-        <button type="button" id="btn-open-explorer" class="btn primary">Xfer64</button>
+        <button type="button" id="btn-open-explorer" class="btn primary" aria-describedby="xfer64-card-hint xfer64-error">Xfer64</button>
       </div>
       <p class="hint hint-error card-error" id="xfer64-error" role="alert" hidden></p>
     </section>
@@ -153,7 +154,7 @@
             <p class="hint hint-warning" id="cart-hint" hidden></p>
             <label class="field">
               <span>Serial port</span>
-              <select id="serial-port"></select>
+              <select id="serial-port" aria-describedby="auto-hint"></select>
             </label>
             <p class="hint" id="auto-hint"></p>
             <div class="row">
@@ -188,7 +189,7 @@
               <span>Minimize to tray when closing the window (instead of exiting)</span>
             </label>
             <label class="check">
-              <input type="checkbox" id="start-minimized" />
+              <input type="checkbox" id="start-minimized" aria-describedby="start-minimized-hint" />
               <span>Start with the window hidden (open from the tray)</span>
             </label>
             <p class="hint" id="start-minimized-hint">
@@ -198,10 +199,10 @@
 
           <section class="dialog-section">
             <h3 class="dialog-section-title">Appearance</h3>
-            <p class="dialog-section-note">Applies immediately. Not part of Save settings.</p>
+            <p class="dialog-section-note" id="appearance-note">Applies immediately. Not part of Save settings.</p>
             <label class="field">
               <span>Theme</span>
-              <select id="pref-theme">
+              <select id="pref-theme" aria-describedby="appearance-note">
                 <option value="dark">Dark</option>
                 <option value="light">Light</option>
                 <option value="system">Match system</option>
@@ -210,7 +211,7 @@
             </label>
             <label class="field">
               <span>Text size</span>
-              <select id="pref-scale">
+              <select id="pref-scale" aria-describedby="appearance-note">
                 <option value="0.9">Smaller (90%)</option>
                 <option value="1">Default (100%)</option>
                 <option value="1.15">Larger (115%)</option>
@@ -219,7 +220,7 @@
             </label>
             <label class="field">
               <span>Motion</span>
-              <select id="pref-motion">
+              <select id="pref-motion" aria-describedby="appearance-note">
                 <option value="system">Match system</option>
                 <option value="reduced">Reduce animation</option>
               </select>
@@ -251,7 +252,7 @@
 
         <div class="dialog-footer">
           <button type="button" id="btn-cancel-settings" class="btn">Cancel</button>
-          <button type="button" id="btn-save" class="btn primary">Save settings</button>
+          <button type="button" id="btn-save" class="btn primary" aria-describedby="settings-error">Save settings</button>
         </div>
       </div>
     </div>
