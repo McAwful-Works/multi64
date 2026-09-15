@@ -901,6 +901,31 @@ mod tests {
         assert_eq!(fake_of(s).file("saves/ä.sav").unwrap(), data.as_slice());
     }
 
+    /// #131, the other name: the copy is listed but the source's own name is not, as when the cart
+    /// resolves both spellings to one file and lists it under the destination's. The source path
+    /// then names the only copy, so the move must stop before deleting it.
+    #[test]
+    fn a_move_whose_source_name_goes_missing_never_deletes_it() {
+        let data = pattern(CHUNK + 9);
+        let s = session(FakeEd64Pro::new().with_file("saves/ä.sav", &data));
+        let source = s.find_entry("saves/ä.sav").unwrap().unwrap();
+        // The cart now lists that same file as `Ä.sav`: to this fake, as to FatFs, the two names
+        // are one key, and an overwrite keeps the stored spelling.
+        let s = session(fake_of(s).with_file("saves/Ä.sav", &data));
+        let err = s
+            .move_entry(&source, "saves/Ä.sav")
+            .expect_err("a copy whose source is no longer listed cannot be verified");
+        assert!(err.to_string().contains("nothing was deleted"), "{err}");
+        let names: Vec<_> = s
+            .list_dir("saves")
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, ["Ä.sav"]);
+        assert_eq!(fake_of(s).file("saves/Ä.sav").unwrap(), data.as_slice());
+    }
+
     #[test]
     fn rename_refuses_what_a_copy_cannot_do_and_leaves_the_cart_alone() {
         let s = session(

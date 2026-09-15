@@ -51,8 +51,9 @@ fn daemon_health_ok(listen: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The daemon address for lookups the backend makes on its own: `MULTI64_DAEMON_LISTEN`, else the
-/// default. A window pointed at another address just gets no hint, and Auto probes as before.
+/// The daemon address when no window supplied one: `MULTI64_DAEMON_LISTEN`, else the default. The
+/// headless `xfer64 upload` uses it; in the app, Auto's cart hint asks the address the windows last
+/// probed ([`ExplorerCartSerialState::hint_listen`]) and falls back to this only before any probe.
 pub fn default_listen() -> String {
     std::env::var("MULTI64_DAEMON_LISTEN").unwrap_or_else(|_| "http://127.0.0.1:38765".into())
 }
@@ -99,59 +100,33 @@ fn cart_hint_from_root(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonProbe {
+    /// multi64d answers `/health`.
     pub up: bool,
-    pub daemon_serial: Option<String>,
-    /// The COM port pinned in Xfer64, if any. Auto is never resolved here: see below.
-    pub explorer_serial: Option<String>,
 }
 
-/// Whether multi64d is up and using the same COM port as Xfer64 (conflict).
+/// Whether multi64d answers at `listen`, and so has to be paused before Xfer64 opens the cart.
+///
+/// Also records `listen` in `st` as the address Auto's cart hint asks
+/// ([`ExplorerCartSerialState::hint_listen`]): cart work always probes first, so the hint reaches
+/// the daemon this probe is about, not `MULTI64_DAEMON_LISTEN`'s (#179).
+///
+/// Never resolves Auto: that probes ports, which fails while multi64d holds the cart's port, and the
+/// error used to skip the release this probe exists to decide on.
 pub fn explorer_daemon_probe_snapshot(
     st: &ExplorerCartSerialState,
     _snap: &ExplorerSettingsSnapshot,
     listen: &str,
 ) -> Result<DaemonProbe, String> {
-    // Only a pinned port. Resolving Auto used to happen here, first -- and it probes ports, which
-    // fails while multi64d holds the cart's port. The error then skipped the release this probe
-    // exists to decide on, so Auto-detect could never find a cart the daemon was using.
-    let explorer_serial = cart_serial_sd::pinned_com_port(st);
-    if !daemon_health_ok(listen) {
-        return Ok(DaemonProbe {
-            up: false,
-            daemon_serial: None,
-            explorer_serial,
-        });
-    }
-
-    let v = match daemon_get_root(listen) {
-        Ok(j) => j,
-        Err(_) => {
-            return Ok(DaemonProbe {
-                up: true,
-                daemon_serial: None,
-                explorer_serial,
-            });
-        }
-    };
-
-    let daemon_serial = v
-        .get("serial")
-        .and_then(|s| s.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-
+    st.remember_daemon_listen(listen);
     // Callers release and resume whenever `up`, not by `serialActive` or a COM match: COM strings
     // were too brittle (`COM3` vs `\\.\COM3`, an empty `serial`), and a link that is already
     // released or faulted still needs the resume that pairs with a release.
     Ok(DaemonProbe {
-        up: true,
-        daemon_serial,
-        explorer_serial,
+        up: daemon_health_ok(listen),
     })
 }
 
-/// Whether multi64d is up and using the same COM port as Xfer64 (conflict).
+/// Whether multi64d is up, so the window has to pause it around cart work.
 ///
 /// `async` because resolving the COM port can run a full serial auto-detect scan and the health
 /// and root probes each block on HTTP; a sync command would do all of that on the main thread.
@@ -217,6 +192,77 @@ pub async fn explorer_daemon_resume(listen: String) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    /// A multi64d stand-in on an ephemeral port: answers `/health` and `GET /` (naming a port that
+    /// is not plugged in, so no hint results) and logs each request's path.
+    fn fake_daemon() -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut req = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let head = String::from_utf8_lossy(&req);
+                let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                let body = if path == "/" {
+                    r#"{"serial":"COM_NOT_PLUGGED_IN","serialActive":true,"cart":"sc64"}"#
+                } else {
+                    "ok"
+                };
+                log.lock().unwrap().push(path);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (listen, seen)
+    }
+
+    /// #179 follow-up: Auto's cart hint asks multi64d at the address the window probed it at, not
+    /// at `MULTI64_DAEMON_LISTEN`. The probe runs on a command's detached copy of the state, as in
+    /// the app, and the address still reaches the managed state the next command copies.
+    #[test]
+    fn the_cart_hint_asks_the_daemon_the_window_probed() {
+        let (listen, seen) = fake_daemon();
+        let st = ExplorerCartSerialState::new();
+        assert_eq!(
+            st.hint_listen(),
+            default_listen(),
+            "nothing probed yet, as in the headless upload"
+        );
+
+        let probe_listen = listen.clone();
+        let probe = tauri::async_runtime::block_on(cart_serial_sd::spawn_with_cart_state(
+            &st,
+            "test",
+            move |st| {
+                explorer_daemon_probe_snapshot(
+                    st,
+                    &ExplorerSettingsSnapshot::default(),
+                    &probe_listen,
+                )
+            },
+        ))
+        .unwrap();
+        assert!(probe.up);
+        assert_eq!(st.hint_listen(), listen);
+
+        assert_eq!(cart_serial_sd::auto_cart_hint(&st), None);
+        assert_eq!(*seen.lock().unwrap(), ["/health", "/health", "/"]);
+    }
 
     fn ports(names: &[&str]) -> Vec<String> {
         names.iter().map(|n| n.to_string()).collect()

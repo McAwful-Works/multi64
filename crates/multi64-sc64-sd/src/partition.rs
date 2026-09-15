@@ -1839,13 +1839,11 @@ fn exfat_sync_stream_data_length_to_valid(
     const STREAM_EXT: u8 = 0xC0;
 
     let (dir, primary_slot) = exfat_locate_entry_set(fs, path, entry, vol, part_start, part_bytes)?;
-    let primary = exfat_read_dir_entry_at(vol, part_start, part_bytes, dir.offset(primary_slot)?)?;
-    let secondary_count = primary[1] as usize;
-    if secondary_count < 2 || secondary_count > 18 {
+    let read_at = exfat_volume_reader(vol, part_start, part_bytes);
+    let Some(mut entries) = exfat_read_entry_set(&dir, primary_slot, read_at)? else {
         return Ok(());
-    }
-    let offsets = dir.offsets(primary_slot, 1 + secondary_count)?;
-    let mut entries = exfat_read_slots(vol, part_start, part_bytes, &offsets)?;
+    };
+    let offsets = dir.offsets(primary_slot, entries.len())?;
     if entries[1][0] != STREAM_EXT {
         return Ok(());
     }
@@ -1882,15 +1880,13 @@ fn exfat_finalize_deleted_entry_set(
 ) -> io::Result<()> {
     const DELETED_FILE: u8 = 0x05;
 
-    let primary = exfat_read_dir_entry_at(vol, part_start, part_bytes, dir.offset(primary_slot)?)?;
-    let secondary_count = primary[1] as usize;
-    if secondary_count < 2 || secondary_count > 18 {
+    let read_at = exfat_volume_reader(vol, part_start, part_bytes);
+    let Some(mut entries) = exfat_read_entry_set(dir, primary_slot, read_at)? else {
         trace("exFAT: skip finalize delete (unexpected secondary_count)");
         return Ok(());
-    }
-    let total = 1 + secondary_count;
+    };
+    let total = entries.len();
     let offsets = dir.offsets(primary_slot, total)?;
-    let mut entries = exfat_read_slots(vol, part_start, part_bytes, &offsets)?;
 
     entries[0][0] = DELETED_FILE;
     for i in 1..total {
@@ -2115,15 +2111,16 @@ fn rename_cart_exfat(
     exfat_validate_rename_name(&name_to)?;
     let new_slabs = exfat_build_rename_entry_set_bytes(&fs, &old, &name_to)?;
     let new_total = new_slabs.len();
-    let primary = exfat_read_dir_entry_at(vol, part_start, part_bytes, dir.offset(old_slot)?)?;
-    let secondary_count = primary[1] as usize;
-    if secondary_count < 2 || secondary_count > 18 {
-        return Err(io::Error::new(
+    // Read before anything is written. The slots marked deleted below are never written first, so
+    // what was read is still what is on disk.
+    let read_at = exfat_volume_reader(vol, part_start, part_bytes);
+    let old_entries = exfat_read_entry_set(&dir, old_slot, read_at)?.ok_or_else(|| {
+        io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid exFAT secondary_count on disk",
-        ));
-    }
-    let old_total = 1 + secondary_count;
+        )
+    })?;
+    let old_total = old_entries.len();
     let old_offsets = dir.offsets(old_slot, old_total)?;
     if new_total <= old_total {
         exfat_write_entry_slabs_at(
@@ -2133,14 +2130,20 @@ fn rename_cart_exfat(
             &old_offsets[..new_total],
             &new_slabs,
         )?;
-        exfat_mark_slots_deleted(vol, part_start, part_bytes, &old_offsets[new_total..])?;
+        exfat_mark_slots_deleted(
+            vol,
+            part_start,
+            part_bytes,
+            &old_offsets[new_total..],
+            &old_entries[new_total..],
+        )?;
     } else {
         let old_slots = old_slot..old_slot + old_total as u64;
         let read_at = exfat_volume_reader(vol, part_start, part_bytes);
         let dest_slot = exfat_find_free_entry_run(&dir, new_total, old_slots, read_at)?;
         let dest_offsets = dir.offsets(dest_slot, new_total)?;
         exfat_write_entry_slabs_at(vol, part_start, part_bytes, &dest_offsets, &new_slabs)?;
-        exfat_mark_slots_deleted(vol, part_start, part_bytes, &old_offsets)?;
+        exfat_mark_slots_deleted(vol, part_start, part_bytes, &old_offsets, &old_entries)?;
     }
     fs.sync_bitmap().map_err(exfat_err)?;
     drop(fs);
@@ -2273,35 +2276,53 @@ fn exfat_write_entry_slabs_at(
     Ok(())
 }
 
-fn exfat_read_slots(
-    vol: &ExfatVolumeSource,
-    part_start: u64,
-    part_bytes: u64,
-    offsets: &[u64],
-) -> io::Result<Vec<[u8; 32]>> {
-    offsets
-        .iter()
-        .map(|&o| exfat_read_dir_entry_at(vol, part_start, part_bytes, o))
-        .collect()
+/// The entry set whose File entry is slot `primary_slot`: that entry, then its secondaries. `None`
+/// when the File entry's secondary count is outside 2..=18, the range exFAT allows.
+///
+/// Read through [`ExfatSlotReader`], so the set costs one disk read (one SC64 USB round trip) per
+/// chunk it touches, usually one, rather than one per slot.
+fn exfat_read_entry_set(
+    dir: &ExfatDirSlots,
+    primary_slot: u64,
+    read_at: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
+) -> io::Result<Option<Vec<[u8; 32]>>> {
+    let mut slots = ExfatSlotReader::new(dir, read_at);
+    let primary = slots.slot(primary_slot)?;
+    let secondaries = u64::from(primary[1]);
+    if !(2..=18).contains(&secondaries) {
+        return Ok(None);
+    }
+    (primary_slot..=primary_slot + secondaries)
+        .map(|s| slots.slot(s))
+        .collect::<io::Result<Vec<_>>>()
+        .map(Some)
 }
 
 /// Mark directory slots unused by clearing each one's In-Use bit (`0x85`→`0x05`, `0xC0`→`0x40`,
 /// `0xC1`→`0x41`). Zeroing them instead writes `0x00`, end of directory, and every entry after
 /// that point disappears from listings and can be overwritten (#127).
+///
+/// `entries` are the slots' contents, as read by [`exfat_read_entry_set`]: this only writes.
 fn exfat_mark_slots_deleted(
     vol: &ExfatVolumeSource,
     part_start: u64,
     part_bytes: u64,
     offsets: &[u64],
+    entries: &[[u8; 32]],
 ) -> io::Result<()> {
+    debug_assert_eq!(offsets.len(), entries.len());
     if offsets.is_empty() {
         return Ok(());
     }
-    let mut entries = exfat_read_slots(vol, part_start, part_bytes, offsets)?;
-    for e in &mut entries {
-        e[0] &= !EXFAT_ENTRY_IN_USE;
-    }
-    exfat_write_entry_slabs_at(vol, part_start, part_bytes, offsets, &entries)
+    let deleted: Vec<[u8; 32]> = entries
+        .iter()
+        .map(|e| {
+            let mut e = *e;
+            e[0] &= !EXFAT_ENTRY_IN_USE;
+            e
+        })
+        .collect();
+    exfat_write_entry_slabs_at(vol, part_start, part_bytes, offsets, &deleted)
 }
 
 /// Find `slots_needed` consecutive unused slots in `dir`, counting the slots in `skip` (the entry
@@ -2334,25 +2355,6 @@ fn exfat_find_free_entry_run(
         io::ErrorKind::StorageFull,
         "exFAT directory has no room for a longer name (rename)",
     ))
-}
-
-fn exfat_read_dir_entry_at(
-    vol: &ExfatVolumeSource,
-    part_start: u64,
-    part_bytes: u64,
-    abs: u64,
-) -> io::Result<[u8; 32]> {
-    if abs.saturating_add(32) > part_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "exFAT directory read past partition",
-        ));
-    }
-    let mut disk = vol.partition_disk_rw(part_start, part_bytes);
-    disk.seek(SeekFrom::Start(abs))?;
-    let mut b = [0u8; 32];
-    disk.read_exact(&mut b)?;
-    Ok(b)
 }
 
 /// Normalized path relative to cart root: no leading slash, `/` separators, non-empty.
@@ -3288,8 +3290,8 @@ mod tests {
 mod fs_tests {
     use super::{
         detect_partition_start, exfat_find_entry_set, exfat_find_free_entry_run,
-        hadris_create_slots_are_in_dir, list_dir_exfat, list_dir_fat, mkdir_cart_exfat,
-        mkdir_fat_impl, partition_volume_bytes, read_file_exfat, read_file_fat,
+        exfat_read_entry_set, hadris_create_slots_are_in_dir, list_dir_exfat, list_dir_fat,
+        mkdir_cart_exfat, mkdir_fat_impl, partition_volume_bytes, read_file_exfat, read_file_fat,
         remove_cart_path_exfat_unified, rename_cart_exfat, rename_fat_impl,
         write_file_exfat_streaming, write_file_fat_streaming_impl, ExfatDirSlots,
         ExfatEntryIdentity, ExfatSlotReader, ExfatVolumeSource,
@@ -3985,6 +3987,42 @@ mod fs_tests {
         let err = exfat_find_free_entry_run(&dir, 3, 6..7, slot_disk(&dir, &slots, &reads))
             .expect_err("the moved entry's own slot is not free");
         assert_eq!(err.kind(), io::ErrorKind::StorageFull);
+    }
+
+    /// Reading an entry set to rewrite it (delete, rename, size fix) costs one disk read per chunk
+    /// it touches, not one per slot: on an SC64 each read is a USB round trip.
+    #[test]
+    fn exfat_entry_set_reads_each_chunk_once() {
+        let dir = three_small_clusters();
+        let mut slots = Vec::new();
+        slots.extend(raw_entry_set("a.z64", 5, 10, false)); // 0..=2: inside cluster 0
+        slots.extend(raw_entry_set("b.z64", 6, 10, false)); // 3..=5: straddles clusters 0 and 1
+        let mut bad = [0u8; 32];
+        bad[0] = 0x85;
+        bad[1] = 1; // 6: too few secondaries
+        slots.push(bad);
+        let read = |slots: &[[u8; 32]], primary| {
+            let reads = RefCell::new(Vec::new());
+            let set = exfat_read_entry_set(&dir, primary, slot_disk(&dir, slots, &reads));
+            (set, reads.into_inner())
+        };
+
+        let (set, reads) = read(&slots, 0);
+        assert_eq!(set.unwrap().unwrap(), slots[0..3]);
+        assert_eq!(reads, [(0x1000, 128)], "one read for the whole set");
+
+        let (set, reads) = read(&slots, 3);
+        assert_eq!(set.unwrap().unwrap(), slots[3..6]);
+        assert_eq!(reads, [(0x1000, 128), (0x8000, 128)], "one per cluster");
+
+        let (set, reads) = read(&slots, 6);
+        assert_eq!(set.unwrap(), None);
+        assert_eq!(reads.len(), 1);
+
+        // A set whose secondaries would run past the directory's last slot.
+        let mut end = vec![[0u8; 32]; 11];
+        end.push(raw_entry_set("c.z64", 7, 1, false)[0]);
+        assert!(read(&end, 11).0.is_err());
     }
 
     /// In a large cluster a chunk is 256 slots (16 sectors), and never crosses into the next

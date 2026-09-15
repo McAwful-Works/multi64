@@ -26,9 +26,11 @@
 //!
 //! # Unsafe code
 //!
-//! None. exFAT delete, rename and size fixes find a file's entry set by scanning its folder for
-//! the file's on-disk fields (see `partition::exfat_locate_entry_set`) rather than reading
-//! hadris's private `entry_offset` out of `ExFatFileEntry`'s memory layout.
+//! None, and `forbid` keeps it that way. exFAT delete, rename and size fixes find a file's entry
+//! set by scanning its folder for the file's on-disk fields (see `partition::exfat_locate_entry_set`)
+//! rather than reading hadris's private `entry_offset` out of `ExFatFileEntry`'s memory layout.
+
+#![forbid(unsafe_code)]
 
 mod cart_session;
 #[cfg(feature = "ed64")]
