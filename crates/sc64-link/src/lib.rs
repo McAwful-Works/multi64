@@ -38,6 +38,27 @@ pub const MULTI64_L3_TYPE: u8 = 0x01;
 /// Default max `USB_WRITE` payload bytes per chunk (matches L3 default scale).
 pub const DEFAULT_USB_WRITE_CHUNK: usize = 8192;
 
+/// Largest `data` a `CMP`/`ERR` response can carry: a `MEMORY_READ` spanning the cart's whole
+/// 128 MiB address space (vendor `docs/01_memory_map.md`). Every other response is at most 8 bytes.
+pub const MAX_CMP_DATA_LEN: usize = 0x0800_0000;
+
+/// Largest `data` a `PKT` can carry: `U` (DATA) is a datatype byte, a 24-bit length and that many
+/// bytes (vendor `docs/03_usb_interface.md`). Every other packet id carries less.
+pub const MAX_PKT_DATA_LEN: usize = 4 + 0x00FF_FFFF;
+
+/// Data length of the vendor response header at the start of `buf` (at least 8 bytes), or `None`
+/// if `buf` does not start with `CMP`/`ERR`/`PKT` or the length exceeds what that tag can carry.
+/// An impossible length means the tag was found inside other data, so callers resynchronise.
+fn header_data_len(buf: &[u8]) -> Option<usize> {
+    let cap = match &buf[0..3] {
+        b"CMP" | b"ERR" => MAX_CMP_DATA_LEN,
+        b"PKT" => MAX_PKT_DATA_LEN,
+        _ => return None,
+    };
+    let len = u32::from_be_bytes(buf[4..8].try_into().ok()?) as usize;
+    (len <= cap).then_some(len)
+}
+
 /// Build one `USB_WRITE` `CMD` carrying a chunk of raw L3 octets (`arg0` lower 8 bits = [MULTI64_L3_TYPE]).
 pub fn usb_write_l3_chunk(chunk: &[u8]) -> Vec<u8> {
     let arg0 = u32::from(MULTI64_L3_TYPE);
@@ -87,22 +108,20 @@ pub struct CmpResponse {
 }
 
 /// Try to parse one `CMP`/`ERR` response at the start of `buf`.
-/// Returns `None` if fewer than `8 + data_len` bytes are available.
+/// Returns `None` if fewer than `8 + data_len` bytes are available, or if `data_len` exceeds
+/// [`MAX_CMP_DATA_LEN`] (not a real response).
 /// Returns `Some` only when the buffer starts with `CMP` or `ERR`.
 pub fn try_parse_cmp(buf: &[u8]) -> Option<(usize, CmpResponse)> {
     if buf.len() < 8 {
         return None;
     }
-    let tag = &buf[0..3];
-    let ok = if tag == b"CMP" {
-        true
-    } else if tag == b"ERR" {
-        false
-    } else {
-        return None;
+    let ok = match &buf[0..3] {
+        b"CMP" => true,
+        b"ERR" => false,
+        _ => return None,
     };
     let cmd_id = buf[3];
-    let len = u32::from_be_bytes(buf[4..8].try_into().ok()?) as usize;
+    let len = header_data_len(buf)?;
     let total = 8 + len;
     if buf.len() < total {
         return None;
@@ -129,35 +148,31 @@ impl ResponseBuffer {
     }
 
     /// Pull the next `CMP` or `ERR` packet, skipping `PKT` and resynchronizing if needed.
+    ///
+    /// A tag whose length exceeds [`MAX_CMP_DATA_LEN`] / [`MAX_PKT_DATA_LEN`] is treated as noise.
     pub fn next_cmp(&mut self) -> Option<CmpResponse> {
         loop {
             if self.buf.len() < 8 {
                 return None;
             }
-            let tag = &self.buf[0..3];
-            if tag == b"CMP" || tag == b"ERR" {
-                let len = u32::from_be_bytes(self.buf[4..8].try_into().unwrap()) as usize;
-                let total = 8 + len;
-                if self.buf.len() < total {
-                    return None;
-                }
-                let ok = tag == b"CMP";
-                let cmd_id = self.buf[3];
-                let data = self.buf[8..total].to_vec();
-                self.buf.drain(..total);
-                return Some(CmpResponse { ok, cmd_id, data });
+            let Some(len) = header_data_len(&self.buf) else {
+                // Resync: drop one byte and search again.
+                self.buf.drain(..1);
+                continue;
+            };
+            let total = 8 + len;
+            if self.buf.len() < total {
+                return None;
             }
-            if tag == b"PKT" {
-                let len = u32::from_be_bytes(self.buf[4..8].try_into().unwrap()) as usize;
-                let total = 8 + len;
-                if self.buf.len() < total {
-                    return None;
-                }
+            if &self.buf[0..3] == b"PKT" {
                 self.buf.drain(..total);
                 continue;
             }
-            // Resync: drop one byte and search again.
-            self.buf.drain(..1);
+            let ok = &self.buf[0..3] == b"CMP";
+            let cmd_id = self.buf[3];
+            let data = self.buf[8..total].to_vec();
+            self.buf.drain(..total);
+            return Some(CmpResponse { ok, cmd_id, data });
         }
     }
 }
@@ -226,5 +241,24 @@ mod tests {
         let r = b.next_cmp().unwrap();
         assert_eq!(r.cmd_id, b'v');
         assert_eq!(r.data, b"SCv2");
+    }
+
+    /// #135: `ResponseBuffer` must skip a `CMP` or `PKT` header whose length is impossible.
+    #[test]
+    fn buffer_resyncs_past_oversized_lengths() {
+        for (tag, len) in [(b"CMP", 0x9000_0000u32), (b"PKT", 0x2000_0000u32)] {
+            let mut blob = tag.to_vec();
+            blob.push(b'v');
+            blob.extend_from_slice(&len.to_be_bytes());
+            blob.extend_from_slice(b"CMP");
+            blob.push(b'V');
+            blob.extend_from_slice(&(4u32).to_be_bytes());
+            blob.extend_from_slice(b"SCv2");
+            let mut b = ResponseBuffer::default();
+            b.push_bytes(&blob);
+            let r = b.next_cmp().expect("valid CMP after the bad header");
+            assert_eq!(r.cmd_id, b'V');
+            assert_eq!(r.data, b"SCv2");
+        }
     }
 }
