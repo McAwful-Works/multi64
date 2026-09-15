@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -584,6 +585,7 @@ fn detect_cart(
     only: Option<&str>,
     ports: &[serialport::SerialPortInfo],
     mut probe: impl FnMut(&str) -> Option<DetectedCart>,
+    cancelled: impl Fn() -> bool,
     mut log: impl FnMut(String),
 ) -> Result<(DaemonCart, String), String> {
     let candidates: Vec<String> = match only {
@@ -604,6 +606,10 @@ fn detect_cart(
         return Err("Auto-detect: no serial ports found. Plug in the cart.".to_string());
     }
     for port in &candidates {
+        // Each probe can take seconds, and Exit waits for this start to finish (#147).
+        if cancelled() {
+            return Err(EXITING.to_string());
+        }
         match probe(port) {
             Some(found) => {
                 let cart = DaemonCart::from(found);
@@ -660,6 +666,7 @@ fn resolve_start(
                 only.as_deref(),
                 &ports,
                 multi64_cart_probe::probe_port,
+                shutting_down,
                 &mut log,
             )?;
             Ok((cart, port, true))
@@ -757,6 +764,159 @@ fn daemon_is_running(daemon: &Arc<Mutex<DaemonInner>>) -> bool {
 /// retaken across the spawn.
 static DAEMON_OPS: Mutex<()> = Mutex::new(());
 
+/// Set once Multi64 starts exiting. A start in progress checks it between Auto-detect's port
+/// probes and before spawning, so Exit waits for at most one probe rather than all of them (#147).
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+const EXITING: &str = "Multi64 is exiting, so the bridge was not started.";
+
+fn shutting_down() -> bool {
+    SHUTTING_DOWN.load(Ordering::SeqCst)
+}
+
+fn begin_shutdown() {
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
+}
+
+/// Whether something already accepts connections on the listen address.
+///
+/// A connect rather than a trial bind, which could briefly take the address from a daemon being
+/// started. The timeout is short because a refused loopback connect takes about 2 s on Windows,
+/// while one that is accepted completes in well under a millisecond. An address given as a
+/// wildcard is tried on loopback.
+fn listen_address_in_use(listen: &str) -> bool {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
+    let host = listen
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+    let Ok(addrs) = host.to_socket_addrs() else {
+        return false;
+    };
+    addrs.into_iter().any(|mut addr| {
+        if addr.ip().is_unspecified() {
+            addr.set_ip(match addr.ip() {
+                IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+                IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+            });
+        }
+        TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(150)).is_ok()
+    })
+}
+
+/// Why Start refuses while something else holds the listen address.
+fn listen_in_use_message(listen: &str) -> String {
+    format!(
+        "Something is already listening on {listen}, most likely a bridge left running after \
+         Multi64 closed unexpectedly. Multi64 can only stop a bridge it started: end multi64d.exe \
+         in Task Manager, or choose another Listen address in Settings, then start the bridge again."
+    )
+}
+
+/// A job object whose processes are killed when its last handle closes (#146).
+///
+/// The daemon is assigned to one that lives as long as Multi64. Windows closes the handle when
+/// Multi64's process ends however it ends — a panic, Task Manager, sign-out — so the bridge can no
+/// longer outlive it holding the serial port and the listen address.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub struct KillOnCloseJob(HANDLE);
+
+    // SAFETY: the handle names a kernel object, usable from any thread; nothing here is thread-local.
+    unsafe impl Send for KillOnCloseJob {}
+    unsafe impl Sync for KillOnCloseJob {}
+
+    fn failed(call: &str) -> String {
+        format!("{call} failed: {}", std::io::Error::last_os_error())
+    }
+
+    impl KillOnCloseJob {
+        pub fn new() -> Result<Self, String> {
+            // SAFETY: no attributes and no name create an unnamed job with default security.
+            let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if handle.is_null() {
+                return Err(failed("CreateJobObjectW"));
+            }
+            // Owned from here, so an early return below closes it.
+            let job = Self(handle);
+            let info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+                BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                    LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            // SAFETY: `info` is the structure this information class takes, passed with its size.
+            let ok = unsafe {
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    std::mem::size_of_val(&info) as u32,
+                )
+            };
+            if ok == 0 {
+                return Err(failed("SetInformationJobObject"));
+            }
+            Ok(job)
+        }
+
+        pub fn assign(&self, child: &Child) -> Result<(), String> {
+            // SAFETY: the job handle is open for `self`'s life and the process handle for `child`'s.
+            let ok = unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle()) };
+            if ok == 0 {
+                return Err(failed("AssignProcessToJobObject"));
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for KillOnCloseJob {
+        fn drop(&mut self) {
+            // SAFETY: the handle is open and owned by this value alone.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
+/// Elsewhere there is no job object; the daemon is stopped only by Exit.
+#[cfg(not(windows))]
+mod job {
+    use std::process::Child;
+
+    pub struct KillOnCloseJob;
+
+    impl KillOnCloseJob {
+        pub fn new() -> Result<Self, String> {
+            Ok(Self)
+        }
+
+        pub fn assign(&self, _child: &Child) -> Result<(), String> {
+            Ok(())
+        }
+    }
+}
+
+/// Put `child` in the job Multi64 holds for its whole life, created on first use.
+fn tie_to_multi64_lifetime(child: &Child) -> Result<(), String> {
+    static JOB: std::sync::OnceLock<Result<job::KillOnCloseJob, String>> =
+        std::sync::OnceLock::new();
+    match JOB.get_or_init(job::KillOnCloseJob::new) {
+        Ok(job) => job.assign(child),
+        Err(e) => Err(e.clone()),
+    }
+}
+
 fn kill_daemon(daemon: &Arc<Mutex<DaemonInner>>) {
     let _ops = DAEMON_OPS.lock();
     kill_daemon_locked(daemon);
@@ -798,9 +958,18 @@ fn start_daemon(
 ) -> Result<(), String> {
     let _ops = DAEMON_OPS.lock();
     kill_daemon_locked(daemon);
+    if shutting_down() {
+        return Err(EXITING.to_string());
+    }
     {
         let mut inner = daemon.lock();
         inner.logs.clear();
+    }
+    // After the kill, so what is left on the address is not ours. A daemon that cannot bind exits
+    // at once, and before this the window only showed Stopped with no way to stop the other one
+    // (#146). Checked before Auto-detect, which would otherwise probe ports that process holds.
+    if listen_address_in_use(&settings.listen) {
+        return Err(listen_in_use_message(&settings.listen));
     }
     // After the kill, so the port the old daemon held is free to probe.
     let (cart, serial, detected) = resolve_start(settings, |line| push_log(daemon, line))?;
@@ -848,9 +1017,19 @@ fn start_daemon(
     apply_multi64d_log_preset(&mut cmd, settings.multi64d_log_preset);
     command_no_window(&mut cmd);
 
+    // Probing can take seconds; an Exit clicked meanwhile must not get a daemon it then kills.
+    if shutting_down() {
+        return Err(EXITING.to_string());
+    }
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Could not start the bridge: {e}"))?;
+    if let Err(e) = tie_to_multi64_lifetime(&child) {
+        push_log(
+            daemon,
+            format!("The bridge may keep running if Multi64 closes unexpectedly: {e}"),
+        );
+    }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let d = Arc::clone(daemon);
@@ -913,11 +1092,14 @@ async fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), S
 fn apply_settings(app: &AppHandle, state: &AppState, settings: Settings) -> Result<(), String> {
     let settings = normalize_settings(settings);
     let prev = { state.settings.lock().clone() };
-    save_settings(&settings)?;
+    commit_settings(
+        &prev,
+        &settings,
+        || multi64_auto_launch().ok()?.is_enabled().ok(),
+        set_autostart_windows_impl,
+        save_settings,
+    )?;
     *state.settings.lock() = settings.clone();
-    if settings.autostart_app != prev.autostart_app {
-        set_autostart_windows_impl(settings.autostart_app)?;
-    }
     // Serial port, baud, cart, listen address and log preset are command-line arguments fixed at
     // spawn, so a running daemon keeps using the old ones. Saving used to appear to apply them
     // while the bridge quietly stayed on the previous port.
@@ -935,6 +1117,40 @@ fn apply_settings(app: &AppHandle, state: &AppState, settings: Settings) -> Resu
             push_log(&state.daemon, format!("Restart failed: {e}"));
         }
         let _ = app.emit("daemon-changed", ());
+    }
+    Ok(())
+}
+
+/// Write the sign-in entry and the settings file so that they cannot disagree (#148).
+///
+/// The file used to be saved first and the registry written after, so a failed write left the file
+/// saying autostart was on. Later saves compared against that file, saw no change and never
+/// retried, and Multi64 silently did not start at sign-in. Now the registry is written first, the
+/// file only if that worked, and the registry is put back if the file cannot be written. The
+/// comparison is with what Windows has (`autostart_enabled`, `None` when it cannot be read, which
+/// falls back to the file), so a file and registry that already disagree are reconciled on the
+/// next save.
+fn commit_settings(
+    prev: &Settings,
+    next: &Settings,
+    autostart_enabled: impl FnOnce() -> Option<bool>,
+    mut set_autostart: impl FnMut(bool) -> Result<(), String>,
+    save: impl FnOnce(&Settings) -> Result<(), String>,
+) -> Result<(), String> {
+    let current = autostart_enabled().unwrap_or(prev.autostart_app);
+    let changed = current != next.autostart_app;
+    if changed {
+        set_autostart(next.autostart_app)?;
+    }
+    if let Err(e) = save(next) {
+        if changed {
+            if let Err(undo) = set_autostart(current) {
+                return Err(format!(
+                    "{e} (the Windows sign-in setting could not be put back either: {undo})"
+                ));
+            }
+        }
+        return Err(e);
     }
     Ok(())
 }
@@ -1023,9 +1239,13 @@ fn daemon_status(state: &AppState, with_ports: bool) -> DaemonStatus {
         settings.cart.label().to_string()
     };
     let healthy = running && check_health(&listen);
-    let (message, port_options) = note_and_port_options(running, &settings, with_ports, || {
+    let (mut message, port_options) = note_and_port_options(running, &settings, with_ports, || {
         serialport::available_ports().unwrap_or_default()
     });
+    // A failed auto-start is otherwise only in the log, behind Developer mode (#146).
+    if !running && listen_address_in_use(&listen) {
+        message = listen_in_use_message(&listen);
+    }
     DaemonStatus {
         running,
         healthy,
@@ -1616,11 +1836,18 @@ pub fn run() {
                         }
                     })
                     .on_menu_event(move |app, event| match event.id.as_ref() {
+                        // Off the event loop (#147): `kill_daemon` waits on DAEMON_OPS, which a
+                        // start holds for its whole Auto-detect probe. The flag makes that start
+                        // give up after the port it is probing, without spawning.
                         "quit" => {
-                            if let Some(s) = app.try_state::<AppState>() {
-                                kill_daemon(&s.daemon);
-                            }
-                            app.exit(0);
+                            begin_shutdown();
+                            let app = app.clone();
+                            tauri::async_runtime::spawn_blocking(move || {
+                                if let Some(s) = app.try_state::<AppState>() {
+                                    kill_daemon(&s.daemon);
+                                }
+                                app.exit(0);
+                            });
                         }
                         "show" => show_main_window(app),
                         // Off the event loop: starting can probe serial ports for seconds.
@@ -1730,6 +1957,8 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(move |_app_handle, event| {
             if let RunEvent::Exit = event {
+                // Set first, so a start still probing stops after its current port.
+                begin_shutdown();
                 kill_daemon(&daemon_arc);
             }
         });
@@ -1855,6 +2084,103 @@ mod tests {
             ..Settings::default()
         });
         assert!(s.start_minimized);
+    }
+
+    fn with_autostart(autostart_app: bool) -> Settings {
+        Settings {
+            autostart_app,
+            ..Settings::default()
+        }
+    }
+
+    /// #148: a failed sign-in change used to be saved anyway, so the box stayed ticked.
+    #[test]
+    fn a_failed_autostart_change_is_not_saved() {
+        let mut saved = false;
+        let got = commit_settings(
+            &with_autostart(false),
+            &with_autostart(true),
+            || Some(false),
+            |_| Err("access denied".to_string()),
+            |_| {
+                saved = true;
+                Ok(())
+            },
+        );
+        assert_eq!(got, Err("access denied".to_string()));
+        assert!(!saved, "the file must not say autostart is on");
+    }
+
+    /// A file that could not be written leaves Windows as it was, not ahead of the file.
+    #[test]
+    fn a_failed_save_undoes_the_autostart_change() {
+        let mut writes = Vec::new();
+        let got = commit_settings(
+            &with_autostart(false),
+            &with_autostart(true),
+            || Some(false),
+            |on| {
+                writes.push(on);
+                Ok(())
+            },
+            |_| Err("disk full".to_string()),
+        );
+        assert_eq!(got, Err("disk full".to_string()));
+        assert_eq!(writes, [true, false]);
+    }
+
+    /// #148: once the file said on while Windows said off, later saves compared with the file and
+    /// never retried. They compare with Windows now.
+    #[test]
+    fn autostart_is_retried_when_windows_disagrees_with_the_file() {
+        let mut writes = Vec::new();
+        commit_settings(
+            &with_autostart(true),
+            &with_autostart(true),
+            || Some(false),
+            |on| {
+                writes.push(on);
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(writes, [true]);
+    }
+
+    #[test]
+    fn autostart_is_left_alone_when_nothing_changes() {
+        for on in [false, true] {
+            // Unreadable counts as what the file last said.
+            for read in [Some(on), None] {
+                commit_settings(
+                    &with_autostart(on),
+                    &with_autostart(on),
+                    || read,
+                    |_| panic!("nothing to write"),
+                    |_| Ok(()),
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    /// #146: a bridge left behind by a crashed Multi64 still holds the listen address; Start
+    /// must say so instead of spawning a daemon that exits at once.
+    #[test]
+    fn a_listener_on_the_listen_address_is_detected() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        assert!(listen_address_in_use(&addr), "{addr}");
+        assert!(listen_address_in_use(&format!("http://{addr}/")), "{addr}");
+        drop(listener);
+        assert!(!listen_address_in_use(&addr), "{addr}");
+        assert!(!listen_address_in_use("not an address"));
+        let msg = listen_in_use_message("127.0.0.1:38765");
+        assert!(
+            msg.contains("127.0.0.1:38765") && msg.contains("multi64d.exe"),
+            "{msg}"
+        );
     }
 
     /// The baud the user picks must reach multi64d; it was collected and never passed.
@@ -2091,6 +2417,7 @@ mod port_selection_tests {
                 tried.push(port.to_string());
                 (port == "COM7").then_some(DetectedCart::Ed64Pro)
             },
+            || false,
             |line| logged.push(line),
         );
         assert_eq!(got, Ok((DaemonCart::Ed64Pro, "COM7".to_string())));
@@ -2102,9 +2429,10 @@ mod port_selection_tests {
     #[test]
     fn detect_names_every_port_it_tried_when_nothing_answers() {
         let ports = [pci("COM1"), ch340("COM3")];
-        let err = detect_cart(None, &ports, |_| None, |_| {}).unwrap_err();
+        let err = detect_cart(None, &ports, |_| None, || false, |_| {}).unwrap_err();
         assert!(err.contains("COM3, COM1"), "{err}");
-        let err = detect_cart(None, &[], |_| panic!("no ports to probe"), |_| {}).unwrap_err();
+        let err =
+            detect_cart(None, &[], |_| panic!("no ports to probe"), || false, |_| {}).unwrap_err();
         assert!(err.contains("no serial ports"), "{err}");
     }
 
@@ -2118,11 +2446,38 @@ mod port_selection_tests {
                 tried.push(port.to_string());
                 None
             },
+            || false,
             |_| {},
         )
         .unwrap_err();
         assert_eq!(tried, ["COM9"]);
         assert!(err.contains("COM9"), "{err}");
+    }
+
+    /// #147: Exit waited for every port's probe (about 3 s each) before the window could close.
+    /// Detection now stops at the next port once Multi64 is exiting.
+    #[test]
+    fn detect_stops_probing_once_multi64_is_exiting() {
+        let ports = [ch340("COM3"), ch340("COM5"), ch340("COM7")];
+        let exiting = std::cell::Cell::new(false);
+        let mut tried = Vec::new();
+        let err = detect_cart(
+            None,
+            &ports,
+            |port| {
+                tried.push(port.to_string());
+                exiting.set(true);
+                None
+            },
+            || exiting.get(),
+            |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(tried, ["COM3"], "no port after the Exit is probed");
+        assert_eq!(err, EXITING);
+        // Already exiting: nothing is sent at all.
+        let err = detect_cart(Some("COM9"), &[], |_| panic!("probed"), || true, |_| {});
+        assert_eq!(err.unwrap_err(), EXITING);
     }
 
     #[test]
@@ -2393,6 +2748,47 @@ mod tray_tests {
         );
         // Unreadable state is treated as unavailable rather than offering a click that fails.
         assert_eq!(xfer64_label(None), ("Xfer64 (not available)", false));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod job_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// #146: closing the job — which Windows does when Multi64's process ends, however it ends —
+    /// must end the daemon too, so it cannot keep the serial port and the listen address.
+    #[test]
+    fn closing_the_job_ends_the_process_in_it() {
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn ping");
+        let job = job::KillOnCloseJob::new().expect("create job");
+        job.assign(&child).expect("assign to job");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "runs while the job is open"
+        );
+        drop(job);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let exited = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() > deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        if exited.is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(exited.is_some(), "the process outlived its job");
     }
 }
 
