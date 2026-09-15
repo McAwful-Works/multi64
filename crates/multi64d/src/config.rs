@@ -15,7 +15,7 @@ pub struct FileConfig {
     pub listen: Option<String>,
     pub clear_serial: Option<bool>,
     pub allow_origin: Option<Vec<String>>,
-    /// `"sc64"` or `"ed64"`; any other value is a parse error naming the accepted ones.
+    /// `"sc64"`, `"ed64"` or `"ed64pro"`; any other value is a parse error naming the accepted ones.
     pub cart: Option<CartKind>,
 }
 

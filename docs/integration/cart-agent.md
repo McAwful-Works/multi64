@@ -149,11 +149,18 @@ What differs from the SC64 build:
   hands it over on the next receive, and the PRO leaves it in the cart FIFO. When the driver reports
   a lost piece (a failed read, a bad `DMA@` header or `CMPH` trailer, an X7 message more than 512
   bytes larger than the room left) the partial frame is dropped at once, so it
-  cannot be completed with a later request's bytes; one the driver cannot see go missing is
-  discarded after waiting 60 ticks, so it cannot swallow the host's retry for long. L3 frames carry no
-  checksum, so neither check can catch a loss that goes unreported and is then filled out by bytes
-  that happen to form a plausible frame. `make host-test` runs this logic on a PC against a fake
-  driver for both carts, and CI runs it on every change.
+  cannot be completed with a later request's bytes.
+- **A loss the driver cannot see is not recovered from cleanly.** The partial frame keeps the length
+  its header claimed, and whatever arrives next is read as the rest of it. The 60-tick guard counts
+  only ticks in which *nothing at all* arrives — any arrival resets it — so a host that retries
+  inside that window has its retry spliced into the frame the loss broke. Once enough bytes have
+  arrived to fill the claimed length, the agent answers that frame: under the **first** request's
+  `rid`, carrying bytes that belong to the retry, and the retry is never seen as a request of its
+  own. L3 frames carry no checksum, and the header check only ever looks at a header, so nothing
+  catches this. A host that leaves 60 ticks of silence before retrying (a second at 60 Hz, two at
+  30 Hz) finds a clean buffer; one that retries sooner can lose the retry the same way.
+  `make host-test` runs this logic on a PC against a fake driver for both carts, and CI runs it on
+  every change.
 - **Nothing is staged in ROM space.** libdragon's X7 driver copies received packets to the top of the
   ROM window; this one reads straight out of the cart's USB window. The PRO needs no staging.
 - **A reply holds the tick while it is sent.** The X7 driver waits for the cart after each 512-byte

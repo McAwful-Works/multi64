@@ -4,13 +4,13 @@
 
 This document describes **`multi64d`**, the reference PC daemon: HTTP metadata + health + **WebSocket** bridge to the **L3 octet stream** between host and N64.
 
-The daemon is **L3-facing**: clients send and receive **raw L3 bytes** on the WebSocket binary channel. How those bytes move over USB/serial is **L2** and depends on the cart. The daemon speaks the **SummerCart64** mapping ([`l3-over-sc64.md`](./l3-over-sc64.md)) by default, and the **EverDrive-64 X7** mapping ([`l3-over-everdrive-x7.md`](./l3-over-everdrive-x7.md)) with `--cart ed64` (§5.1). Both present the **same L3 stream** at this boundary. The EverDrive mapping is **experimental**: it has never been run against a cart.
+The daemon is **L3-facing**: clients send and receive **raw L3 bytes** on the WebSocket binary channel. How those bytes move over USB/serial is **L2** and depends on the cart. The daemon speaks the **SummerCart64** mapping ([`l3-over-sc64.md`](./l3-over-sc64.md)) by default, the **EverDrive-64 X7** mapping ([`l3-over-everdrive-x7.md`](./l3-over-everdrive-x7.md)) with `--cart ed64`, and the **EverDrive-64 PRO** mapping ([`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md)) with `--cart ed64pro` (§5.1). All three present the **same L3 stream** at this boundary. Both EverDrive mappings are **experimental**: neither has been run against a cart.
 
 ---
 
 ## 1. Transport
 
-- **HTTP** `GET /` — JSON metadata (service name, version, WebSocket path, configured serial, `serialActive`, `serialBusy`).
+- **HTTP** `GET /` — JSON metadata (service name, version, WebSocket path, configured serial, `serialActive`, `serialBusy`, `cart`).
 - **HTTP** `GET /health` — minimal JSON `{"status":"ok"}` for load balancers and process supervisors.
 - **HTTP** `POST /v1/serial/release` — drop the COM port so another process (e.g. Xfer64) can open it; `serialActive` in `GET /` becomes `false` until resume.
 - **HTTP** `POST /v1/serial/resume` — reopen the configured serial device and restore normal operation.
@@ -47,6 +47,8 @@ A tool that needs to know which cart is attached MAY take `serial` and `cart` fr
 
 `POST /v1/serial/resume` waits for the serial link the same way, also at most **2 seconds**. If the link is still in use then, the daemon answers **`503 Service Unavailable`** with a plain-text body and **does not resume**: the link stays as it was, and that request never reopens the port later. Resumes waiting for the link are served in the order they arrived; a resume that answered `503` is no longer waiting. The bound covers only the wait: once the daemon holds the link, opening the port takes as long as the cart's `open` does (with `--cart ed64pro`, a whole handshake). A client MAY retry after a `503`. It MUST NOT assume the link is active until a resume succeeds, since a released link is never reopened on its own. The wait and a normal open stay well under the 10-second timeout Xfer64 puts on this request.
 
+A resume that gets the link but fails to **open** the port — no cart there, or a handshake the device did not answer — answers **`500 Internal Server Error`** with a plain-text body carrying the open error. The link is left exactly as it was: a released link stays *released* and is still not reopened on its own, and a faulted one stays *faulted* and goes on retrying (§1.3). A `500` with a plain-text body is also what either route answers if the daemon fails internally while dropping or reopening the handle. Every other response on these two routes is the JSON above with `200`.
+
 While released, WebSocket binary writes to the cart are ignored; clients should tolerate brief disconnect-like behavior until resume.
 
 ### 1.3 Link faults and recovery
@@ -56,7 +58,7 @@ The link is **faulted** whenever the daemon wants the port but does not hold it.
 - The dead handle is **dropped**, so the COM port is free for another process.
 - `serialActive` in **`GET /`** becomes `false`. Clients MUST NOT read `serialActive: true` as proof the link works; they only ever learn otherwise from this field.
 - WebSocket binary writes are ignored, exactly as while released.
-- The daemon retries `open` about **once per second** until the device returns, and **`POST /v1/serial/resume`** reopens it immediately. With `--cart ed64pro`, when the port opens but the PRO handshake keeps failing (for example, the port belongs to another device), the interval backs off to 1, 2, 4, 8 and 16 seconds, then 30 seconds, and returns to once per second once the link is active or released.
+- The daemon retries `open` about **once per second** until the device returns, and **`POST /v1/serial/resume`** reopens it immediately. With `--cart ed64pro`, when the port opens but the PRO handshake keeps failing (for example, the port belongs to another device), the interval backs off to 1, 2, 4, 8 and 16 seconds, then 30 seconds, and returns to once per second once the link is active or released. An attempt that could not open the port at all restarts that count, since nothing was written to a device.
 
 A release always wins over a fault: if `POST /v1/serial/release` arrives while the link is faulted, the state becomes *released* and the daemon stops retrying, so it never takes the port back from a tool that asked for it.
 
@@ -141,14 +143,14 @@ Server responds with:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config <path>` | (none) | TOML config file; env: `MULTI64D_CONFIG` |
-| `--serial` | (required†) | Serial device (e.g. `COM3`, `/dev/ttyACM0`); env: `MULTI64D_SERIAL` |
+| `--serial`, `-s` | (required†) | Serial device (e.g. `COM3`, `/dev/ttyACM0`); env: `MULTI64D_SERIAL` |
 | `--baud` | `115200` | Baud (often ignored on USB-CDC cart adapters); env: `MULTI64D_BAUD` |
 | `--cart <sc64\|ed64\|ed64pro>` | `sc64` | Which cart's L2 mapping carries the L3 stream. `ed64` selects the EverDrive-64 X7 `DMA@` mapping; `ed64pro` selects the EverDrive-64 PRO mapping ([`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md)), which runs at the PRO's fixed 921600 baud and ignores `--baud`. Both are **experimental** and have never been run against a cart; the daemon logs a warning when either is chosen. Env: `MULTI64D_CART`; config file: `cart = "ed64"` |
 | `--listen` | `127.0.0.1:38765` | TCP bind address; env: `MULTI64D_LISTEN` |
 | `--clear-serial [BOOL]` | off | Clear host serial buffers after open. Bare `--clear-serial` means `true`; `--clear-serial=false` (or `MULTI64D_CLEAR_SERIAL=false`) **overrides** `clear_serial = true` in a config file. Env: `MULTI64D_CLEAR_SERIAL` (`true` / `false`) |
 | `--allow-origin <ORIGIN>` | (none) | Browser origin permitted to call the daemon (§1.4); repeatable. Env: `MULTI64D_ALLOW_ORIGIN` (comma-separated) |
 | `--no-print-ports` | off | If set, do not log available serial ports at startup (default is to log them at info) |
-| `--list-ports` | off | Print serial port names to stdout and exit (for scripts) |
+| `--list-ports` | off | Print serial port names to stdout and exit (for scripts). Handled before configuration is resolved, so it needs no `--serial` |
 | `--serial-trace` | off | Log every non-empty read from the cart at `trace!` on target `multi64_sc64_l2`, `multi64_ed64_l2` or `multi64_ed64pro_l2`, depending on `--cart`. Merges with `RUST_LOG` when that is set. Env: `MULTI64D_SERIAL_TRACE` (`1` / `true` / `yes`) |
 
 † Serial may come from **`--serial`**, **`MULTI64D_SERIAL`**, or **`serial = "..."`** in a config file (see §5.2). CLI and environment **override** file values — they never combine with them, so an explicit `false` or an explicit `--allow-origin` list replaces whatever the file said.
@@ -161,6 +163,8 @@ If `--config` / `MULTI64D_CONFIG` is not set, the daemon loads the first file th
 
 1. `./multi64d.toml` (current working directory)
 2. OS config directory: `multi64d/config.toml` — e.g. Linux `~/.config/multi64d/config.toml`, Windows `%APPDATA%\multi64d\config.toml`, macOS `~/Library/Application Support/multi64d/config.toml`
+
+A `--config` / `MULTI64D_CONFIG` path that does **not** exist is a startup error: the daemon exits rather than falling back to discovery. Neither discovered location existing is normal, and the defaults in §5.1 apply.
 
 ### 5.3 Logging
 
