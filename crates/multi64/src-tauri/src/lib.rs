@@ -580,7 +580,8 @@ fn start_plan(settings: &Settings) -> StartPlan {
 ///
 /// Every port given to `probe` receives its test commands. Across all ports, USB serial devices go
 /// first and each group in name order, so the result does not depend on enumeration order; the
-/// first cart to answer wins. `log` gets each outcome.
+/// first cart to answer wins. `log` gets each outcome. `cancelled` is checked before each port and
+/// after each probe, and `probe` should stop on it too.
 fn detect_cart(
     only: Option<&str>,
     ports: &[serialport::SerialPortInfo],
@@ -616,6 +617,8 @@ fn detect_cart(
                 log(format!("Auto-detect: {} answered on {port}", cart.label()));
                 return Ok((cart, port.clone()));
             }
+            // A probe cut short by Exit did not finish trying the port: don't log it as empty.
+            None if cancelled() => return Err(EXITING.to_string()),
             None => log(format!("Auto-detect: no cart answered on {port}")),
         }
     }
@@ -665,7 +668,7 @@ fn resolve_start(
             let (cart, port) = detect_cart(
                 only.as_deref(),
                 &ports,
-                multi64_cart_probe::probe_port,
+                |port| multi64_cart_probe::probe_port_cancellable(port, shutting_down),
                 shutting_down,
                 &mut log,
             )?;
@@ -764,8 +767,9 @@ fn daemon_is_running(daemon: &Arc<Mutex<DaemonInner>>) -> bool {
 /// retaken across the spawn.
 static DAEMON_OPS: Mutex<()> = Mutex::new(());
 
-/// Set once Multi64 starts exiting. A start in progress checks it between Auto-detect's port
-/// probes and before spawning, so Exit waits for at most one probe rather than all of them (#147).
+/// Set once Multi64 starts exiting. A start in progress checks it before spawning, and Auto-detect
+/// checks it between ports and at every read while probing one, so Exit waits a fraction of a
+/// second rather than for the rest of the probes (#147).
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 const EXITING: &str = "Multi64 is exiting, so the bridge was not started.";
@@ -803,6 +807,79 @@ fn listen_address_in_use(listen: &str) -> bool {
         }
         TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(150)).is_ok()
     })
+}
+
+/// How long a check that found the listen address free is reused; see [`ListenChecks`].
+const LISTEN_FREE_REUSE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The last listen-address check, shared by the status poll, the tray menu and Start.
+static LISTEN_CHECKS: ListenChecks = ListenChecks::new();
+
+/// Remembers the last [`listen_address_in_use`] answer.
+///
+/// Finding the address free is the expensive answer: on Windows a refused loopback connect takes
+/// about 2 s, so it costs the whole 150 ms timeout, and the status poll asks every 2 s while the
+/// bridge is stopped. So a free answer is reused for [`LISTEN_FREE_REUSE`]. An address in use
+/// answers in well under a millisecond and is checked every time, so it shows as free as soon as
+/// the other process lets go. Something taking a free address shows within the reuse window, except
+/// to Start, which always checks.
+struct ListenChecks {
+    last: Mutex<Option<ListenCheck>>,
+}
+
+struct ListenCheck {
+    listen: String,
+    at: std::time::Instant,
+    in_use: bool,
+}
+
+impl ListenChecks {
+    const fn new() -> Self {
+        Self {
+            last: Mutex::new(None),
+        }
+    }
+
+    /// Run `check` and remember its answer.
+    fn fresh(
+        &self,
+        listen: &str,
+        now: std::time::Instant,
+        check: impl FnOnce(&str) -> bool,
+    ) -> bool {
+        let in_use = check(listen);
+        *self.last.lock() = Some(ListenCheck {
+            listen: listen.to_string(),
+            at: now,
+            in_use,
+        });
+        in_use
+    }
+
+    /// False if `listen` was found free less than [`LISTEN_FREE_REUSE`] ago, else [`Self::fresh`].
+    fn recent(
+        &self,
+        listen: &str,
+        now: std::time::Instant,
+        check: impl FnOnce(&str) -> bool,
+    ) -> bool {
+        let reuse = self.last.lock().as_ref().is_some_and(|c| {
+            !c.in_use
+                && c.listen == listen
+                && now.saturating_duration_since(c.at) < LISTEN_FREE_REUSE
+        });
+        !reuse && self.fresh(listen, now, check)
+    }
+}
+
+/// Whether the listen address is in use now, for Start.
+fn listen_in_use_now(listen: &str) -> bool {
+    LISTEN_CHECKS.fresh(listen, std::time::Instant::now(), listen_address_in_use)
+}
+
+/// Whether the listen address is in use, reusing a recent free answer, for the status poll and tray.
+fn listen_in_use_recently(listen: &str) -> bool {
+    LISTEN_CHECKS.recent(listen, std::time::Instant::now(), listen_address_in_use)
 }
 
 /// Why Start refuses while something else holds the listen address.
@@ -968,7 +1045,9 @@ fn start_daemon(
     // After the kill, so what is left on the address is not ours. A daemon that cannot bind exits
     // at once, and before this the window only showed Stopped with no way to stop the other one
     // (#146). Checked before Auto-detect, which would otherwise probe ports that process holds.
-    if listen_address_in_use(&settings.listen) {
+    // Always a fresh check, which also updates what the tray reads when this start's failure
+    // rebuilds it.
+    if listen_in_use_now(&settings.listen) {
         return Err(listen_in_use_message(&settings.listen));
     }
     // After the kill, so the port the old daemon held is free to probe.
@@ -1243,7 +1322,7 @@ fn daemon_status(state: &AppState, with_ports: bool) -> DaemonStatus {
         serialport::available_ports().unwrap_or_default()
     });
     // A failed auto-start is otherwise only in the log, behind Developer mode (#146).
-    if !running && listen_address_in_use(&listen) {
+    if !running && listen_in_use_recently(&listen) {
         message = listen_in_use_message(&listen);
     }
     DaemonStatus {
@@ -1619,12 +1698,15 @@ fn tray_cart_note(
 }
 
 /// `can_start` is whether Start can work at all: Auto-detect can start with no port known yet.
+/// `listen_in_use` is whether something else already listens on `listen` while stopped, so Start
+/// would fail with [`listen_in_use_message`].
 fn tray_labels(
     running: bool,
     serial: Option<&str>,
     can_start: bool,
     cart_note: Option<&str>,
     listen: &str,
+    listen_in_use: bool,
 ) -> TrayLabels {
     let cart_note = cart_note.map(|c| format!(" · {c}")).unwrap_or_default();
     let status = if running {
@@ -1634,6 +1716,11 @@ fn tray_labels(
             // listens rather than claiming a port we cannot name.
             None => format!("Bridge: running ({listen})"),
         }
+    } else if listen_in_use {
+        // Labelled, not greyed, as the window's Start button is: the menu is rebuilt only when the
+        // bridge changes, so a greyed Start would stay greyed after the other process has gone.
+        // Named before a missing port, because Start checks the address first.
+        "Bridge: stopped (listen address in use)".to_string()
     } else if can_start {
         "Bridge: stopped".to_string()
     } else {
@@ -1691,7 +1778,9 @@ fn xfer64_label(state: Option<&Xfer64State>) -> (&'static str, bool) {
 ///
 /// Deliberately does **not** call `check_health`: that issues a blocking HTTP request, and this
 /// runs on every `daemon-changed` event. "Running" here means the child process is alive; the
-/// window shows the finer-grained health.
+/// window shows the finer-grained health. While stopped it does check the listen address, through
+/// [`listen_in_use_recently`]: under a millisecond while the address is taken, and usually a reused
+/// answer while it is free.
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let (running, listen, serial, can_start, cart_note) = match app.try_state::<AppState>() {
         Some(state) => {
@@ -1715,8 +1804,18 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         }
         None => (false, DEFAULT_LISTEN.to_string(), None, false, None),
     };
+    // Without app state there are no settings, so nothing to check.
+    let listen_in_use =
+        !running && app.try_state::<AppState>().is_some() && listen_in_use_recently(&listen);
 
-    let labels = tray_labels(running, serial.as_deref(), can_start, cart_note, &listen);
+    let labels = tray_labels(
+        running,
+        serial.as_deref(),
+        can_start,
+        cart_note,
+        &listen,
+        listen_in_use,
+    );
     // Disabled: a status line, not an action.
     let status = MenuItem::with_id(app, "status", &labels.status, false, None::<&str>)?;
     let toggle = MenuItem::with_id(
@@ -1838,7 +1937,7 @@ pub fn run() {
                     .on_menu_event(move |app, event| match event.id.as_ref() {
                         // Off the event loop (#147): `kill_daemon` waits on DAEMON_OPS, which a
                         // start holds for its whole Auto-detect probe. The flag makes that start
-                        // give up after the port it is probing, without spawning.
+                        // stop probing at its next read, without spawning.
                         "quit" => {
                             begin_shutdown();
                             let app = app.clone();
@@ -1957,7 +2056,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(move |_app_handle, event| {
             if let RunEvent::Exit = event {
-                // Set first, so a start still probing stops after its current port.
+                // Set first, so a start still probing stops at its next read.
                 begin_shutdown();
                 kill_daemon(&daemon_arc);
             }
@@ -2181,6 +2280,42 @@ mod tests {
             msg.contains("127.0.0.1:38765") && msg.contains("multi64d.exe"),
             "{msg}"
         );
+    }
+
+    /// The status poll paid a 150 ms connect every 2 s while stopped. A free answer is reused for a
+    /// while; an in-use one, which is cheap and must clear as soon as the address frees, never is.
+    #[test]
+    fn a_free_listen_address_is_reused_briefly_and_an_address_in_use_never() {
+        use std::time::{Duration, Instant};
+        const A: &str = "127.0.0.1:38765";
+        let checks = ListenChecks::new();
+        let t0 = Instant::now();
+        let never = |_: &str| -> bool { panic!("the free answer should be reused") };
+
+        assert!(!checks.recent(A, t0, |_| false));
+        assert!(!checks.recent(A, t0 + Duration::from_secs(9), never));
+        // Another address, or the reuse window over, checks again.
+        assert!(checks.recent("127.0.0.1:1", t0, |_| true));
+        assert!(!checks.recent(A, t0, |_| false));
+        assert!(checks.recent(A, t0 + LISTEN_FREE_REUSE, |_| true));
+
+        // In use is checked every time, so the address shows free the moment it is let go.
+        let mut asked = 0;
+        assert!(checks.recent(A, t0, |_| {
+            asked += 1;
+            true
+        }));
+        assert!(!checks.recent(A, t0, |_| {
+            asked += 1;
+            false
+        }));
+        assert_eq!(asked, 2);
+
+        // Start always checks, and what it finds is what the tray reads next.
+        assert!(checks.fresh(A, t0, |_| true));
+        assert!(checks.recent(A, t0, |_| true));
+        assert!(!checks.fresh(A, t0, |_| false));
+        assert!(!checks.recent(A, t0, never));
     }
 
     /// The baud the user picks must reach multi64d; it was collected and never passed.
@@ -2461,6 +2596,7 @@ mod port_selection_tests {
         let ports = [ch340("COM3"), ch340("COM5"), ch340("COM7")];
         let exiting = std::cell::Cell::new(false);
         let mut tried = Vec::new();
+        let mut logged = Vec::new();
         let err = detect_cart(
             None,
             &ports,
@@ -2470,11 +2606,13 @@ mod port_selection_tests {
                 None
             },
             || exiting.get(),
-            |_| {},
+            |line| logged.push(line),
         )
         .unwrap_err();
         assert_eq!(tried, ["COM3"], "no port after the Exit is probed");
         assert_eq!(err, EXITING);
+        // The probe on COM3 was cut short, so COM3 was never fully tried.
+        assert!(logged.is_empty(), "{logged:?}");
         // Already exiting: nothing is sent at all.
         let err = detect_cart(Some("COM9"), &[], |_| panic!("probed"), || true, |_| {});
         assert_eq!(err.unwrap_err(), EXITING);
@@ -2602,7 +2740,7 @@ mod tray_tests {
 
     #[test]
     fn status_names_the_port_when_running() {
-        let l = tray_labels(true, Some("COM4"), true, None, LISTEN);
+        let l = tray_labels(true, Some("COM4"), true, None, LISTEN, false);
         assert_eq!(l.status, "Bridge: running on COM4");
         assert_eq!(l.toggle, "Stop bridge");
     }
@@ -2611,7 +2749,7 @@ mod tray_tests {
     fn status_falls_back_to_listen_when_the_port_is_unknown() {
         // A live daemon with no configured or auto-detected port: name where it listens rather
         // than a port we cannot identify.
-        let l = tray_labels(true, None, true, None, LISTEN);
+        let l = tray_labels(true, None, true, None, LISTEN, false);
         assert_eq!(l.status, "Bridge: running (127.0.0.1:38765)");
     }
 
@@ -2645,9 +2783,17 @@ mod tray_tests {
             true,
             Some("EverDrive-64 X7 (beta)"),
             LISTEN,
+            false,
         );
         assert_eq!(l.status, "Bridge: running on COM6 · EverDrive-64 X7 (beta)");
-        let l = tray_labels(false, None, false, Some("EverDrive-64 X7 (beta)"), LISTEN);
+        let l = tray_labels(
+            false,
+            None,
+            false,
+            Some("EverDrive-64 X7 (beta)"),
+            LISTEN,
+            false,
+        );
         assert_eq!(
             l.status,
             "Bridge: stopped (no serial port) · EverDrive-64 X7 (beta)"
@@ -2656,7 +2802,7 @@ mod tray_tests {
 
     #[test]
     fn stopped_shows_start_and_disables_restart() {
-        let l = tray_labels(false, Some("COM4"), true, None, LISTEN);
+        let l = tray_labels(false, Some("COM4"), true, None, LISTEN, false);
         assert_eq!(l.status, "Bridge: stopped");
         assert_eq!(l.toggle, "Start bridge");
         assert!(l.toggle_enabled, "a port is configured, so Start is usable");
@@ -2669,16 +2815,38 @@ mod tray_tests {
     #[test]
     fn start_is_disabled_when_it_cannot_work() {
         // `start_daemon` fails without a port or a probe, so the item must not invite the click.
-        let l = tray_labels(false, None, false, None, LISTEN);
+        let l = tray_labels(false, None, false, None, LISTEN, false);
         assert!(!l.toggle_enabled);
         // ...and the status line says why it is greyed out.
         assert_eq!(l.status, "Bridge: stopped (no serial port)");
     }
 
+    /// Start stayed enabled and unexplained while another process held the listen address, then
+    /// failed. It stays enabled, as the window's does, and the status line says why it would fail.
+    #[test]
+    fn a_taken_listen_address_is_named_while_stopped() {
+        let l = tray_labels(false, Some("COM4"), true, None, LISTEN, true);
+        assert_eq!(l.status, "Bridge: stopped (listen address in use)");
+        assert_eq!(l.toggle, "Start bridge");
+        assert!(
+            l.toggle_enabled,
+            "the menu may be stale by the time it is clicked"
+        );
+        // It is what Start reports first, so it wins over a missing port.
+        let l = tray_labels(false, None, false, Some("Auto-detect"), LISTEN, true);
+        assert_eq!(
+            l.status,
+            "Bridge: stopped (listen address in use) · Auto-detect"
+        );
+        // A running bridge holds the address itself.
+        let l = tray_labels(true, Some("COM4"), true, None, LISTEN, true);
+        assert_eq!(l.status, "Bridge: running on COM4");
+    }
+
     /// Auto-detect with no SC64 on USB has no port yet, but Start will probe for one.
     #[test]
     fn auto_detect_can_start_before_a_port_is_known() {
-        let l = tray_labels(false, None, true, Some("Auto-detect"), LISTEN);
+        let l = tray_labels(false, None, true, Some("Auto-detect"), LISTEN, false);
         assert!(l.toggle_enabled);
         assert_eq!(l.status, "Bridge: stopped · Auto-detect");
     }
@@ -2686,7 +2854,7 @@ mod tray_tests {
     #[test]
     fn stop_stays_enabled_even_without_a_port() {
         // The port can disappear while the daemon runs; stopping it must still be possible.
-        let l = tray_labels(true, None, false, None, LISTEN);
+        let l = tray_labels(true, None, false, None, LISTEN, false);
         assert_eq!(l.toggle, "Stop bridge");
         assert!(l.toggle_enabled);
         assert!(l.restart_enabled);
@@ -2700,7 +2868,7 @@ mod tray_tests {
             panic!("a running daemon must not re-resolve its port")
         });
         assert_eq!(serial.as_deref(), Some("COM4"));
-        let l = tray_labels(true, serial.as_deref(), true, None, LISTEN);
+        let l = tray_labels(true, serial.as_deref(), true, None, LISTEN, false);
         assert_eq!(l.status, "Bridge: running on COM4");
     }
 
@@ -2717,7 +2885,7 @@ mod tray_tests {
     #[test]
     fn running_without_a_recorded_port_falls_back_to_listen() {
         let serial = tray_serial(true, None, || Some("COM4".into()));
-        let l = tray_labels(true, serial.as_deref(), true, None, LISTEN);
+        let l = tray_labels(true, serial.as_deref(), true, None, LISTEN, false);
         assert_eq!(l.status, "Bridge: running (127.0.0.1:38765)");
     }
 

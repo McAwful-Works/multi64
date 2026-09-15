@@ -85,13 +85,32 @@ const READ_SLICE: Duration = Duration::from_millis(100);
 /// Writes to the port; see the [crate docs](crate). A port that cannot be opened (absent, or held
 /// by another process) is `None`. Worst case, a port with no cart costs about three seconds.
 pub fn probe_port(port: &str) -> Option<DetectedCart> {
-    if probe_sc64(port) {
+    probe_port_cancellable(port, || false)
+}
+
+/// [`probe_port`], giving up as soon as `cancelled` returns true: `None`, whatever is on the port.
+///
+/// `cancelled` is checked before each probe and at every read while waiting for an answer, so a
+/// cancel takes effect within one read timeout (100 ms) rather than after the rest of the port's
+/// probes. The PRO's edlink handshake is the exception: it is not interrupted, but gives up on its
+/// own after a 200 ms read timeout on anything that is not a PRO.
+pub fn probe_port_cancellable(port: &str, cancelled: impl Fn() -> bool) -> Option<DetectedCart> {
+    if cancelled() {
+        return None;
+    }
+    if probe_sc64(port, &cancelled) {
         return Some(DetectedCart::Sc64);
+    }
+    if cancelled() {
+        return None;
     }
     if probe_ed64pro(port) {
         return Some(DetectedCart::Ed64Pro);
     }
-    if probe_ed64(port) {
+    if cancelled() {
+        return None;
+    }
+    if probe_ed64(port, &cancelled) {
         return Some(DetectedCart::Ed64);
     }
     None
@@ -102,7 +121,7 @@ fn open(port: &str, baud: u32) -> Option<Box<dyn SerialPort>> {
 }
 
 /// SummerCart64 `IDENTIFIER_GET`, answered with an identifier starting `SC`.
-fn probe_sc64(port: &str) -> bool {
+fn probe_sc64(port: &str, cancelled: &impl Fn() -> bool) -> bool {
     let Some(mut p) = open(port, 115_200) else {
         return false;
     };
@@ -111,10 +130,19 @@ fn probe_sc64(port: &str) -> bool {
     if p.write_all(&request).is_err() || p.flush().is_err() {
         return false;
     }
+    await_sc64_identifier(&mut p, SC64_IDENTIFY_TIMEOUT, cancelled)
+}
+
+/// Read until `IDENTIFIER_GET` is answered, `timeout` passes or `cancelled` returns true.
+fn await_sc64_identifier(
+    p: &mut impl Read,
+    timeout: Duration,
+    cancelled: &impl Fn() -> bool,
+) -> bool {
     let mut responses = ResponseBuffer::default();
     let mut scratch = [0u8; 256];
-    let deadline = Instant::now() + SC64_IDENTIFY_TIMEOUT;
-    while Instant::now() < deadline {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline && !cancelled() {
         match p.read(&mut scratch) {
             // Some drivers return no bytes at once instead of waiting out the read timeout; don't
             // spin a core until the deadline.
@@ -138,7 +166,7 @@ fn probe_ed64pro(port: &str) -> bool {
 }
 
 /// The X-series `usb64` test: `cmd` + `t` in a 16-byte packet, answered with `cmdk` or `cmdr`.
-fn probe_ed64(port: &str) -> bool {
+fn probe_ed64(port: &str, cancelled: &impl Fn() -> bool) -> bool {
     let Some(mut p) = open(port, 115_200) else {
         return false;
     };
@@ -149,10 +177,19 @@ fn probe_ed64(port: &str) -> bool {
     if p.write_all(&request).is_err() || p.flush().is_err() {
         return false;
     }
+    await_ed64_test_reply(&mut p, ED64_TEST_TIMEOUT, cancelled)
+}
+
+/// Read until the `usb64` test is answered, `timeout` passes or `cancelled` returns true.
+fn await_ed64_test_reply(
+    p: &mut impl Read,
+    timeout: Duration,
+    cancelled: &impl Fn() -> bool,
+) -> bool {
     let mut reply = Vec::new();
     let mut scratch = [0u8; 64];
-    let deadline = Instant::now() + ED64_TEST_TIMEOUT;
-    while Instant::now() < deadline && reply.len() < 512 {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline && reply.len() < 512 && !cancelled() {
         match p.read(&mut scratch) {
             Ok(0) => std::thread::sleep(Duration::from_millis(1)),
             Ok(n) => {
@@ -259,6 +296,50 @@ mod tests {
         let started = Instant::now();
         assert_eq!(probe_port("multi64-cart-probe-no-such-port"), None);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// A port that never answers: every read times out at once, as a real one would after
+    /// `READ_SLICE`. Counts the reads.
+    struct Silent {
+        reads: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Read for Silent {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            self.reads.set(self.reads.get() + 1);
+            Err(io::ErrorKind::TimedOut.into())
+        }
+    }
+
+    /// Exit used to wait out the whole of a port's probes (#147 follow-up): a cancel now stops the
+    /// wait at the next read, well before the timeout.
+    #[test]
+    fn a_cancel_stops_waiting_for_an_answer_at_the_next_read() {
+        type Await = fn(&mut Silent, Duration, &dyn Fn() -> bool) -> bool;
+        let waits: [(&str, Await); 2] = [
+            ("sc64", |p, t, c| await_sc64_identifier(p, t, &c)),
+            ("ed64", |p, t, c| await_ed64_test_reply(p, t, &c)),
+        ];
+        for (name, wait) in waits {
+            let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+            let mut port = Silent {
+                reads: reads.clone(),
+            };
+            let seen = reads.clone();
+            let started = Instant::now();
+            let answered = wait(&mut port, Duration::from_secs(30), &|| seen.get() >= 3);
+            assert!(!answered, "{name}");
+            assert_eq!(reads.get(), 3, "{name}: no read after the cancel");
+            assert!(started.elapsed() < Duration::from_secs(5), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_cancelled_probe_opens_nothing() {
+        assert_eq!(
+            probe_port_cancellable("multi64-cart-probe-no-such-port", || true),
+            None
+        );
     }
 
     #[test]

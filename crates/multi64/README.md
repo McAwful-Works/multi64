@@ -64,8 +64,8 @@ These preferences live in **`localStorage`**, *not* in the settings file — the
 
 | Item | |
 |------|---|
-| `Bridge: …` | Status line, disabled. While running, names the port the daemon was actually started on (not what the settings would pick now), else the listen address; while stopped, says so when there is no serial port. Any cart other than the default SummerCart64 is named after it (`· EverDrive-64 X7 (beta)`), again the one the running process was started for. Reflects whether the **process** is alive — the window shows finer-grained health, since a status line that polled `/health` would issue a blocking request on every update |
-| **Start / Stop bridge** | One item, whichever applies. Disabled with no serial port configured, because starting would fail; **Stop** stays enabled without one, since the port can disappear while the daemon runs |
+| `Bridge: …` | Status line, disabled. While running, names the port the daemon was actually started on (not what the settings would pick now), else the listen address; while stopped, says so when there is no serial port, or when something else already listens on the listen address. Any cart other than the default SummerCart64 is named after it (`· EverDrive-64 X7 (beta)`), again the one the running process was started for. Reflects whether the **process** is alive — the window shows finer-grained health, since a status line that polled `/health` would issue a blocking request on every update |
+| **Start / Stop bridge** | One item, whichever applies. Disabled with no serial port configured, because starting would fail; **Stop** stays enabled without one, since the port can disappear while the daemon runs. **Start** stays enabled while the listen address is taken, as the window's Start button does: the menu is only rebuilt when the bridge changes, so a greyed item would stay greyed after the other process exits |
 | **Restart bridge** | Disabled while stopped — that case is **Start** |
 | **Open Xfer64** | Reads *Install Xfer64…* when only the bundled installer is present, and is greyed when neither is |
 | **Show window**, **Exit Multi64** | |
