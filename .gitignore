@@ -20,6 +20,7 @@ scripts/venv/
 
 # Tauri frontends: npm + bundled daemon during dev/build
 crates/multi64/node_modules/
+crates/multi64/e2e/node_modules/
 crates/multi64/src-tauri/resources/multi64d.exe
 # Written by src-tauri/build.rs on every build (real payload or 0-byte placeholder).
 crates/multi64/src-tauri/resources/xfer64-setup.exe

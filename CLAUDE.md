@@ -30,6 +30,16 @@ assert which backend command each drag gesture reaches. They prove the frontend 
 feature: everything the OS owns (whether Windows accepts a drag, whether `tauri://drag-*` fires) is
 still Windows-and-a-cart territory. See [`crates/xfer64/e2e/README.md`](crates/xfer64/e2e/README.md).
 
+The Multi64 frontend checks are a job of the same kind, also Ubuntu only:
+
+```sh
+cd crates/multi64/e2e && npm install && npx playwright install chromium && npm test
+```
+
+They drive `crates/multi64/src/index.html` the same way and check the Status card and the Settings
+Cart and Serial port selects, including a saved port that is unplugged. See
+[`crates/multi64/e2e/README.md`](crates/multi64/e2e/README.md).
+
 And one more, also Ubuntu only — the cart agent's reassembly test, the only CI job that compiles N64 code
 (for the PC, not the console). It needs a host `gcc` or `clang` and `make`, nothing from the N64 toolchain:
 

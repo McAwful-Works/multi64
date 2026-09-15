@@ -63,6 +63,27 @@ jobs:
         working-directory: crates/xfer64/e2e
         run: npm test
 
+  multi64-frontend:
+    name: Multi64 frontend checks (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # Multi64's window is plain JS that no Rust test reaches. These drive the real index.html in
+      # headless Chromium against a stubbed Tauri bridge; see crates/multi64/e2e/README.md for what
+      # that can and cannot prove.
+      - name: Install harness
+        working-directory: crates/multi64/e2e
+        run: npm ci
+      - name: Install Chromium
+        working-directory: crates/multi64/e2e
+        run: npx playwright install --with-deps chromium
+      - name: Run frontend checks
+        working-directory: crates/multi64/e2e
+        run: npm test
+
   agent-host-test:
     name: Cart agent reassembly (host)
     runs-on: ubuntu-latest
