@@ -1067,7 +1067,8 @@ const clearedSavedFolder = (calls) =>
   const main = await openScenario("index.html", scenario);
   await main.waitForSelector(CART_FILE, { timeout: 15000 });
   await main.waitForTimeout(400);
-  const mainBridge = bridgeCalls(await callsIn(main));
+  const mainCalls = await callsIn(main);
+  const mainBridge = bridgeCalls(mainCalls);
   await main.close();
 
   const p = await openScenario("upload-picker.html", scenario);
@@ -1085,6 +1086,19 @@ const clearedSavedFolder = (calls) =>
     ready && mainBridge.length > 0 && pickerBridge.length > 0 && upload?.args?.listen === listen &&
       [...mainBridge, ...pickerBridge].every((c) => c.args.listen === listen),
     detail);
+
+  // The backend's Auto-detect asks multi64d which cart it holds at the address the window last
+  // probed, so in each window a probe at that address has to come before anything that resolves
+  // the cart's port — the boot's detection and listing included.
+  const resolves = (c) => /^(cart_serial_(probe_status|list_dir_page|path_info)|build_cart_)/.test(c.cmd);
+  const probedFirst = (calls) => {
+    const probe = calls.findIndex((c) => c.cmd === "explorer_daemon_probe" && c.args.listen === listen);
+    const first = calls.findIndex(resolves);
+    return { probe, first, ok: probe >= 0 && first >= 0 && probe < first };
+  };
+  const order = { main: probedFirst(mainCalls), picker: probedFirst(calls) };
+  check("each window probes multi64d at its own address before resolving the cart's port",
+    order.main.ok && order.picker.ok, JSON.stringify(order));
 }
 
 // --- report --------------------------------------------------------------

@@ -121,6 +121,9 @@ pub struct ExplorerCartSerialState {
     /// run on the blocking pool (so the window stays responsive), this is what keeps them apart.
     /// It guards no data, so a poisoned lock is recovered rather than propagated.
     pub port_lock: Arc<Mutex<()>>,
+    /// The multi64d address a window last probed ([`crate::daemon`] records it on every probe),
+    /// which Auto's cart hint asks. Shared, so a command's detached copy records into this one.
+    probed_listen: Arc<Mutex<Option<String>>>,
 }
 
 impl ExplorerCartSerialState {
@@ -130,7 +133,42 @@ impl ExplorerCartSerialState {
             probe_cache: Arc::new(Mutex::new(None)),
             cart_list_cache: Arc::new(Mutex::new(None)),
             port_lock: Arc::new(Mutex::new(())),
+            probed_listen: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Remember the multi64d address just probed, so Auto's cart hint asks that daemon.
+    pub fn remember_daemon_listen(&self, listen: &str) {
+        if let Ok(mut g) = self.probed_listen.lock() {
+            *g = Some(listen.to_string());
+        }
+    }
+
+    /// The multi64d address Auto's cart hint asks: the one last probed, which in the app is the
+    /// windows' own. Before any probe, [`crate::daemon::default_listen`].
+    pub fn hint_listen(&self) -> String {
+        self.probed_listen
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .unwrap_or_else(crate::daemon::default_listen)
+    }
+
+    /// A copy for work on the blocking pool, where `State` guards cannot follow: the pinned port is
+    /// copied, and everything else is shared, so caches and the probed address stay in step.
+    pub(crate) fn detached(&self) -> Result<Self, String> {
+        let preferred_com = self
+            .preferred_com
+            .lock()
+            .map_err(|e| e.to_string())?
+            .clone();
+        Ok(Self {
+            preferred_com: Mutex::new(preferred_com),
+            probe_cache: Arc::clone(&self.probe_cache),
+            cart_list_cache: Arc::clone(&self.cart_list_cache),
+            port_lock: Arc::clone(&self.port_lock),
+            probed_listen: Arc::clone(&self.probed_listen),
+        })
     }
 
     pub fn invalidate_probe_cache(&self) {
@@ -387,17 +425,9 @@ fn detect_best_auto_port(
     Ok(suggest_port(settings))
 }
 
-/// The COM port pinned in Settings or on the command line, without probing anything.
-///
-/// For Xfer64 ↔ multi64d coordination ([`crate::daemon`]), which must not resolve Auto: that probes
-/// ports, and cannot work while multi64d holds the cart's port.
-pub fn pinned_com_port(st: &ExplorerCartSerialState) -> Option<String> {
-    st.preferred_com
-        .lock()
-        .ok()
-        .and_then(|p| p.clone())
-        .map(|p| p.trim().to_string())
-        .filter(|p| !p.is_empty())
+/// Ask a running multi64d which cart it holds and on which port, at [`ExplorerCartSerialState::hint_listen`].
+pub(crate) fn auto_cart_hint(st: &ExplorerCartSerialState) -> Option<(String, DetectedCartKind)> {
+    crate::daemon::daemon_cart_hint(&st.hint_listen())
 }
 
 /// Ensures cart session close runs on panic (SD teardown + serial flush), not only on normal return.
@@ -569,9 +599,7 @@ fn resolve_port_probed(
     let auto = is_auto(settings);
     // A running multi64d already knows the cart and its port: ask it before probing any port.
     if auto {
-        if let Some((port, kind)) =
-            crate::daemon::daemon_cart_hint(&crate::daemon::default_listen())
-        {
+        if let Some((port, kind)) = auto_cart_hint(st) {
             if let Ok(mut g) = st.probe_cache.lock() {
                 *g = Some((port.clone(), kind));
             }
@@ -700,36 +728,10 @@ where
     T: Send + 'static,
     F: FnOnce(&ExplorerCartSerialState) -> Result<T, String> + Send + 'static,
 {
-    let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
-    let probe_cache = Arc::clone(&st.probe_cache);
-    let cart_list_cache = Arc::clone(&st.cart_list_cache);
-    let port_lock = Arc::clone(&st.port_lock);
-    tauri::async_runtime::spawn_blocking(move || {
-        let st = cart_serial_state_from_preferred(
-            preferred_com,
-            probe_cache,
-            cart_list_cache,
-            port_lock,
-        );
-        f(&st)
-    })
-    .await
-    .map_err(|e| format!("{context} task: {e}"))?
-}
-
-/// Reconstruct managed state for use on the blocking pool.
-fn cart_serial_state_from_preferred(
-    preferred_com: Option<String>,
-    probe_cache: Arc<Mutex<Option<(String, DetectedCartKind)>>>,
-    cart_list_cache: Arc<Mutex<CartDirListCache>>,
-    port_lock: Arc<Mutex<()>>,
-) -> ExplorerCartSerialState {
-    ExplorerCartSerialState {
-        preferred_com: Mutex::new(preferred_com),
-        probe_cache,
-        cart_list_cache,
-        port_lock,
-    }
+    let detached = st.detached()?;
+    tauri::async_runtime::spawn_blocking(move || f(&detached))
+        .await
+        .map_err(|e| format!("{context} task: {e}"))?
 }
 
 /// Take [`ExplorerCartSerialState::port_lock`], recovering from poisoning.
@@ -1153,20 +1155,12 @@ pub async fn cart_serial_export_copy_batch(
         return Ok(());
     }
     let cancel = ExplorerCancelState::clone(&cancel);
-    let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
-    let probe_cache = Arc::clone(&st.probe_cache);
-    let cart_list_cache = Arc::clone(&st.cart_list_cache);
-    let port_lock = Arc::clone(&st.port_lock);
+    let detached = st.detached()?;
     let snap = settings.snapshot();
     let app_block = app.clone();
     let dev = (*dev).clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        let st = cart_serial_state_from_preferred(
-            preferred_com,
-            probe_cache,
-            cart_list_cache,
-            port_lock,
-        );
+        let st = detached;
         with_session(
             &dev,
             "cart_serial_export_copy_batch",
@@ -1243,20 +1237,12 @@ pub async fn cart_serial_import_copy_batch(
         return Ok(());
     }
     let cancel = ExplorerCancelState::clone(&cancel);
-    let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
-    let probe_cache = Arc::clone(&st.probe_cache);
-    let cart_list_cache = Arc::clone(&st.cart_list_cache);
-    let port_lock = Arc::clone(&st.port_lock);
+    let detached = st.detached()?;
     let snap = settings.snapshot();
     let app_block = app.clone();
     let dev = (*dev).clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        let st = cart_serial_state_from_preferred(
-            preferred_com,
-            probe_cache,
-            cart_list_cache,
-            port_lock,
-        );
+        let st = detached;
         with_session(
             &dev,
             "cart_serial_import_copy_batch",
@@ -1402,10 +1388,7 @@ pub async fn cart_serial_remove_cart(
     }
     cancel.reset();
     let cancel = ExplorerCancelState::clone(&cancel);
-    let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
-    let probe_cache = Arc::clone(&st.probe_cache);
-    let cart_list_cache = Arc::clone(&st.cart_list_cache);
-    let port_lock = Arc::clone(&st.port_lock);
+    let detached = st.detached()?;
     let snap = settings.snapshot();
     let app = app.clone();
     let dev = (*dev).clone();
@@ -1422,12 +1405,7 @@ pub async fn cart_serial_remove_cart(
         };
         let start_msg = deleting_msg(0, paths.first().map(|s| s.as_str()).unwrap_or(""));
         emit_explorer_progress_full(&app, 0, total as u64, Some(start_msg), None, None);
-        let st = cart_serial_state_from_preferred(
-            preferred_com,
-            probe_cache,
-            cart_list_cache,
-            port_lock,
-        );
+        let st = detached;
         with_session(&dev, "cart_serial_remove_cart", &st, &snap, |session| {
             require_ed64pro_write_consent(session)?;
             for (i, p) in paths.iter().enumerate() {

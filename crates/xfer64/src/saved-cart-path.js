@@ -21,8 +21,9 @@ const DEFAULT_DAEMON_LISTEN = "http://127.0.0.1:38765";
 /**
  * multi64d's HTTP address, for every window: the main explorer, Quick upload's cart reads, and
  * Quick upload's upload, which passes it to the backend. The windows share localStorage, so they
- * always agree; only the headless `xfer64 upload`, which has no window, reads
- * `MULTI64_DAEMON_LISTEN` instead.
+ * always agree. The backend also remembers the address from each `explorer_daemon_probe`, and its
+ * Auto-detect asks that daemon which cart it holds; only the headless `xfer64 upload`, which has
+ * no window, reads `MULTI64_DAEMON_LISTEN` instead.
  */
 export function bridgeListenUrl() {
   try {

@@ -498,23 +498,14 @@ mod tests {
             .is_none());
     }
 
-    fn probe(up: bool, daemon_serial: Option<&str>) -> daemon::DaemonProbe {
-        daemon::DaemonProbe {
-            up,
-            daemon_serial: daemon_serial.map(str::to_string),
-            explorer_serial: None,
-        }
-    }
-
     /// The main window releases whenever multi64d answers; the CLI and Quick upload must too. A
     /// link another Xfer64 already released, or one that faulted, reports `serialActive: false`,
     /// and skipping the release then also skips the resume that would have restored the bridge.
-    /// The probe no longer carries `serialActive` at all, so only `up` can decide.
+    /// The probe carries neither `serialActive` nor a port, so only `up` can decide.
     #[test]
     fn a_reachable_daemon_is_released_even_with_no_active_link() {
-        assert!(should_release(&probe(true, Some("COM4"))));
-        assert!(should_release(&probe(true, None)));
-        assert!(!should_release(&probe(false, None)));
+        assert!(should_release(&daemon::DaemonProbe { up: true }));
+        assert!(!should_release(&daemon::DaemonProbe { up: false }));
     }
 
     /// A release that failed may still apply later (a timed-out request the daemon finishes), so a
