@@ -983,6 +983,7 @@ fn write_file_exfat_streaming(
                 d
             }
             Err(_) => {
+                exfat_refuse_unsafe_create(&fs, &path_prefix, p, vol, part_start, part_bytes)?;
                 let new_dir = fs.create_dir(&dir, p).map_err(exfat_err)?;
                 exfat_zero_fat_for_nofatchain_entry(&fs, vol, part_start, part_bytes, &next_path)?;
                 path_prefix = next_path;
@@ -990,13 +991,16 @@ fn write_file_exfat_streaming(
             }
         };
     }
-    if let Some(old) = dir.find(name).map_err(exfat_err)? {
-        if old.is_directory() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "a directory exists with this name",
-            ));
-        }
+    let existing = dir.find(name).map_err(exfat_err)?;
+    if existing.as_ref().is_some_and(|old| old.is_directory()) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "a directory exists with this name",
+        ));
+    }
+    // Before the delete: replacing a file must not lose it when the new entry set can't go in.
+    exfat_refuse_unsafe_create(&fs, &path_prefix, name, vol, part_start, part_bytes)?;
+    if let Some(old) = existing {
         let mut trace_quiet = |_s: &str| {};
         exfat_delete_entry_resolved(
             &fs,
@@ -1350,6 +1354,7 @@ fn exfat_parent_path_and_name(path: &str) -> (&str, &str) {
 ///
 /// The root directory has no stream entry of its own and always follows the FAT. Treating it as
 /// contiguous with size 0, as hadris does, let a scan run on into whatever clusters follow it (#128).
+/// hadris's own creates have the same flaw; [`exfat_refuse_unsafe_create`] guards them (#175).
 fn exfat_parent_dir_slots(
     fs: &ExFatFs<PartitionDiskUnion>,
     parent_path: &str,
@@ -1495,6 +1500,87 @@ impl ExfatDirSlots {
             .get(usize::try_from(rel / cluster_bytes).ok()?)?;
         Some(base + rel % cluster_bytes)
     }
+}
+
+/// Entries in an exFAT entry set for `name`: File, Stream Extension, then one File Name entry per
+/// 15 UTF-16 code units.
+fn exfat_entry_set_len(name: &str) -> usize {
+    2 + (name.encode_utf16().count() + 14) / 15
+}
+
+/// Refuses an exFAT `create_file` or `create_dir` in `parent_path` that hadris would write to the
+/// wrong place, before anything is written (#175).
+///
+/// hadris (at the pinned rev) reads the root as if its clusters were contiguous on disk, takes the
+/// first run of slots of type `0x00` or `0x05`, and writes the entry set 32 bytes at a time from
+/// the start of that run. A run it completes past the end of the directory lands in whatever
+/// follows on disk, such as a ROM, and a run crossing into a cluster that is not physically next
+/// lands there too. A root already longer than one cluster is refused outright: hadris does not
+/// list its later clusters, so it could not see a name there and would add a second entry with it.
+fn exfat_refuse_unsafe_create(
+    fs: &ExFatFs<PartitionDiskUnion>,
+    parent_path: &str,
+    name: &str,
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+) -> io::Result<()> {
+    let dir = exfat_parent_dir_slots(fs, parent_path, vol, part_start, part_bytes)?;
+    if parent_path.is_empty() && dir.cluster_offsets.len() > 1 {
+        return Err(io::Error::other(
+            "the card's root folder has grown past one exFAT cluster, and adding to it could \
+             overwrite other files; add this to a subfolder instead",
+        ));
+    }
+    let cluster_bytes = dir.slots_per_cluster * ExfatDirSlots::SLOT_BYTES;
+    let mut disk = vol.partition_disk_ro(part_start, part_bytes);
+    let read_cluster = |base: u64| -> io::Result<Vec<u8>> {
+        disk.seek(SeekFrom::Start(base))?;
+        let mut buf = vec![0u8; cluster_bytes as usize];
+        disk.read_exact(&mut buf)?;
+        Ok(buf)
+    };
+    if hadris_create_slots_are_in_dir(&dir, exfat_entry_set_len(name), read_cluster)? {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "this exFAT folder has no room for the name without overwriting other files on the \
+             card; try another folder",
+        ))
+    }
+}
+
+/// Whether the `count` slots hadris's `create_file`/`create_dir` would write in `dir` are all
+/// `dir`'s own, in order. `false` when hadris would find no run inside `dir`, since it then either
+/// fails or goes on reading past the directory's end.
+fn hadris_create_slots_are_in_dir(
+    dir: &ExfatDirSlots,
+    count: usize,
+    mut read_cluster: impl FnMut(u64) -> io::Result<Vec<u8>>,
+) -> io::Result<bool> {
+    let slot_bytes = ExfatDirSlots::SLOT_BYTES;
+    let mut run_start = 0u64;
+    let mut run_len = 0usize;
+    for (i, &base) in dir.cluster_offsets.iter().enumerate() {
+        let cluster = read_cluster(base)?;
+        for (j, slot) in cluster.chunks_exact(slot_bytes as usize).enumerate() {
+            // hadris's test for a free slot, not the exFAT one: a freed `0x40` or `0x41` stays taken.
+            if slot[0] != 0x00 && slot[0] != 0x05 {
+                run_len = 0;
+                continue;
+            }
+            if run_len == 0 {
+                run_start = i as u64 * dir.slots_per_cluster + j as u64;
+            }
+            run_len += 1;
+            if run_len == count {
+                let first = dir.offset(run_start)?;
+                return Ok((0..count as u64)
+                    .all(|k| dir.slot_at(first + k * slot_bytes) == Some(run_start + k)));
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn exfat_read_fat_entry_inner(
@@ -1818,6 +1904,7 @@ fn mkdir_cart_exfat(
                 d
             }
             Err(_) => {
+                exfat_refuse_unsafe_create(&fs, &path_prefix, p, vol, part_start, part_bytes)?;
                 let new_dir = fs.create_dir(&dir, p).map_err(exfat_err)?;
                 exfat_zero_fat_for_nofatchain_entry(&fs, vol, part_start, part_bytes, &next_path)?;
                 path_prefix = next_path;
@@ -3110,9 +3197,10 @@ mod tests {
 #[cfg(test)]
 mod fs_tests {
     use super::{
-        detect_partition_start, list_dir_exfat, list_dir_fat, mkdir_fat_impl,
-        partition_volume_bytes, read_file_exfat, read_file_fat, rename_cart_exfat, rename_fat_impl,
-        write_file_exfat_streaming, write_file_fat_streaming_impl, ExfatVolumeSource,
+        detect_partition_start, hadris_create_slots_are_in_dir, list_dir_exfat, list_dir_fat,
+        mkdir_cart_exfat, mkdir_fat_impl, partition_volume_bytes, read_file_exfat, read_file_fat,
+        rename_cart_exfat, rename_fat_impl, write_file_exfat_streaming,
+        write_file_fat_streaming_impl, ExfatDirSlots, ExfatVolumeSource,
     };
     use crate::mem_disk::RamPartitionDisk;
     use fatfs::FormatVolumeOptions;
@@ -3391,14 +3479,20 @@ mod fs_tests {
         vol: ExfatVolumeSource,
         part_bytes: u64,
         info: ExFatInfo,
-        /// The root's clusters in chain order. Not adjacent: a ROM sits between them.
-        chain: [u32; 2],
+        /// The root's clusters in chain order. When there are two they are not adjacent: a ROM sits
+        /// between them.
+        chain: Vec<u32>,
         rom: Vec<u8>,
     }
 
     /// An exFAT volume whose root directory is two non-adjacent clusters, the first holding all but
     /// `free_slots_left` in-use slots, with a zero-padded ROM in the cluster physically after it.
     fn exfat_chained_root(free_slots_left: usize) -> ChainedRoot {
+        exfat_full_root(free_slots_left, true)
+    }
+
+    /// As [`exfat_chained_root`], but the root is only its first cluster unless `chained`.
+    fn exfat_full_root(free_slots_left: usize, chained: bool) -> ChainedRoot {
         let (arc, vol, part_bytes) =
             exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
         let mut rom = vec![0u8; 1024];
@@ -3437,14 +3531,18 @@ mod fs_tests {
             fill -= slots;
             n += 1;
         }
-        let ext = fs.allocate_cluster(root + 20).unwrap();
-        assert!(
-            ext > root + 3,
-            "fixture: extension cluster clear of the ROM"
-        );
-        fs.sync_bitmap().unwrap();
+        let mut chain = vec![root];
+        if chained {
+            let ext = fs.allocate_cluster(root + 20).unwrap();
+            assert!(
+                ext > root + 3,
+                "fixture: extension cluster clear of the ROM"
+            );
+            fs.sync_bitmap().unwrap();
+            chain.push(ext);
+        }
         drop(fs);
-        {
+        if let &[root, ext] = chain.as_slice() {
             let mut g = arc.lock().unwrap();
             for copy in 0..u64::from(info.fat_count) {
                 let fat = info.fat_offset + copy * info.fat_length;
@@ -3460,7 +3558,7 @@ mod fs_tests {
             vol,
             part_bytes,
             info,
-            chain: [root, ext],
+            chain,
             rom,
         }
     }
@@ -3503,6 +3601,168 @@ mod fs_tests {
     #[test]
     fn exfat_rename_entry_set_straddling_chained_root_clusters() {
         rename_to_a_longer_name_in_a_chained_root(2);
+    }
+
+    fn write_small(fx: &ChainedRoot, path: &str) -> io::Result<()> {
+        write_file_exfat_streaming(
+            &fx.vol,
+            0,
+            fx.part_bytes,
+            path,
+            &mut Cursor::new(&b"data"[..]),
+            &mut |_| true,
+        )
+    }
+
+    /// Neither the root's slots nor the ROM after its first cluster changed.
+    fn assert_nothing_written(fx: &ChainedRoot, root_before: &[[u8; 32]]) {
+        let rom = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)),
+            "rom.z64",
+        )
+        .unwrap();
+        assert!(
+            rom == fx.rom,
+            "a new entry set was written into the ROM's data"
+        );
+        assert!(
+            raw_dir_slots(&fx.arc, &fx.info, &fx.chain) == root_before,
+            "the root's slots changed"
+        );
+    }
+
+    /// #175: hadris would finish the entry set past the root's only cluster, in the ROM that
+    /// follows it on disk. The import and the new folder are refused before anything is written.
+    fn create_past_the_root_cluster_is_refused(free_slots_left: usize) {
+        let fx = exfat_full_root(free_slots_left, false);
+        let before = raw_dir_slots(&fx.arc, &fx.info, &fx.chain);
+
+        // 14 characters: a File, a Stream Extension and one File Name entry.
+        let err = write_small(&fx, "new-import.z64").expect_err("an import past the root");
+        assert!(err.to_string().contains("no room"), "{err}");
+        mkdir_cart_exfat(&fx.vol, 0, fx.part_bytes, "Saves").expect_err("a folder past the root");
+
+        assert_nothing_written(&fx, &before);
+    }
+
+    #[test]
+    fn exfat_create_in_a_full_root_is_refused() {
+        create_past_the_root_cluster_is_refused(0);
+    }
+
+    #[test]
+    fn exfat_create_that_would_run_past_the_root_cluster_is_refused() {
+        create_past_the_root_cluster_is_refused(2);
+    }
+
+    /// The guard must not refuse what hadris writes correctly.
+    #[test]
+    fn exfat_create_that_fits_the_root_cluster_is_allowed() {
+        let fx = exfat_full_root(3, false);
+
+        write_small(&fx, "new-import.z64").expect("import");
+
+        let rom = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)),
+            "rom.z64",
+        )
+        .unwrap();
+        assert!(rom == fx.rom, "the import wrote into the ROM's data");
+        let names = in_use_names(&raw_dir_slots(&fx.arc, &fx.info, &fx.chain));
+        assert!(
+            names.iter().any(|(_, n)| n == "new-import.z64"),
+            "{names:?}"
+        );
+        let back = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)),
+            "new-import.z64",
+        )
+        .unwrap();
+        assert_eq!(back, b"data");
+    }
+
+    /// hadris lists only the first cluster of a longer root, so it can't see every name already
+    /// there. Adding to that root is refused even with room in its first cluster.
+    #[test]
+    fn exfat_create_in_a_root_past_one_cluster_is_refused() {
+        let fx = exfat_chained_root(5);
+        let before = raw_dir_slots(&fx.arc, &fx.info, &fx.chain);
+
+        let err = write_small(&fx, "a.z64").expect_err("an import into a longer root");
+        assert!(err.to_string().contains("root folder"), "{err}");
+        mkdir_cart_exfat(&fx.vol, 0, fx.part_bytes, "Saves").expect_err("a folder in it");
+        // Nested paths are refused at the folder they would create in the root.
+        write_small(&fx, "Saves/game.sav").expect_err("an import creating a folder in it");
+
+        assert_nothing_written(&fx, &before);
+    }
+
+    /// The check runs before an existing file is deleted, so a refused replace keeps it.
+    #[test]
+    fn exfat_refused_replace_keeps_the_existing_file() {
+        let fx = exfat_full_root(0, false);
+        let before = raw_dir_slots(&fx.arc, &fx.info, &fx.chain);
+        let (_, existing) = in_use_names(&before)
+            .into_iter()
+            .find(|(_, n)| n.starts_with("f00"))
+            .unwrap();
+
+        write_small(&fx, &existing).expect_err("a replace with no room for the new entry set");
+
+        assert_nothing_written(&fx, &before);
+    }
+
+    /// Mirrors hadris's pick of slots: the first run of `0x00`/`0x05` slots, written as if
+    /// contiguous from its first slot.
+    #[test]
+    fn hadris_create_slots_must_be_the_directorys_own_and_in_order() {
+        const U: u8 = 0x85;
+        // Two 4-slot (128-byte) clusters: next to each other on disk, or far apart.
+        let near = ExfatDirSlots {
+            cluster_offsets: vec![0x1000, 0x1080],
+            slots_per_cluster: 4,
+        };
+        let far = ExfatDirSlots {
+            cluster_offsets: vec![0x1000, 0x4000],
+            slots_per_cluster: 4,
+        };
+        let check = |dir: &ExfatDirSlots, types: [[u8; 4]; 2], count: usize| {
+            hadris_create_slots_are_in_dir(dir, count, |base| {
+                let i = dir.cluster_offsets.iter().position(|&b| b == base).unwrap();
+                Ok(types[i]
+                    .iter()
+                    .flat_map(|&t| {
+                        let mut slot = [0u8; 32];
+                        slot[0] = t;
+                        slot
+                    })
+                    .collect())
+            })
+            .unwrap()
+        };
+
+        let straddling = [[U, U, 0x05, 0x00], [0x00, U, U, U]];
+        assert!(
+            check(&near, straddling, 3),
+            "adjacent clusters: written in order"
+        );
+        assert!(
+            !check(&far, straddling, 3),
+            "chained clusters: the last entry lands off the chain"
+        );
+        assert!(
+            check(&far, [[U, 0x00, 0x00, 0x00], [U; 4]], 3),
+            "fits one cluster"
+        );
+        assert!(
+            !check(&far, [[U, U, 0x00, 0x00], [U; 4]], 3),
+            "no run inside the directory"
+        );
+        // hadris reuses only 0x05 of a freed entry set.
+        assert!(
+            !check(&far, [[0x05, 0x40, 0x41, 0x00], [U; 4]], 3),
+            "0x40 and 0x41 stay taken"
+        );
     }
 
     /// #130: a card formatted without a partition table has boot code where an MBR keeps its
