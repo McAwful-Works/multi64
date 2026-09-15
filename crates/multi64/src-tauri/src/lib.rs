@@ -200,6 +200,10 @@ pub struct DaemonStatus {
     /// While running, the cart the live process was started for and the port it holds; while
     /// stopped, the Cart setting.
     pub cart: String,
+    /// Only when the poll asked for it (Settings is open): the ports and auto pick, from the
+    /// same enumeration as `message`, so the Settings hints track the Note without a second one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port_options: Option<SerialPortOptions>,
 }
 
 #[derive(Default)]
@@ -425,7 +429,7 @@ fn pick_auto(ports: &[serialport::SerialPortInfo]) -> AutoPort {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SerialPortOptions {
     pub ports: Vec<String>,
@@ -435,6 +439,9 @@ pub struct SerialPortOptions {
     /// More than one cart, so Start refuses to guess. `auto_warning` is set for no cart too, and
     /// with Cart on Auto-detect the two need different hints: no cart only means Start probes.
     pub ambiguous: bool,
+    /// The Serial port hint for a chosen EverDrive on Auto, sent so its wording lives only in
+    /// [`everdrive_needs_port!`] beside the status line's.
+    pub everdrive_hint: &'static str,
 }
 
 /// Enumerate the ports once and derive both the list and the auto pick from it.
@@ -454,13 +461,28 @@ fn options_from(ports: Vec<serialport::SerialPortInfo>) -> SerialPortOptions {
         auto_warning: auto.problem(),
         ports: ports.into_iter().map(|p| p.port_name).collect(),
         auto: auto.port(),
+        everdrive_hint: EVERDRIVE_NEEDS_PORT_HINT,
     }
 }
 
-/// Why a fixed EverDrive cart has no port, worded like [`AutoPort::problem`].
-const EVERDRIVE_NEEDS_PORT: &str =
-    "For a fixed Cart type, Auto-detect finds only a SummerCart64. Pick the \
-     EverDrive's serial port in Settings, or set Cart to Auto-detect.";
+/// Why a fixed EverDrive cart has no port, with `$where` saying where to pick one. Both wordings
+/// come from here so they cannot drift apart.
+macro_rules! everdrive_needs_port {
+    ($where:literal) => {
+        concat!(
+            "For a fixed Cart type, Auto-detect finds only a SummerCart64. Pick the \
+             EverDrive's serial port",
+            $where,
+            ", or set Cart to Auto-detect."
+        )
+    };
+}
+
+/// For the status line and the daemon log, worded like [`AutoPort::problem`].
+const EVERDRIVE_NEEDS_PORT: &str = everdrive_needs_port!(" in Settings");
+
+/// For the Settings → Serial port hint, which is already in Settings.
+const EVERDRIVE_NEEDS_PORT_HINT: &str = everdrive_needs_port!("");
 
 /// What a start would do, decided without writing to any port.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -943,13 +965,50 @@ fn set_autostart_windows_impl(enabled: bool) -> Result<(), String> {
 }
 
 /// Blocking: `check_health` issues an HTTP request with a 1 s timeout, and the window polls
-/// this every 2 s.
+/// this every 2 s. `with_ports` adds [`DaemonStatus::port_options`], for the Settings hints.
 #[tauri::command]
-async fn get_daemon_status(app: tauri::AppHandle) -> Result<DaemonStatus, String> {
-    on_blocking_pool(&app, "get_daemon_status", |_, state| daemon_status(state)).await
+async fn get_daemon_status(
+    app: tauri::AppHandle,
+    with_ports: bool,
+) -> Result<DaemonStatus, String> {
+    on_blocking_pool(&app, "get_daemon_status", move |_, state| {
+        daemon_status(state, with_ports)
+    })
+    .await
 }
 
-fn daemon_status(state: &AppState) -> DaemonStatus {
+/// The stopped Note and, when `with_ports`, the port options, from at most one call to
+/// `enumerate` however many of them need the ports.
+fn note_and_port_options(
+    running: bool,
+    settings: &Settings,
+    with_ports: bool,
+    enumerate: impl FnOnce() -> Vec<serialport::SerialPortInfo>,
+) -> (String, Option<SerialPortOptions>) {
+    let mut enumerate = Some(enumerate);
+    let mut enumerated: Option<Vec<serialport::SerialPortInfo>> = None;
+    let mut ports = || {
+        enumerated
+            .get_or_insert_with(|| enumerate.take().map(|f| f()).unwrap_or_default())
+            .clone()
+    };
+    let message = if !running {
+        // Name what Start would do, or why it cannot. Without a saved port this enumerates,
+        // which only happens while stopped; it never probes a port.
+        stopped_message(&plan_start(
+            settings.serial_port.as_deref(),
+            settings.cart,
+            &mut ports,
+        ))
+    } else {
+        // The Bridge and Health rows already say running and whether it responds.
+        String::new()
+    };
+    let port_options = with_ports.then(|| options_from(ports()));
+    (message, port_options)
+}
+
+fn daemon_status(state: &AppState, with_ports: bool) -> DaemonStatus {
     let settings = state.settings.lock().clone();
     let listen = settings.listen.clone();
     let running = daemon_is_running(&state.daemon);
@@ -964,20 +1023,16 @@ fn daemon_status(state: &AppState) -> DaemonStatus {
         settings.cart.label().to_string()
     };
     let healthy = running && check_health(&listen);
-    let message = if !running {
-        // Name what Start would do, or why it cannot. Without a saved port this enumerates on
-        // every poll, which is cheap and only happens while stopped; it never probes a port.
-        stopped_message(&start_plan(&settings))
-    } else {
-        // The Bridge and Health rows already say running and whether it responds.
-        String::new()
-    };
+    let (message, port_options) = note_and_port_options(running, &settings, with_ports, || {
+        serialport::available_ports().unwrap_or_default()
+    });
     DaemonStatus {
         running,
         healthy,
         listen,
         message,
         cart,
+        port_options,
     }
 }
 
@@ -1331,11 +1386,15 @@ struct TrayLabels {
 /// is named, so an experimental daemon is never mistaken for the proven one, and a stopped daemon on
 /// Auto-detect says so. A running daemon is named for what it was started with, by the cart's name
 /// alone: the status line before it already names the port.
-fn tray_cart_note(running: bool, spawned: DaemonCart, setting: CartSetting) -> Option<String> {
+fn tray_cart_note(
+    running: bool,
+    spawned: DaemonCart,
+    setting: CartSetting,
+) -> Option<&'static str> {
     if running {
-        (spawned != DaemonCart::Sc64).then(|| spawned.label().to_string())
+        (spawned != DaemonCart::Sc64).then(|| spawned.label())
     } else {
-        (setting != CartSetting::Sc64).then(|| setting.label().to_string())
+        (setting != CartSetting::Sc64).then(|| setting.label())
     }
 }
 
@@ -1437,13 +1496,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         None => (false, DEFAULT_LISTEN.to_string(), None, false, None),
     };
 
-    let labels = tray_labels(
-        running,
-        serial.as_deref(),
-        can_start,
-        cart_note.as_deref(),
-        &listen,
-    );
+    let labels = tray_labels(running, serial.as_deref(), can_start, cart_note, &listen);
     // Disabled: a status line, not an action.
     let status = MenuItem::with_id(app, "status", &labels.status, false, None::<&str>)?;
     let toggle = MenuItem::with_id(
@@ -2089,11 +2142,81 @@ mod port_selection_tests {
             auto: None,
             auto_warning: AutoPort::NoCart.problem(),
             ambiguous: false,
+            everdrive_hint: EVERDRIVE_NEEDS_PORT_HINT,
         })
         .unwrap();
         assert!(json["auto"].is_null());
         assert!(json["autoWarning"].is_string());
         assert_eq!(json["ambiguous"], false);
+        assert_eq!(json["everdriveHint"], EVERDRIVE_NEEDS_PORT_HINT);
+    }
+
+    /// Both EverDrive wordings come from one macro; this pins the text each place shows.
+    #[test]
+    fn everdrive_needs_port_wordings_are_unchanged() {
+        assert_eq!(
+            EVERDRIVE_NEEDS_PORT,
+            "For a fixed Cart type, Auto-detect finds only a SummerCart64. Pick the EverDrive's \
+             serial port in Settings, or set Cart to Auto-detect."
+        );
+        assert_eq!(
+            EVERDRIVE_NEEDS_PORT_HINT,
+            "For a fixed Cart type, Auto-detect finds only a SummerCart64. Pick the EverDrive's \
+             serial port, or set Cart to Auto-detect."
+        );
+    }
+
+    fn settings_for(serial_port: Option<&str>, cart: CartSetting) -> Settings {
+        Settings {
+            serial_port: serial_port.map(str::to_string),
+            cart,
+            ..Settings::default()
+        }
+    }
+
+    /// The Note and the Settings hints share one enumeration per poll, and a poll that needs
+    /// neither enumerates nothing.
+    #[test]
+    fn a_status_poll_enumerates_at_most_once() {
+        let cases = [
+            // (running, saved port, cart, with_ports, enumerations)
+            (false, None, CartSetting::Auto, true, 1),
+            (false, None, CartSetting::Auto, false, 1),
+            (false, None, CartSetting::Sc64, true, 1),
+            (false, Some("COM6"), CartSetting::Auto, true, 1),
+            (false, Some("COM6"), CartSetting::Ed64, false, 0),
+            (false, Some("COM6"), CartSetting::Ed64, true, 1),
+            (true, None, CartSetting::Auto, false, 0),
+            (true, None, CartSetting::Auto, true, 1),
+        ];
+        for (running, saved, cart, with_ports, want) in cases {
+            let calls = std::cell::Cell::new(0);
+            let settings = settings_for(saved, cart);
+            let (message, options) = note_and_port_options(running, &settings, with_ports, || {
+                calls.set(calls.get() + 1);
+                vec![ch340("COM5"), sc64_windows("COM4")]
+            });
+            let case = (running, saved, cart, with_ports);
+            assert_eq!(calls.get(), want, "{case:?}");
+            assert_eq!(options.is_some(), with_ports, "{case:?}");
+            if running {
+                assert_eq!(message, "", "{case:?}");
+            } else {
+                let plan = plan_start(saved, cart, || vec![ch340("COM5"), sc64_windows("COM4")]);
+                assert_eq!(message, stopped_message(&plan), "{case:?}");
+            }
+        }
+    }
+
+    /// The Note and the hints come from the same enumeration, so they agree about what is plugged in.
+    #[test]
+    fn a_status_poll_note_and_options_agree() {
+        let settings = settings_for(None, CartSetting::Sc64);
+        let (message, options) =
+            note_and_port_options(false, &settings, true, || vec![ch340("COM5")]);
+        let options = options.unwrap();
+        assert_eq!(Some(message), options.auto_warning);
+        assert_eq!(options.ports, ["COM5"]);
     }
 
     /// No cart and two carts both leave `auto` empty with a warning; only two carts is ambiguous,
@@ -2145,16 +2268,16 @@ mod tray_tests {
             None
         );
         assert_eq!(
-            tray_cart_note(true, DaemonCart::Ed64Pro, CartSetting::Ed64Pro).as_deref(),
+            tray_cart_note(true, DaemonCart::Ed64Pro, CartSetting::Ed64Pro),
             Some("EverDrive-64 PRO (beta)")
         );
         // Chosen by Auto-detect or not, the note is the cart's name; the status line names the port.
         assert_eq!(
-            tray_cart_note(true, DaemonCart::Ed64Pro, CartSetting::Auto).as_deref(),
+            tray_cart_note(true, DaemonCart::Ed64Pro, CartSetting::Auto),
             Some("EverDrive-64 PRO (beta)")
         );
         assert_eq!(
-            tray_cart_note(false, DaemonCart::Sc64, CartSetting::Auto).as_deref(),
+            tray_cart_note(false, DaemonCart::Sc64, CartSetting::Auto),
             Some("Auto-detect")
         );
         assert_eq!(

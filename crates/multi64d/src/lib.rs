@@ -21,7 +21,7 @@ use multi64_sc64_l2::Sc64L2Pipe;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -32,6 +32,9 @@ pub const SERIAL_READ_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// How long to wait before retrying `open` after the link faulted (cart unplugged, device reset).
 const REOPEN_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Ceiling on the EverDrive-64 PRO's reopen backoff; see [`reopen_retry_interval`].
+const PRO_REOPEN_BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 /// Reader buffer size. One allocation for the life of the loop; see `cart_reader_loop`.
 const READ_BUF_BYTES: usize = 65536;
@@ -372,8 +375,74 @@ enum ReadChunk {
     Empty,
     /// Link is down deliberately (`Released`); poll again shortly so resume is picked up promptly.
     Released,
-    /// Link is faulted and `open` just failed; back off before the next attempt.
-    RetryOpen,
+    /// Link is faulted and `open` just failed; back off before the next attempt. `reached_device`
+    /// is [`open_reached_device`] of the failure.
+    RetryOpen {
+        reached_device: bool,
+    },
+    /// Link is faulted, but the reopen backoff has not run out, so nothing was attempted.
+    BackingOff,
+}
+
+/// How long the reader loop waits between attempts to reopen a faulted link, after
+/// `handshake_failures` consecutive attempts that opened the port but failed on the device.
+///
+/// A fixed [`REOPEN_RETRY_INTERVAL`] for every cart except the EverDrive-64 PRO. Its `open` runs the
+/// edlink handshake, written to whatever answers on the port, so a daemon pointed at the wrong
+/// device would otherwise send it every second, under the link lock, for as long as it runs. From
+/// the second such failure in a row the PRO's interval doubles, up to [`PRO_REOPEN_BACKOFF_MAX`].
+fn reopen_retry_interval(cart: CartKind, handshake_failures: u32) -> Duration {
+    if cart != CartKind::Ed64Pro || handshake_failures < 2 {
+        return REOPEN_RETRY_INTERVAL;
+    }
+    let factor = 1u32.checked_shl(handshake_failures - 1).unwrap_or(u32::MAX);
+    REOPEN_RETRY_INTERVAL
+        .checked_mul(factor)
+        .map_or(PRO_REOPEN_BACKOFF_MAX, |d| d.min(PRO_REOPEN_BACKOFF_MAX))
+}
+
+/// The reader loop's reopen schedule: [`reopen_retry_interval`] over consecutive failures.
+#[derive(Debug, Default)]
+struct ReopenBackoff {
+    handshake_failures: u32,
+    /// No attempt before this; `None` when the loop's own [`REOPEN_RETRY_INTERVAL`] sleep is wait
+    /// enough.
+    not_before: Option<Instant>,
+}
+
+impl ReopenBackoff {
+    /// Back to the normal interval: the link is up again, or was released for another tool.
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn may_attempt(&self, now: Instant) -> bool {
+        !matches!(self.not_before, Some(t) if now < t)
+    }
+
+    /// Record a reopen that failed at `now`. A port that did not open at all sent nothing, so it
+    /// ends the run of handshake failures rather than extending it.
+    fn failed(&mut self, cart: CartKind, reached_device: bool, now: Instant) {
+        self.handshake_failures = if reached_device {
+            self.handshake_failures.saturating_add(1)
+        } else {
+            0
+        };
+        let wait = reopen_retry_interval(cart, self.handshake_failures);
+        self.not_before = (wait > REOPEN_RETRY_INTERVAL).then(|| now + wait);
+    }
+}
+
+/// Whether a failed [`open_pipe`] opened the port and failed afterwards (handshake, identity or
+/// setup), as opposed to not opening the port at all. Only the former wrote to a device.
+fn open_reached_device(err: &anyhow::Error) -> bool {
+    let port_did_not_open = err.chain().any(|e| {
+        e.is::<serialport::Error>()
+            || e.downcast_ref::<io::Error>()
+                .and_then(|io| io.get_ref())
+                .is_some_and(|inner| inner.is::<serialport::Error>())
+    });
+    !port_did_not_open
 }
 
 /// Background task: read L3 chunks from the cart and broadcast them to WebSocket clients.
@@ -381,20 +450,24 @@ enum ReadChunk {
 /// Also owns fault recovery. A hard `io::Error` from the pipe (as opposed to a timeout, which
 /// `read_l3_bytes` reports as `Ok(0)`) moves the link to [`LinkState::Faulted`] and drops the dead
 /// handle, so `GET /` stops claiming `serialActive` and the port becomes reopenable. The loop then
-/// retries `open` every [`REOPEN_RETRY_INTERVAL`] until the cart comes back.
+/// retries `open` every [`REOPEN_RETRY_INTERVAL`] until the cart comes back, backing off for an
+/// EverDrive-64 PRO that keeps failing its handshake ([`reopen_retry_interval`]).
+/// `POST /v1/serial/resume` does not wait for that backoff.
 pub async fn cart_reader_loop(state: Arc<AppState>) {
     // Allocated once and passed back and forth with the blocking task. Declaring it inside the
     // loop cost a 64 KiB allocation *and* a 64 KiB zero-fill every iteration -- about 20 times a
     // second while idle, for the whole life of a daemon that starts at login -- to produce bytes
     // `read_l3_bytes` immediately overwrites.
     let mut buf = vec![0u8; READ_BUF_BYTES];
+    let mut backoff = ReopenBackoff::default();
 
     loop {
+        let may_reopen = backoff.may_attempt(Instant::now());
         let handoff = tokio::task::spawn_blocking({
             let link = state.link.clone();
             let cfg = state.serial_cfg.clone();
             move || {
-                let r = read_once(&link, &cfg, &mut buf);
+                let r = read_once(&link, &cfg, &mut buf, may_reopen);
                 // Hand the buffer back so the next iteration reuses this allocation.
                 (r, buf)
             }
@@ -416,15 +489,24 @@ pub async fn cart_reader_loop(state: Arc<AppState>) {
 
         match chunk {
             Ok(Ok(ReadChunk::Data(data))) => {
+                backoff.reset();
                 let _ = state.from_cart.send(data);
             }
             Ok(Ok(ReadChunk::Empty)) => {
+                backoff.reset();
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
             Ok(Ok(ReadChunk::Released)) => {
+                backoff.reset();
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            Ok(Ok(ReadChunk::RetryOpen)) => {
+            Ok(Ok(ReadChunk::RetryOpen { reached_device })) => {
+                backoff.failed(state.serial_cfg.cart, reached_device, Instant::now());
+                tokio::time::sleep(REOPEN_RETRY_INTERVAL).await;
+            }
+            // Sleep in the same slices as a failed attempt, so a resume or release during a long
+            // backoff is picked up just as promptly.
+            Ok(Ok(ReadChunk::BackingOff)) => {
                 tokio::time::sleep(REOPEN_RETRY_INTERVAL).await;
             }
             Ok(Err(e)) => {
@@ -439,15 +521,18 @@ pub async fn cart_reader_loop(state: Arc<AppState>) {
     }
 }
 
-/// One pass over the link: reopen it if faulted, otherwise read whatever is queued into `buf`.
+/// One pass over the link: reopen it if faulted (and `may_reopen`), otherwise read whatever is
+/// queued into `buf`.
 fn read_once(
     link: &Arc<Mutex<LinkState>>,
     cfg: &SerialConfig,
     buf: &mut [u8],
+    may_reopen: bool,
 ) -> io::Result<ReadChunk> {
     let mut g = lock_link(link);
     match &mut *g {
         LinkState::Released => Ok(ReadChunk::Released),
+        LinkState::Faulted if !may_reopen => Ok(ReadChunk::BackingOff),
         LinkState::Faulted => match open_pipe(cfg) {
             Ok(p) => {
                 tracing::info!(serial = %cfg.path, "serial link reopened after fault");
@@ -458,7 +543,9 @@ fn read_once(
                 // Expected while the cart is unplugged; `debug` keeps it out of the default log
                 // at one line per second.
                 tracing::debug!(error = %e, serial = %cfg.path, "reopen serial link");
-                Ok(ReadChunk::RetryOpen)
+                Ok(ReadChunk::RetryOpen {
+                    reached_device: open_reached_device(&e),
+                })
             }
         },
         LinkState::Active(p) => {
@@ -561,5 +648,92 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn secs(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    #[test]
+    fn pro_reopen_interval_doubles_from_the_second_handshake_failure_up_to_30s() {
+        let schedule: Vec<Duration> = (0..=8)
+            .map(|n| reopen_retry_interval(CartKind::Ed64Pro, n))
+            .collect();
+        assert_eq!(schedule, [1, 1, 2, 4, 8, 16, 30, 30, 30].map(secs));
+        assert_eq!(reopen_retry_interval(CartKind::Ed64Pro, 40), secs(30));
+        assert_eq!(reopen_retry_interval(CartKind::Ed64Pro, u32::MAX), secs(30));
+    }
+
+    #[test]
+    fn sc64_and_x7_reopen_every_second_however_often_they_fail() {
+        for cart in [CartKind::Sc64, CartKind::Ed64] {
+            for n in [0, 1, 2, 5, 40, u32::MAX] {
+                assert_eq!(reopen_retry_interval(cart, n), REOPEN_RETRY_INTERVAL);
+            }
+        }
+    }
+
+    #[test]
+    fn backoff_holds_off_after_repeated_handshake_failures_until_reset() {
+        let t0 = Instant::now();
+        let mut b = ReopenBackoff::default();
+        assert!(b.may_attempt(t0));
+        b.failed(CartKind::Ed64Pro, true, t0);
+        assert!(
+            b.may_attempt(t0),
+            "one failure keeps the loop's own 1 s sleep"
+        );
+        for _ in 0..3 {
+            b.failed(CartKind::Ed64Pro, true, t0);
+        }
+        assert!(
+            !b.may_attempt(t0 + secs(7)),
+            "four failures in a row wait 8 s"
+        );
+        assert!(b.may_attempt(t0 + secs(8)));
+
+        b.reset();
+        assert!(b.may_attempt(t0), "a successful open, or a release, resets");
+
+        for _ in 0..4 {
+            b.failed(CartKind::Ed64Pro, true, t0);
+        }
+        b.failed(CartKind::Ed64Pro, false, t0);
+        assert!(b.may_attempt(t0), "a port that did not open sent nothing");
+
+        let mut sc64 = ReopenBackoff::default();
+        for _ in 0..10 {
+            sc64.failed(CartKind::Sc64, true, t0);
+        }
+        assert!(sc64.may_attempt(t0));
+    }
+
+    #[test]
+    fn only_a_port_that_opened_counts_as_reaching_the_device() {
+        let no_port = anyhow::Error::from(io::Error::other(serialport::Error::new(
+            serialport::ErrorKind::NoDevice,
+            "gone",
+        )));
+        assert!(!open_reached_device(&no_port));
+        let silent = anyhow::Error::from(io::Error::new(io::ErrorKind::TimedOut, "no answer"));
+        assert!(open_reached_device(&silent));
+        let wrong = anyhow::Error::from(io::Error::other("not an EverDrive-64 PRO"));
+        assert!(open_reached_device(&wrong));
+
+        // The real chain, through `Ed64ProL2Pipe::open`, for a port that is not there.
+        let Err(missing) = open_pipe(&SerialConfig {
+            path: "multi64d-no-such-port".into(),
+            baud: 115_200,
+            clear_serial: false,
+            cart: CartKind::Ed64Pro,
+        }) else {
+            panic!("a missing port must not open");
+        };
+        assert!(!open_reached_device(&missing), "{missing:#}");
     }
 }

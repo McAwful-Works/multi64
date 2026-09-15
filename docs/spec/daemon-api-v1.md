@@ -51,7 +51,7 @@ The link is **faulted** whenever the daemon wants the port but does not hold it.
 - The dead handle is **dropped**, so the COM port is free for another process.
 - `serialActive` in **`GET /`** becomes `false`. Clients MUST NOT read `serialActive: true` as proof the link works; they only ever learn otherwise from this field.
 - WebSocket binary writes are ignored, exactly as while released.
-- The daemon retries `open` about **once per second** until the device returns, and **`POST /v1/serial/resume`** reopens it immediately.
+- The daemon retries `open` about **once per second** until the device returns, and **`POST /v1/serial/resume`** reopens it immediately. With `--cart ed64pro`, when the port opens but the PRO handshake keeps failing (for example, the port belongs to another device), the interval backs off to 1, 2, 4, 8 and 16 seconds, then 30 seconds, and returns to once per second once the link is active or released.
 
 A release always wins over a fault: if `POST /v1/serial/release` arrives while the link is faulted, the state becomes *released* and the daemon stops retrying, so it never takes the port back from a tool that asked for it.
 

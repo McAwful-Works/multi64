@@ -6,6 +6,7 @@
 #   make CART=ed64                build/ed64/m64p_agent.o, for an EverDrive-64 X7 (experimental)
 #   make CART=ed64pro             build/ed64pro/m64p_agent.o, for an EverDrive-64 PRO (experimental)
 #   make host-test                the EverDrive builds' L3 reassembly, compiled and run on the PC
+#   make host-test KNOWN_BUG_151=1  same, plus the case for open bug #151 (fails until it is fixed)
 #
 # For a game with no buildable source, link a flat image at a fixed address instead:
 # templates/link-flat.sh. See docs/integration/cart-agent.md.
@@ -97,11 +98,20 @@ HOSTCC ?= cc
 HOST_CFLAGS ?= -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -Wall -Wextra
 HOST_TEST_SOURCES = tests/reassembly_test.c agent.c $(PROTO)/mem_proto.c
 
+# make host-test KNOWN_BUG_151=1 also builds the case for bug #151 (a request missing a lost piece
+# is completed by the next request's bytes and handled). It fails until #151 is fixed, so it is off
+# by default to keep CI green; the fix for #151 must turn it on by default, in the same change.
+KNOWN_BUG_151 ?= 0
+HOST_TEST_DEFINES =
+ifeq ($(KNOWN_BUG_151),1)
+  HOST_TEST_DEFINES += -DTEST_KNOWN_BUG_151
+endif
+
 host-test:
 	mkdir -p build/host
-	$(HOSTCC) $(HOST_CFLAGS) -DAGENT_CART_ED64 -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64
+	$(HOSTCC) $(HOST_CFLAGS) $(HOST_TEST_DEFINES) -DAGENT_CART_ED64 -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64
 	build/host/reassembly-ed64
-	$(HOSTCC) $(HOST_CFLAGS) -DAGENT_CART_ED64PRO -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64pro
+	$(HOSTCC) $(HOST_CFLAGS) $(HOST_TEST_DEFINES) -DAGENT_CART_ED64PRO -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64pro
 	build/host/reassembly-ed64pro
 
 clean:

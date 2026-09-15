@@ -7,6 +7,10 @@
  * Requests use an unknown M64P message type, which mem_proto answers with ERR echoing the request
  * id, so nothing touches RDRAM.
  *
+ * The fake driver copies what each real driver does when a piece does not fit the space the agent
+ * offers (the X7 drops the message, the PRO reads what fits), and can lose a piece the way both do
+ * when a read fails: consumed, and reported as nothing waiting.
+ *
  * This checks the byte-stream logic only. It says nothing about whether either driver works on a
  * cart.
  */
@@ -39,18 +43,27 @@
 
 /* ---- fake driver ------------------------------------------------------------ */
 
+/* Larger than agent.c's AGENT_RX_CAP (8296), so one piece can overflow the agent's buffer. */
+#define PIECE_BYTES 9000u
+
 #define MAX_PIECES 64
 static struct {
-    uint8_t bytes[9000];
+    uint8_t bytes[PIECE_BYTES];
     uint32_t len;
+    int lost;
 } s_piece[MAX_PIECES];
 static int s_pieces;
 static int s_next;
+/* Bytes of s_piece[s_next] already delivered: the PRO can read a piece in parts. */
+static uint32_t s_offset;
 /* 0: deliver every queued piece as fast as the agent asks; 1: one piece per tick. */
 static int s_one_per_tick;
 static int s_given_this_tick;
+/* Receives where the waiting piece was larger than the space the agent offered. */
+static int s_overflows;
+static int s_lost;
 
-static uint8_t s_sent[16][9000];
+static uint8_t s_sent[16][PIECE_BYTES];
 static uint32_t s_sent_len[16];
 static int s_sends;
 
@@ -65,11 +78,33 @@ uint32_t FAKE_RECEIVE(uint8_t *dst, uint32_t cap)
     if (s_next >= s_pieces || (s_one_per_tick && s_given_this_tick)) {
         return 0;
     }
-    n = s_piece[s_next].len;
-    assert(n <= cap && "a piece larger than the space the agent offered");
-    memcpy(dst, s_piece[s_next].bytes, n);
-    s_next++;
     s_given_this_tick = 1;
+    if (s_piece[s_next].lost) {
+        /* Consumed but not delivered, as when usb_pull fails or a CMPH trailer does not match
+           (ed64.c), or a FIFO load fails (ed64pro.c): the driver returns 0 and says no more. */
+        s_next++;
+        s_lost++;
+        return 0;
+    }
+    n = s_piece[s_next].len - s_offset;
+    if (n > cap) {
+        s_overflows++;
+#if defined(AGENT_CART_ED64)
+        /* ed64_receive drains a message that does not fit and returns 0: it is gone. */
+        s_next++;
+        s_offset = 0;
+        return 0;
+#else
+        /* ed64pro_receive reads only what fits; the rest waits in the FIFO. */
+        n = cap;
+#endif
+    }
+    memcpy(dst, s_piece[s_next].bytes + s_offset, n);
+    s_offset += n;
+    if (s_offset == s_piece[s_next].len) {
+        s_next++;
+        s_offset = 0;
+    }
     return n;
 }
 
@@ -88,17 +123,30 @@ static void reset_script(void)
 {
     s_pieces = 0;
     s_next = 0;
+    s_offset = 0;
     s_sends = 0;
     s_one_per_tick = 0;
+    s_overflows = 0;
+    s_lost = 0;
 }
 
 static void queue(const uint8_t *b, uint32_t n)
 {
-    assert(s_pieces < MAX_PIECES);
+    assert(s_pieces < MAX_PIECES && n <= PIECE_BYTES);
     memcpy(s_piece[s_pieces].bytes, b, n);
     s_piece[s_pieces].len = n;
+    s_piece[s_pieces].lost = 0;
     s_pieces++;
 }
+
+#ifdef TEST_KNOWN_BUG_151
+/** A piece the host sent that the driver consumes and never delivers. Only #151's case uses it. */
+static void queue_lost(const uint8_t *b, uint32_t n)
+{
+    queue(b, n);
+    s_piece[s_pieces - 1].lost = 1;
+}
+#endif
 
 static void queue_split(const uint8_t *b, uint32_t n, uint32_t size)
 {
@@ -157,7 +205,7 @@ static void ticks(int n)
 
 /* ---- cases -------------------------------------------------------------------- */
 
-static uint8_t f1[9000], f2[9000], junk[9000];
+static uint8_t f1[PIECE_BYTES], f2[PIECE_BYTES], junk[PIECE_BYTES];
 
 static void whole_frame_in_one_piece(void)
 {
@@ -272,18 +320,79 @@ static void a_non_data_frame_is_consumed_and_ignored(void)
     assert(s_sends == 1 && reply_rid(0) == 0x000A);
 }
 
+/*
+ * A message larger than all the space the agent offers: a small frame, then filler with no magic,
+ * PIECE_BYTES in all. The X7 driver drains and drops the whole message, frame included; the PRO
+ * reads what fits and the rest on the next receive. Either way the agent stays in step and answers
+ * the request that follows.
+ */
+static void a_message_larger_than_the_receive_space(void)
+{
+    uint32_t n1 = frame(f1, 0x10, 0x0B16, 0);
+    uint32_t n2 = frame(f2, 0x10, 0x0FF1, 0);
+    reset_script();
+    memset(junk, 0xAA, sizeof junk);
+    memcpy(junk, f1, n1);
+    queue(junk, sizeof junk);
+    queue(f2, n2);
+    ticks(4);
+    assert(s_overflows == 1 && "the oversize piece must reach the driver's overflow path");
+#if defined(AGENT_CART_ED64)
+    assert(s_sends == 1 && reply_rid(0) == 0x0FF1 && "a dropped message's frame must not be handled");
+#else
+    assert(s_sends == 2 && reply_rid(0) == 0x0B16 && reply_rid(1) == 0x0FF1);
+#endif
+}
+
+#ifdef TEST_KNOWN_BUG_151
+/*
+ * Bug #151, still open. Reassembly trusts a partial frame's payload_len, so when a middle piece of a
+ * request is lost, the next request's bytes fill out the claimed length and the spliced bytes are
+ * handled as a real request. Here the first request's rid survives in its first piece, so the
+ * spliced frame would be answered with that rid.
+ *
+ * Off by default (make host-test KNOWN_BUG_151=1) because it fails until #151 is fixed. The fix for
+ * #151 must turn it on by default, in the same change.
+ */
+static void a_lost_piece_is_not_completed_by_the_next_request(void)
+{
+    /* 2.5 host pieces, and the next request longer than the one piece that is lost. */
+    uint32_t n1 = frame(f1, 0x10, 0x0151, HOST_PIECE * 5u / 2u - 23u);
+    uint32_t n2 = frame(f2, 0x10, 0x0B0B, HOST_PIECE * 5u / 4u - 23u);
+    int k;
+    reset_script();
+    queue(f1, HOST_PIECE);
+    queue_lost(f1 + HOST_PIECE, HOST_PIECE);
+    queue(f1 + 2u * HOST_PIECE, n1 - 2u * HOST_PIECE);
+    queue_split(f2, n2, HOST_PIECE);
+    ticks(4);
+    assert(s_lost == 1);
+    for (k = 0; k < s_sends; k++) {
+        assert(reply_rid(k) != 0x0151 && "a frame spliced from a lost piece and later bytes was handled");
+    }
+    assert(s_sends == 1 && reply_rid(0) == 0x0B0B && "the request after the loss must be answered");
+}
+#endif
+
+static int s_cases;
+#define RUN(test) (test(), s_cases++)
+
 int main(void)
 {
     ticks(1); /* init */
     assert(agent_is_ready());
-    whole_frame_in_one_piece();
-    a_large_frame_in_host_sized_pieces_in_one_tick();
-    pieces_across_ticks_answer_only_when_complete();
-    garbage_and_a_false_magic_before_the_frame();
-    two_frames_in_one_piece();
-    a_stale_partial_frame_does_not_swallow_the_retry();
-    an_impossible_length_is_skipped();
-    a_non_data_frame_is_consumed_and_ignored();
-    printf("reassembly (" CART_NAME "): 8 cases passed\n");
+    RUN(whole_frame_in_one_piece);
+    RUN(a_large_frame_in_host_sized_pieces_in_one_tick);
+    RUN(pieces_across_ticks_answer_only_when_complete);
+    RUN(garbage_and_a_false_magic_before_the_frame);
+    RUN(two_frames_in_one_piece);
+    RUN(a_stale_partial_frame_does_not_swallow_the_retry);
+    RUN(an_impossible_length_is_skipped);
+    RUN(a_non_data_frame_is_consumed_and_ignored);
+    RUN(a_message_larger_than_the_receive_space);
+#ifdef TEST_KNOWN_BUG_151
+    RUN(a_lost_piece_is_not_completed_by_the_next_request);
+#endif
+    printf("reassembly (" CART_NAME "): %d cases passed\n", s_cases);
     return 0;
 }

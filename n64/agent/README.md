@@ -38,6 +38,7 @@ make PREFIX=mips64-ultra-elf-  # or a libultra toolchain
 make symbols                   # sizes, exports, and undefined symbols (must be none)
 make CART=ed64pro              # an EverDrive build instead: ed64 or ed64pro (experimental)
 make host-test                 # the EverDrive builds' L3 reassembly, run on the PC (CI runs this)
+make host-test KNOWN_BUG_151=1 # also the lost-piece splice case, which fails until #151 is fixed
 ```
 
 For a ROM with no source to build against:

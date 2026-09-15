@@ -8,7 +8,12 @@ function setText(id, text) {
 
 async function refreshStatus() {
   try {
-    const s = await invoke("get_daemon_status");
+    // While Settings is open and loaded, the same poll (and enumeration) refreshes its port hints.
+    const generation = settingsGeneration;
+    const s = await invoke("get_daemon_status", { withPorts: settingsSnapshot !== null });
+    if (s.portOptions && generation === settingsGeneration && settingsSnapshot !== null) {
+      applyPolledPortOptions(s.portOptions);
+    }
     setText("status-running", s.running ? "Running" : "Stopped");
     setText("status-healthy", s.healthy ? "OK" : s.running ? "Not responding yet" : "—");
     setText("status-cart", s.cart || "—");
@@ -28,11 +33,14 @@ async function refreshStatus() {
   }
 }
 
-/** The last port enumeration's auto pick, kept so a cart change can re-render without re-enumerating. */
-let lastAuto = { auto: null, autoWarning: null, ambiguous: false };
+/**
+ * The last port enumeration's auto pick, kept so a cart change can re-render without re-enumerating.
+ * `everdriveHint` is the backend's wording (`SerialPortOptions`), so it is not repeated here.
+ */
+let lastAuto = { auto: null, autoWarning: null, ambiguous: false, everdriveHint: "" };
 
-const EVERDRIVE_AUTO_HINT =
-  "For a fixed Cart type, Auto-detect finds only a SummerCart64. Pick the EverDrive's serial port, or set Cart to Auto-detect.";
+/** The port names the Serial port dropdown was last built from; null before the first build. */
+let lastPorts = null;
 
 /** Cart values the backend accepts (`CartSetting`); anything else reads as the default, Auto-detect. */
 const CART_VALUES = ["auto", "sc64", "ed64", "ed64pro"];
@@ -56,16 +64,25 @@ async function refreshPorts() {
   return applyPortOptions(await invoke("get_serial_port_options"));
 }
 
-/** Rebuild the Serial port dropdown from one enumeration, keeping the selection if still listed. */
-function applyPortOptions({ ports, auto, autoWarning, ambiguous }) {
-  lastAuto = { auto, autoWarning, ambiguous: !!ambiguous };
+function rememberAuto({ auto, autoWarning, ambiguous, everdriveHint }) {
+  lastAuto = { auto, autoWarning, ambiguous: !!ambiguous, everdriveHint: everdriveHint || "" };
+}
+
+/**
+ * Rebuild the Serial port dropdown from `ports`, keeping the selection if still listed. With
+ * `keepSelection`, a selected port that is no longer listed stays as an option, so the selection
+ * never changes.
+ */
+function fillPortSelect(ports, keepSelection) {
+  lastPorts = [...ports];
   const sel = document.getElementById("serial-port");
   const selected = sel.value;
+  const names = keepSelection && selected !== "" && !ports.includes(selected) ? [...ports, selected] : ports;
   sel.innerHTML = "";
   const optAuto = document.createElement("option");
   optAuto.value = "";
   sel.appendChild(optAuto);
-  for (const p of ports) {
+  for (const p of names) {
     const o = document.createElement("option");
     o.value = p;
     o.textContent = p;
@@ -74,8 +91,27 @@ function applyPortOptions({ ports, auto, autoWarning, ambiguous }) {
   if ([...sel.options].some((o) => o.value === selected)) {
     sel.value = selected;
   }
+}
+
+/** Rebuild the Serial port dropdown from one enumeration, keeping the selection if still listed. */
+function applyPortOptions(options) {
+  rememberAuto(options);
+  fillPortSelect(options.ports, false);
   renderCartAndAuto();
-  return { ports, auto };
+  return { ports: options.ports, auto: options.auto };
+}
+
+/**
+ * The status poll's enumeration, while Settings is open: refresh the hints, but leave what the
+ * user chose alone. The dropdown is rebuilt only when the port list changed, and keeps its
+ * selection even when that port is gone, so `settingsHaveUnsavedEdits()` cannot change.
+ */
+function applyPolledPortOptions(options) {
+  rememberAuto(options);
+  const { ports } = options;
+  const unchanged = lastPorts !== null && ports.length === lastPorts.length && ports.every((p, i) => p === lastPorts[i]);
+  if (!unchanged) fillPortSelect(ports, true);
+  renderCartAndAuto();
 }
 
 /**
@@ -94,7 +130,7 @@ function applyPortOptions({ ports, auto, autoWarning, ambiguous }) {
 function renderCartAndAuto() {
   const cart = knownCart(document.getElementById("cart").value);
   const everdrive = cart === "ed64" || cart === "ed64pro";
-  const { auto, autoWarning, ambiguous } = lastAuto;
+  const { auto, autoWarning, ambiguous, everdriveHint } = lastAuto;
   const sel = document.getElementById("serial-port");
   const onAuto = sel.value === "";
   const optAuto = sel.options[0];
@@ -127,7 +163,7 @@ function renderCartAndAuto() {
   let portWarn = false;
   if (onAuto) {
     if (everdrive) {
-      portText = EVERDRIVE_AUTO_HINT;
+      portText = everdriveHint;
       portWarn = true;
     } else if (ambiguous) {
       portText = autoWarning || "";

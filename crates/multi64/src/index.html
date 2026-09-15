@@ -75,7 +75,7 @@
       <p class="tagline">Bridges an N64 flash cart to tools on this PC.</p>
     </header>
 
-    <section class="card" id="status-card">
+    <section class="card">
       <h2>Status</h2>
       <dl class="status-grid">
         <dt>Bridge</dt>
@@ -109,7 +109,7 @@
       <p class="hint hint-error card-error" id="xfer64-error" role="alert" hidden></p>
     </section>
 
-    <section class="card dev-only" id="dev-panel" hidden>
+    <section class="card" id="dev-panel" hidden>
       <h2>Developer</h2>
       <p class="hint">
         Raw <code>multi64d</code> stdout/stderr. Choose verbosity under <strong>Settings → Bridge logging</strong>
@@ -233,7 +233,7 @@
               <input type="checkbox" id="developer-mode" />
               <span>Developer mode (show bridge log)</span>
             </label>
-            <label class="field dev-only-setting" id="multi64d-log-preset-wrap" hidden>
+            <label class="field dev-only-setting" hidden>
               <span>Bridge logging</span>
               <select id="multi64d-log-preset" aria-describedby="multi64d-log-hint">
                 <option value="default">Default (info)</option>

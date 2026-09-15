@@ -116,7 +116,9 @@ fn probe_sc64(port: &str) -> bool {
     let deadline = Instant::now() + SC64_IDENTIFY_TIMEOUT;
     while Instant::now() < deadline {
         match p.read(&mut scratch) {
-            Ok(0) => {}
+            // Some drivers return no bytes at once instead of waiting out the read timeout; don't
+            // spin a core until the deadline.
+            Ok(0) => std::thread::sleep(Duration::from_millis(1)),
             Ok(n) => responses.push_bytes(&scratch[..n]),
             Err(e) if e.kind() == io::ErrorKind::TimedOut => {}
             Err(_) => return false,

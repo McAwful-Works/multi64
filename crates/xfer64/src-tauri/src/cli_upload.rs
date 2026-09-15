@@ -5,7 +5,7 @@ use crate::cart_serial_sd::{self, ExplorerCartSerialState};
 use crate::copy_plan;
 use crate::daemon;
 use crate::dev_log::{ExplorerDevLog, ExplorerSettingsState};
-use crate::progress::emit_explorer_progress_full;
+use crate::progress::{emit_explorer_progress, emit_explorer_progress_full};
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
@@ -274,14 +274,24 @@ pub fn run_headless_import_upload(
             if let Some(ref app) = app {
                 emit_explorer_progress_full(app, done_base, t_total, Some(msg.clone()), None, None);
                 cart_serial_sd::import_pc_file_to_cart_in_session(
-                    session, &src, cart_path, overwrite, &cancel, app, done_base, t_total,
+                    session,
+                    &src,
+                    cart_path,
+                    overwrite,
+                    &cancel,
+                    |written| emit_explorer_progress(app, done_base + written, t_total),
                 )?;
                 uploaded += 1;
                 done_base += step.bytes;
                 emit_explorer_progress_full(app, done_base, t_total, Some(msg), None, None);
             } else {
-                cart_serial_sd::import_pc_file_to_cart_in_session_silent(
-                    session, &src, cart_path, overwrite, &cancel,
+                cart_serial_sd::import_pc_file_to_cart_in_session(
+                    session,
+                    &src,
+                    cart_path,
+                    overwrite,
+                    &cancel,
+                    |_| {},
                 )?;
                 uploaded += 1;
                 done_base += step.bytes;

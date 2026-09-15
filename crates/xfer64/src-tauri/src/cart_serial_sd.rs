@@ -493,17 +493,17 @@ fn cleanup_partial_import(
     }
 }
 
-/// One PC file → cart path (used by import copy one + batch + CLI upload with progress).
-#[allow(clippy::too_many_arguments)]
+/// One PC file → cart path (used by the import batch and CLI upload).
+///
+/// `on_progress` is called after each chunk with the bytes of this file written so far; callers
+/// that show progress emit their event from it, and the headless CLI path passes a no-op.
 pub(crate) fn import_pc_file_to_cart_in_session(
     session: &CartSession,
     src: &Path,
     cart_dest_path: &str,
     overwrite: bool,
     cancel: &ExplorerCancelState,
-    app: &AppHandle,
-    progress_done_base: u64,
-    progress_total: u64,
+    mut on_progress: impl FnMut(u64),
 ) -> Result<(), String> {
     if !src.is_file() {
         return Err("Source is not a file.".into());
@@ -528,50 +528,7 @@ pub(crate) fn import_pc_file_to_cart_in_session(
         .import_from_pc_with_progress(src, &parent, &name, !overwrite, |d| {
             acc += d;
             wrote_any = true;
-            emit_explorer_progress(app, progress_done_base + acc, progress_total);
-            !cancel.is_cancelled()
-        })
-        .map_err(|e| {
-            let msg = map_usb_io_path(src, e);
-            if wrote_any {
-                cleanup_partial_import(session, cart_dest_path, existed_before, msg)
-            } else {
-                msg
-            }
-        })
-}
-
-/// PC → cart import without Tauri progress events (CLI / shell upload).
-pub(crate) fn import_pc_file_to_cart_in_session_silent(
-    session: &CartSession,
-    src: &Path,
-    cart_dest_path: &str,
-    overwrite: bool,
-    cancel: &ExplorerCancelState,
-) -> Result<(), String> {
-    if !src.is_file() {
-        return Err("Source is not a file.".into());
-    }
-    let (parent, name) = cart_path_parts(cart_dest_path);
-    let kind = session
-        .cart_path_entry_kind(cart_dest_path)
-        .map_err(|e| e.to_string())?;
-    match kind {
-        Some(true) => {
-            return Err("Cannot copy file over an existing folder on the cart.".into());
-        }
-        Some(false) if !overwrite => {
-            return Err("Destination exists and overwrite is false.".into());
-        }
-        _ => {}
-    }
-    let existed_before = kind == Some(false);
-    let mut acc = 0u64;
-    let mut wrote_any = false;
-    session
-        .import_from_pc_with_progress(src, &parent, &name, !overwrite, |d| {
-            acc += d;
-            wrote_any = true;
+            on_progress(acc);
             !cancel.is_cancelled()
         })
         .map_err(|e| {
@@ -1151,128 +1108,6 @@ pub async fn build_cart_import_plan(
     .await
 }
 
-#[allow(clippy::too_many_arguments)] // Tauri injects many State/handle parameters
-#[tauri::command]
-pub async fn cart_serial_export_copy_one(
-    app: AppHandle,
-    cancel: State<'_, ExplorerCancelState>,
-    st: State<'_, ExplorerCartSerialState>,
-    settings: State<'_, ExplorerSettingsState>,
-    dev: State<'_, ExplorerDevLog>,
-    cart_path: String,
-    dest_pc_path: String,
-    overwrite: bool,
-    progress_done_base: u64,
-    progress_total: u64,
-) -> Result<(), String> {
-    let cart_path = cart_path.trim().to_string();
-    if cart_path.is_empty() {
-        return Ok(());
-    }
-    let dest = PathBuf::from(dest_pc_path.trim());
-    let cancel = ExplorerCancelState::clone(&cancel);
-    let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
-    let probe_cache = Arc::clone(&st.probe_cache);
-    let cart_list_cache = Arc::clone(&st.cart_list_cache);
-    let port_lock = Arc::clone(&st.port_lock);
-    let snap = settings.snapshot();
-    let app_block = app.clone();
-    let dev = (*dev).clone();
-    let res = tauri::async_runtime::spawn_blocking(move || {
-        let st = cart_serial_state_from_preferred(
-            preferred_com,
-            probe_cache,
-            cart_list_cache,
-            port_lock,
-        );
-        with_session(&dev, "cart_serial_export_copy_one", &st, &snap, |session| {
-            if cancel.is_cancelled() {
-                return Err("Cancelled".into());
-            }
-            export_cart_file_to_pc_in_session(
-                session,
-                &cart_path,
-                &dest,
-                overwrite,
-                &cancel,
-                &app_block,
-                progress_done_base,
-                progress_total,
-            )
-        })
-    })
-    .await
-    .map_err(|e| format!("export task: {e}"))?;
-    // Invalidate unconditionally: a mid-batch failure still wrote earlier files to the PC.
-    if let Some(cache) = app.try_state::<ExplorerPathCache>() {
-        cache.invalidate_pc();
-    }
-    res
-}
-
-#[allow(clippy::too_many_arguments)] // Tauri injects many State/handle parameters
-#[tauri::command]
-pub async fn cart_serial_import_copy_one(
-    app: AppHandle,
-    cancel: State<'_, ExplorerCancelState>,
-    st: State<'_, ExplorerCartSerialState>,
-    settings: State<'_, ExplorerSettingsState>,
-    dev: State<'_, ExplorerDevLog>,
-    src_pc_path: String,
-    cart_dest_path: String,
-    overwrite: bool,
-    progress_done_base: u64,
-    progress_total: u64,
-) -> Result<(), String> {
-    let src = PathBuf::from(src_pc_path.trim());
-    let cart_dest_path = cart_dest_path.trim().to_string();
-    if cart_dest_path.is_empty() {
-        return Ok(());
-    }
-    if !src.is_file() {
-        return Err("Source is not a file.".into());
-    }
-    let cancel = ExplorerCancelState::clone(&cancel);
-    let preferred_com = st.preferred_com.lock().map_err(|e| e.to_string())?.clone();
-    let probe_cache = Arc::clone(&st.probe_cache);
-    let cart_list_cache = Arc::clone(&st.cart_list_cache);
-    let port_lock = Arc::clone(&st.port_lock);
-    let snap = settings.snapshot();
-    let app = app.clone();
-    let dev = (*dev).clone();
-    let res = tauri::async_runtime::spawn_blocking(move || {
-        let st = cart_serial_state_from_preferred(
-            preferred_com,
-            probe_cache,
-            cart_list_cache,
-            port_lock,
-        );
-        with_session(&dev, "cart_serial_import_copy_one", &st, &snap, |session| {
-            require_ed64pro_write_consent(session)?;
-            if cancel.is_cancelled() {
-                return Err("Cancelled".into());
-            }
-            import_pc_file_to_cart_in_session(
-                session,
-                &src,
-                &cart_dest_path,
-                overwrite,
-                &cancel,
-                &app,
-                progress_done_base,
-                progress_total,
-            )
-        })
-    })
-    .await
-    .map_err(|e| format!("import task: {e}"))?;
-    // Invalidate unconditionally. A failed or cancelled run may still have changed the
-    // card, and with_session also reports Err when the work succeeded but the SD session
-    // close failed. Keeping the cache would leave the pane showing a stale listing.
-    st.invalidate_cart_list_cache();
-    res
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportCopyBatchItem {
@@ -1303,7 +1138,7 @@ pub struct ImportCopyBatchItem {
     pub is_dir: bool,
 }
 
-/// Multi-file cart → PC copy in **one** SD session (open/close once). Progress matches per-file `cart_serial_export_copy_one` behavior.
+/// Multi-file cart → PC copy in **one** SD session (open/close once).
 #[tauri::command]
 pub async fn cart_serial_export_copy_batch(
     app: AppHandle,
@@ -1463,9 +1298,9 @@ pub async fn cart_serial_import_copy_batch(
                         &cart_dest_path,
                         item.overwrite,
                         &cancel,
-                        &app_block,
-                        base,
-                        progress_total,
+                        |written| {
+                            emit_explorer_progress(&app_block, base + written, progress_total)
+                        },
                     )?;
                     emit_explorer_progress_full(
                         &app_block,

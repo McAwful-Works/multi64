@@ -1338,19 +1338,6 @@ function isAnyExplorerDialogOpen() {
   return dialogFocusStack.length > 0;
 }
 
-function isExplorerModalOpen() {
-  const root = document.getElementById("explorer-modal-root");
-  const ow = document.getElementById("explorer-overwrite-modal");
-  const help = document.getElementById("explorer-help-modal");
-  const props = document.getElementById("explorer-properties-modal");
-  return (
-    (root != null && !root.hidden) ||
-    (ow != null && !ow.hidden) ||
-    (help != null && !help.hidden) ||
-    (props != null && !props.hidden)
-  );
-}
-
 function isExplorerContextMenuVisible() {
   const menu = document.getElementById("explorer-context-menu");
   return menu != null && !menu.hidden;
@@ -1432,7 +1419,7 @@ function onExplorerContextMenuKeyDown(ev) {
  * @param {"cart" | "pc"} pane
  */
 function openExplorerContextMenuFromKeyboard(pane) {
-  if (isExplorerSettingsOpen() || isExplorerModalOpen() || inlineRenameState || isPaneBusy(pane)) return;
+  if (isAnyExplorerDialogOpen() || inlineRenameState || isPaneBusy(pane)) return;
   const wrap = document.getElementById(`table-wrap-${pane}`);
   if (!wrap) return;
   focusedPane = pane;
@@ -1810,8 +1797,7 @@ function setupExplorerContextMenu() {
  * @param {"cart" | "pc"} pane
  */
 function onExplorerPaneContextMenu(ev, pane) {
-  if (isExplorerSettingsOpen()) return;
-  if (isExplorerModalOpen()) return;
+  if (isAnyExplorerDialogOpen()) return;
   if (inlineRenameState) return;
   if (isPaneBusy(pane)) return;
   const wrap = document.getElementById(`table-wrap-${pane}`);
@@ -2562,7 +2548,7 @@ function bindRowPointerDrag(pane, tr, path) {
   tr.addEventListener("pointerdown", (ev) => {
     if (ev.button !== 0 || ev.pointerType === "touch") return;
     if (ev.target.closest(".explorer-name-input")) return;
-    if (isExplorerModalOpen() || isPaneBusy(pane)) return;
+    if (isAnyExplorerDialogOpen() || isPaneBusy(pane)) return;
     const wrap = document.getElementById(`table-wrap-${pane}`);
     if (!wrap) return;
     cancelPointerDrag();
@@ -2710,7 +2696,7 @@ function isPointOutsideWindow(x, y) {
  * @returns {{ pane: "cart" | "pc", wrap: HTMLElement, dirRow: HTMLTableRowElement | null, destPath: string | null } | null}
  */
 function dropTargetAt(clientX, clientY) {
-  if (isExplorerModalOpen()) return null;
+  if (isAnyExplorerDialogOpen()) return null;
   const el = document.elementFromPoint(clientX, clientY);
   if (!(el instanceof Element)) return null;
   const wrap = el.closest(".explorer-table-wrap[data-drop-pane]");
@@ -4090,7 +4076,7 @@ function setupExplorerKeyboard() {
     "keydown",
     (ev) => {
       // Settings included: nothing behind an open dialog reacts to the keyboard.
-      if (isAnyExplorerDialogOpen() || isExplorerModalOpen()) return;
+      if (isAnyExplorerDialogOpen()) return;
       if (isExplorerContextMenuVisible()) {
         onExplorerContextMenuKeyDown(ev);
         return;
@@ -4261,6 +4247,9 @@ function serialPortsSnapshot(ports) {
 /** Last seen port list from `refreshUsbComPorts` / hotplug poll (for change detection). */
 let usbSerialPortsSnapshot = "";
 
+/** The port list the app bar's Serial port select was last filled from; Settings copies it. @type {string[]} */
+let usbSerialPorts = [];
+
 /** Prevents overlapping hotplug polls (slow `loadCartPane` / hint refresh vs 2.5s interval). */
 let usbSerialPollInFlight = false;
 
@@ -4296,15 +4285,11 @@ async function refreshUsbComPorts(portsOpt) {
   try {
     const ports = portsOpt ?? (await invoke("cart_serial_list_ports"));
     usbSerialPortsSnapshot = serialPortsSnapshot(ports);
+    usbSerialPorts = ports;
     const saved = localStorage.getItem(LS_USB_COM) || "";
     fillSerialPortOptions(sel, ports);
     if (saved && [...sel.options].some((o) => o.value === saved)) sel.value = saved;
-    // Settings' copy is refilled when Settings opens; leave an open form's edit alone.
-    const settingsSel = document.getElementById("explorer-serial-port");
-    if (settingsSel instanceof HTMLSelectElement && !isExplorerSettingsOpen()) {
-      fillSerialPortOptions(settingsSel, ports);
-      settingsSel.value = sel.value;
-    }
+    // Settings' copy is filled from `usbSerialPorts` each time Settings opens.
   } finally {
     if (needFetch) endUsbLoading();
   }
@@ -4332,8 +4317,7 @@ const USB_SERIAL_VISIBILITY_BURST_DELAYS_MS = [500, 1500];
  */
 async function pollUsbSerialPortsOnChange() {
   if (document.visibilityState !== "visible") return;
-  if (isExplorerModalOpen()) return;
-  if (isExplorerSettingsOpen()) return;
+  if (isAnyExplorerDialogOpen()) return;
   // An operation holds the port. The snapshot is left alone, so the first poll after it ends
   // still sees the change.
   if (isPaneBusy("cart") || isPaneBusy("pc")) return;
@@ -4792,7 +4776,7 @@ function setExplorerSettingsOpen(open) {
     const release = releaseSettingsFocus;
     releaseSettingsFocus = null;
     release?.();
-    void loadExplorerSettings();
+    // The form is not reloaded here: the only way to open Settings reloads it first.
   }
 }
 
@@ -4903,7 +4887,7 @@ async function loadExplorerSettings() {
     const appBarPort = document.getElementById("select-usb-com");
     const portSel = document.getElementById("explorer-serial-port");
     if (appBarPort instanceof HTMLSelectElement && portSel instanceof HTMLSelectElement) {
-      portSel.innerHTML = appBarPort.innerHTML;
+      fillSerialPortOptions(portSel, usbSerialPorts);
       portSel.value = appBarPort.value;
     }
     const baseEl = document.getElementById("explorer-ed64-linear-base");
@@ -5100,7 +5084,7 @@ function setupExplorerSettings() {
       await showExplorerAlert(userFacingErrorMessage(e, { context: "general" }));
       return;
     }
-    // Before closing: closing reloads the form from the saved settings, which now hold this cart.
+    // The saved settings now hold this cart.
     explorerSettingsCartDeviceAtLoad = cartDevice;
     setExplorerSettingsOpen(false);
     try {
