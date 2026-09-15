@@ -51,6 +51,9 @@ pub struct Sc64L2Pipe {
     port: Box<dyn serialport::SerialPort>,
     wire: WireBuffer,
     l3_rx: VecDeque<u8>,
+    /// An L2 error parsed after L3 bytes were queued. Held until [`read_l3_bytes`](Self::read_l3_bytes)
+    /// has handed those bytes out, so a caller that drops the pipe on error does not lose them.
+    pending_err: Option<io::Error>,
 }
 
 impl Sc64L2Pipe {
@@ -63,6 +66,7 @@ impl Sc64L2Pipe {
             port,
             wire: WireBuffer::default(),
             l3_rx: VecDeque::new(),
+            pending_err: None,
         })
     }
 
@@ -78,6 +82,7 @@ impl Sc64L2Pipe {
             .map_err(io::Error::other)?;
         self.wire = WireBuffer::default();
         self.l3_rx.clear();
+        self.pending_err = None;
         Ok(())
     }
 
@@ -96,6 +101,8 @@ impl Sc64L2Pipe {
     }
 
     /// Read L3 octets **from the N64** (async `PKT` `U` with `MULTI64_L3` datatype). Returns `0` on timeout if the queue is empty.
+    ///
+    /// An L2 error (`PKT` `G`) is returned only once every L3 octet received before it has been read.
     pub fn read_l3_bytes(&mut self, out: &mut [u8]) -> io::Result<usize> {
         if out.is_empty() {
             return Ok(0);
@@ -107,6 +114,9 @@ impl Sc64L2Pipe {
                     *slot = self.l3_rx.pop_front().expect("len checked");
                 }
                 return Ok(n);
+            }
+            if let Some(e) = self.pending_err.take() {
+                return Err(e);
             }
             let mut scratch = [0u8; 512];
             match self.port.read(&mut scratch) {
@@ -120,7 +130,10 @@ impl Sc64L2Pipe {
                         );
                     }
                     self.wire.push_bytes(&scratch[..n]);
-                    process_wire_events(&mut self.wire, &mut self.l3_rx)?;
+                    if let Err(e) = process_wire_events(&mut self.wire, &mut self.l3_rx) {
+                        // The loop hands out anything queued first, then this error.
+                        self.pending_err = Some(e);
+                    }
                 }
                 Err(e) if e.kind() == io::ErrorKind::TimedOut => return Ok(0),
                 Err(e) => return Err(e),
@@ -192,6 +205,159 @@ mod tests {
         pkt.extend_from_slice(&0u32.to_be_bytes());
         wire.push_bytes(&pkt);
         let e = process_wire_events(&mut wire, &mut q).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::ConnectionReset);
+    }
+
+    /// Serial port stand-in: each `read` hands out the next scripted chunk, then times out.
+    struct ScriptedPort {
+        reads: VecDeque<Vec<u8>>,
+    }
+
+    impl io::Read for ScriptedPort {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.reads.pop_front() {
+                Some(chunk) => {
+                    buf[..chunk.len()].copy_from_slice(&chunk);
+                    Ok(chunk.len())
+                }
+                None => Err(io::Error::new(io::ErrorKind::TimedOut, "script done")),
+            }
+        }
+    }
+
+    impl io::Write for ScriptedPort {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl serialport::SerialPort for ScriptedPort {
+        fn name(&self) -> Option<String> {
+            None
+        }
+        fn baud_rate(&self) -> serialport::Result<u32> {
+            unimplemented!()
+        }
+        fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
+            unimplemented!()
+        }
+        fn flow_control(&self) -> serialport::Result<serialport::FlowControl> {
+            unimplemented!()
+        }
+        fn parity(&self) -> serialport::Result<serialport::Parity> {
+            unimplemented!()
+        }
+        fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
+            unimplemented!()
+        }
+        fn timeout(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> {
+            unimplemented!()
+        }
+        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> {
+            unimplemented!()
+        }
+        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> {
+            unimplemented!()
+        }
+        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> {
+            unimplemented!()
+        }
+        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> {
+            unimplemented!()
+        }
+        fn set_timeout(&mut self, _: Duration) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> {
+            unimplemented!()
+        }
+        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> {
+            unimplemented!()
+        }
+        fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
+            unimplemented!()
+        }
+        fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
+            unimplemented!()
+        }
+        fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
+            unimplemented!()
+        }
+        fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
+            unimplemented!()
+        }
+        fn bytes_to_read(&self) -> serialport::Result<u32> {
+            unimplemented!()
+        }
+        fn bytes_to_write(&self) -> serialport::Result<u32> {
+            unimplemented!()
+        }
+        fn clear(&self, _: ClearBuffer) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
+            unimplemented!()
+        }
+        fn set_break(&self) -> serialport::Result<()> {
+            unimplemented!()
+        }
+        fn clear_break(&self) -> serialport::Result<()> {
+            unimplemented!()
+        }
+    }
+
+    fn pipe_over(reads: Vec<Vec<u8>>) -> Sc64L2Pipe {
+        Sc64L2Pipe {
+            port: Box::new(ScriptedPort {
+                reads: reads.into(),
+            }),
+            wire: WireBuffer::default(),
+            l3_rx: VecDeque::new(),
+            pending_err: None,
+        }
+    }
+
+    fn pkt_g() -> Vec<u8> {
+        let mut pkt = b"PKT".to_vec();
+        pkt.push(b'G');
+        pkt.extend_from_slice(&0u32.to_be_bytes());
+        pkt
+    }
+
+    /// #136: L3 bytes queued by the same serial read as a later `PKT G` are handed out before the
+    /// error, so a caller that drops the pipe on error (multi64d) does not lose them.
+    #[test]
+    fn queued_l3_bytes_are_returned_before_data_flushed_error() {
+        let mut chunk = encode_fake_pkt_u(b"M64B-queued");
+        chunk.extend_from_slice(&pkt_g());
+        let mut pipe = pipe_over(vec![chunk]);
+        let mut got = Vec::new();
+        let mut out = [0u8; 4];
+        let err = loop {
+            match pipe.read_l3_bytes(&mut out) {
+                Ok(0) => panic!("timed out before the error surfaced"),
+                Ok(n) => got.extend_from_slice(&out[..n]),
+                Err(e) => break e,
+            }
+        };
+        assert_eq!(got, b"M64B-queued");
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
+        // The error is reported once, then the pipe reads on as before.
+        assert_eq!(pipe.read_l3_bytes(&mut out).unwrap(), 0);
+    }
+
+    /// With nothing queued, `PKT G` still surfaces on the read that parsed it.
+    #[test]
+    fn data_flushed_with_empty_queue_errors_immediately() {
+        let mut pipe = pipe_over(vec![pkt_g()]);
+        let mut out = [0u8; 16];
+        let e = pipe.read_l3_bytes(&mut out).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::ConnectionReset);
     }
 }

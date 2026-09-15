@@ -260,5 +260,6 @@ These fields appear in the **handshake** and identify the L3 wire level peers im
 
 ## 13. Reference implementation notes (non-normative)
 
-- Host-side parsers SHOULD buffer until `16 + PAYLOAD_LEN` bytes are available, then validate `MAGIC` and length caps.
+- Host-side parsers SHOULD validate the header as soon as its 16 bytes are buffered, **before** waiting for `16 + PAYLOAD_LEN` bytes: `MAGIC`, a known `TYPE`, a known `CHANNEL`, and `PAYLOAD_LEN` within a cap. A parser that does not track the handshake can use the §6 ceiling of `1048576` as that cap, since no negotiated `MAX_PAYLOAD` exceeds it. On a failed check, discard one byte and resume the search for `MAGIC`; otherwise noise that happens to contain `M64B` can claim gigabytes of payload and stall the stream.
+- L2 chunk boundaries are arbitrary, so a parser that finds no `MAGIC` SHOULD keep the last 3 bytes (a possible partial `M64B`) rather than discard the whole buffer.
 - N64-side code SHOULD use a fixed buffer of size `16 + MAX_PAYLOAD` after handshake.
