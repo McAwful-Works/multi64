@@ -47,10 +47,11 @@ And one more, also Ubuntu only — the cart agent's host tests, the only CI job 
 make -C n64/agent host-test
 ```
 
-All of it runs under ASan and UBSan, in two parts:
+All of it runs under ASan and UBSan, in three parts:
 
 - It builds `n64/agent/agent.c` once per EverDrive cart against a fake driver, and checks that L3 frames arriving in pieces are reassembled and that a lost piece is never spliced into the next request.
 - It builds the real SC64 driver, `n64/agent/sc64.c`, against a fake cart and bus (`tests/sc64_test.c`, `SC64_HOST_TEST`), and checks that every bus wait is bounded and every failed register write is reported.
+- It builds the real X7 driver, `n64/agent/ed64.c`, with fake `pi_io_*` functions in place of `pi_io.c` (`tests/ed64_test.c`), and checks that a received `DMA@` message is delivered in order, including the part that did not fit the space offered, or reported lost, and that every wait is bounded. The X7 driver has still never run on a cart.
 
 Neither part shows that a driver works on a cart.
 

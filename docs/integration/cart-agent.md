@@ -129,7 +129,7 @@ to test. Nothing about them counts as support.
 | Build | Driver | Wire | RAM, flat image |
 |---|---|---|---|
 | default | `sc64.c` | [l3-over-sc64.md](../spec/l3-over-sc64.md) | 21,132 B |
-| `CART=ed64` | `ed64.c` + `pi_io.c` | [l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4: `DMA@` messages through the cart's 512-byte USB window | 23,196 B |
+| `CART=ed64` | `ed64.c` + `pi_io.c` | [l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4: `DMA@` messages through the cart's 512-byte USB window | 24,020 B |
 | `CART=ed64pro` | `ed64pro.c` + `pi_io.c` | [l3-over-everdrive-pro.md](../spec/l3-over-everdrive-pro.md): the cart FIFO | 22,216 B |
 
 Sizes are from [`templates/link-flat.sh`](../../n64/agent/templates/link-flat.sh) with libdragon's GCC 16.2.
@@ -144,8 +144,11 @@ What differs from the SC64 build:
 - **Frames are reassembled.** An SC64 packet carries a whole L3 frame. The EverDrive hosts send
   512-byte messages (X7) or 1024-byte FIFO writes (PRO), so these builds collect bytes across
   receives and ticks, and find frames by their magic, skipping a header whose type, channel or length
-  the protocol does not allow. When the driver reports a lost piece (a failed read, a bad `DMA@`
-  header or `CMPH` trailer, a message too large to keep) the partial frame is dropped at once, so it
+  the protocol does not allow. A host message that arrives while the agent's buffer has less room
+  than it needs is not lost: the X7 driver keeps the part that does not fit, up to 512 bytes, and
+  hands it over on the next receive, and the PRO leaves it in the cart FIFO. When the driver reports
+  a lost piece (a failed read, a bad `DMA@` header or `CMPH` trailer, an X7 message more than 512
+  bytes larger than the room left) the partial frame is dropped at once, so it
   cannot be completed with a later request's bytes; one the driver cannot see go missing is
   discarded after waiting 60 ticks, so it cannot swallow the host's retry for long. L3 frames carry no
   checksum, so neither check can catch a loss that goes unreported and is then filled out by bytes
