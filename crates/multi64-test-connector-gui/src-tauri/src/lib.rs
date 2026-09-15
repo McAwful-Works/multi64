@@ -7,7 +7,7 @@ use multi64_test_connector::{
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
 fn workspace_root() -> PathBuf {
@@ -39,29 +39,57 @@ fn target_exe(tool: &str) -> Result<PathBuf, String> {
     ))
 }
 
-struct ListenState {
-    stop: Arc<AtomicBool>,
+/// The stop flag of one kind of long-running task (Listen, or Controller poll).
+///
+/// Each run gets a flag of its own (#150). One shared flag, reset to false on every Start, let a
+/// Stop then Start inside the listener's 100 ms check or the poller's sleep un-stop the old run,
+/// which then kept running beside the new one.
+struct RunSlot {
+    current: Mutex<Arc<AtomicBool>>,
 }
 
-impl Default for ListenState {
+impl Default for RunSlot {
     fn default() -> Self {
         Self {
-            stop: Arc::new(AtomicBool::new(false)),
+            current: Mutex::new(Arc::new(AtomicBool::new(false))),
         }
     }
 }
 
-struct ControllerPollState {
-    stop: Arc<AtomicBool>,
-}
+impl RunSlot {
+    /// A fresh stop flag for a run about to start. The run it replaces, if still going, is stopped.
+    fn start(&self) -> Arc<AtomicBool> {
+        let fresh = Arc::new(AtomicBool::new(false));
+        let mut current = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::mem::replace(&mut *current, Arc::clone(&fresh));
+        previous.store(true, Ordering::SeqCst);
+        fresh
+    }
 
-impl Default for ControllerPollState {
-    fn default() -> Self {
-        Self {
-            stop: Arc::new(AtomicBool::new(false)),
-        }
+    /// Ask the current run to stop.
+    fn stop(&self) {
+        let current = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        current.store(true, Ordering::SeqCst);
     }
 }
+
+/// Log why a run failed. Its errors used to be discarded, so a refused connection or a bad hello
+/// made Start look like it did nothing (#150). A run logs its own success.
+fn report_run_end<E: std::fmt::Display>(
+    what: &str,
+    result: Result<(), E>,
+    log: &mut impl FnMut(String),
+) {
+    if let Err(e) = result {
+        log(format!("{what} failed: {e:#}"));
+    }
+}
+
+#[derive(Default)]
+struct ListenState(RunSlot);
+
+#[derive(Default)]
+struct ControllerPollState(RunSlot);
 
 #[tauri::command]
 async fn run_command(
@@ -87,21 +115,21 @@ async fn listen_start(
     url: String,
     duration_secs: f64,
 ) -> Result<(), String> {
-    state.stop.store(false, Ordering::SeqCst);
-    let stop = Arc::clone(&state.stop);
+    let stop = state.0.start();
     let app = app.clone();
     tokio::spawn(async move {
         let mut log = move |line: String| {
             let _ = app.emit("listen-log", line);
         };
-        let _ = run_listen(&url, duration_secs, Some(stop), &mut log).await;
+        let result = run_listen(&url, duration_secs, Some(stop), &mut log).await;
+        report_run_end("Listen", result, &mut log);
     });
     Ok(())
 }
 
 #[tauri::command]
 fn listen_stop(state: tauri::State<'_, ListenState>) {
-    state.stop.store(true, Ordering::SeqCst);
+    state.0.stop();
 }
 
 #[tauri::command]
@@ -112,22 +140,22 @@ async fn controller_poll_start(
     recv_timeout_secs: f64,
     interval_ms: u64,
 ) -> Result<(), String> {
-    state.stop.store(false, Ordering::SeqCst);
-    let stop = Arc::clone(&state.stop);
+    let stop = state.0.start();
     let app = app.clone();
     tokio::spawn(async move {
         let mut log = move |line: String| {
             let _ = app.emit("controller-poll-log", line);
         };
-        let _ =
+        let result =
             run_controller_poll(&url, recv_timeout_secs, interval_ms, Some(stop), &mut log).await;
+        report_run_end("Controller poll", result, &mut log);
     });
     Ok(())
 }
 
 #[tauri::command]
 fn controller_poll_stop(state: tauri::State<'_, ControllerPollState>) {
-    state.stop.store(true, Ordering::SeqCst);
+    state.0.stop();
 }
 
 #[tauri::command]
@@ -238,4 +266,57 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #150: Stop then Start inside the listener's 100 ms check reset the one shared flag, so the
+    /// old run never saw Stop and kept running beside the new one.
+    #[test]
+    fn a_quick_stop_then_start_still_stops_the_old_run() {
+        let slot = RunSlot::default();
+        let first = slot.start();
+        slot.stop();
+        let second = slot.start();
+        assert!(
+            first.load(Ordering::SeqCst),
+            "the stopped run must stay stopped"
+        );
+        assert!(
+            !second.load(Ordering::SeqCst),
+            "the new run must not start stopped"
+        );
+        slot.stop();
+        assert!(second.load(Ordering::SeqCst));
+    }
+
+    /// Start while a run is still going replaces it rather than running two side by side.
+    #[test]
+    fn starting_again_stops_the_run_it_replaces() {
+        let slot = RunSlot::default();
+        let first = slot.start();
+        let second = slot.start();
+        assert!(first.load(Ordering::SeqCst));
+        assert!(!second.load(Ordering::SeqCst));
+    }
+
+    /// #150: a refused connection or a bad hello used to end the task with nothing logged.
+    #[test]
+    fn a_failed_run_says_why() {
+        let mut lines = Vec::new();
+        report_run_end(
+            "Listen",
+            Err::<(), _>("connect WebSocket ws://127.0.0.1:38765/ws: refused"),
+            &mut |l| lines.push(l),
+        );
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("Listen failed: "), "{lines:?}");
+        assert!(lines[0].contains("refused"), "{lines:?}");
+
+        let mut lines = Vec::new();
+        report_run_end("Listen", Ok::<(), &str>(()), &mut |l| lines.push(l));
+        assert!(lines.is_empty(), "the run logs its own success: {lines:?}");
+    }
 }

@@ -140,6 +140,11 @@ fn l3_data_application(payload: Vec<u8>) -> Result<Vec<u8>> {
 
 fn parse_hex_body(s: &str) -> Result<Vec<u8>> {
     let h = s.trim().replace(' ', "");
+    // Before slicing by byte offset below, which would split a multi-byte character and panic
+    // (#149). This also rejects the sign `from_str_radix` would accept.
+    if let Some(bad) = h.chars().find(|c| !c.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid hex: {bad:?} is not a hex digit");
+    }
     if h.len() % 2 != 0 {
         anyhow::bail!("--hex must have an even number of hex digits");
     }
@@ -1133,5 +1138,35 @@ pub async fn run_ws_raw_echo<F: FnMut(String) + Send>(
             Message::Close(_) => anyhow::bail!("connection closed before binary echo"),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod hex_tests {
+    use super::*;
+
+    /// #149: slicing by byte offset split a multi-byte character and panicked inside the GUI's
+    /// `run_command` (and aborted the CLI) instead of reporting bad input.
+    #[test]
+    fn non_ascii_input_is_an_error_not_a_panic() {
+        for s in ["0é0", "é0", "00é", "日本", "0０"] {
+            assert!(parse_hex_body(s).is_err(), "{s:?}");
+        }
+        assert!(parse_hex_fixed8("0é00000000000000").is_err());
+    }
+
+    #[test]
+    fn hex_with_spaces_and_either_case_still_parses() {
+        assert_eq!(
+            parse_hex_body(" de ad BE ef ").unwrap(),
+            [0xde, 0xad, 0xbe, 0xef]
+        );
+        assert!(parse_hex_body("").unwrap().is_empty());
+        assert!(parse_hex_body("abc").is_err());
+        assert!(parse_hex_body("0g").is_err());
+        assert!(
+            parse_hex_body("+1").is_err(),
+            "from_str_radix accepts a sign"
+        );
     }
 }

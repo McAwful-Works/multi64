@@ -61,7 +61,8 @@ const CART_HINTS = {
 async function refreshPorts() {
   // One call, one port enumeration: asking for the list and the auto pick separately enumerated
   // twice and could disagree if a cart was plugged in between the two.
-  return applyPortOptions(await invoke("get_serial_port_options"));
+  // Refresh ports keeps the chosen port even if it was unplugged; changing it is the user's call.
+  return applyPortOptions(await invoke("get_serial_port_options"), true);
 }
 
 function rememberAuto({ auto, autoWarning, ambiguous, everdriveHint }) {
@@ -69,23 +70,31 @@ function rememberAuto({ auto, autoWarning, ambiguous, everdriveHint }) {
 }
 
 /**
- * Rebuild the Serial port dropdown from `ports`, keeping the selection if still listed. With
- * `keepSelection`, a selected port that is no longer listed stays as an option, so the selection
- * never changes.
+ * The serial port the saved settings name, set when Settings loads. It stays in the dropdown while
+ * unplugged: dropping it selected Auto-detect, which Save then wrote although nobody chose it.
+ */
+let savedSerialPort = "";
+
+/**
+ * Rebuild the Serial port dropdown from `ports`, keeping the selection if still listed. The saved
+ * port is always listed, and with `keepSelection` so is the selected one, so the selection never
+ * changes. A listed port that is not plugged in says so.
  */
 function fillPortSelect(ports, keepSelection) {
   lastPorts = [...ports];
   const sel = document.getElementById("serial-port");
   const selected = sel.value;
-  const names = keepSelection && selected !== "" && !ports.includes(selected) ? [...ports, selected] : ports;
+  const absent = [savedSerialPort, keepSelection ? selected : ""].filter(
+    (p, i, all) => p && !ports.includes(p) && all.indexOf(p) === i,
+  );
   sel.innerHTML = "";
   const optAuto = document.createElement("option");
   optAuto.value = "";
   sel.appendChild(optAuto);
-  for (const p of names) {
+  for (const p of [...ports, ...absent]) {
     const o = document.createElement("option");
     o.value = p;
-    o.textContent = p;
+    o.textContent = ports.includes(p) ? p : `${p} (not connected)`;
     sel.appendChild(o);
   }
   if ([...sel.options].some((o) => o.value === selected)) {
@@ -93,10 +102,13 @@ function fillPortSelect(ports, keepSelection) {
   }
 }
 
-/** Rebuild the Serial port dropdown from one enumeration, keeping the selection if still listed. */
-function applyPortOptions(options) {
+/**
+ * Rebuild the Serial port dropdown from one enumeration, keeping the selection if still listed, or
+ * with `keepSelection` even if not.
+ */
+function applyPortOptions(options, keepSelection) {
   rememberAuto(options);
-  fillPortSelect(options.ports, false);
+  fillPortSelect(options.ports, keepSelection);
   renderCartAndAuto();
   return { ports: options.ports, auto: options.auto };
 }
@@ -229,7 +241,10 @@ async function loadSettings(isCurrent = () => true) {
   const options = await invoke("get_serial_port_options");
   if (!isCurrent()) return false;
   applySettingsToForm(s);
-  applyPortOptions(options);
+  // Before the rebuild, so an unplugged saved port is listed and selected below. A port selected
+  // earlier and never saved is not kept: loading discards unsaved edits.
+  savedSerialPort = s.serialPort || "";
+  applyPortOptions(options, false);
   const saved = s.serialPort;
   const sel = document.getElementById("serial-port");
   if (saved && [...sel.options].some((o) => o.value === saved)) {
