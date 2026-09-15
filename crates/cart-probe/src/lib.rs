@@ -16,6 +16,7 @@
 //! The EverDrive probes follow `docs/spec/ed64-pro-usb-host.md` §4 and
 //! `docs/spec/l3-over-everdrive-x7.md` §8, and have **never been run against a cart**.
 
+use multi64_ed64pro_link::{Ed64Pro, Transport, BAUD};
 use multi64_sc64_link::{cmd, cmd_packet, ResponseBuffer};
 use serialport::{ClearBuffer, SerialPort, UsbPortInfo};
 use std::io::{self, Read, Write};
@@ -79,6 +80,9 @@ const SC64_IDENTIFY_TIMEOUT: Duration = Duration::from_millis(1000);
 const ED64_TEST_TIMEOUT: Duration = Duration::from_millis(2000);
 /// Read timeout for a single `read` while waiting on either of the above.
 const READ_SLICE: Duration = Duration::from_millis(100);
+/// The port timeout [`Ed64Pro::open`] opens with. Its handshake sets the same value before its first
+/// write, so this only keeps the probe's port set up exactly as the link's own.
+const ED64PRO_OPEN_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Identify the cart on `port` by asking it, or `None` if nothing answered as a cart.
 ///
@@ -91,9 +95,8 @@ pub fn probe_port(port: &str) -> Option<DetectedCart> {
 /// [`probe_port`], giving up as soon as `cancelled` returns true: `None`, whatever is on the port.
 ///
 /// `cancelled` is checked before each probe and at every read while waiting for an answer, so a
-/// cancel takes effect within one read timeout (100 ms) rather than after the rest of the port's
-/// probes. The PRO's edlink handshake is the exception: it is not interrupted, but gives up on its
-/// own after a 200 ms read timeout on anything that is not a PRO.
+/// cancel takes effect within one read timeout rather than after the rest of the port's probes:
+/// 100 ms for the SummerCart64 and X-series probes, 200 ms during the PRO's edlink handshake.
 pub fn probe_port_cancellable(port: &str, cancelled: impl Fn() -> bool) -> Option<DetectedCart> {
     if cancelled() {
         return None;
@@ -104,7 +107,7 @@ pub fn probe_port_cancellable(port: &str, cancelled: impl Fn() -> bool) -> Optio
     if cancelled() {
         return None;
     }
-    if probe_ed64pro(port) {
+    if probe_ed64pro(port, &cancelled) {
         return Some(DetectedCart::Ed64Pro);
     }
     if cancelled() {
@@ -161,8 +164,62 @@ fn await_sc64_identifier(
 }
 
 /// The full edlink connection sequence at 921600 baud; succeeds only for an EverDrive-64 PRO.
-fn probe_ed64pro(port: &str) -> bool {
-    multi64_ed64pro_link::Ed64Pro::open(port).is_ok()
+fn probe_ed64pro(port: &str, cancelled: &impl Fn() -> bool) -> bool {
+    let Ok(p) = serialport::new(port, BAUD)
+        .timeout(ED64PRO_OPEN_TIMEOUT)
+        .open()
+    else {
+        return false;
+    };
+    ed64pro_answers(p, cancelled)
+}
+
+/// Whether the edlink handshake on `io` identifies a PRO, giving up at the handshake's next read
+/// once `cancelled` returns true. Uncancelled, the handshake sends and reads exactly what
+/// [`Ed64Pro::open`] does.
+fn ed64pro_answers<T: Transport>(io: T, cancelled: &impl Fn() -> bool) -> bool {
+    Ed64Pro::connect(Cancellable { io, cancelled }).is_ok()
+}
+
+/// A [`Transport`] whose reads fail once `cancelled` returns true, so a handshake in progress stops
+/// at its next read instead of running to the end.
+struct Cancellable<'a, T, C> {
+    io: T,
+    cancelled: &'a C,
+}
+
+impl<T: Read, C: Fn() -> bool> Read for Cancellable<'_, T, C> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if (self.cancelled)() {
+            // Not `Interrupted`: `read_exact` retries that.
+            return Err(io::Error::other("cart probe cancelled"));
+        }
+        self.io.read(buf)
+    }
+}
+
+impl<T: Write, C> Write for Cancellable<'_, T, C> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.io.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.io.flush()
+    }
+}
+
+impl<T: Transport, C: Fn() -> bool> Transport for Cancellable<'_, T, C> {
+    fn set_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.io.set_timeout(timeout)
+    }
+
+    fn clear_input(&mut self) -> io::Result<()> {
+        self.io.clear_input()
+    }
+
+    fn bytes_to_read(&mut self) -> io::Result<u32> {
+        self.io.bytes_to_read()
+    }
 }
 
 /// The X-series `usb64` test: `cmd` + `t` in a 16-byte packet, answered with `cmdk` or `cmdr`.
@@ -332,6 +389,68 @@ mod tests {
             assert_eq!(reads.get(), 3, "{name}: no read after the cancel");
             assert!(started.elapsed() < Duration::from_secs(5), "{name}");
         }
+    }
+
+    /// A fake PRO that trickles its replies one byte per read, so the handshake takes many reads.
+    /// Counts them.
+    struct Trickle {
+        cart: multi64_ed64pro_link::fake::FakeEd64Pro,
+        reads: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.reads.set(self.reads.get() + 1);
+            let one = buf.len().min(1);
+            self.cart.read(&mut buf[..one])
+        }
+    }
+
+    impl Write for Trickle {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.cart.write(buf)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.cart.flush()
+        }
+    }
+
+    impl Transport for Trickle {
+        fn set_timeout(&mut self, t: Duration) -> io::Result<()> {
+            self.cart.set_timeout(t)
+        }
+        fn clear_input(&mut self) -> io::Result<()> {
+            self.cart.clear_input()
+        }
+        fn bytes_to_read(&mut self) -> io::Result<u32> {
+            self.cart.bytes_to_read()
+        }
+    }
+
+    fn trickle() -> (Trickle, std::rc::Rc<std::cell::Cell<usize>>) {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+        let port = Trickle {
+            cart: multi64_ed64pro_link::fake::FakeEd64Pro::new(),
+            reads: reads.clone(),
+        };
+        (port, reads)
+    }
+
+    #[test]
+    fn an_uncancelled_pro_handshake_still_identifies_the_pro() {
+        let (port, reads) = trickle();
+        assert!(ed64pro_answers(port, &|| false));
+        assert!(reads.get() >= 8, "the whole handshake ran: {}", reads.get());
+    }
+
+    /// #167: the PRO's edlink handshake used to run to the end once started, whatever the cancel
+    /// flag said; it now stops at its next read.
+    #[test]
+    fn a_cancel_stops_the_pro_handshake_at_its_next_read() {
+        let (port, reads) = trickle();
+        let seen = reads.clone();
+        assert!(!ed64pro_answers(port, &|| seen.get() >= 3));
+        assert_eq!(reads.get(), 3, "no read after the cancel");
     }
 
     #[test]
