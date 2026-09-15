@@ -1,5 +1,10 @@
 import { countNoun, userFacingErrorMessage } from "./user-error.js";
-import { normalizeUsbPath, probeSavedCartFolderReachable } from "./saved-cart-path.js";
+import {
+  bridgeListenUrl,
+  normalizeUsbPath,
+  probeSavedCartFolderReachable,
+  withBridgePaused,
+} from "./saved-cart-path.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -25,6 +30,12 @@ let pickerSessionActive = false;
 
 /** True while an upload is running: the close button acts as Cancel. */
 let uploadInFlight = false;
+
+/** Cancel was pressed during this upload: progress must not replace "Cancelling…". */
+let cancelPending = false;
+
+/** The saved Quick upload folder, while the cart couldn't be read to check it. Rechecked on reconnect. */
+let unverifiedSavedFolder = "";
 
 const STATUS_READY =
   "Ready — use Upload here, or wait for the automatic upload.";
@@ -74,10 +85,19 @@ async function tryReconnectSd() {
     } catch {
       /* ignore */
     }
+    if (unverifiedSavedFolder && !userHasNavigated) {
+      cartPath = await resolveSavedCartFolder(unverifiedSavedFolder);
+      renderPath();
+    }
     await loadFolderList();
   } finally {
     sdReconnectInFlight = false;
   }
+}
+
+/** Run a cart read with the Multi64 bridge paused. */
+function withCartBridgePaused(fn, opts) {
+  return withBridgePaused(invoke, bridgeListenUrl(), fn, opts);
 }
 
 function formatCartDisplay(normalizedPath) {
@@ -310,13 +330,17 @@ async function persistQuickUploadOverwrite() {
   }
 }
 
-/** @param {Record<string, unknown> | null} settings */
-async function resolveInitialCartPathFromSettings(settings) {
-  if (!settings) return "";
-  return probeSavedCartFolderReachable(
-    invoke,
-    normalizeUsbPath(String(settings.quickUploadCartPath ?? "")),
-  );
+/**
+ * The folder to start in for the saved Quick upload folder `saved`. While the cart can't be read
+ * that is still `saved`: it is kept, and checked again when the cart reconnects.
+ * @param {string} saved normalized
+ */
+async function resolveSavedCartFolder(saved) {
+  const { status, path } = await probeSavedCartFolderReachable(invoke, saved, {
+    withBridge: (check) => withCartBridgePaused(check),
+  });
+  unverifiedSavedFolder = status === "unknown" ? saved : "";
+  return path;
 }
 
 function updateAutoUploadIndicator(secondsLeft) {
@@ -413,20 +437,27 @@ async function loadFolderList() {
   beginListLoading();
   const path = normalizeUsbPath(cartPath);
   let ok = false;
+  let resumeError = null;
   try {
-    const all = [];
-    let offset = 0;
-    for (;;) {
-      const page = await invoke("cart_serial_list_dir_page", {
-        path,
-        offset,
-        limit: LIST_LIMIT,
-        fresh: offset === 0,
-      });
-      all.push(...page.entries);
-      offset += page.entries.length;
-      if (offset >= page.total || page.entries.length === 0) break;
-    }
+    const all = await withCartBridgePaused(
+      async () => {
+        const entries = [];
+        let offset = 0;
+        for (;;) {
+          const page = await invoke("cart_serial_list_dir_page", {
+            path,
+            offset,
+            limit: LIST_LIMIT,
+            fresh: offset === 0,
+          });
+          entries.push(...page.entries);
+          offset += page.entries.length;
+          if (offset >= page.total || page.entries.length === 0) break;
+        }
+        return entries;
+      },
+      { onResumeError: (e) => { resumeError = e; } },
+    );
     const dirs = all.filter((e) => e.isDir);
     dirs.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     if (dirs.length === 0) {
@@ -468,6 +499,11 @@ async function loadFolderList() {
     ok = false;
   } finally {
     endListLoading();
+  }
+  if (ok && resumeError) {
+    setError(
+      `The Multi64 bridge was paused to read the cart and could not be resumed (${userFacingErrorMessage(resumeError, { context: "general" })}). Use Restart bridge in Multi64.`,
+    );
   }
   if (ok && !userHasNavigated) {
     scheduleAutoUpload();
@@ -515,7 +551,7 @@ async function init() {
       /* use path/overwrite defaults */
     }
     userHasNavigated = false;
-    cartPath = await resolveInitialCartPathFromSettings(settings);
+    cartPath = await resolveSavedCartFolder(normalizeUsbPath(String(settings?.quickUploadCartPath ?? "")));
     renderPath();
     await loadFolderList();
     const ov = document.getElementById("upload-picker-overwrite");
@@ -541,6 +577,7 @@ document.getElementById("upload-picker-btn-close")?.addEventListener("click", ()
     void invoke("explorer_cancel_operation").catch(() => {});
     const closeBtn = document.getElementById("upload-picker-btn-close");
     if (closeBtn) closeBtn.disabled = true;
+    cancelPending = true;
     setUploadStatus("uploading", "Cancelling…");
     return;
   }
@@ -578,6 +615,7 @@ async function runUpload() {
     closeBtn.disabled = false;
   }
   uploadInFlight = true;
+  cancelPending = false;
   setUploadingUi(true);
   setUploadStatus("uploading", "Uploading to cart…");
   const fill = document.getElementById("upload-picker-status-fill");
@@ -586,6 +624,8 @@ async function runUpload() {
   try {
     const eventApi = window.__TAURI__?.event;
     if (eventApi?.listen) {
+      // "Uploading to cart — "name"", from the last update that carried a message.
+      let label = "Uploading to cart";
       unlisten = await eventApi.listen("explorer-progress", (e) => {
         const payload = e.payload || {};
         const done = Number(payload.done) || 0;
@@ -595,12 +635,14 @@ async function runUpload() {
           fill.classList.remove("indeterminate");
           fill.style.width = `${pct}%`;
         }
-        if (txt) {
-          // One format for the whole upload: "Uploading to cart — "name" (42%)…". The backend's
-          // message carries the name; the trailing ellipsis moves after the percentage.
-          const raw = typeof payload.message === "string" ? payload.message.trim() : "";
-          const base = raw.replace(/…$/, "") || "Uploading to cart";
-          txt.textContent = `${base} (${Math.round(pct)}%)…`;
+        // One format for the whole upload: "Uploading to cart — "name" (42%)…". Only the update
+        // that starts a file carries the name; per-chunk updates carry no message, so the last
+        // name is kept. The trailing ellipsis moves after the percentage.
+        const raw = typeof payload.message === "string" ? payload.message.trim() : "";
+        if (raw) label = raw.replace(/…$/, "");
+        // A pending cancel keeps "Cancelling…" until the upload stops.
+        if (txt && !cancelPending) {
+          txt.textContent = `${label} (${Math.round(pct)}%)…`;
         }
       });
     }
@@ -628,16 +670,26 @@ async function runUpload() {
       // An empty folder copies and skips nothing; "Uploaded 0 files" would read as a failure.
       doneMsg = uploaded === 0 ? "Upload finished." : `Uploaded ${countNoun(uploaded, "file")} to cart.`;
     }
+    // The bridge stays paused until someone resumes it, so this outranks the success colour.
+    const resumeWarning = typeof summary?.resumeWarning === "string" ? summary.resumeWarning.trim() : "";
+    if (resumeWarning) {
+      doneMode = "warning";
+      doneMsg = `${doneMsg} ${resumeWarning}`;
+    }
     setUploadStatus(doneMode, doneMsg);
   } catch (e) {
     if (String(e).includes("Cancelled")) {
       setUploadStatus("warning", "Upload cancelled.");
+      // The backend appends a failed bridge resume after a blank line; don't let it vanish with the cancel.
+      const resumeNote = String(e).split("\n\n").slice(1).join(" ");
+      if (resumeNote) setError(resumeNote);
     } else {
       setError(userFacingErrorMessage(e, { context: "general" }));
       setUploadStatus("idle");
     }
   } finally {
     uploadInFlight = false;
+    cancelPending = false;
     if (typeof unlisten === "function") unlisten();
     if (btn) btn.disabled = !sdReady;
     // Restore the label here, not only on success: a failed or cancelled upload used to leave

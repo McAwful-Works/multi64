@@ -191,6 +191,49 @@ fn append_fs_dir_steps(
     Ok(())
 }
 
+/// Device names Windows reserves in every folder, with or without an extension (`nul.txt` too).
+const WINDOWS_RESERVED_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+    "COM8", "COM9", "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// The This PC path a cart entry called `name` exports to inside `parent`.
+///
+/// Cart names come straight from the card's directory entries (FAT long names, or the EverDrive-64
+/// PRO firmware), so they are refused unless they are one ordinary Windows file name. `x:y` would
+/// write an NTFS alternate data stream and report success; `\`, `/` or a drive prefix would reach
+/// outside `parent`; a device name opens the device; a trailing dot or space is stripped by Windows,
+/// so two cart names would land on one file. Refusing is safer than renaming: a renamed export
+/// would not match its cart name when copied back.
+fn pc_child_path(parent: &Path, name: &str) -> Result<PathBuf, String> {
+    let refuse = || {
+        Err(format!(
+            "Can't copy {name:?} to This PC: that name isn't allowed in a Windows file name."
+        ))
+    };
+    if name.is_empty() || name == "." || name == ".." || name.ends_with(['.', ' ']) {
+        return refuse();
+    }
+    if name.chars().any(|c| {
+        c.is_control() || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+    }) {
+        return refuse();
+    }
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    if WINDOWS_RESERVED_NAMES
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(stem))
+    {
+        return refuse();
+    }
+    let path = parent.join(name);
+    // Belt and braces: whatever the checks above missed, the result must be a direct child.
+    if path.parent() != Some(parent) || path.file_name() != Some(std::ffi::OsStr::new(name)) {
+        return refuse();
+    }
+    Ok(path)
+}
+
 /// Cart → PC: one step per file.
 pub fn build_cart_export_plan(
     session: &CartSession,
@@ -212,7 +255,7 @@ pub fn build_cart_export_plan(
             .into_iter()
             .find(|e| e.name == name)
             .ok_or_else(|| format!("Not found on cart: {raw}"))?;
-        let dest_top = to_pc_parent.join(&entry.name);
+        let dest_top = pc_child_path(to_pc_parent, &entry.name)?;
         if entry.is_dir {
             if dest_top.exists() && dest_top.is_file() {
                 return Err("Cannot copy cart folder over an existing file on This PC.".into());
@@ -260,7 +303,7 @@ fn append_cart_export_steps(
         if e.name == "." || e.name == ".." {
             continue;
         }
-        let dest = dest_dir.join(&e.name);
+        let dest = pc_child_path(dest_dir, &e.name)?;
         if e.is_dir {
             if dest.exists() && dest.is_file() {
                 return Err("Cannot copy cart folder over an existing file on This PC.".into());
@@ -520,5 +563,60 @@ mod tests {
         assert!(!is_symlink(&tmp));
         assert!(!is_symlink(&tmp.join("does-not-exist")));
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Cart names come from the card's directory entries, so they can hold anything. A name that
+    /// isn't a single, ordinary Windows file name must not become part of a This PC path: `x:y`
+    /// writes an NTFS alternate data stream, `\` and `/` climb into other folders, and a drive
+    /// prefix or device name reaches outside the destination altogether.
+    #[test]
+    fn cart_names_unsafe_on_windows_are_refused() {
+        let parent = std::env::temp_dir().join("xfer64_names");
+        for bad in [
+            "x:y",
+            "C:evil",
+            r"a\b",
+            "a/b",
+            r"..\..\escape",
+            "..",
+            ".",
+            "",
+            "tab\there",
+            "nul\0byte",
+            "CON",
+            "nul.txt",
+            "Com1",
+            "LPT9.z64",
+            "trailing.",
+            "trailing ",
+            "what?",
+            "a*b",
+            "pipe|",
+            "\"quoted\"",
+            "<angle>",
+        ] {
+            assert!(
+                pc_child_path(&parent, bad).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_cart_names_stay_directly_under_the_destination() {
+        let parent = std::env::temp_dir().join("xfer64_names");
+        for good in [
+            "sm64.z64",
+            "Mario Kart 64 (USA).z64",
+            "CONSOLE.txt",
+            "com10",
+            "saves",
+            ".hidden",
+            "ゼルダ.z64",
+        ] {
+            let path = pc_child_path(&parent, good).unwrap();
+            assert_eq!(path.parent(), Some(parent.as_path()), "{good:?}");
+            assert_eq!(path.file_name().and_then(|n| n.to_str()), Some(good));
+        }
     }
 }

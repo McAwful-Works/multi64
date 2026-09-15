@@ -8,9 +8,11 @@
 //! drag-out takes two gestures: the first stages, the second drags.
 //!
 //! Everything staged is a copy. The whole session directory goes when the app exits; one left
-//! behind by a crash is pruned on a later start, once it is older than [`STALE_STAGING_MAX_AGE`].
+//! behind by a crash is pruned on a later start, once it is older than [`STALE_STAGING_MAX_AGE`]
+//! and no running Xfer64 holds its [`LIVE_MARKER_NAME`].
 //! The Windows pane needs none of this — those paths are already real.
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -20,9 +22,67 @@ use tauri::State;
 /// Directory under the OS temp dir holding one subdirectory per Xfer64 run.
 const STAGING_ROOT_NAME: &str = "xfer64-drag";
 
-/// A staging directory from an earlier run is only pruned once it is this old — a second Xfer64
-/// running right now must not have its staged files deleted out from under an in-flight drag.
+/// A staging directory from an earlier run is only pruned once it is this old, and never while a
+/// running Xfer64 still holds it (see [`LIVE_MARKER_NAME`]).
 const STALE_STAGING_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A file in each session directory that its run holds for as long as it lives.
+///
+/// Age alone cannot tell a crashed run from an idle one: a directory's modified time changes only
+/// when a drag adds to it, so an instance left open for a day looked stale, and a second Xfer64
+/// deleted the files its window still meant to drag. On Windows the run keeps the marker open
+/// without `FILE_SHARE_DELETE`, so it cannot be deleted until that run exits; elsewhere it holds
+/// the run's process id.
+const LIVE_MARKER_NAME: &str = ".xfer64-live";
+
+/// Create and hold this run's marker in `dir`.
+#[cfg(windows)]
+fn hold_live_marker(dir: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(dir.join(LIVE_MARKER_NAME))
+}
+
+#[cfg(not(windows))]
+fn hold_live_marker(dir: &Path) -> std::io::Result<File> {
+    use std::io::Write;
+    let mut file = File::create(dir.join(LIVE_MARKER_NAME))?;
+    write!(file, "{}", std::process::id())?;
+    Ok(file)
+}
+
+/// Whether a running Xfer64 still holds the session in `dir`. A directory with no marker (a run
+/// that crashed before writing one, or an older Xfer64) is not held, and ages out as before.
+#[cfg(windows)]
+fn session_is_held(dir: &Path) -> bool {
+    let marker = dir.join(LIVE_MARKER_NAME);
+    // Deleting it fails with a sharing violation while its owner has it open, and succeeds once
+    // the owner has exited, leaving the prune to take the rest. Any other failure counts as held.
+    match std::fs::remove_file(&marker) {
+        Ok(()) => false,
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn session_is_held(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(LIVE_MARKER_NAME))
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .is_some_and(|pid| Path::new("/proc").join(pid.to_string()).exists())
+}
+
+/// No cheap liveness check without new dependencies; such platforms keep the age rule alone.
+#[cfg(not(any(windows, target_os = "linux")))]
+fn session_is_held(_dir: &Path) -> bool {
+    false
+}
 
 fn staging_root() -> PathBuf {
     std::env::temp_dir().join(STAGING_ROOT_NAME)
@@ -49,9 +109,9 @@ fn is_inside(parent: &Path, child: &Path) -> bool {
     child.starts_with(parent)
 }
 
-/// Remove staging directories left by earlier runs, skipping `keep` (this run's own) and
-/// anything younger than `max_age`. Best effort throughout: a directory another process is
-/// still using fails to delete, and that is not an error worth failing a drag over.
+/// Remove staging directories left by earlier runs, skipping `keep` (this run's own), anything
+/// younger than `max_age`, and any session a running Xfer64 still holds. Best effort throughout:
+/// a directory that fails to delete is not an error worth failing a drag over.
 fn prune_stale_staging_dirs(root: &Path, keep: Option<&Path>, now: SystemTime, max_age: Duration) {
     let Ok(rd) = std::fs::read_dir(root) else {
         return;
@@ -66,7 +126,7 @@ fn prune_stale_staging_dirs(root: &Path, keep: Option<&Path>, now: SystemTime, m
             .and_then(|m| m.modified())
             .ok()
             .and_then(|m| now.duration_since(m).ok());
-        if age.is_some_and(|a| a > max_age) {
+        if age.is_some_and(|a| a > max_age) && !session_is_held(&path) {
             let _ = std::fs::remove_dir_all(&path);
         }
     }
@@ -76,6 +136,8 @@ fn prune_stale_staging_dirs(root: &Path, keep: Option<&Path>, now: SystemTime, m
 #[derive(Default)]
 pub struct DragStagingState {
     session_dir: Mutex<Option<PathBuf>>,
+    /// Held open for the session's life; see [`LIVE_MARKER_NAME`].
+    live_marker: Mutex<Option<File>>,
     next_batch: AtomicU64,
 }
 
@@ -85,17 +147,24 @@ impl DragStagingState {
     }
 
     fn ensure_session_dir(&self) -> Result<PathBuf, String> {
+        self.ensure_session_dir_in(&staging_root())
+    }
+
+    fn ensure_session_dir_in(&self, root: &Path) -> Result<PathBuf, String> {
         let mut guard = self.session_dir.lock().map_err(|e| e.to_string())?;
         if let Some(dir) = guard.as_ref() {
             if dir.is_dir() {
                 return Ok(dir.clone());
             }
         }
-        let root = staging_root();
-        std::fs::create_dir_all(&root).map_err(|e| format!("staging directory: {e}"))?;
-        prune_stale_staging_dirs(&root, None, SystemTime::now(), STALE_STAGING_MAX_AGE);
+        std::fs::create_dir_all(root).map_err(|e| format!("staging directory: {e}"))?;
+        prune_stale_staging_dirs(root, None, SystemTime::now(), STALE_STAGING_MAX_AGE);
         let dir = root.join(format!("{}-{}", std::process::id(), unix_millis()));
         std::fs::create_dir_all(&dir).map_err(|e| format!("staging directory: {e}"))?;
+        // Best effort: without a marker the session is still pruned only once it is old.
+        if let Ok(mut marker) = self.live_marker.lock() {
+            *marker = hold_live_marker(&dir).ok();
+        }
         *guard = Some(dir.clone());
         Ok(dir)
     }
@@ -106,6 +175,10 @@ impl DragStagingState {
 
     /// Drop everything this run staged. Called when the app exits; safe to call twice.
     pub fn clear(&self) {
+        // Let go of the marker first: on Windows this run's own open handle would stop the delete.
+        if let Ok(mut marker) = self.live_marker.lock() {
+            *marker = None;
+        }
         if let Some(dir) = self.session_dir_if_any() {
             let _ = std::fs::remove_dir_all(&dir);
         }
@@ -208,6 +281,26 @@ mod tests {
 
         assert!(mine.is_dir());
         assert!(!theirs.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A second Xfer64's prune must leave a running instance's session alone however old it looks:
+    /// an instance idle for a day still hands the shell the paths it staged, and nothing but a
+    /// new drag ever touched the directory's modified time.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn prune_skips_a_session_a_running_instance_still_holds() {
+        let root = test_root("live");
+        let state = DragStagingState::new();
+        let live = state.ensure_session_dir_in(&root).unwrap();
+        std::fs::write(live.join("rom.z64"), b"staged").unwrap();
+
+        let later = SystemTime::now() + STALE_STAGING_MAX_AGE + Duration::from_secs(60);
+        prune_stale_staging_dirs(&root, None, later, STALE_STAGING_MAX_AGE);
+
+        assert!(live.join("rom.z64").is_file(), "a live session was pruned");
+        state.clear();
+        assert!(!live.exists(), "clear must still remove its own session");
         let _ = std::fs::remove_dir_all(&root);
     }
 
