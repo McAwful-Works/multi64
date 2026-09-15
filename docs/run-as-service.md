@@ -26,7 +26,7 @@ See [`daemon-api-v1.md` §1.3](spec/daemon-api-v1.md) for the faulted-link contr
 ## Linux / Steam Deck
 
 1. Install the binary (e.g. `cargo install --path crates/multi64d` or copy from `target/release/`).
-2. Ensure your user can open the serial device (dialout group, udev rules for your USB flash cart if needed).
+2. Ensure your user can open the serial device (dialout group, udev rules for your N64 flash cart if needed).
 3. Run under **systemd** (user or system unit). Example **user** service `~/.config/systemd/user/multi64d.service`:
 
 ```ini
