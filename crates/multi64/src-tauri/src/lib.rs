@@ -3032,4 +3032,281 @@ mod frontend_tests {
             );
         }
     }
+
+    /// Colour functions whose arguments may be literals rather than tokens.
+    const COLOUR_FUNCTIONS: &[&str] = &[
+        "rgb",
+        "rgba",
+        "hsl",
+        "hsla",
+        "hwb",
+        "lab",
+        "lch",
+        "oklab",
+        "oklch",
+        "color",
+        "color-mix",
+    ];
+
+    /// The CSS named colours. `transparent` and `currentColor` are absent on purpose: neither
+    /// pins a hue, so neither breaks a theme.
+    const NAMED_COLOURS: &str = "\
+        aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue \
+        blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk \
+        crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki \
+        darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen \
+        darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue \
+        dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite \
+        gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki \
+        lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan \
+        lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen \
+        lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen \
+        magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen \
+        mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream \
+        mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid \
+        palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum \
+        powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown \
+        seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen \
+        steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow \
+        yellowgreen";
+
+    /// Comments replaced by spaces, newlines kept, so line numbers still line up.
+    fn strip_comments(css: &str) -> String {
+        let mut out = String::with_capacity(css.len());
+        let mut chars = css.chars().peekable();
+        let mut in_comment = false;
+        while let Some(c) = chars.next() {
+            if in_comment {
+                if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    out.push_str("  ");
+                    in_comment = false;
+                } else {
+                    out.push(if c == '\n' { '\n' } else { ' ' });
+                }
+            } else if c == '/' && chars.peek() == Some(&'*') {
+                chars.next();
+                out.push_str("  ");
+                in_comment = true;
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Quoted spans replaced by spaces: a font name or a `content:` string is not a declaration's
+    /// colour, however it reads.
+    fn strip_strings(value: &str) -> String {
+        let mut out = String::with_capacity(value.len());
+        let mut quote: Option<char> = None;
+        for c in value.chars() {
+            match quote {
+                Some(q) => {
+                    out.push(' ');
+                    if c == q {
+                        quote = None;
+                    }
+                }
+                None if c == '"' || c == '\'' => {
+                    quote = Some(c);
+                    out.push(' ');
+                }
+                None => out.push(c),
+            }
+        }
+        out
+    }
+
+    /// Every declaration in a stylesheet, as (line, enclosing selector, text). Enough of a CSS
+    /// parser for these sheets: rules, at-rules with rules nested inside them, and strings that
+    /// may hold a brace or a semicolon.
+    fn declarations(css: &str) -> Vec<(usize, String, String)> {
+        let source = strip_comments(css);
+        let mut out = Vec::new();
+        let mut stack: Vec<String> = Vec::new();
+        let mut buf = String::new();
+        let mut line = 1usize;
+        let mut buf_line = 1usize;
+        let mut quote: Option<char> = None;
+        for c in source.chars() {
+            match quote {
+                Some(q) => {
+                    buf.push(c);
+                    if c == q {
+                        quote = None;
+                    }
+                }
+                None => match c {
+                    '"' | '\'' => {
+                        quote = Some(c);
+                        buf.push(c);
+                    }
+                    '{' => {
+                        stack.push(buf.split_whitespace().collect::<Vec<_>>().join(" "));
+                        buf.clear();
+                        buf_line = line;
+                    }
+                    '}' | ';' => {
+                        let declaration = buf.trim().to_string();
+                        if declaration.contains(':') {
+                            if let Some(selector) = stack.last() {
+                                out.push((buf_line, selector.clone(), declaration));
+                            }
+                        }
+                        buf.clear();
+                        if c == '}' {
+                            stack.pop();
+                        }
+                        buf_line = line;
+                    }
+                    _ => {
+                        if !c.is_whitespace() && buf.trim().is_empty() {
+                            buf_line = line;
+                        }
+                        buf.push(c);
+                    }
+                },
+            }
+            if c == '\n' {
+                line += 1;
+            }
+        }
+        out
+    }
+
+    /// The palette blocks: `:root` and `:root[data-theme="…"]`, the only rules that may hold a
+    /// colour. `:root[data-motion="reduced"] *` and the like are ordinary rules and are checked.
+    fn is_palette_block(selector: &str) -> bool {
+        selector == ":root" || (selector.starts_with(":root[") && selector.ends_with(']'))
+    }
+
+    /// The first colour literal in a declaration's value, if it has one.
+    fn colour_literal(declaration: &str) -> Option<String> {
+        let (_property, value) = declaration.split_once(':')?;
+        let value: Vec<char> = strip_strings(value).chars().collect();
+        let mut i = 0;
+        while i < value.len() {
+            let c = value[i];
+            if c == '#' {
+                let mut end = i + 1;
+                while end < value.len() && value[end].is_ascii_hexdigit() {
+                    end += 1;
+                }
+                let digits = end - i - 1;
+                let ends_cleanly = match value.get(end) {
+                    None => true,
+                    Some(next) => !next.is_alphanumeric() && *next != '-' && *next != '_',
+                };
+                if matches!(digits, 3 | 4 | 6 | 8) && ends_cleanly {
+                    return Some(value[i..end].iter().collect());
+                }
+                i = end;
+                continue;
+            }
+            if c.is_ascii_alphabetic() {
+                let mut end = i;
+                while end < value.len() && (value[end].is_ascii_alphanumeric() || value[end] == '-')
+                {
+                    end += 1;
+                }
+                // Mid-identifier: part of `--accent-rgb` or `sans-serif`, not a word of its own.
+                let continues_an_identifier = i > 0
+                    && (value[i - 1] == '-'
+                        || value[i - 1] == '_'
+                        || value[i - 1].is_alphanumeric());
+                let word: String = value[i..end].iter().collect();
+                let lower = word.to_ascii_lowercase();
+                if continues_an_identifier {
+                    i = end;
+                    continue;
+                }
+                if value.get(end) == Some(&'(') {
+                    if COLOUR_FUNCTIONS.contains(&lower.as_str()) {
+                        let mut depth = 0usize;
+                        let mut close = end;
+                        while close < value.len() {
+                            match value[close] {
+                                '(' => depth += 1,
+                                ')' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            close += 1;
+                        }
+                        let args: String = value[end..close.min(value.len())].iter().collect();
+                        // A token anywhere in the arguments means the theme still reaches it.
+                        if !args.contains("var(") {
+                            return Some(format!("{word}{args})"));
+                        }
+                    }
+                } else if NAMED_COLOURS.split_whitespace().any(|named| named == lower) {
+                    return Some(word);
+                }
+                i = end;
+                continue;
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// The palette rule of `docs/frontend-appearance.md` §1: outside the `:root` palette blocks,
+    /// no rule in either app's stylesheets may name a colour. A literal is invisible to the theme
+    /// switch, so it survives into Light and High contrast unchanged and usually becomes
+    /// unreadable there — a failure a diff of the CSS does not show.
+    ///
+    /// `crates/multi64-test-connector-gui` is out of scope: that window has one hardcoded palette
+    /// and no theme switch, so it has nothing to break.
+    #[test]
+    fn no_colour_literals_outside_the_palette() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("crates/multi64/src-tauri -> repo root");
+        let mut sheets = Vec::new();
+        for app in ["multi64", "xfer64"] {
+            let dir = root.join(format!("crates/{app}/src"));
+            let entries =
+                std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+            for entry in entries {
+                let path = entry.expect("directory entry").path();
+                if path.extension().and_then(|e| e.to_str()) == Some("css") {
+                    sheets.push(path);
+                }
+            }
+        }
+        sheets.sort();
+        assert!(
+            sheets.len() >= 4,
+            "expected both apps' stylesheets, found {sheets:?}"
+        );
+
+        let mut offences = Vec::new();
+        for path in &sheets {
+            let css = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            for (line, selector, declaration) in declarations(&css) {
+                if is_palette_block(&selector) {
+                    continue;
+                }
+                if let Some(literal) = colour_literal(&declaration) {
+                    offences.push(format!(
+                        "{}:{line}: `{literal}` in `{declaration}` (rule `{selector}`)",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        assert!(
+            offences.is_empty(),
+            "colour literals outside the :root palette blocks. Use a token, or \
+             rgba(var(--…-rgb), a) — docs/frontend-appearance.md §1:\n{}",
+            offences.join("\n")
+        );
+    }
 }

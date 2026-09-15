@@ -8,7 +8,7 @@
  * What it cannot see: anything the backend owns, such as which ports are really plugged in or
  * whether the bridge starts. Green here means the frontend wiring holds, not that the feature works.
  *
- * Run: npm install && npx playwright install chromium && npm test
+ * Run: npm ci && npx playwright install --with-deps chromium && npm test
  */
 import { chromium } from "playwright";
 import { createServer } from "node:http";

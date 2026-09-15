@@ -1,4 +1,4 @@
-//! Staging for drags that leave Xfer64 for another window (SD card pane → Windows).
+//! Staging for drags that leave Xfer64 for another window (Cart pane → Windows).
 //!
 //! Windows will not start a drag for a file that does not exist, and cart files live on the
 //! cart's SD card rather than on disk. A cart drag-out therefore exports the selection into a

@@ -96,7 +96,7 @@ Guides, not specifications: how to make a game on real hardware readable and wri
 
 ## Connectors (`connectors/`)
 
-Host programs that use **`multi64d`**’s **WebSocket** for **raw L3**. The cart link is whatever **`multi64d`** is built with (**SC64 L2** today; the EverDrive [X7](spec/l3-over-everdrive-x7.md) and [PRO](spec/l3-over-everdrive-pro.md) mappings are still draft).
+Host programs that use **`multi64d`**’s **WebSocket** for **raw L3**. The cart link is whichever `--cart` **`multi64d`** was started with (**SC64 L2** by default; the EverDrive [X7](spec/l3-over-everdrive-x7.md) and [PRO](spec/l3-over-everdrive-pro.md) mappings are implemented, but their specs are still draft and neither has been run against a cart).
 
 | Document | Programs |
 |----------|----------|

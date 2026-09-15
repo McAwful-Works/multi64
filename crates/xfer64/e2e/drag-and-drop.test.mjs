@@ -14,7 +14,7 @@
  * `tauri://drag-*` fires at all, and whether a real Explorer drop carries the paths we expect are
  * all beyond it. Green here means the frontend wiring holds, not that the feature works.
  *
- * Run: npm install && npx playwright install chromium && npm test
+ * Run: npm ci && npx playwright install --with-deps chromium && npm test
  */
 import { chromium } from "playwright";
 import { createServer } from "node:http";

@@ -48,7 +48,7 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 | Crate | Role |
 |-------|------|
 | `multi64-l3` | L3 framing (`M64B`), `StreamDecoder`, session helpers |
-| `multi64d` | Daemon on `127.0.0.1:38765` → L3 over **SC64 L2** today |
+| `multi64d` | Daemon on `127.0.0.1:38765` → L3 over **SC64 L2** by default; `--cart ed64` / `--cart ed64pro` select the EverDrive mappings, implemented but never run against a cart |
 | `multi64-test-connector` | CLI ↔ **`multi64_test.z64`** ([`docs/connectors/test-rom.md`](docs/connectors/test-rom.md)) |
 | `multi64-sc64-sd` | FAT/exFAT over SC64 USB; optional EverDrive `RomRead` experiment (does not reach the SD card), optional EverDrive-64 PRO file access (experimental) — Xfer64 / tooling |
 | `multi64-ed64-link` | EverDrive X-series **`usb64`** serial (`RomRead` / `RamRead`) |
@@ -84,7 +84,7 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 
 Build **[`n64/test-rom/`](n64/test-rom/)** → **`multi64_test.z64`** (needs **`N64_INST`**). Modes **RAW_ECHO** (default), **M64T_PROTO**, **BENCH** — [`test-l3-application-v0.md`](docs/spec/test-l3-application-v0.md).
 
-**Serial (SC64, RAW_ECHO):** `cargo run -p sc64-l3-framing-e2e --release -- --port COM3` (add `--large` for multi-chunk USB). **EverDrive:** same ROM; ED e2e crates compile but **`Ed64L2Pipe::open`** is still unsupported.
+**Serial (SC64, RAW_ECHO):** `cargo run -p sc64-l3-framing-e2e --release -- --port COM3` (add `--large` for multi-chunk USB). **EverDrive:** same ROM; the ED e2e crates run and **`Ed64L2Pipe::open`** opens the port — but that data path carries no identity handshake, so a successful open means only that the serial port opened, and the framing it drives has **never been run against a cart** ([`l3-over-everdrive-x7.md`](docs/spec/l3-over-everdrive-x7.md) §4.5 lists what to check first).
 
 **Via `multi64d`:** ROM in **M64T_PROTO** or **BENCH**, then e.g. `cargo run -p multi64-test-connector -- ping`. Optional: `pip install -r scripts/requirements.txt` and **`scripts/multi64_ws_test.py`** for HTTP/WebSocket smoke.
 

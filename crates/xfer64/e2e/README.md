@@ -7,7 +7,7 @@ reaches, and with what arguments**.
 
 `../src/index.html` is served as-is to headless Chromium with `window.__TAURI__` replaced by a stub
 that records every `invoke`. So a drag is judged by the calls it produces: no cart, no COM port, no
-Tauri. A drop on the SD card pane has to reach `build_cart_import_plan` with the hovered folder as
+Tauri. A drop on the Cart pane has to reach `build_cart_import_plan` with the hovered folder as
 its parent; the first cart drag-out has to open a staging directory and *not* start an OS drag; the
 second has to drag the staged copy and not export again.
 
@@ -24,8 +24,8 @@ through its enabled items, and sort headers are column headers holding a button 
 Chromium's focus handling stands in for WebView2's here; they share an engine, not a guarantee.
 
 ```sh
-npm install
-npx playwright install chromium   # once per machine
+npm ci
+npx playwright install --with-deps chromium   # once per machine
 npm test
 ```
 

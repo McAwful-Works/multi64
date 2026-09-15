@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-The four checks CI runs (`.github/workflows/ci.yml`, on Ubuntu and Windows) — run these before proposing a change is done:
+CI's Rust job (`.github/workflows/ci.yml`, on Ubuntu and Windows) is these six steps, in this order — run them before proposing a change is done:
 
 ```sh
 cargo fmt --all -- --check
@@ -19,10 +19,10 @@ The `multi64d` builds are not optional and are not a packaging step — anything
 
 Clippy runs with `-D warnings`, so an unused import or a stray `mut` fails CI the same as a type error.
 
-CI runs one more job, on Ubuntu only — the Xfer64 frontend checks, which nothing above covers:
+CI runs three more jobs, all on Ubuntu only. The first is the Xfer64 frontend checks, which nothing above covers:
 
 ```sh
-cd crates/xfer64/e2e && npm install && npx playwright install chromium && npm test
+cd crates/xfer64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
 ```
 
 These drive `crates/xfer64/src/index.html` in headless Chromium with `window.__TAURI__` stubbed, and
@@ -30,17 +30,17 @@ assert which backend command each drag gesture reaches. They prove the frontend 
 feature: everything the OS owns (whether Windows accepts a drag, whether `tauri://drag-*` fires) is
 still Windows-and-a-cart territory. See [`crates/xfer64/e2e/README.md`](crates/xfer64/e2e/README.md).
 
-The Multi64 frontend checks are a job of the same kind, also Ubuntu only:
+The Multi64 frontend checks are a job of the same kind:
 
 ```sh
-cd crates/multi64/e2e && npm install && npx playwright install chromium && npm test
+cd crates/multi64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
 ```
 
 They drive `crates/multi64/src/index.html` the same way and check the Status card and the Settings
 Cart and Serial port selects, including a saved port that is unplugged. See
 [`crates/multi64/e2e/README.md`](crates/multi64/e2e/README.md).
 
-And one more, also Ubuntu only — the cart agent's host tests, the only CI job that compiles N64 code
+And the third — the cart agent's host tests, the only CI job that compiles N64 code
 (for the PC, not the console). It needs a host `gcc` or `clang` and `make`, nothing from the N64 toolchain:
 
 ```sh
@@ -53,7 +53,7 @@ All of it runs under ASan and UBSan, in three parts:
 - It builds the real SC64 driver, `n64/agent/sc64.c`, against a fake cart and bus (`tests/sc64_test.c`, `SC64_HOST_TEST`), and checks that every bus wait is bounded and every failed register write is reported.
 - It builds the real X7 driver, `n64/agent/ed64.c`, with fake `pi_io_*` functions in place of `pi_io.c` (`tests/ed64_test.c`), and checks that a received `DMA@` message is delivered in order, including the part that did not fit the space offered, or reported lost, and that every wait is bounded. The X7 driver has still never run on a cart.
 
-Neither part shows that a driver works on a cart.
+No part of it shows that a driver works on a cart.
 
 Targeted testing:
 
@@ -121,7 +121,7 @@ The **EverDrive-64 PRO** has its own pipe, `Ed64ProL2Pipe` (`multi64-ed64pro-l2`
 
 Committed under `.claude/`, so they apply for anyone working on this repo:
 
-- **`/preflight`** — runs the four CI checks in order and reports the first failure. Not every machine holding this repo has a Rust toolchain; when `cargo` is absent, say the change is unverified rather than implying otherwise.
+- **`/preflight`** — runs the six steps of CI's Rust job in order and reports the first failure. It does not run CI's three Ubuntu-only jobs (the two frontend suites and the agent host test). Not every machine holding this repo has a Rust toolchain; when `cargo` is absent, say the change is unverified rather than implying otherwise.
 - **`/check-docs`** — validates markdown links, heading anchors, backtick-wrapped links, and `docs/spec/` paths cited from Rust/JS. Run after any spec rename or file move; nothing in CI covers this.
 - **`/implement-ed64-l2`** — the ED64 L2 backend walkthrough. The blocker is `l3-over-everdrive-x7.md` §4, not the code.
 - **`spec-reviewer`** subagent — reviews a diff against `docs/spec/` as normative. Worth running on changes to `crates/l3`, any `*-l2` or `*-link` crate, `multi64d`'s WebSocket path, or the specs themselves.

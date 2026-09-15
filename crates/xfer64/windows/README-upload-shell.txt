@@ -7,7 +7,7 @@ Command line
 
   --com COM          Serial port (optional; otherwise settings file, env, or auto)
   --to CART_FOLDER   Folder on the SD card relative to root (optional; default is the
-                     folder you last opened in the SD card pane, or the card root)
+                     folder you last opened in the Cart pane, or the card root)
   --overwrite, -y    Replace files that already exist on the cart
 
 Environment (optional)
@@ -22,7 +22,7 @@ Settings file
   %APPDATA%\\multi64\\xfer64-settings.json
 
   preferred_com            — saved when you pick a COM port in the app
-  quick_upload_cart_path   — updated when you navigate the SD card pane
+  quick_upload_cart_path   — updated when you navigate the Cart pane
 
 Send to (from Xfer64 Settings)
 ------------------------------
