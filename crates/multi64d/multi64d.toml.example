@@ -11,8 +11,9 @@ listen = "127.0.0.1:38765"
 baud = 115200
 clear_serial = false
 
-# Flash cart L2 mapping: "sc64" (default) or "ed64". The EverDrive-64 X7 mapping is experimental
-# and has never been run against a cart (see docs/spec/l3-over-everdrive-x7.md).
+# Flash cart L2 mapping: "sc64" (default), "ed64" (EverDrive-64 X7) or "ed64pro" (EverDrive-64 PRO).
+# Both EverDrive mappings are experimental and have never been run against a cart (see
+# docs/spec/l3-over-everdrive-x7.md and docs/spec/l3-over-everdrive-pro.md).
 # cart = "sc64"
 
 # Browser origins allowed to reach the daemon (see docs/spec/daemon-api-v1.md 1.4).

@@ -117,13 +117,29 @@ The framing is **symmetric**. Both directions send:
 
 ### 4.4 Errors
 
-| Condition | Reference behavior | Mapping for `ed64-l2` |
+§4 is not normative while this document is Draft, so the last column records what `ed64-l2`
+(`crates/ed64-l2/src/lib.rs`) **does**, rather than what an implementation must do. It recovers
+further than the reference does: only a bad trailer is an error at all.
+
+| Condition | Reference behavior | `ed64-l2` as implemented |
 |-----------|--------------------|------------------------|
 | No data pending | Queue status reports 0 | `read_l3_bytes` returns `Ok(0)` — same contract as `Sc64L2Pipe` |
-| Header mismatch | `DEVICEERR_64D_BADDMA` | `io::ErrorKind::InvalidData`, and reset parse state |
-| Trailer mismatch | `DEVICEERR_64D_BADCMP` | `io::ErrorKind::InvalidData`, and reset parse state |
-| Stalled transfer | 500 ms read/write timeouts | `io::ErrorKind::TimedOut` |
-| Resynchronisation | Purge RX **and** TX | `clear_serial_buffers` MUST clear the port *and* the internal wire buffer |
+| Bytes before a header | `DEVICEERR_64D_BADDMA` | **Not an error.** The parser skips forward to the next `DMA@` and carries on, logging how many bytes it discarded at `debug` on target `multi64_ed64_l2`. With no `DMA@` anywhere in the buffer it keeps the last 3 bytes, in case a magic is split across two reads |
+| Trailer mismatch | `DEVICEERR_64D_BADCMP` | `io::ErrorKind::InvalidData`. Parse state is **not** reset: only the 4 `DMA@` magic bytes are dropped, so a resync cannot latch onto the same bad message again, and every byte after them stays buffered, to be parsed on the next read that brings more in. L3 octets decoded before the error are handed out first, so a caller that drops the pipe on error does not lose them; the error then surfaces once, when the queue is empty |
+| Datatype other than `MULTI64_L3` | — | Not an error: the message is consumed whole and its payload **discarded**, with a `debug` log. Only `0x01` payloads reach the L3 codec |
+| Stalled transfer | 500 ms read/write timeouts | A read timeout is `Ok(0)`, not an error — the timeout is whatever `set_timeout` last applied (`multi64d` uses 50 ms for reads, 1 s for a write). Any other read error is returned unchanged, which faults `multi64d`'s link |
+| Resynchronisation | Purge RX **and** TX | `clear_serial_buffers` clears the port in both directions, the wire buffer, the decoded L3 queue, and any error held back |
+
+A `size` field that is wrong in a way the trailer check cannot yet see costs time rather than data:
+the parser must buffer `8 + align(size) + 4` bytes before it can check the trailer at all, and `size`
+is 24 bits, so a `DMA@` invented by noise can hold the decoder until as much as 16 MiB has arrived.
+Nothing bounds that below the header's own limit.
+
+Which bytes the trailer check looks at depends on the padding direction in §4.2 and §4.3, and that
+direction is itself unconfirmed (issue #134): the parser expects `CMPH` after the payload padded up
+to 2 bytes, so if a cart instead puts the trailer straight after the unpadded data, every
+odd-length message lands on the trailer-mismatch row above. Resolve that on hardware before
+treating this row as settled.
 
 ### 4.5 Open questions — resolve on hardware before dropping Draft
 
