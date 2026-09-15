@@ -26,10 +26,9 @@
 //!
 //! # Unsafe code
 //!
-//! `link` and `Sc64PartitionDisk` remain free of `unsafe`. `partition` uses a small `unsafe` block
-//! to view `ExFatFileEntry` as bytes while locating the on-disk entry-set offset (see
-//! [`partition::exfat_entry_offset_via_disk_probe`]) for exFAT delete (hadris stores
-//! directory-relative offsets in iterated entries but `delete` writes as if they were absolute).
+//! None. exFAT delete, rename and size fixes find a file's entry set by scanning its folder for
+//! the file's on-disk fields (see `partition::exfat_locate_entry_set`) rather than reading
+//! hadris's private `entry_offset` out of `ExFatFileEntry`'s memory layout.
 
 mod cart_session;
 #[cfg(feature = "ed64")]

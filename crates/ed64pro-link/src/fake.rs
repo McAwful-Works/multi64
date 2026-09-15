@@ -479,10 +479,16 @@ impl FakeEd64Pro {
                 return status::NOT_FOUND;
             }
             if create {
+                // FatFs truncates an existing file in place, so the name keeps the letter case it
+                // was stored with, whatever case `path` is in.
+                let display = self
+                    .nodes
+                    .get(&k)
+                    .map_or_else(|| norm(path), |n| n.display.clone());
                 self.nodes.insert(
                     k.clone(),
                     Node {
-                        display: norm(path),
+                        display,
                         data: Some(Vec::new()),
                     },
                 );
@@ -701,5 +707,29 @@ mod tests {
         let mut buf = [0u8; 8];
         // The reconnect's clear_input discards pending ROM output, as edlink's FlushPort does.
         assert_eq!(dev.usb_read(&mut buf).unwrap(), 0);
+    }
+
+    /// FatFs `f_open` with `FA_CREATE_ALWAYS` on a name that matches an existing file only after
+    /// case folding truncates that file under its stored name; it does not rename it.
+    #[test]
+    fn overwriting_under_another_letter_case_keeps_the_stored_name() {
+        let fake = FakeEd64Pro::new().with_file("roms/Game.z64", b"old contents");
+        let mut dev = Ed64Pro::connect(fake).expect("handshake");
+        dev.fs_init().unwrap();
+
+        dev.file_open("ROMS/GAME.Z64", open_mode::WRITE | open_mode::CREATE_ALWAYS)
+            .unwrap();
+        dev.file_write(b"new").unwrap();
+        dev.file_close().unwrap();
+
+        let names: Vec<_> = dev
+            .dir_list("roms", dir_option::SORTED)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, ["Game.z64"]);
+        assert_eq!(dev.file_info("roms/game.z64").unwrap().size, 3);
+        assert_eq!(dev.into_inner().file("roms/Game.z64").unwrap(), b"new");
     }
 }

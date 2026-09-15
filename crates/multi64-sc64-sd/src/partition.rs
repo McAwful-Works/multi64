@@ -1262,83 +1262,197 @@ fn flush_link_serial(link: &Arc<Mutex<Sc64Link>>) -> io::Result<()> {
     g.flush_serial()
 }
 
-/// hadris [`hadris_fat::exfat::ExFatFileEntry::entry_offset`] is **bytes from the start of the
-/// parent directory stream**, not a volume byte offset (`hadris` `exfat/dir.rs` sets
-/// `entry_offset = dir_offset - entry_size`). We therefore try each aligned `u64` in the struct as:
-/// 1) a **volume-absolute** byte offset, or 2) a **directory-relative** offset mapped through the
-/// parent directory's cluster chain (see [`ExfatDirSlots::stream_offset`]).
+/// Locates `entry`'s entry set in its parent directory by what is on disk, not by where hadris
+/// says it is: hadris keeps [`hadris_fat::exfat::ExFatFileEntry`]'s `entry_offset` private, and
+/// sets it directory-relative in some paths and volume-absolute in others.
+///
+/// Scans the parent's own slots, in stream order, for the first in-use entry set whose File,
+/// Stream Extension and File Name entries carry `entry`'s exact name, directory flag, first
+/// cluster and both lengths (see [`exfat_find_entry_set`]). Nothing outside the parent's slots is
+/// ever considered.
 ///
 /// Returns the parent directory's slot map and the index of the entry set's primary slot. Address
 /// the set's other slots through that map: in a FAT-chained directory the next slot is not always
 /// 32 bytes further on (#128).
 ///
-/// Call while the primary is still `0x85` on disk (before marking deleted).
-///
-/// # Safety
-///
-/// `ExFatFileEntry` is read as raw bytes for the duration of this function only.
-fn exfat_entry_offset_via_disk_probe(
+/// Call with an entry hadris has just read, and while the primary is still `0x85` on disk (before
+/// marking deleted).
+fn exfat_locate_entry_set(
     fs: &ExFatFs<PartitionDiskUnion>,
     entry_path: &str,
-    entry: &hadris_fat::exfat::ExFatFileEntry,
+    entry: &ExFatFileEntry,
     vol: &ExfatVolumeSource,
     part_start: u64,
     part_bytes: u64,
 ) -> io::Result<(ExfatDirSlots, u64)> {
-    const FILE_DIRECTORY: u8 = 0x85;
-    const DELETED: u8 = 0x05;
-    const STREAM_EXT: u8 = 0xC0;
-
     let (parent_path, _) = exfat_parent_path_and_name(entry_path);
     let dir = exfat_parent_dir_slots(fs, parent_path, vol, part_start, part_bytes)?;
-
-    let sz = std::mem::size_of::<hadris_fat::exfat::ExFatFileEntry>();
-    let bytes = unsafe {
-        std::slice::from_raw_parts(
-            entry as *const hadris_fat::exfat::ExFatFileEntry as *const u8,
-            sz,
-        )
-    };
-    let mut disk = vol.partition_disk_rw(part_start, part_bytes);
-
-    // A candidate counts only as one of the parent directory's own slots, holding a file entry
-    // whose stream extension sits in the next slot along the chain.
-    let mut try_abs = |abs: u64| -> Option<u64> {
-        let slot = dir.slot_at(abs)?;
-        let stream_abs = dir.offset(slot + 1).ok()?;
-        let mut read = |at: u64| -> Option<[u8; 32]> {
-            if at.saturating_add(32) > part_bytes {
-                return None;
-            }
-            disk.seek(SeekFrom::Start(at)).ok()?;
-            let mut b = [0u8; 32];
-            disk.read_exact(&mut b).ok()?;
-            Some(b)
-        };
-        let primary = read(abs)?;
-        if primary[0] != FILE_DIRECTORY && primary[0] != DELETED {
-            return None;
-        }
-        if !(2..=18).contains(&(primary[1] as usize)) {
-            return None;
-        }
-        (read(stream_abs)?[0] == STREAM_EXT).then_some(slot)
-    };
-
-    let mut found = None;
-    for i in (0..=sz.saturating_sub(8)).step_by(8) {
-        let cand = u64::from_le_bytes(bytes[i..i + 8].try_into().unwrap());
-        found = try_abs(cand).or_else(|| dir.stream_offset(cand).and_then(&mut try_abs));
-        if found.is_some() {
-            break;
-        }
-    }
-    match found {
+    let want = ExfatEntryIdentity::of(entry);
+    let read_at = exfat_volume_reader(vol, part_start, part_bytes);
+    match exfat_find_entry_set(&dir, &want, read_at)? {
         Some(slot) => Ok((dir, slot)),
         None => Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "could not locate exFAT directory entry set offset (relative vs absolute)",
+            "could not find the exFAT directory entry set in its folder",
         )),
+    }
+}
+
+/// The on-disk fields that identify a file's entry set in its directory.
+struct ExfatEntryIdentity<'a> {
+    name: &'a str,
+    is_directory: bool,
+    first_cluster: u32,
+    valid_data_length: u64,
+    data_length: u64,
+}
+
+impl<'a> ExfatEntryIdentity<'a> {
+    fn of(entry: &'a ExFatFileEntry) -> Self {
+        Self {
+            name: &entry.name,
+            is_directory: entry.is_directory(),
+            first_cluster: entry.first_cluster,
+            valid_data_length: entry.valid_data_length,
+            data_length: entry.data_length,
+        }
+    }
+}
+
+/// Index of the primary slot of the first in-use entry set in `dir` that matches `want`, decoded
+/// by the exFAT layout: attributes at File entry byte 4, and NameLength (3), ValidDataLength (8),
+/// FirstCluster (20) and DataLength (24) in the Stream Extension, which the File Name entries
+/// follow. The name compares exactly, UTF-16 unit by unit: hadris reports the name as stored.
+///
+/// The scan stops at the end-of-directory marker (`0x00`), and a set whose secondaries would run
+/// past `dir`'s last slot is not a match. Of two sets that match, the first in stream order is the
+/// one hadris's own lookup reaches first.
+fn exfat_find_entry_set(
+    dir: &ExfatDirSlots,
+    want: &ExfatEntryIdentity<'_>,
+    read_at: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
+) -> io::Result<Option<u64>> {
+    const END_OF_DIRECTORY: u8 = 0x00;
+    const ATTR_DIRECTORY: u16 = 0x10;
+    let u32_at = |s: &[u8; 32], at: usize| u32::from_le_bytes(s[at..at + 4].try_into().unwrap());
+    let u64_at = |s: &[u8; 32], at: usize| u64::from_le_bytes(s[at..at + 8].try_into().unwrap());
+
+    let name: Vec<u16> = want.name.encode_utf16().collect();
+    let mut slots = ExfatSlotReader::new(dir, read_at);
+    let count = dir.slot_count();
+    let mut i = 0;
+    while i < count {
+        let primary = slots.slot(i)?;
+        if primary[0] == END_OF_DIRECTORY {
+            break;
+        }
+        let secondaries = u64::from(primary[1]);
+        if primary[0] != EXFAT_ENTRY_FILE_DIRECTORY
+            || !(2..=18).contains(&secondaries)
+            || i + secondaries >= count
+        {
+            i += 1;
+            continue;
+        }
+        let stream = slots.slot(i + 1)?;
+        if stream[0] != EXFAT_ENTRY_STREAM_EXT {
+            i += 1;
+            continue;
+        }
+        let attributes = u16::from_le_bytes([primary[4], primary[5]]);
+        let mut matched = (attributes & ATTR_DIRECTORY != 0) == want.is_directory
+            && usize::from(stream[3]) == name.len()
+            && u64_at(&stream, 8) == want.valid_data_length
+            && u32_at(&stream, 20) == want.first_cluster
+            && u64_at(&stream, 24) == want.data_length;
+        let mut units = 0;
+        let mut s = i + 2;
+        while matched && units < name.len() {
+            if s > i + secondaries {
+                matched = false;
+                break;
+            }
+            let entry = slots.slot(s)?;
+            if entry[0] != EXFAT_ENTRY_FILE_NAME {
+                matched = false;
+                break;
+            }
+            for unit in entry[2..].chunks_exact(2).take(name.len() - units) {
+                if u16::from_le_bytes([unit[0], unit[1]]) != name[units] {
+                    matched = false;
+                    break;
+                }
+                units += 1;
+            }
+            s += 1;
+        }
+        if matched {
+            return Ok(Some(i));
+        }
+        i += 1 + secondaries;
+    }
+    Ok(None)
+}
+
+/// Reads `dir`'s slots a chunk at a time and keeps every chunk it has read, so a scan costs one
+/// disk read (one SC64 USB round trip) per chunk rather than one per slot. A chunk is at most
+/// [`Self::MAX_CHUNK_SLOTS`] slots and never crosses a cluster boundary, so it is contiguous on
+/// disk even in a FAT-chained directory.
+struct ExfatSlotReader<'d, R> {
+    dir: &'d ExfatDirSlots,
+    read_at: R,
+    chunk_slots: u64,
+    chunks: std::collections::HashMap<u64, Vec<u8>>,
+}
+
+impl<'d, R: FnMut(u64, &mut [u8]) -> io::Result<()>> ExfatSlotReader<'d, R> {
+    /// 8 KiB: 16 sectors.
+    const MAX_CHUNK_SLOTS: u64 = 256;
+
+    fn new(dir: &'d ExfatDirSlots, read_at: R) -> Self {
+        let chunk_slots = if dir.slots_per_cluster % Self::MAX_CHUNK_SLOTS == 0 {
+            Self::MAX_CHUNK_SLOTS
+        } else {
+            dir.slots_per_cluster
+        };
+        Self {
+            dir,
+            read_at,
+            chunk_slots,
+            chunks: std::collections::HashMap::new(),
+        }
+    }
+
+    fn slot(&mut self, slot: u64) -> io::Result<[u8; 32]> {
+        let chunk = slot / self.chunk_slots;
+        if !self.chunks.contains_key(&chunk) {
+            // Errors for a slot past the directory's last cluster.
+            let at = self.dir.offset(chunk * self.chunk_slots)?;
+            let mut buf = vec![0u8; (self.chunk_slots * ExfatDirSlots::SLOT_BYTES) as usize];
+            (self.read_at)(at, &mut buf)?;
+            self.chunks.insert(chunk, buf);
+        }
+        let off = ((slot % self.chunk_slots) * ExfatDirSlots::SLOT_BYTES) as usize;
+        Ok(self.chunks[&chunk][off..off + 32].try_into().unwrap())
+    }
+}
+
+/// Reads `buf.len()` bytes at a volume byte offset, refusing reads past the partition.
+fn exfat_volume_reader(
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+) -> impl FnMut(u64, &mut [u8]) -> io::Result<()> {
+    let mut disk = vol.partition_disk_ro(part_start, part_bytes);
+    move |at, buf| {
+        if at.saturating_add(buf.len() as u64) > part_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "exFAT directory read past partition",
+            ));
+        }
+        disk.seek(SeekFrom::Start(at))?;
+        disk.read_exact(buf)
     }
 }
 
@@ -1490,16 +1604,6 @@ impl ExfatDirSlots {
         })?;
         Some(i as u64 * self.slots_per_cluster + (abs - self.cluster_offsets[i]) / Self::SLOT_BYTES)
     }
-
-    /// Volume byte offset of byte `rel` of the directory stream (hadris's directory-relative
-    /// entry offsets).
-    fn stream_offset(&self, rel: u64) -> Option<u64> {
-        let cluster_bytes = self.slots_per_cluster * Self::SLOT_BYTES;
-        let base = *self
-            .cluster_offsets
-            .get(usize::try_from(rel / cluster_bytes).ok()?)?;
-        Some(base + rel % cluster_bytes)
-    }
 }
 
 /// Entries in an exFAT entry set for `name`: File, Stream Extension, then one File Name entry per
@@ -1533,11 +1637,10 @@ fn exfat_refuse_unsafe_create(
         ));
     }
     let cluster_bytes = dir.slots_per_cluster * ExfatDirSlots::SLOT_BYTES;
-    let mut disk = vol.partition_disk_ro(part_start, part_bytes);
+    let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
     let read_cluster = |base: u64| -> io::Result<Vec<u8>> {
-        disk.seek(SeekFrom::Start(base))?;
         let mut buf = vec![0u8; cluster_bytes as usize];
-        disk.read_exact(&mut buf)?;
+        read_at(base, &mut buf)?;
         Ok(buf)
     };
     if hadris_create_slots_are_in_dir(&dir, exfat_entry_set_len(name), read_cluster)? {
@@ -1735,8 +1838,7 @@ fn exfat_sync_stream_data_length_to_valid(
 ) -> io::Result<()> {
     const STREAM_EXT: u8 = 0xC0;
 
-    let (dir, primary_slot) =
-        exfat_entry_offset_via_disk_probe(fs, path, entry, vol, part_start, part_bytes)?;
+    let (dir, primary_slot) = exfat_locate_entry_set(fs, path, entry, vol, part_start, part_bytes)?;
     let primary = exfat_read_dir_entry_at(vol, part_start, part_bytes, dir.offset(primary_slot)?)?;
     let secondary_count = primary[1] as usize;
     if secondary_count < 2 || secondary_count > 18 {
@@ -1813,8 +1915,8 @@ fn exfat_finalize_deleted_entry_set(
 /// `write_at`, but entries from directory iteration store **directory-stream-relative** offsets
 /// (`exfat/dir.rs`), while `create_file` sets **volume-absolute** offsets (`fs.rs`). Deletes of
 /// files opened via `open_path` therefore write `0x05` to the wrong byte and never remove the
-/// listing entry. We resolve the real volume offset with [`exfat_entry_offset_via_disk_probe`],
-/// then free clusters, mark deleted, fix checksum, and sync the bitmap — matching hadris intent.
+/// listing entry. We find the entry set on disk with [`exfat_locate_entry_set`], then free
+/// clusters, mark deleted, fix checksum, and sync the bitmap — matching hadris intent.
 fn exfat_delete_entry_resolved(
     fs: &ExFatFs<PartitionDiskUnion>,
     entry_path: &str,
@@ -1834,7 +1936,7 @@ fn exfat_delete_entry_resolved(
 
     trace("exFAT: resolve entry set volume offset…");
     let (dir, primary_slot) =
-        exfat_entry_offset_via_disk_probe(fs, entry_path, entry, vol, part_start, part_bytes)?;
+        exfat_locate_entry_set(fs, entry_path, entry, vol, part_start, part_bytes)?;
 
     let info = fs.info();
     let cs = info.bytes_per_cluster as u64;
@@ -1994,17 +2096,15 @@ fn rename_cart_exfat(
     } else {
         fs.open_dir(&parent_path).map_err(exfat_err)?
     };
-    let (dir, old_slot) =
-        exfat_entry_offset_via_disk_probe(&fs, from_rel, &old, vol, part_start, part_bytes)?;
+    let (dir, old_slot) = exfat_locate_entry_set(&fs, from_rel, &old, vol, part_start, part_bytes)?;
     let to_path = if parent_path.is_empty() {
         name_to.clone()
     } else {
         format!("{parent_path}/{name_to}")
     };
     if let Some(candidate) = parent_dir.find(&name_to).map_err(exfat_err)? {
-        let (_, cand_slot) = exfat_entry_offset_via_disk_probe(
-            &fs, &to_path, &candidate, vol, part_start, part_bytes,
-        )?;
+        let (_, cand_slot) =
+            exfat_locate_entry_set(&fs, &to_path, &candidate, vol, part_start, part_bytes)?;
         if cand_slot != old_slot {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -2036,8 +2136,8 @@ fn rename_cart_exfat(
         exfat_mark_slots_deleted(vol, part_start, part_bytes, &old_offsets[new_total..])?;
     } else {
         let old_slots = old_slot..old_slot + old_total as u64;
-        let dest_slot =
-            exfat_find_free_entry_run(&dir, new_total, old_slots, vol, part_start, part_bytes)?;
+        let read_at = exfat_volume_reader(vol, part_start, part_bytes);
+        let dest_slot = exfat_find_free_entry_run(&dir, new_total, old_slots, read_at)?;
         let dest_offsets = dir.offsets(dest_slot, new_total)?;
         exfat_write_entry_slabs_at(vol, part_start, part_bytes, &dest_offsets, &new_slabs)?;
         exfat_mark_slots_deleted(vol, part_start, part_bytes, &old_offsets)?;
@@ -2206,29 +2306,19 @@ fn exfat_mark_slots_deleted(
 
 /// Find `slots_needed` consecutive unused slots in `dir`, counting the slots in `skip` (the entry
 /// being renamed) as used; returns the index of the first. The scan stays within the directory's
-/// own clusters, and a run may continue from one cluster into the next in the chain (#128).
+/// own clusters, and a run may continue from one cluster into the next in the chain (#128). Slots
+/// are read a chunk at a time through [`ExfatSlotReader`].
 fn exfat_find_free_entry_run(
     dir: &ExfatDirSlots,
     slots_needed: usize,
     skip: std::ops::Range<u64>,
-    vol: &ExfatVolumeSource,
-    part_start: u64,
-    part_bytes: u64,
+    read_at: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
 ) -> io::Result<u64> {
+    let mut slots = ExfatSlotReader::new(dir, read_at);
     let mut run_start = 0;
     let mut run_len = 0usize;
     for slot in 0..dir.slot_count() {
-        let ent = if skip.contains(&slot) {
-            None
-        } else {
-            Some(exfat_read_dir_entry_at(
-                vol,
-                part_start,
-                part_bytes,
-                dir.offset(slot)?,
-            )?)
-        };
-        if ent.is_some_and(|e| e[0] & EXFAT_ENTRY_IN_USE == 0) {
+        if !skip.contains(&slot) && slots.slot(slot)?[0] & EXFAT_ENTRY_IN_USE == 0 {
             if run_len == 0 {
                 run_start = slot;
             }
@@ -3197,15 +3287,18 @@ mod tests {
 #[cfg(test)]
 mod fs_tests {
     use super::{
-        detect_partition_start, hadris_create_slots_are_in_dir, list_dir_exfat, list_dir_fat,
-        mkdir_cart_exfat, mkdir_fat_impl, partition_volume_bytes, read_file_exfat, read_file_fat,
-        rename_cart_exfat, rename_fat_impl, write_file_exfat_streaming,
-        write_file_fat_streaming_impl, ExfatDirSlots, ExfatVolumeSource,
+        detect_partition_start, exfat_find_entry_set, exfat_find_free_entry_run,
+        hadris_create_slots_are_in_dir, list_dir_exfat, list_dir_fat, mkdir_cart_exfat,
+        mkdir_fat_impl, partition_volume_bytes, read_file_exfat, read_file_fat,
+        remove_cart_path_exfat_unified, rename_cart_exfat, rename_fat_impl,
+        write_file_exfat_streaming, write_file_fat_streaming_impl, ExfatDirSlots,
+        ExfatEntryIdentity, ExfatSlotReader, ExfatVolumeSource,
     };
     use crate::mem_disk::RamPartitionDisk;
     use fatfs::FormatVolumeOptions;
     use hadris_fat::exfat::{format_exfat, ExFatFormatOptions, ExFatFs, ExFatInfo};
     use sha2::{Digest, Sha256};
+    use std::cell::RefCell;
     use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
@@ -3763,6 +3856,201 @@ mod fs_tests {
             !check(&far, [[0x05, 0x40, 0x41, 0x00], [U; 4]], 3),
             "0x40 and 0x41 stay taken"
         );
+    }
+
+    /// An entry set as exFAT stores it: File, Stream Extension, then File Name entries.
+    fn raw_entry_set(name: &str, first_cluster: u32, len: u64, is_dir: bool) -> Vec<[u8; 32]> {
+        let units: Vec<u16> = name.encode_utf16().collect();
+        let mut file = [0u8; 32];
+        file[0] = 0x85;
+        file[1] = (1 + (units.len() + 14) / 15) as u8;
+        file[4] = if is_dir { 0x10 } else { 0x20 };
+        let mut stream = [0u8; 32];
+        stream[0] = 0xC0;
+        stream[3] = units.len() as u8;
+        stream[8..16].copy_from_slice(&len.to_le_bytes());
+        stream[20..24].copy_from_slice(&first_cluster.to_le_bytes());
+        stream[24..32].copy_from_slice(&len.to_le_bytes());
+        let mut out = vec![file, stream];
+        for chunk in units.chunks(15) {
+            let mut e = [0u8; 32];
+            e[0] = 0xC1;
+            for (k, u) in chunk.iter().enumerate() {
+                e[2 + 2 * k..4 + 2 * k].copy_from_slice(&u.to_le_bytes());
+            }
+            out.push(e);
+        }
+        out
+    }
+
+    /// A reader over `slots`, laid out in `dir`'s clusters, that logs each read's offset and length.
+    fn slot_disk<'a>(
+        dir: &'a ExfatDirSlots,
+        slots: &'a [[u8; 32]],
+        reads: &'a RefCell<Vec<(u64, usize)>>,
+    ) -> impl FnMut(u64, &mut [u8]) -> io::Result<()> + 'a {
+        move |at, buf| {
+            reads.borrow_mut().push((at, buf.len()));
+            for (k, b) in buf.chunks_exact_mut(32).enumerate() {
+                let slot = dir
+                    .slot_at(at + k as u64 * 32)
+                    .expect("a read inside the directory");
+                b.copy_from_slice(slots.get(slot as usize).unwrap_or(&[0; 32]));
+            }
+            Ok(())
+        }
+    }
+
+    /// Three 4-slot clusters, far apart and out of disk order.
+    fn three_small_clusters() -> ExfatDirSlots {
+        ExfatDirSlots {
+            cluster_offsets: vec![0x1000, 0x8000, 0x3000],
+            slots_per_cluster: 4,
+        }
+    }
+
+    /// An entry set is found by its on-disk name and stream fields, through the chain, and only
+    /// among the directory's own in-use slots. Nothing depends on hadris's `entry_offset`.
+    #[test]
+    fn exfat_entry_set_is_found_by_its_on_disk_fields() {
+        let dir = three_small_clusters();
+        let mut slots = Vec::new();
+        slots.extend(raw_entry_set("game.z64", 5, 10, false)); // 0: same name, other file
+        slots.extend(raw_entry_set("game.z64", 9, 10, false)); // 3: straddles clusters 0 and 1
+        let mut deleted = raw_entry_set("save.eep", 7, 4, false);
+        deleted[0][0] = 0x05;
+        slots.extend(deleted); // 6: a deleted set with the same fields as the next one
+        slots.extend(raw_entry_set("save.eep", 7, 4, false)); // 9
+        let find = |slots: &[[u8; 32]], name, first_cluster, len, is_dir| {
+            let reads = RefCell::new(Vec::new());
+            let want = ExfatEntryIdentity {
+                name,
+                is_directory: is_dir,
+                first_cluster,
+                valid_data_length: len,
+                data_length: len,
+            };
+            let found = exfat_find_entry_set(&dir, &want, slot_disk(&dir, slots, &reads)).unwrap();
+            (found, reads.into_inner().len())
+        };
+
+        assert_eq!(find(&slots, "game.z64", 9, 10, false), (Some(3), 2));
+        assert_eq!(find(&slots, "save.eep", 7, 4, false).0, Some(9));
+        assert_eq!(find(&slots, "GAME.Z64", 9, 10, false).0, None, "exact name");
+        assert_eq!(find(&slots, "game.z64", 9, 10, true).0, None, "a folder");
+        assert_eq!(
+            find(&slots, "game.z64", 9, 11, false).0,
+            None,
+            "another length"
+        );
+
+        // Nothing after the end-of-directory marker counts.
+        let mut ended = slots.clone();
+        ended[3][0] = 0x00;
+        assert_eq!(find(&ended, "save.eep", 7, 4, false).0, None);
+
+        // A set whose secondaries would run past the directory's last slot is not the directory's.
+        let mut cut = slots[..9].to_vec();
+        cut.push([0; 32]);
+        cut.extend(&raw_entry_set("x", 2, 1, false)[..2]); // 10, 11: needs slot 12
+        cut[10][1] = 2;
+        assert_eq!(find(&cut, "x", 2, 1, false).0, None);
+    }
+
+    /// The free-slot scan reads a chunk at a time, not a slot at a time, and still treats the
+    /// entry being moved as taken.
+    #[test]
+    fn exfat_free_slot_scan_reads_each_chunk_once() {
+        const U: u8 = 0x85;
+        let dir = three_small_clusters();
+        let slots: Vec<[u8; 32]> = [U, U, U, U, U, U, 0x05, 0x40, 0x00, U, 0x00, 0x00]
+            .iter()
+            .map(|&t| {
+                let mut s = [0u8; 32];
+                s[0] = t;
+                s
+            })
+            .collect();
+
+        let reads = RefCell::new(Vec::new());
+        let run = exfat_find_free_entry_run(&dir, 3, 0..0, slot_disk(&dir, &slots, &reads));
+        assert_eq!(run.unwrap(), 6);
+        assert_eq!(
+            reads.into_inner(),
+            [(0x1000, 128), (0x8000, 128), (0x3000, 128)],
+            "one read per chunk, following the chain"
+        );
+
+        let reads = RefCell::new(Vec::new());
+        let err = exfat_find_free_entry_run(&dir, 3, 6..7, slot_disk(&dir, &slots, &reads))
+            .expect_err("the moved entry's own slot is not free");
+        assert_eq!(err.kind(), io::ErrorKind::StorageFull);
+    }
+
+    /// In a large cluster a chunk is 256 slots (16 sectors), and never crosses into the next
+    /// cluster.
+    #[test]
+    fn exfat_slot_reader_chunks_stay_inside_a_cluster() {
+        let dir = ExfatDirSlots {
+            cluster_offsets: vec![0x10_0000, 0x40_0000],
+            slots_per_cluster: 512,
+        };
+        let reads = RefCell::new(Vec::new());
+        let mut r = ExfatSlotReader::new(&dir, slot_disk(&dir, &[], &reads));
+        for slot in [300, 301, 511, 512, 1023] {
+            r.slot(slot).unwrap();
+        }
+        assert!(r.slot(1024).is_err(), "past the directory's last slot");
+        drop(r);
+        assert_eq!(
+            reads.into_inner(),
+            [
+                (0x10_0000 + 256 * 32, 8192),
+                (0x40_0000, 8192),
+                (0x40_0000 + 256 * 32, 8192)
+            ]
+        );
+    }
+
+    /// A case-only rename, and deletes in the root and in a folder, all locate their entry sets
+    /// on a real volume.
+    #[test]
+    fn exfat_rename_and_delete_locate_entry_sets_on_disk() {
+        let (arc, vol, part_bytes) = exfat_image(&ExFatFormatOptions::new());
+        for path in ["a.z64", "b.z64", "Saves/game.sav"] {
+            write_file_exfat_streaming(
+                &vol,
+                0,
+                part_bytes,
+                path,
+                &mut Cursor::new(&b"data"[..]),
+                &mut |_| true,
+            )
+            .unwrap();
+        }
+        let names = |dir: &str| -> Vec<String> {
+            let mut n: Vec<_> =
+                list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), dir)
+                    .unwrap()
+                    .into_iter()
+                    .map(|e| e.name)
+                    .collect();
+            n.sort();
+            n
+        };
+
+        rename_cart_exfat(&vol, 0, part_bytes, "a.z64", "A.Z64").expect("case-only rename");
+        assert_eq!(names("/"), ["A.Z64", "Saves", "b.z64"]);
+
+        let mut quiet = |_: &str| {};
+        remove_cart_path_exfat_unified(vol.clone(), 0, part_bytes, "Saves/game.sav", &mut quiet)
+            .expect("delete in a folder");
+        assert!(names("/Saves").is_empty());
+        remove_cart_path_exfat_unified(vol.clone(), 0, part_bytes, "b.z64", &mut quiet)
+            .expect("delete in the root");
+        assert_eq!(names("/"), ["A.Z64", "Saves"]);
+        let back = read_file_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "A.Z64");
+        assert_eq!(back.unwrap(), b"data");
     }
 
     /// #130: a card formatted without a partition table has boot code where an MBR keeps its
