@@ -23,7 +23,13 @@
  */
 int ed64pro_init(void);
 
-/** Copy up to `cap` waiting host bytes to `dst`; returns the count, 0 if none. Never blocks. */
+/** ed64pro_receive's result when host bytes were drained from the FIFO and not delivered. */
+#define ED64PRO_RECEIVE_LOST 0xFFFFFFFFu
+
+/**
+ * Copy up to `cap` waiting host bytes to `dst`; returns the count, 0 if none. Never blocks.
+ * Returns ED64PRO_RECEIVE_LOST if a load failed after draining some bytes.
+ */
 uint32_t ed64pro_receive(uint8_t *dst, uint32_t cap);
 
 /** Send `len` bytes to the host. Returns 1 on success, 0 if the cart stayed busy. */

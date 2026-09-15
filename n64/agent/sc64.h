@@ -40,9 +40,10 @@ uint32_t sc64_poll(uint8_t *datatype);
 
 /**
  * Copy `len` bytes of a staged packet (see sc64_poll) out of the cart's buffer into
- * `dst`. `offset` is relative to the start of the packet.
+ * `dst`. `offset` is relative to the start of the packet. Returns 1, or 0 if the PI
+ * stayed busy, in which case `dst` holds nothing usable.
  */
-void sc64_read(void *dst, uint32_t offset, uint32_t len);
+int sc64_read(void *dst, uint32_t offset, uint32_t len);
 
 /**
  * Send one packet to the host. Returns 1 on success, 0 on timeout.

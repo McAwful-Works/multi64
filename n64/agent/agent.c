@@ -26,12 +26,14 @@
 #define AGENT_STREAM_CART 1
 #define CART_INIT() ed64_init()
 #define CART_RECEIVE(dst, cap) ed64_receive((dst), (cap))
+#define CART_RECEIVE_LOST ED64_RECEIVE_LOST
 #define CART_SEND(data, len) ed64_send((data), (len))
 #elif defined(AGENT_CART_ED64PRO)
 #include "ed64pro.h"
 #define AGENT_STREAM_CART 1
 #define CART_INIT() ed64pro_init()
 #define CART_RECEIVE(dst, cap) ed64pro_receive((dst), (cap))
+#define CART_RECEIVE_LOST ED64PRO_RECEIVE_LOST
 #define CART_SEND(data, len) ed64pro_send((data), (len))
 #else
 #include "sc64.h"
@@ -204,6 +206,33 @@ static int rx_magic_at(uint32_t i)
     return 1;
 }
 
+/**
+ * 1 if the header at the start of s_rx could be a real frame: a TYPE l3-bridge-protocol-v1.md 3
+ * defines, a CHANNEL outside the reserved 0x03..0x7F (4), and a payload this agent could hold.
+ *
+ * L3 frames carry no checksum, so this is the only check a claimed length gets before the agent
+ * waits for that many bytes. Bytes that happen to spell the magic rarely pass all three.
+ */
+static int rx_header_plausible(void)
+{
+    uint8_t type = s_rx[4];
+    uint8_t channel = s_rx[5];
+
+    switch (type) {
+    case 0x01u: case 0x02u: case 0x03u: /* HANDSHAKE, _OK, _REJECT */
+    case 0x10u: case 0x11u: case 0x12u: /* DATA, ACK, ERROR */
+    case 0x20u: case 0x21u:             /* HEARTBEAT, _ACK */
+    case 0x30u: case 0x31u: case 0x32u: case 0x33u: /* SESSION_* */
+        break;
+    default:
+        return 0;
+    }
+    if (channel >= 0x03u && channel <= 0x7Fu) {
+        return 0;
+    }
+    return be32(&s_rx[12]) <= AGENT_RX_CAP - L3_HEADER_LEN;
+}
+
 /** Length of the complete frame at the start of s_rx, dropping anything before it; 0 if none yet. */
 static uint32_t rx_frame_len(void)
 {
@@ -218,12 +247,12 @@ static uint32_t rx_frame_len(void)
         if (s_rx_len < L3_HEADER_LEN) {
             return 0u;
         }
-        payload_len = be32(&s_rx[12]);
-        if (payload_len > AGENT_RX_CAP - L3_HEADER_LEN) {
+        if (!rx_header_plausible()) {
             /* Not a frame this agent could hold: look past this magic for the next one. */
             rx_drop(1u);
             continue;
         }
+        payload_len = be32(&s_rx[12]);
         if (s_rx_len < L3_HEADER_LEN + payload_len) {
             return 0u;
         }
@@ -247,6 +276,13 @@ static uint32_t stream_frame(void)
             break;
         }
         n = CART_RECEIVE(&s_rx[s_rx_len], AGENT_RX_CAP - s_rx_len);
+        if (n == CART_RECEIVE_LOST) {
+            /* Part of the stream is gone. A partial frame held here could now be completed only by
+               bytes that are not its own -- the tail of a later request, spliced in and handled
+               as this one (#151). Drop it; the host retries. */
+            s_rx_len = 0u;
+            break;
+        }
         if (n == 0u) {
             break;
         }
@@ -337,7 +373,9 @@ void agent_tick(void)
         return;
     }
 
-    sc64_read(s_rx, 0u, size);
+    if (!sc64_read(s_rx, 0u, size)) {
+        return; /* s_rx holds stale bytes, not this request */
+    }
 #endif
 
     if (s_rx[0] != L3_MAGIC0 || s_rx[1] != L3_MAGIC1 || s_rx[2] != L3_MAGIC2 || s_rx[3] != L3_MAGIC3) {
