@@ -68,6 +68,7 @@ async function serveFrontend() {
  * - `localStorage`: keys written before the page loads
  * - `daemonUp`: multi64d answers the probe
  * - `releaseFails`: `explorer_daemon_release` rejects, as a timed-out request does
+ * - `resumeFails`: `explorer_daemon_resume` rejects
  * - `listFails`: cart paths whose listing rejects, or `"all"`
  * - `pickerPaths`: the files Quick upload was opened with
  */
@@ -131,6 +132,10 @@ function installTauriStub(scenario = {}) {
     explorer_daemon_probe: () => ({ up: sc.daemonUp === true }),
     explorer_daemon_release: () => {
       if (sc.releaseFails) throw new Error("POST http://127.0.0.1:38765/v1/serial/release: timeout");
+      return null;
+    },
+    explorer_daemon_resume: () => {
+      if (sc.resumeFails) throw new Error("POST http://127.0.0.1:38765/v1/serial/resume: connection refused");
       return null;
     },
     upload_picker_get_paths: () => sc.pickerPaths || [],
@@ -934,6 +939,42 @@ const clearedSavedFolder = (calls) =>
 }
 
 {
+  // The cart reads fine, but multi64d refuses the resume afterwards.
+  const p = await openScenario("index.html", { daemonUp: true, resumeFails: true });
+  const told = await until(p, () =>
+    !document.getElementById("explorer-modal-root").hidden &&
+    document.getElementById("explorer-modal-title").textContent === "Multi64 bridge not resumed");
+  const message = await p.evaluate(() => document.getElementById("explorer-modal-message").textContent);
+  check("a resume that fails after a cart read tells the user the bridge is still paused",
+    told && message.includes("connection refused") && message.includes("Restart bridge"), message);
+  await p.close();
+}
+
+{
+  // New folder on the cart asks before pausing the bridge; Cancel there must leave the bridge alone.
+  const p = await openScenario("index.html", { daemonUp: true });
+  await p.waitForSelector(CART_FILE, { timeout: 15000 });
+  await p.waitForTimeout(400);
+  await p.evaluate(() => { window.__TAURI_CALLS__.length = 0; });
+  await p.click(CART_FILE);
+  await p.keyboard.press("Escape");
+  await p.keyboard.press("Control+Shift+N");
+  await p.waitForSelector("#explorer-modal-input:not([hidden])");
+  await p.keyboard.press("Enter");
+  const asked = await until(p, () =>
+    !document.getElementById("explorer-modal-root").hidden &&
+    document.getElementById("explorer-modal-title").textContent === "Pause the Multi64 bridge?");
+  await p.click("#explorer-modal-cancel");
+  await p.waitForTimeout(300);
+  const seen = (await callsIn(p)).map((c) => c.cmd);
+  check("declining to pause the bridge releases nothing, resumes nothing and doesn't touch the cart",
+    asked && seen.includes("explorer_daemon_probe") &&
+      !seen.some((c) => c === "explorer_daemon_release" || c === "explorer_daemon_resume" || c === "cart_serial_mkdir_cart"),
+    seen.join(","));
+  await p.close();
+}
+
+{
   const p = await openScenario("upload-picker.html", {
     daemonUp: true,
     pickerPaths: ["C:\\dl\\game.z64"],
@@ -1009,6 +1050,41 @@ const clearedSavedFolder = (calls) =>
   check("and uploads there once the cart can be read",
     reconnected && afterReconnect.destination === "Destination: /roms" && afterReconnect.cleared === 0, JSON.stringify(afterReconnect));
   await p.close();
+}
+
+{
+  // multi64d moved off the default address. The main window and Quick upload read it from the same
+  // place, and Quick upload's upload itself must pause the bridge there, not at another address.
+  const listen = "http://127.0.0.1:40123";
+  const scenario = {
+    daemonUp: true,
+    pickerPaths: ["C:\\dl\\game.z64"],
+    settings: { quickUploadCartPath: "roms" },
+    localStorage: { "multi64.explorer.daemonListen": listen },
+  };
+  const bridgeCalls = (calls) => calls.filter((c) => c.cmd.startsWith("explorer_daemon_"));
+
+  const main = await openScenario("index.html", scenario);
+  await main.waitForSelector(CART_FILE, { timeout: 15000 });
+  await main.waitForTimeout(400);
+  const mainBridge = bridgeCalls(await callsIn(main));
+  await main.close();
+
+  const p = await openScenario("upload-picker.html", scenario);
+  const ready = await until(p, () => document.getElementById("upload-picker-btn-upload")?.disabled === false);
+  await p.click("#upload-picker-btn-upload");
+  await until(p, () => Boolean(window.__FINISH_UPLOAD__));
+  const calls = await callsIn(p);
+  const upload = calls.find((c) => c.cmd === "upload_picker_run");
+  const pickerBridge = bridgeCalls(calls);
+  await p.evaluate(() => window.__FINISH_UPLOAD__.resolve({ uploaded: 1, skipped: 0 }));
+  await p.close();
+
+  const detail = JSON.stringify({ upload: upload?.args, main: mainBridge, picker: pickerBridge });
+  check("Quick upload's upload talks to the same multi64d address as the main window and its own folder listing",
+    ready && mainBridge.length > 0 && pickerBridge.length > 0 && upload?.args?.listen === listen &&
+      [...mainBridge, ...pickerBridge].every((c) => c.args.listen === listen),
+    detail);
 }
 
 // --- report --------------------------------------------------------------

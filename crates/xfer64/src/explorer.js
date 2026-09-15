@@ -1,5 +1,10 @@
 import { countNoun, userFacingErrorMessage } from "./user-error.js";
-import { normalizeUsbPath, probeSavedCartFolderReachable } from "./saved-cart-path.js";
+import {
+  bridgeListenUrl,
+  normalizeUsbPath,
+  probeSavedCartFolderReachable,
+  withBridgePaused,
+} from "./saved-cart-path.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -7,9 +12,6 @@ const LS_PC = "multi64.explorer.pcPath";
 const LS_USB_COM = "multi64.explorer.usbCom";
 const LS_SHOW_HIDDEN_CART = "multi64.explorer.showHiddenCart";
 const LS_SHOW_HIDDEN_PC = "multi64.explorer.showHiddenPc";
-/** multi64d HTTP base (override for non-default listen). */
-const LS_DAEMON_LISTEN = "multi64.explorer.daemonListen";
-const DEFAULT_DAEMON_LISTEN = "http://127.0.0.1:38765";
 
 /** Normalized cart device when Settings last loaded (`loadExplorerSettings`). Used to skip cart/USB refresh on Save if unchanged. */
 let explorerSettingsCartDeviceAtLoad = "auto";
@@ -57,13 +59,9 @@ function normalizeCartDeviceSetting(raw) {
   return "auto";
 }
 
-function daemonListenUrl() {
-  return localStorage.getItem(LS_DAEMON_LISTEN) || DEFAULT_DAEMON_LISTEN;
-}
-
 /**
- * Pause multi64d (release COM) whenever it is running, run `fn`, then resume the daemon.
- * Uses `probe.up` (daemon `/health` OK), not COM matching — so we always interrupt when multi64d is active.
+ * Run `fn` with the Multi64 bridge paused ({@link withBridgePaused}), telling the user in a dialog if
+ * the bridge could not be resumed afterwards.
  * @param {() => Promise<unknown>} fn
  * @param {{ confirm?: boolean }} [opts]
  *   - `confirm: false` (default) — no dialog before release/resume.
@@ -71,63 +69,29 @@ function daemonListenUrl() {
  * @returns {Promise<boolean>} `true` if the user cancelled the preflight dialog (only when `confirm` is true).
  */
 async function withCartDaemonYield(fn, opts = {}) {
-  const confirm = opts.confirm === true;
-  const listen = daemonListenUrl();
-  let probe;
-  try {
-    probe = await invoke("explorer_daemon_probe", { listen });
-  } catch {
-    await fn();
-    return false;
-  }
-  if (!probe.up) {
-    await fn();
-    return false;
-  }
-  if (confirm) {
-    const ok = await showExplorerConfirm(
-      "The Multi64 bridge is using this cart on the same serial port.\n\nIt will pause while this finishes, then resume. Continue?",
-      { title: "Pause the Multi64 bridge?", okLabel: "Continue" }
-    );
-    if (!ok) return true;
-  }
-  try {
-    await invoke("explorer_daemon_release", { listen });
-  } catch (releaseError) {
-    // A release that failed or timed out may still be applied by multi64d once it gets the link,
-    // and nothing would resume it after that. Resume anyway; the release error is what to report.
-    await invoke("explorer_daemon_resume", { listen }).catch(() => {});
-    throw releaseError;
-  }
-  // Released and resumed separately so a resume failure can be reported without masking
-  // the operation's own error. If resume fails, multi64d keeps ignoring WebSocket writes
-  // and the bridge is silently dead -- the user has to be told.
-  let fnError = null;
-  try {
-    await fn();
-  } catch (e) {
-    fnError = e;
-  }
-  let resumeError = null;
-  try {
-    await invoke("explorer_daemon_resume", { listen });
-  } catch (e) {
-    resumeError = e;
-  }
-  if (resumeError) {
-    await showExplorerAlert(
-      `The Multi64 bridge was paused for this operation and could not be resumed:
+  let declined = false;
+  await withBridgePaused(invoke, bridgeListenUrl(), fn, {
+    confirmRelease:
+      opts.confirm === true
+        ? async () => {
+            declined = !(await showExplorerConfirm(
+              "The Multi64 bridge is using this cart on the same serial port.\n\nIt will pause while this finishes, then resume. Continue?",
+              { title: "Pause the Multi64 bridge?", okLabel: "Continue" }
+            ));
+            return !declined;
+          }
+        : undefined,
+    onResumeError: (resumeError) =>
+      showExplorerAlert(
+        `The Multi64 bridge was paused for this operation and could not be resumed:
 
-${String(
-        resumeError
-      )}
+${String(resumeError)}
 
 The bridge is not using the cart until it resumes — use Restart bridge in Multi64.`,
-      { title: "Multi64 bridge not resumed" }
-    );
-  }
-  if (fnError) throw fnError;
-  return false;
+        { title: "Multi64 bridge not resumed" }
+      ),
+  });
+  return declined;
 }
 
 /**
@@ -3902,7 +3866,7 @@ async function deleteSelectedCart() {
   let multi64dRunning = false;
   const endProbeBusy = beginBusy("cart", "Deleting…");
   try {
-    const p = await invoke("explorer_daemon_probe", { listen: daemonListenUrl() });
+    const p = await invoke("explorer_daemon_probe", { listen: bridgeListenUrl() });
     multi64dRunning = p.up === true;
   } catch {
     multi64dRunning = false;

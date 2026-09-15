@@ -15,11 +15,15 @@ export function normalizeUsbPath(p) {
   return s;
 }
 
-/** Same key and default as the main explorer's `daemonListenUrl`. */
 const LS_DAEMON_LISTEN = "multi64.explorer.daemonListen";
 const DEFAULT_DAEMON_LISTEN = "http://127.0.0.1:38765";
 
-/** multi64d's HTTP address. */
+/**
+ * multi64d's HTTP address, for every window: the main explorer, Quick upload's cart reads, and
+ * Quick upload's upload, which passes it to the backend. The windows share localStorage, so they
+ * always agree; only the headless `xfer64 upload`, which has no window, reads
+ * `MULTI64_DAEMON_LISTEN` instead.
+ */
 export function bridgeListenUrl() {
   try {
     return localStorage.getItem(LS_DAEMON_LISTEN) || DEFAULT_DAEMON_LISTEN;
@@ -32,15 +36,25 @@ export function bridgeListenUrl() {
  * Run `fn` with the Multi64 bridge paused when multi64d is running, then resume it: multi64d holds
  * the cart's serial port while the bridge runs, so any cart access has to go through here.
  *
- * A resume is attempted after every release attempt, including one that failed or timed out, since
- * multi64d may still apply that release late; `fn` never runs without a release.
+ * The bridge is paused whenever multi64d answers (`probe.up`), not only when its port matches ours:
+ * COM matching was too brittle. A resume is attempted after every release attempt, including one
+ * that failed or timed out, since multi64d may still apply that release late; `fn` never runs
+ * without a release. The release error is the one thrown.
  *
  * @template T
  * @param {function(string, object=): Promise<unknown>} invoke
  * @param {string} listen
  * @param {() => Promise<T>} fn
- * @param {{ onResumeError?: (e: unknown) => void }} [opts] told when the resume after `fn` fails
- * @returns {Promise<T>}
+ * @param {{
+ *   confirmRelease?: () => Promise<boolean>,
+ *   onResumeError?: (e: unknown) => unknown,
+ * }} [opts]
+ *   - `confirmRelease`: asked once multi64d is known to be up, before releasing it. When it resolves
+ *     false nothing is released or resumed, `fn` does not run, and this resolves `undefined`.
+ *   - `onResumeError`: told when the resume after `fn` fails, and awaited (so a dialog can be shown)
+ *     before `fn`'s own result or error is passed on. A failed resume leaves multi64d ignoring
+ *     WebSocket writes, so the bridge is silently dead: the user has to be told.
+ * @returns {Promise<T | undefined>}
  */
 export async function withBridgePaused(invoke, listen, fn, opts = {}) {
   let up = false;
@@ -50,6 +64,7 @@ export async function withBridgePaused(invoke, listen, fn, opts = {}) {
     up = false;
   }
   if (!up) return fn();
+  if (opts.confirmRelease && !(await opts.confirmRelease())) return undefined;
   try {
     await invoke("explorer_daemon_release", { listen });
   } catch (releaseError) {
@@ -62,7 +77,7 @@ export async function withBridgePaused(invoke, listen, fn, opts = {}) {
     try {
       await invoke("explorer_daemon_resume", { listen });
     } catch (e) {
-      opts.onResumeError?.(e);
+      await opts.onResumeError?.(e);
     }
   }
 }

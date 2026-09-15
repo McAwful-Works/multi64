@@ -94,6 +94,7 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
     uint32_t keep;
     uint32_t left;
     uint32_t got = 0u;
+    int is_l3;
 
     if (!usb_idle()) {
         return 0u;
@@ -103,13 +104,16 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
         return 0u;
     }
 
+    /* From here on a message is being consumed: any failure has lost part of the stream, and says
+       so, so the agent throws away the partial frame it belonged to (#151). */
     b = usb_pull(8u);
     if (b == 0 || b[0] != 'D' || b[1] != 'M' || b[2] != 'A' || b[3] != '@') {
         /* Out of step with the host. The agent's L3 layer resynchronises on the next frame. */
-        return 0u;
+        return ED64_RECEIVE_LOST;
     }
     size = ((uint32_t)b[5] << 16) | ((uint32_t)b[6] << 8) | (uint32_t)b[7];
-    keep = (b[4] == ED_DATATYPE_L3 && size <= cap) ? size : 0u;
+    is_l3 = b[4] == ED_DATATYPE_L3;
+    keep = (is_l3 && size <= cap) ? size : 0u;
 
     /* The payload is padded to 2 bytes on the wire; drain all of it even when keeping none. */
     left = (size + 1u) & ~1u;
@@ -119,7 +123,7 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
 
         b = usb_pull(n);
         if (b == 0) {
-            return 0u;
+            return ED64_RECEIVE_LOST;
         }
         for (i = 0u; i < n && got < keep; i++) {
             dst[got++] = b[i];
@@ -129,7 +133,11 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
 
     b = usb_pull(4u);
     if (b == 0 || b[0] != 'C' || b[1] != 'M' || b[2] != 'P' || b[3] != 'H') {
-        return 0u;
+        return ED64_RECEIVE_LOST;
+    }
+    if (is_l3 && size > cap) {
+        /* Drained, but it did not fit: its L3 bytes are gone. */
+        return ED64_RECEIVE_LOST;
     }
     return got;
 }

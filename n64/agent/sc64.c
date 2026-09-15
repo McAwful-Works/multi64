@@ -97,11 +97,26 @@
 /** Words moved per masked span. 64 words is a few microseconds of latency. */
 #define PI_CHUNK_WORDS 64u
 
+#ifdef SC64_HOST_TEST
+/* make host-test: tests/sc64_test.c stands in for the PI bus and the interrupt mask. The N64 build
+   never defines this, and compiles exactly the uncached loads and stores below. */
+uint32_t sc64_test_pi_load(uint32_t addr);
+void sc64_test_pi_store(uint32_t addr, uint32_t value);
+uint32_t sc64_test_int_mask(void);
+void sc64_test_int_restore(uint32_t sr);
+#define PI_LOAD(addr) sc64_test_pi_load(addr)
+#define PI_STORE(addr, value) sc64_test_pi_store((addr), (value))
+#define int_mask() sc64_test_int_mask()
+#define int_restore(sr) sc64_test_int_restore(sr)
+#else
 /* Uncached (KSEG1) view: cart and register access must never be cached. */
 static volatile uint32_t *io(uint32_t phys)
 {
     return (volatile uint32_t *)(0xA0000000u | (phys & 0x1FFFFFFFu));
 }
+
+#define PI_LOAD(addr) (*io(addr))
+#define PI_STORE(addr, value) (*io(addr) = (value))
 
 /** Clear the CP0 interrupt-enable bit, returning the previous Status. */
 static uint32_t int_mask(void)
@@ -118,6 +133,7 @@ static void int_restore(uint32_t sr)
     __asm__ __volatile__("mtc0 %0, $12" : : "r"(sr));
     __asm__ __volatile__("nop; nop; nop");
 }
+#endif
 
 /**
  * Spin until the PI is idle, or give up.
@@ -134,10 +150,10 @@ static void int_restore(uint32_t sr)
  */
 #define PI_WAIT_SPINS 100000u
 
-static int pi_wait_idle(void)
+static int pi_wait_clear(uint32_t bits)
 {
     uint32_t spins = PI_WAIT_SPINS;
-    while (*io(PI_STATUS) & (PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY)) {
+    while (PI_LOAD(PI_STATUS) & bits) {
         if (--spins == 0u) {
             return 0;
         }
@@ -145,35 +161,46 @@ static int pi_wait_idle(void)
     return 1;
 }
 
-static uint32_t io_read(uint32_t addr)
+static int pi_wait_idle(void)
 {
-    uint32_t sr, v;
-    if (!pi_wait_idle()) {
-        return 0u;
-    }
-    sr = int_mask();
-    if (!pi_wait_idle()) {
-        int_restore(sr);
-        return 0u;
-    }
-    v = *io(addr);
-    int_restore(sr);
-    return v;
+    return pi_wait_clear(PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY);
 }
 
-static void io_write(uint32_t addr, uint32_t value)
+/*
+ * One register access with the PI idle and interrupts masked. Both return 0 if the PI stayed busy,
+ * having touched nothing. This once reported nothing: a store that never happened looked like one
+ * that did, and a failed load read as 0 -- "not busy, no error" to sc64_cmd (#153).
+ */
+static int io_read(uint32_t addr, uint32_t *value)
 {
     uint32_t sr;
     if (!pi_wait_idle()) {
-        return;
+        return 0;
     }
     sr = int_mask();
     if (!pi_wait_idle()) {
         int_restore(sr);
-        return;
+        return 0;
     }
-    *io(addr) = value;
+    *value = PI_LOAD(addr);
     int_restore(sr);
+    return 1;
+}
+
+static int io_write(uint32_t addr, uint32_t value)
+{
+    uint32_t sr;
+    if (!pi_wait_idle()) {
+        return 0;
+    }
+    sr = int_mask();
+    if (!pi_wait_idle()) {
+        int_restore(sr);
+        return 0;
+    }
+    PI_STORE(addr, value);
+    int_restore(sr);
+    return 1;
 }
 
 /**
@@ -182,8 +209,12 @@ static void io_write(uint32_t addr, uint32_t value)
  * `len` is rounded up to a word; callers size their buffers with that slack. Both
  * directions go through the uncached window, so no cache maintenance is needed and
  * no stale line can be left behind.
+ *
+ * Returns 1, or 0 if the PI stayed busy, in which case some words may have moved and interrupts are
+ * as they were. Every wait is bounded: this once ignored pi_wait_idle() failing and spun on IO_BUSY
+ * with no limit and interrupts masked, the hang the comment on PI_WAIT_SPINS describes (#152).
  */
-static void pi_copy(void *ram, uint32_t cart_addr, uint32_t len, int to_cart)
+static int pi_copy(void *ram, uint32_t cart_addr, uint32_t len, int to_cart)
 {
     uint32_t words = (len + 3u) / 4u;
     uint32_t *r = (uint32_t *)ram;
@@ -198,9 +229,14 @@ static void pi_copy(void *ram, uint32_t cart_addr, uint32_t len, int to_cart)
             n = PI_CHUNK_WORDS;
         }
 
-        pi_wait_idle();
+        if (!pi_wait_idle()) {
+            return 0;
+        }
         sr = int_mask();
-        pi_wait_idle();
+        if (!pi_wait_idle()) {
+            int_restore(sr);
+            return 0;
+        }
         if (to_cart) {
             for (i = 0u; i < n; i++) {
                 /*
@@ -213,51 +249,73 @@ static void pi_copy(void *ram, uint32_t cart_addr, uint32_t len, int to_cart)
                  * Only IO_BUSY is polled: a DMA cannot start inside the masked
                  * span, and pi_wait_idle() above already cleared DMA_BUSY.
                  */
-                while (*io(PI_STATUS) & PI_STATUS_IO_BUSY) {
+                if (!pi_wait_clear(PI_STATUS_IO_BUSY)) {
+                    int_restore(sr);
+                    return 0;
                 }
-                *io(cart_addr + (done + i) * 4u) = r[done + i];
+                PI_STORE(cart_addr + (done + i) * 4u, r[done + i]);
             }
-            while (*io(PI_STATUS) & PI_STATUS_IO_BUSY) {
+            if (!pi_wait_clear(PI_STATUS_IO_BUSY)) {
+                int_restore(sr);
+                return 0;
             }
         } else {
             for (i = 0u; i < n; i++) {
-                r[done + i] = *io(cart_addr + (done + i) * 4u);
+                r[done + i] = PI_LOAD(cart_addr + (done + i) * 4u);
             }
         }
         int_restore(sr);
 
         done += n;
     }
+    return 1;
 }
 
 /* ---- command interface -------------------------------------------------- */
 
+/**
+ * Status reads while a command is in progress, and USB_READ_STATUS polls while a read is staged,
+ * before giving up. Generous, like PI_WAIT_SPINS: both loops once had no bound at all (#153).
+ */
+#define SC64_CMD_SPINS 100000u
+
+/** Run one command. Returns 0 if the cart reported an error or any register access failed. */
 static int sc64_cmd(uint8_t cmd, const uint32_t *args, uint32_t *result)
 {
     uint32_t sr;
+    uint32_t spins;
 
     if (args != 0) {
-        io_write(REG_DATA_0, args[0]);
-        io_write(REG_DATA_1, args[1]);
+        if (!io_write(REG_DATA_0, args[0]) || !io_write(REG_DATA_1, args[1])) {
+            return 0;
+        }
     }
-    io_write(REG_SR_CMD, cmd);
+    if (!io_write(REG_SR_CMD, cmd)) {
+        return 0;
+    }
 
-    do {
-        sr = io_read(REG_SR_CMD);
-    } while (sr & SR_CMD_BUSY);
+    for (spins = 0u;; spins++) {
+        if (spins >= SC64_CMD_SPINS || !io_read(REG_SR_CMD, &sr)) {
+            return 0;
+        }
+        if (!(sr & SR_CMD_BUSY)) {
+            break;
+        }
+    }
 
     if (result != 0) {
-        result[0] = io_read(REG_DATA_0);
-        result[1] = io_read(REG_DATA_1);
+        if (!io_read(REG_DATA_0, &result[0]) || !io_read(REG_DATA_1, &result[1])) {
+            return 0;
+        }
     }
     return (sr & SR_CMD_ERROR) ? 0 : 1;
 }
 
 /**
- * Toggle cart write-enable, returning the previous setting so it can be restored
- * exactly. CONFIG_SET reports the old value in result[1].
+ * Set cart write-enable, writing the previous setting through `previous` so it can be
+ * restored exactly. CONFIG_SET reports the old value in result[1]. Returns 0 on failure.
  */
-static uint32_t set_rom_writable(uint32_t enable)
+static int set_rom_writable(uint32_t enable, uint32_t *previous)
 {
     uint32_t args[2];
     uint32_t result[2];
@@ -267,15 +325,33 @@ static uint32_t set_rom_writable(uint32_t enable)
     if (!sc64_cmd(CMD_CONFIG_SET, args, result)) {
         return 0;
     }
-    return result[1];
+    *previous = result[1];
+    return 1;
+}
+
+/*
+ * What write-enable goes back to after sc64_write stages a packet, and whether putting it back
+ * failed. A restore that does not land leaves the cart writable under the running game (#153), so
+ * it is retried by every sc64_poll and sc64_write until it does. While one is pending, the old value
+ * CONFIG_SET reports is the agent's own leftover and is not taken as the value to restore.
+ */
+static uint32_t s_rom_write_restore;
+static int s_rom_write_restore_pending;
+
+static void rom_write_restore(void)
+{
+    uint32_t ignored;
+    s_rom_write_restore_pending = !set_rom_writable(s_rom_write_restore, &ignored);
 }
 
 int sc64_init(void)
 {
-    io_write(REG_KEY, KEY_RESET);
-    io_write(REG_KEY, KEY_UNLOCK_1);
-    io_write(REG_KEY, KEY_UNLOCK_2);
-    return io_read(REG_IDENT) == IDENT_V2;
+    uint32_t ident;
+
+    if (!io_write(REG_KEY, KEY_RESET) || !io_write(REG_KEY, KEY_UNLOCK_1) || !io_write(REG_KEY, KEY_UNLOCK_2)) {
+        return 0;
+    }
+    return io_read(REG_IDENT, &ident) && ident == IDENT_V2;
 }
 
 uint32_t sc64_poll(uint8_t *datatype)
@@ -283,6 +359,11 @@ uint32_t sc64_poll(uint8_t *datatype)
     uint32_t args[2];
     uint32_t result[2];
     uint32_t size;
+    uint32_t spins;
+
+    if (s_rom_write_restore_pending) {
+        rom_write_restore();
+    }
 
     if (!sc64_cmd(CMD_USB_READ_STATUS, 0, result)) {
         return 0;
@@ -303,27 +384,31 @@ uint32_t sc64_poll(uint8_t *datatype)
     if (!sc64_cmd(CMD_USB_READ, args, 0)) {
         return 0;
     }
-    do {
-        if (!sc64_cmd(CMD_USB_READ_STATUS, 0, result)) {
+    for (spins = 0u;; spins++) {
+        if (spins >= SC64_CMD_SPINS || !sc64_cmd(CMD_USB_READ_STATUS, 0, result)) {
             return 0;
         }
-    } while (result[0] & USB_READ_BUSY);
+        if (!(result[0] & USB_READ_BUSY)) {
+            break;
+        }
+    }
 
     return size;
 }
 
-void sc64_read(void *dst, uint32_t offset, uint32_t len)
+int sc64_read(void *dst, uint32_t offset, uint32_t len)
 {
     /* PI DMA needs even lengths; round up into the caller's buffer, which the
        agent sizes with that slack. */
-    pi_copy(dst, SC64_BUFFER + offset, len, 0);
+    return pi_copy(dst, SC64_BUFFER + offset, len, 0);
 }
 
 int sc64_write(uint8_t datatype, const void *data, uint32_t len)
 {
     uint32_t args[2];
     uint32_t result[2];
-    uint32_t restore;
+    uint32_t previous;
+    int staged = 0;
     uint32_t spins;
 
     if (len == 0u || len > SC64_BUFFER_SIZE) {
@@ -342,11 +427,19 @@ int sc64_write(uint8_t datatype, const void *data, uint32_t len)
     /*
      * Write-enable spans the staging copy only -- microseconds, with interrupts
      * masked in 64-word chunks inside pi_copy -- so the cartridge is never left
-     * writable underneath the running game.
+     * writable underneath the running game. If the enable fails nothing is staged; if the
+     * restore fails it stays pending for the next call (see s_rom_write_restore).
      */
-    restore = set_rom_writable(1u);
-    pi_copy((void *)data, SC64_BUFFER, len, 1);
-    set_rom_writable(restore);
+    if (set_rom_writable(1u, &previous)) {
+        if (!s_rom_write_restore_pending) {
+            s_rom_write_restore = previous;
+        }
+        staged = pi_copy((void *)data, SC64_BUFFER, len, 1);
+    }
+    rom_write_restore();
+    if (!staged) {
+        return 0;
+    }
 
     /*
      * Read back the ends of what we just staged. If a store was dropped the cart
@@ -360,8 +453,9 @@ int sc64_write(uint8_t datatype, const void *data, uint32_t len)
         uint32_t tail = ((len + 3u) / 4u - 1u) * 4u;
         const uint8_t *src = (const uint8_t *)data;
 
-        pi_copy(&first, SC64_BUFFER, 4u, 0);
-        pi_copy(&last, SC64_BUFFER + tail, 4u, 0);
+        if (!pi_copy(&first, SC64_BUFFER, 4u, 0) || !pi_copy(&last, SC64_BUFFER + tail, 4u, 0)) {
+            return 0;
+        }
         if (first != *(const uint32_t *)src) {
             return 0;
         }

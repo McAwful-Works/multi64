@@ -40,15 +40,19 @@ They drive `crates/multi64/src/index.html` the same way and check the Status car
 Cart and Serial port selects, including a saved port that is unplugged. See
 [`crates/multi64/e2e/README.md`](crates/multi64/e2e/README.md).
 
-And one more, also Ubuntu only — the cart agent's reassembly test, the only CI job that compiles N64 code
+And one more, also Ubuntu only — the cart agent's host tests, the only CI job that compiles N64 code
 (for the PC, not the console). It needs a host `gcc` or `clang` and `make`, nothing from the N64 toolchain:
 
 ```sh
 make -C n64/agent host-test
 ```
 
-It builds `n64/agent/agent.c` once per EverDrive cart against a fake driver, under ASan and UBSan,
-and checks that L3 frames arriving in pieces are reassembled. It proves that logic, not either driver.
+All of it runs under ASan and UBSan, in two parts:
+
+- It builds `n64/agent/agent.c` once per EverDrive cart against a fake driver, and checks that L3 frames arriving in pieces are reassembled and that a lost piece is never spliced into the next request.
+- It builds the real SC64 driver, `n64/agent/sc64.c`, against a fake cart and bus (`tests/sc64_test.c`, `SC64_HOST_TEST`), and checks that every bus wait is bounded and every failed register write is reported.
+
+Neither part shows that a driver works on a cart.
 
 Targeted testing:
 

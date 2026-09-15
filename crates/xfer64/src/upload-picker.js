@@ -646,9 +646,11 @@ async function runUpload() {
         }
       });
     }
+    // The address this window's cart reads paused the bridge at, so the upload pauses the same one.
     const summary = await invoke("upload_picker_run", {
       cartParent: cartPath,
       overwrite: ow,
+      listen: bridgeListenUrl(),
     });
     await persistQuickUploadPath();
     const uploaded = Number(summary?.uploaded) || 0;

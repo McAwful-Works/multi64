@@ -10,7 +10,7 @@ The daemon is **L3-facing**: clients send and receive **raw L3 bytes** on the We
 
 ## 1. Transport
 
-- **HTTP** `GET /` — JSON metadata (service name, version, WebSocket path, configured serial, `serialActive`).
+- **HTTP** `GET /` — JSON metadata (service name, version, WebSocket path, configured serial, `serialActive`, `serialBusy`).
 - **HTTP** `GET /health` — minimal JSON `{"status":"ok"}` for load balancers and process supervisors.
 - **HTTP** `POST /v1/serial/release` — drop the COM port so another process (e.g. Xfer64) can open it; `serialActive` in `GET /` becomes `false` until resume.
 - **HTTP** `POST /v1/serial/resume` — reopen the configured serial device and restore normal operation.
@@ -26,7 +26,8 @@ Default listen address: **`127.0.0.1:38765`** (configurable via `--listen` / `MU
 | `version` | string | Daemon binary version. |
 | `websocket_path` | string | Path for the WebSocket upgrade (e.g. `"/ws"`). |
 | `serial` | string | Configured serial device path (e.g. `COM3`); empty in the metadata-only test router. |
-| `serialActive` | boolean | `true` **only** while the daemon holds an open serial link. `false` after **`POST /v1/serial/release`** until **`POST /v1/serial/resume`**, and also `false` while the link is **faulted** (§1.3). |
+| `serialActive` | boolean | `true` while the daemon holds an open serial link, or while `serialBusy` is `true`. `false` after **`POST /v1/serial/release`** until **`POST /v1/serial/resume`**, and also `false` while the link is **faulted** (§1.3). |
+| `serialBusy` | boolean | `true` when the daemon could not look at the serial link within **500 ms** because it was in use: writing a message to the cart, or opening the port (§1.2). `serialActive` is then `true`, so a client treats the port as held and releases before opening it. Daemons older than this field omit it, and wait for the link before answering instead. |
 | `cart` | string | The cart mapping the daemon was started for, as `--cart` names it (§5.1): `sc64`, `ed64` or `ed64pro`. Empty in the metadata-only test router. Daemons older than this field omit it; clients MUST treat a missing or unrecognised value as unknown. It is configuration, like `serial`: it says which mapping the daemon speaks, not that a cart of that kind is attached. |
 
 ### 1.2 Serial yield (Xfer64)
@@ -40,7 +41,7 @@ A tool that needs to know which cart is attached MAY take `serial` and `cart` fr
 | `POST /v1/serial/release` | `{"released":true}` |
 | `POST /v1/serial/resume` | `{"resumed":true}` |
 
-`POST /v1/serial/release` waits at most **2 seconds** for the serial link. The daemon holds the link for each cart read (at most 50 ms), for the whole of each WebSocket message it writes to the cart, and while it reopens a faulted link, so a large message or a slow reopen can outlast that. The daemon then answers **`503 Service Unavailable`** with a plain-text body and **does not release**: the link stays as it was, and that request never takes effect later. After a `503` a client MUST NOT open the port; it MAY retry the release. The bound is well below the 5-second timeout Xfer64 puts on this request, so Xfer64 hears the refusal before it gives up. A client whose own request timed out cannot tell whether the release was applied, and SHOULD call resume anyway, which is harmless on an active link (below).
+`POST /v1/serial/release` waits at most **2 seconds** for the serial link. The daemon holds the link for each cart read (at most 50 ms), for the whole of each WebSocket message it writes to the cart, and while it reopens a faulted link, so a large message or a slow reopen can outlast that. With `--cart ed64pro` a write is paced at about 34 ms per 1024 bytes ([`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md) §5), so any message over roughly 60 KiB outlasts it. The daemon then answers **`503 Service Unavailable`** with a plain-text body and **does not release**: the link stays as it was, and that request never takes effect later. Releases waiting for the link are served in the order they arrived; a release that answered `503` is no longer waiting. After a `503` a client MUST NOT open the port; it MAY retry the release. The bound is well below the 5-second timeout Xfer64 puts on this request, so Xfer64 hears the refusal before it gives up. A client whose own request timed out cannot tell whether the release was applied, and SHOULD call resume anyway, which is harmless on an active link (below).
 
 `POST /v1/serial/resume` is **idempotent**: if the link is already active (e.g. nested release/resume from Xfer64), the handler succeeds without opening a second serial handle. This short-circuit applies to a **live** link only — a link that failed on I/O is *faulted*, not active, so resume always reopens it (§1.3).
 
@@ -69,7 +70,7 @@ The `--serial` requirement in §5.1 is about *configuration*: a device must be *
 
 #### 1.3.2 A failed write faults the link
 
-Writes to the cart are not bound by the 50 ms read timeout. With `--cart sc64` and `--cart ed64`, each serial write call may take up to **1 second** to make progress. The PRO pipe keeps its link's own timeouts. A write that still fails or times out may already have sent part of the WebSocket message, and the cart would read whatever followed as the rest of it. The daemon therefore clears the serial buffers and faults the link instead of sending more. The rest of that message is lost, and recovery follows §1.3.
+Writes to the cart are not bound by the 50 ms read timeout. With `--cart sc64` and `--cart ed64`, each serial write call may take up to **1 second** to make progress. With `--cart ed64pro` the PRO link's own **2-second** operation timeout, set when the port opens, applies instead. A write that still fails or times out may already have sent part of the WebSocket message, and the cart would read whatever followed as the rest of it. The daemon therefore clears the serial buffers and faults the link instead of sending more. The rest of that message is lost, and recovery follows §1.3.
 
 ### 1.4 Origin policy
 

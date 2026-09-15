@@ -191,16 +191,25 @@ static void run_raw_echo(void)
 static void run_m64t_usb_rx(void)
 {
     uint8_t type = 0;
-    int n = (int)cart_link_poll(&type);
+    int left = (int)cart_link_poll(&type);
 
-    if (n > 0) {
-        read_exact(s_pkt, USB_READ_CHUNK, n);
-        s_rx_bytes += (uint32_t)n;
+    if (left <= 0) {
+        return;
+    }
+    s_rx_bytes += (uint32_t)left;
 
+    /* A packet may be longer than s_pkt. Read it a chunk at a time and hand each chunk to the
+       stream before reading the next, so nothing is read past s_pkt and no chunk is overwritten
+       unseen (#154). Draining after each chunk keeps the stream buffer from overflowing. */
+    while (left > 0) {
+        int chunk = left > (int)USB_READ_CHUNK ? (int)USB_READ_CHUNK : left;
+
+        cart_link_read(s_pkt, chunk);
         if (type == MULTI64_L3) {
-            test_proto_rx_append(s_pkt, n);
+            test_proto_rx_append(s_pkt, chunk);
             (void)test_proto_drain_stream();
         }
+        left -= chunk;
     }
 }
 
