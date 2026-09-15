@@ -37,7 +37,7 @@ if (Test-NonPlaceholder $exe) {
 
 if (-not $SkipPrompt) {
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
-    $text = "Install Xfer64 (SD file manager for your flash cart) now?`n`nYou can install it later from Multi64."
+    $text = "Install Xfer64 (SD file manager for your N64 flash cart) now?`n`nYou can install it later from Multi64."
     $answer = [System.Windows.Forms.MessageBox]::Show($text, 'Multi64', 'YesNo', 'Question')
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) {
         exit 0

@@ -29,7 +29,7 @@ let uploadInFlight = false;
 const STATUS_READY =
   "Ready — use Upload here, or wait for the automatic upload.";
 const STATUS_NO_CART =
-  "No cart found. Connect your flash cart over USB. Still checking for the cart…";
+  "No cart found. Connect your N64 flash cart over USB. Still checking for the cart…";
 
 /** Poll when cart was absent so plugging in refreshes the folder list and can start auto-upload. */
 const SD_RECONNECT_POLL_MS = 1500;

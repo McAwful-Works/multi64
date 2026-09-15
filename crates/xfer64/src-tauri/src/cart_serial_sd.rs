@@ -637,7 +637,7 @@ fn resolve_port_probed(
             "No serial port found. Plug in the EverDrive-64 PRO over USB, or choose a serial port."
                 .to_string()
         } else {
-            "No serial port found. Plug in your flash cart over USB, or choose a serial port."
+            "No serial port found. Plug in your N64 flash cart over USB, or choose a serial port."
                 .to_string()
         }
     })?;

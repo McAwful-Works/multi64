@@ -83,7 +83,7 @@ pub fn parse_upload_args() -> Result<UploadCliArgs, String> {
             return Err(
                 "usage: xfer64 upload [options] <files...>\n\
                  \n\
-                 Upload files from this PC to the flash cart's SD card over USB serial.\n\
+                 Upload files from this PC to the N64 flash cart's SD card over USB serial.\n\
                  \n\
                  --com COM        Serial port (default: settings file, or MULTI64_XFER64_COM, or auto)\n\
                  --to PATH        Cart folder relative to the cart root (headless only; default: Quick upload folder or root)\n\
