@@ -59,7 +59,7 @@ which is the most likely way to reintroduce a contrast failure.
 
 One script, **duplicated verbatim in both apps** (`crates/multi64/src/` and `crates/xfer64/src/`).
 There is no shared frontend directory: `frontendDist` points at each app's own `src`, so a file
-cannot be referenced across crates. **Edit one, copy to the other.** Nothing enforces this.
+cannot be referenced across crates. **Edit one, copy to the other.** `appearance_js_is_identical_in_both_apps` in the `multi64` crate fails when they differ.
 
 Three constraints, each of which has already caused a bug:
 

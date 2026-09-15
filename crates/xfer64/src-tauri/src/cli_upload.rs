@@ -22,6 +22,27 @@ fn count_files(n: u32) -> String {
     format!("{n} {}", if n == 1 { "file" } else { "files" })
 }
 
+/// The `--notify` dialog text for a successful upload. Keep in step with `upload-picker.js`.
+fn upload_summary_description(summary: &UploadImportSummary) -> String {
+    match (summary.uploaded, summary.skipped) {
+        // An empty folder copies and skips nothing; "Uploaded 0 files" would read as a failure.
+        (0, 0) => "Upload finished.".to_string(),
+        (0, 1) => {
+            "Nothing uploaded — that file is already on the cart. Use --overwrite (-y) to replace it."
+                .to_string()
+        }
+        (0, skipped) => format!(
+            "Nothing uploaded — {skipped} files are already on the cart. Use --overwrite (-y) to replace them."
+        ),
+        (uploaded, 0) => format!("Uploaded {} to cart.", count_files(uploaded)),
+        (uploaded, skipped) => format!(
+            "Uploaded {} to cart. {} skipped (already on the cart).",
+            count_files(uploaded),
+            count_files(skipped)
+        ),
+    }
+}
+
 /// Result of [`run_headless_import_upload`] (picker UI and CLI share the same import loop).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -290,28 +311,9 @@ pub fn run_headless_import_upload(
 
     let summary = result?;
     if notify_ok {
-        let description = if summary.uploaded == 0 && summary.skipped > 0 {
-            if summary.skipped == 1 {
-                "Nothing uploaded — that file is already on the cart. Use --overwrite (-y) to replace it."
-                    .to_string()
-            } else {
-                format!(
-                    "Nothing uploaded — {} files are already on the cart. Use --overwrite (-y) to replace them.",
-                    summary.skipped
-                )
-            }
-        } else if summary.skipped > 0 {
-            format!(
-                "Uploaded {} to cart. {} skipped (already on the cart).",
-                count_files(summary.uploaded),
-                count_files(summary.skipped)
-            )
-        } else {
-            format!("Uploaded {} to cart.", count_files(summary.uploaded))
-        };
         let _ = rfd::MessageDialog::new()
             .set_title("Xfer64 — Quick upload")
-            .set_description(description)
+            .set_description(upload_summary_description(&summary))
             .set_level(rfd::MessageLevel::Info)
             .show();
     }
@@ -364,4 +366,31 @@ pub fn run_cli_upload_from_args(args: UploadCliArgs) -> Result<(), String> {
 pub fn run_cli_upload() -> Result<(), String> {
     let args = parse_upload_args()?;
     run_cli_upload_from_args(args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn describe(uploaded: u32, skipped: u32) -> String {
+        upload_summary_description(&UploadImportSummary { uploaded, skipped })
+    }
+
+    #[test]
+    fn upload_summary_description_covers_each_case() {
+        assert_eq!(describe(0, 0), "Upload finished.");
+        assert_eq!(
+            describe(0, 1),
+            "Nothing uploaded — that file is already on the cart. Use --overwrite (-y) to replace it."
+        );
+        assert_eq!(
+            describe(0, 3),
+            "Nothing uploaded — 3 files are already on the cart. Use --overwrite (-y) to replace them."
+        );
+        assert_eq!(describe(1, 0), "Uploaded 1 file to cart.");
+        assert_eq!(
+            describe(2, 1),
+            "Uploaded 2 files to cart. 1 file skipped (already on the cart)."
+        );
+    }
 }

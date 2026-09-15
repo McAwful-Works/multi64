@@ -6,8 +6,9 @@
  * as-is and `window.__TAURI__` is replaced with a stub that records every `invoke`, so a drag is
  * judged by the calls it produces — no cart, no serial port, no Tauri. The run also checks the
  * explorer's control states (disabled with nothing selected, the show-hidden toggle, the delayed
- * busy overlay) and keyboard access (dialog focus trap, Escape and focus return, the context menu's
- * arrow keys, sort headers), which need the same stubbed page.
+ * busy overlay) and keyboard access (dialog focus trap, Escape and focus return, dialogs asked for
+ * while another is open, the context menu's arrow keys, sort headers), which need the same stubbed
+ * page.
  *
  * What it cannot see: anything the OS owns. Whether Windows accepts the drag we start, whether
  * `tauri://drag-*` fires at all, and whether a real Explorer drop carries the paths we expect are
@@ -65,6 +66,8 @@ async function serveFrontend() {
 function installTauriStub() {
   const calls = [];
   window.__TAURI_CALLS__ = calls;
+  // Commands whose (possibly delayed) answer has been returned, in order.
+  window.__TAURI_DONE__ = [];
   window.__TAURI_LISTENERS__ = {};
 
   const cartEntries = [
@@ -76,6 +79,11 @@ function installTauriStub() {
     { name: "patches", path: "C:\\dl\\patches", isDir: true, size: 0, modifiedMs: 1, hidden: false },
     { name: "banjo.z64", path: "C:\\dl\\banjo.z64", isDir: false, size: 16777216, modifiedMs: 2, hidden: false },
   ];
+  // A folder far taller than its pane, for the checks that scroll; `__TAURI_LONG_PC__` lists it.
+  const longPcEntries = Array.from({ length: 300 }, (_, i) => {
+    const name = `file-${String(i).padStart(3, "0")}.bin`;
+    return { name, path: `C:\\dl\\${name}`, isDir: false, size: 1024, modifiedMs: 10 + i, hidden: false };
+  });
   const listing = (entries) => ({ entries, total: entries.length, done: true, truncated: false, hasMore: false });
   const step = (over) => ({ srcPc: null, destPc: null, cartPath: null, bytes: 4, conflictIfExists: false, isDir: false, ...over });
 
@@ -97,7 +105,9 @@ function installTauriStub() {
     cart_serial_suggest_port: () => (window.__TAURI_NO_SUGGEST__ ? null : "COM3"),
     cart_serial_probe_status: () => ({ resolvedPort: "COM3", mode: settings.cartDevice, detectedKind: "sc64", message: null }),
     cart_serial_list_dir_page: () => listing(cartEntries),
-    fs_list_dir_page: () => listing(pcEntries),
+    fs_list_dir_page: () => listing(window.__TAURI_LONG_PC__ ? longPcEntries : pcEntries),
+    // The EverDrive SD base scan, finding nothing: it ends in an alert.
+    cart_serial_probe_ed64_linear_base: () => ({ candidates: [], basesChecked: 12 }),
     xfer64_app_version: () => "0.0.0-test",
     explorer_daemon_probe: () => ({ up: false }),
     build_fs_copy_plan: (a) => (a.srcPaths || []).map((p) =>
@@ -117,7 +127,9 @@ function installTauriStub() {
         // A check can slow one command down to watch what the UI does while it runs.
         const delay = window.__TAURI_DELAYS__?.[cmd];
         if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-        return handlers[cmd] ? handlers[cmd](args || {}) : null;
+        const result = handlers[cmd] ? handlers[cmd](args || {}) : null;
+        window.__TAURI_DONE__.push(cmd);
+        return result;
       },
       Channel: class { set onmessage(fn) { this._fn = fn; } },
     },
@@ -371,32 +383,56 @@ await reset();
 // --- the busy overlay ----------------------------------------------------
 await reset();
 {
-  await page.evaluate(() => { window.__TAURI_DELAYS__ = { fs_mkdir: 900 }; });
+  await page.evaluate(() => { window.__TAURI_DELAYS__ = { fs_mkdir: 1500 }; });
   await page.click(PC_FILE);
   await page.keyboard.press("Escape");
   await page.keyboard.press("Control+Shift+N");
   await page.waitForSelector("#explorer-modal-input:not([hidden])");
-  await page.waitForTimeout(100);
-  await page.keyboard.press("Enter");
-  const busyState = () => page.evaluate(() => {
+  await page.waitForFunction(() => document.activeElement?.id === "explorer-modal-input");
+  // Every change to the shade and to Refresh, stamped with the page's own clock: the timing checks
+  // below compare these stamps, so a slow test runner cannot make them pass or fail.
+  await page.evaluate(() => {
     const shade = document.getElementById("table-shade-pc");
-    return {
+    const refresh = document.querySelector('[data-action="refresh"][data-pane="pc"]');
+    const log = (window.__SHADE_LOG__ = []);
+    const snap = () => log.push({
+      t: performance.now(),
       hidden: shade.hidden,
       pending: shade.classList.contains("explorer-table-shade--pending"),
-      refreshDisabled: document.querySelector('[data-action="refresh"][data-pane="pc"]').disabled,
+      refreshDisabled: refresh.disabled,
+    });
+    snap();
+    const observer = new MutationObserver(snap);
+    observer.observe(shade, { attributes: true, attributeFilter: ["hidden", "class"] });
+    observer.observe(refresh, { attributes: true, attributeFilter: ["disabled"] });
+    window.__SHADE_OBSERVER__ = observer;
+  });
+  await page.keyboard.press("Enter");
+  const reached = (fn, timeout = 5000) => page.waitForFunction(fn, null, { timeout }).then(() => true, () => false);
+  const blocked = await reached(() => window.__SHADE_LOG__.some((s) => !s.hidden && s.pending));
+  const drawn = await reached(() => window.__SHADE_LOG__.some((s) => !s.hidden && !s.pending));
+  const cleared = await reached(() => {
+    const log = window.__SHADE_LOG__;
+    const i = log.findIndex((s) => !s.hidden && !s.pending);
+    return i >= 0 && log.slice(i + 1).some((s) => s.hidden) && log.at(-1).hidden && !log.at(-1).refreshDisabled;
+  });
+  const timing = await page.evaluate(() => {
+    window.__SHADE_OBSERVER__.disconnect();
+    const log = window.__SHADE_LOG__;
+    const first = log.find((s) => !s.hidden && s.pending);
+    const shown = log.find((s) => !s.hidden && !s.pending);
+    return {
+      refreshDisabled: first?.refreshDisabled,
+      drawnAfterMs: first && shown ? Math.round(shown.t - first.t) : null,
+      log: log.map((s) => ({ ...s, t: Math.round(s.t) })),
     };
   });
-  await page.waitForTimeout(100);
-  const early = await busyState();
-  await page.waitForTimeout(400);
-  const later = await busyState();
-  await page.waitForTimeout(900);
-  const after = await busyState();
   await page.evaluate(() => { window.__TAURI_DELAYS__ = {}; });
   check("an operation blocks its pane at once but draws no overlay yet",
-    !early.hidden && early.pending && early.refreshDisabled, JSON.stringify(early));
-  check("the overlay is drawn once the operation passes 300 ms", !later.hidden && !later.pending, JSON.stringify(later));
-  check("and removed when it ends, with the pane usable again", after.hidden && !after.refreshDisabled, JSON.stringify(after));
+    blocked && timing.refreshDisabled === true, JSON.stringify(timing));
+  check("the overlay is drawn once the operation passes 300 ms, and not before",
+    drawn && timing.drawnAfterMs >= 295 && timing.drawnAfterMs <= 900, JSON.stringify(timing));
+  check("and removed when it ends, with the pane usable again", cleared, JSON.stringify(timing));
   check("the folder was created", (await cmds()).includes("fs_mkdir"), (await cmds()).join(","));
 }
 
@@ -516,6 +552,68 @@ await reset();
 }
 
 {
+  // A list taller than its pane. Scrolling a list closes the context menu, so opening the menu from
+  // the keyboard must not scroll a row that is already in view, nor close over a scroll it made itself.
+  await page.evaluate(() => { window.__TAURI_LONG_PC__ = true; });
+  await page.click('[data-action="refresh"][data-pane="pc"]');
+  await page.waitForFunction(() => {
+    const wrap = document.getElementById("table-wrap-pc");
+    return document.querySelector('#tbody-pc tr[data-path$="file-000.bin"]') && wrap.scrollHeight > wrap.clientHeight * 3;
+  }, null, { timeout: 5000 });
+  // The lowest row wholly in view: centring it, as the menu used to, would scroll the list.
+  const name = await page.evaluate(() => {
+    const wrap = document.getElementById("table-wrap-pc");
+    const bottom = wrap.getBoundingClientRect().top + wrap.clientHeight;
+    const rows = [...document.querySelectorAll("#tbody-pc tr[data-path]")].filter((tr) => tr.getBoundingClientRect().bottom <= bottom);
+    return rows.at(-1)?.dataset.path.split("\\").pop();
+  });
+  const row = `#tbody-pc tr[data-path$="${name}"]`;
+  /** After two animation frames, by when any scroll event the key caused has fired. */
+  const menuAfterFrames = () => page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const menu = document.getElementById("explorer-context-menu");
+      const first = [...menu.querySelectorAll('[role="menuitem"]')].find((b) => !b.disabled && !b.closest("[hidden]"));
+      resolve({
+        open: !menu.hidden,
+        onFirstItem: first != null && document.activeElement === first,
+        scrollTop: document.getElementById("table-wrap-pc").scrollTop,
+      });
+    }));
+  }));
+
+  await page.click(row);
+  const before = await page.evaluate(() => document.getElementById("table-wrap-pc").scrollTop);
+  await page.keyboard.press("Shift+F10");
+  const inView = await menuAfterFrames();
+  check("in a list taller than its pane, Shift+F10 on a row in view stays open on its first item without scrolling",
+    Boolean(name) && inView.open && inView.onFirstItem && inView.scrollTop === before, JSON.stringify({ name, before, inView }));
+
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => new Promise((resolve) => {
+    document.getElementById("table-wrap-pc").scrollTop = 1e6;
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+  await page.keyboard.press("Shift+F10");
+  const scrolledBack = await menuAfterFrames();
+  const rowShown = await page.evaluate((sel) => {
+    const tr = document.querySelector(sel);
+    const wrap = document.getElementById("table-wrap-pc").getBoundingClientRect();
+    const r = tr?.getBoundingClientRect();
+    return r != null && r.top >= wrap.top && r.bottom <= wrap.bottom;
+  }, row);
+  check("and on a row scrolled out of view, it brings the row back and the menu stays open",
+    scrolledBack.open && scrolledBack.onFirstItem && rowShown, JSON.stringify({ scrolledBack, rowShown }));
+
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => {
+    delete window.__TAURI_LONG_PC__;
+    document.getElementById("table-wrap-pc").scrollTop = 0;
+  });
+  await page.click('[data-action="refresh"][data-pane="pc"]');
+  await page.waitForSelector(PC_FILE, { timeout: 5000 });
+}
+
+{
   const sort = await page.evaluate(() => {
     const th = document.querySelector('#table-cart th[data-sort-key="size"]');
     const btn = th.querySelector("button.explorer-sort-btn");
@@ -561,14 +659,19 @@ await reset();
   await page.keyboard.press("Escape");
   await page.keyboard.press("Control+Shift+N");
   await page.waitForSelector("#explorer-modal-input:not([hidden])");
-  await page.waitForTimeout(100);
+  await page.waitForFunction(() => document.activeElement?.id === "explorer-modal-input");
   await page.keyboard.press("Enter");
-  await page.waitForTimeout(150);
-  const during = await Promise.all(["#select-cart-device", "#select-usb-com"].map(controlState));
-  await page.waitForTimeout(1200);
-  const after = await Promise.all(["#select-cart-device", "#select-usb-com"].map(controlState));
+  // Settings is off too: its Save can change the cart and the serial port.
+  const appBar = ["#select-cart-device", "#select-usb-com", "#btn-open-settings"];
+  const allDisabled = (want) => page.waitForFunction(
+    ({ sels, want }) => sels.every((s) => document.querySelector(s).disabled === want), { sels: appBar, want }, { timeout: 5000 },
+  ).catch(() => {});
+  await allDisabled(true);
+  const during = await Promise.all(appBar.map(controlState));
+  await allDisabled(false);
+  const after = await Promise.all(appBar.map(controlState));
   await page.evaluate(() => { window.__TAURI_DELAYS__ = {}; });
-  check("both app-bar selects are disabled while the cart pane is busy, and say why",
+  check("both app-bar selects and the Settings button are disabled while the cart pane is busy, and say why",
     during.every((s) => s.disabled && s.aria === "true" && s.title.includes(" — wait for")), JSON.stringify(during));
   check("and enabled again when the operation ends",
     after.every((s) => !s.disabled && s.aria === "false" && !s.title.includes(" — ")), JSON.stringify(after));
@@ -649,6 +752,70 @@ await reset();
   await page.waitForSelector("#explorer-modal-root:not([hidden])");
   await page.keyboard.press("Enter");
   await page.waitForSelector("#explorer-settings-panel", { state: "hidden" });
+}
+
+await reset();
+{
+  // Alert, confirm and prompt share one dialog root. Settings' discard confirm is open when a scan
+  // started from Settings ends in an alert: the alert must wait rather than take over the confirm's
+  // root, where Enter used to answer the confirm underneath and leave the alert stuck.
+  await page.evaluate(() => {
+    window.__TAURI_DELAYS__ = { cart_serial_probe_ed64_linear_base: 700 };
+    window.__TAURI_DONE__.length = 0;
+  });
+  await page.click("#btn-open-settings");
+  await page.waitForSelector("#explorer-settings-panel:not([hidden])");
+  await page.selectOption("#explorer-cart-device", "ed64_beta");
+  await page.waitForSelector("#explorer-ed64-advanced-section:not([hidden])");
+  await page.click("#btn-ed64-probe-linear-base");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("#explorer-modal-root:not([hidden])");
+  await page.waitForFunction(() => window.__TAURI_DONE__.includes("cart_serial_probe_ed64_linear_base"), null, { timeout: 5000 });
+  // Nothing should change on screen now, so there is no state to poll for: give the alert a moment.
+  await page.waitForTimeout(250);
+  const underConfirm = await page.evaluate(() => ({
+    title: document.getElementById("explorer-modal-title").textContent,
+    cancelShown: !document.getElementById("explorer-modal-cancel").hidden,
+  }));
+  check("an alert asked for while a confirm is open waits, leaving the confirm's text and buttons alone",
+    underConfirm.title === "Discard changes?" && underConfirm.cancelShown, JSON.stringify(underConfirm));
+
+  // Keep editing: Escape answers the confirm, and the waiting alert opens in its place.
+  await page.keyboard.press("Escape");
+  const alertOpened = await page.waitForFunction(() =>
+    !document.getElementById("explorer-modal-root").hidden &&
+      document.getElementById("explorer-modal-title").textContent === "No SD base found",
+  null, { timeout: 3000 }).then(() => true, () => false);
+  const alertFocus = await activeId();
+  await page.keyboard.press("Enter");
+  // The scan's own cleanup runs only once its alert has resolved.
+  await page.waitForFunction(() => !document.getElementById("btn-ed64-probe-linear-base").disabled, null, { timeout: 3000 }).catch(() => {});
+  const afterAlert = await page.evaluate(() => ({
+    modal: !document.getElementById("explorer-modal-root").hidden,
+    settings: !document.getElementById("explorer-settings-panel").hidden,
+    cart: document.getElementById("explorer-cart-device").value,
+    scanStatus: document.getElementById("explorer-ed64-probe-status").textContent,
+    focusInSettings: document.getElementById("explorer-settings-panel").contains(document.activeElement),
+  }));
+  check("Enter on that alert answers the alert only: Settings stays open with its edit, and the scan finishes",
+    alertOpened && alertFocus === "explorer-modal-ok" && !afterAlert.modal && afterAlert.settings &&
+      afterAlert.cart === "ed64_beta" && afterAlert.scanStatus === "" && afterAlert.focusInSettings,
+    JSON.stringify({ alertOpened, alertFocus, afterAlert }));
+
+  // Both dialogs settled and left the dialog stack: Settings traps Tab again, and Escape asks again.
+  await page.focus("#btn-save-explorer-settings");
+  await page.keyboard.press("Tab");
+  const wrapped = await activeId();
+  await page.keyboard.press("Escape");
+  const askedAgain = await page.waitForFunction(() =>
+    !document.getElementById("explorer-modal-root").hidden &&
+      document.getElementById("explorer-modal-title").textContent === "Discard changes?",
+  null, { timeout: 2000 }).then(() => true, () => false);
+  check("and both dialogs have left the dialog stack: Settings traps Tab again, and Escape asks to discard again",
+    wrapped === "btn-close-settings" && askedAgain, JSON.stringify({ wrapped, askedAgain }));
+  if (askedAgain) await page.keyboard.press("Enter");
+  await page.waitForSelector("#explorer-settings-panel", { state: "hidden", timeout: 3000 }).catch(() => {});
+  await page.evaluate(() => { window.__TAURI_DELAYS__ = {}; });
 }
 
 {

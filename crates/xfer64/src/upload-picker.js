@@ -625,7 +625,8 @@ async function runUpload() {
       }
     } else {
       doneMode = "success";
-      doneMsg = `Uploaded ${countNoun(uploaded, "file")} to cart.`;
+      // An empty folder copies and skips nothing; "Uploaded 0 files" would read as a failure.
+      doneMsg = uploaded === 0 ? "Upload finished." : `Uploaded ${countNoun(uploaded, "file")} to cart.`;
     }
     setUploadStatus(doneMode, doneMsg);
   } catch (e) {

@@ -6,9 +6,9 @@
  * stored preference is not the default. That needs a classic `<script>` in <head>, not
  * `type="module"`: module scripts are always deferred, so they run only after the document is parsed.
  *
- * Persistence is localStorage rather than the app's settings file: this must be readable
- * synchronously at load, and a Tauri `invoke` is async. The settings file remains the source of
- * truth across installs; the app mirrors it here whenever it changes.
+ * Persistence is localStorage only: this must be readable synchronously at load, and a Tauri
+ * `invoke` is async. Neither app keeps appearance in its settings file, so the preferences exist
+ * only in this PC's WebView data; a reinstall or cleared WebView data resets them to the defaults.
  */
 (() => {
   const KEY = "multi64.appearance";

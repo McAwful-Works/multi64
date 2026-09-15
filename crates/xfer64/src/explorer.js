@@ -747,6 +747,15 @@ function finishOperationProgress(message, isError = false, pane) {
   }, OP_HIDE_MS);
 }
 
+/**
+ * For the reload a cancel branch runs before `finishOperationCancelled`: a reload that fails must
+ * not leave the strip stuck on the operation's progress.
+ * @param {unknown} e
+ */
+function logReloadAfterCancelError(e) {
+  console.error("Reload after a cancelled operation failed:", e);
+}
+
 /** Finish the operation strip for a cancellation: shown in amber, since nothing finished. */
 function finishOperationCancelled(message, pane) {
   finishOperationProgress(message, false, pane);
@@ -1220,8 +1229,9 @@ function focusableIn(root) {
 }
 
 /**
- * Open dialogs, bottom first. Only the last one takes Tab and Escape.
- * @type {{ panel: HTMLElement, onEscape: () => void, prevFocus: HTMLElement | null, initialFocus: () => HTMLElement | null, fallbackFocus: () => HTMLElement | null }[]}
+ * Open dialogs, bottom first. Only the last one takes Tab, Escape and Enter, so a key pressed in a
+ * dialog never reaches one underneath it.
+ * @type {{ panel: HTMLElement, onEscape: () => void, onEnter: ((e: KeyboardEvent) => void) | null, prevFocus: HTMLElement | null, initialFocus: () => HTMLElement | null, fallbackFocus: () => HTMLElement | null }[]}
  */
 const dialogFocusStack = [];
 
@@ -1247,7 +1257,11 @@ function onDialogStackKeyDown(e) {
     top.onEscape();
     return;
   }
-  if (e.key !== "Tab" || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.key === "Enter") {
+    top.onEnter?.(e);
+    return;
+  }
+  if (e.key !== "Tab"|| e.ctrlKey || e.altKey || e.metaKey) return;
   const items = focusableIn(top.panel);
   const active = document.activeElement;
   if (items.length === 0) {
@@ -1278,10 +1292,12 @@ let dialogStackListenerInstalled = false;
 
 /**
  * Make `panel` the topmost dialog: focus moves into it, Tab and Shift+Tab stay inside it, and Escape
- * runs `onEscape` (what its Cancel or close does). Call the returned `release` when it closes: focus
- * goes back to what had it before, or to `fallbackFocus`, or into the dialog underneath.
+ * runs `onEscape` (what its Cancel or close does). `onEnter`, when given, gets Enter while this is
+ * the topmost dialog, and only then; it calls `preventDefault` itself if it acts. Call the returned
+ * `release` when it closes: focus goes back to what had it before, or to `fallbackFocus`, or into
+ * the dialog underneath.
  * @param {HTMLElement} panel the `role="dialog"` element
- * @param {{ initialFocus?: HTMLElement | null | (() => HTMLElement | null), onEscape: () => void, fallbackFocus?: HTMLElement | null | (() => HTMLElement | null) }} opts
+ * @param {{ initialFocus?: HTMLElement | null | (() => HTMLElement | null), onEscape: () => void, onEnter?: (e: KeyboardEvent) => void, fallbackFocus?: HTMLElement | null | (() => HTMLElement | null) }} opts
  * @returns {(opts?: { restoreFocus?: boolean }) => void} release
  */
 function trapDialogFocus(panel, opts) {
@@ -1293,6 +1309,7 @@ function trapDialogFocus(panel, opts) {
   const entry = {
     panel,
     onEscape: opts.onEscape,
+    onEnter: opts.onEnter ?? null,
     prevFocus: active instanceof HTMLElement && active !== document.body && !panel.contains(active) ? active : null,
     initialFocus: () => resolveFocusTarget(opts.initialFocus) || focusableIn(panel)[0] || panel,
     fallbackFocus: () => resolveFocusTarget(opts.fallbackFocus),
@@ -1341,6 +1358,14 @@ function isExplorerContextMenuVisible() {
 
 /** What had focus when the context menu opened (the list, usually); it gets focus back. */
 let contextMenuReturnFocus = /** @type {HTMLElement | null} */ (null);
+
+/**
+ * Where the menu's own list was scrolled when the menu opened. Scrolling a list closes the menu, but
+ * opening it from the keyboard can first scroll its row into view, and that scroll's event arrives
+ * once the menu is already up. A scroll event that leaves the list at this position is that one.
+ * @type {{ wrap: HTMLElement, top: number, left: number } | null}
+ */
+let contextMenuOpenScroll = null;
 
 /**
  * @param {{ restoreFocus?: boolean }} [opts] `restoreFocus`: return focus to where the menu opened
@@ -1416,7 +1441,7 @@ function openExplorerContextMenuFromKeyboard(pane) {
   if (sel.size > 0) {
     const anchor = state[pane].anchorPath;
     const path = anchor && sel.has(anchor) ? anchor : [...sel][0];
-    ensurePathVisibleInPane(pane, path);
+    ensurePathVisibleInPane(pane, path, { onlyIfHidden: true });
     const r = (findRowInPaneDom(pane, path) || wrap).getBoundingClientRect();
     showExplorerContextMenu(pane, r.left + 24, r.bottom, false);
     return;
@@ -1452,6 +1477,8 @@ function showExplorerContextMenu(pane, clientX, clientY, blankArea = false) {
     else updateExplorerContextMenuItems(menu, pane);
   }
   menu.dataset.pane = pane;
+  const paneWrap = document.getElementById(`table-wrap-${pane}`);
+  contextMenuOpenScroll = paneWrap ? { wrap: paneWrap, top: paneWrap.scrollTop, left: paneWrap.scrollLeft } : null;
   const copyBtn = menu.querySelector('[data-ctx="copy"]');
   if (copyBtn) {
     copyBtn.textContent = pane === "cart" ? "Export to This PC" : "Import to cart";
@@ -1900,6 +1927,32 @@ function throwUserCopyCancel() {
  * @returns {Promise<'yes'|'skip'|'yesAll'|'skipAll'|'cancel'>}
  */
 function showFileReplaceModal(cfg) {
+  return fileReplaceModalQueue(() => openFileReplaceModal(cfg));
+}
+
+/**
+ * One dialog root holds one dialog at a time. The returned function runs `open` once every dialog it
+ * was given before has settled, and returns that dialog's own promise, so a message that arrives
+ * while its root is in use waits its turn rather than overwriting the one on screen.
+ * @returns {<T>(open: () => Promise<T>) => Promise<T>}
+ */
+function createModalQueue() {
+  let tail = Promise.resolve();
+  return (open) => {
+    const run = tail.then(open);
+    tail = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  };
+}
+
+const fileReplaceModalQueue = createModalQueue();
+const explorerModalQueue = createModalQueue();
+
+/** @param {{ mode: 'fs'|'export'|'import', step: Record<string, unknown>, totalInPlan: number }} cfg */
+function openFileReplaceModal(cfg) {
   return new Promise((resolve) => {
     const root = document.getElementById("explorer-overwrite-modal");
     const msgEl = document.getElementById("explorer-overwrite-message");
@@ -1937,7 +1990,6 @@ function showFileReplaceModal(cfg) {
     let releaseFocus = null;
 
     const cleanup = () => {
-      document.removeEventListener("keydown", onKeyDown, true);
       btnYes.removeEventListener("click", onYes);
       btnSkip.removeEventListener("click", onSkip);
       btnYesAll.removeEventListener("click", onYesAll);
@@ -1957,16 +2009,14 @@ function showFileReplaceModal(cfg) {
       resolve(v);
     };
 
-    // Escape and Tab belong to trapDialogFocus; Enter is this dialog's own.
-    const onKeyDown = (e) => {
-      if (!root || root.hidden) return;
-      if (e.key === "Enter") {
-        // Enter on a focused button presses that button; anywhere else it is Replace.
-        if (e.target instanceof HTMLButtonElement && root.contains(e.target)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        finish("yes");
-      }
+    // trapDialogFocus hands this Enter only while this dialog is the topmost one.
+    /** @param {KeyboardEvent} e */
+    const onEnter = (e) => {
+      // Enter on a focused button presses that button; anywhere else it is Replace.
+      if (e.target instanceof HTMLButtonElement && root.contains(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      finish("yes");
     };
 
     const onYes = () => finish("yes");
@@ -1976,7 +2026,6 @@ function showFileReplaceModal(cfg) {
     const onCancel = () => finish("cancel");
     const onBackdrop = () => finish("cancel");
 
-    document.addEventListener("keydown", onKeyDown, true);
     btnYes.addEventListener("click", onYes);
     btnSkip.addEventListener("click", onSkip);
     btnYesAll.addEventListener("click", onYesAll);
@@ -1991,6 +2040,7 @@ function showFileReplaceModal(cfg) {
     releaseFocus = trapDialogFocus(panel instanceof HTMLElement ? panel : root, {
       initialFocus: btnYes,
       onEscape: onCancel,
+      onEnter,
     });
   });
 }
@@ -2068,8 +2118,15 @@ async function runInteractiveCopyPlan(plan, mode, action = copyActionLabel(mode)
 /**
  * @param {{ type: 'alert'|'confirm'|'prompt', message: string, title?: string, okLabel?: string, defaultValue?: string, placeholder?: string, selectFilenameStem?: boolean, disableOkIfEmpty?: boolean }} cfg
  *   `title` defaults to "Xfer64" and `okLabel` to "OK"; both are reset on every open.
+ *   Alert, confirm and prompt share one dialog root: one asked for while another is open waits
+ *   until that one is answered, then opens and resolves on its own.
  */
 function showExplorerModal(cfg) {
+  return explorerModalQueue(() => openExplorerModal(cfg));
+}
+
+/** @param {Parameters<typeof showExplorerModal>[0]} cfg */
+function openExplorerModal(cfg) {
   return new Promise((resolve) => {
     const root = document.getElementById("explorer-modal-root");
     const titleEl = document.getElementById("explorer-modal-title");
@@ -2144,19 +2201,17 @@ function showExplorerModal(cfg) {
       resolve(value);
     };
 
-    // Escape and Tab belong to trapDialogFocus; Enter is this dialog's own.
-    const onKeyDown = (e) => {
-      if (!root || root.hidden) return;
-      if (e.key === "Enter") {
-        e.preventDefault();
-        e.stopPropagation();
-        if (cfg.type === "alert") finish(undefined);
-        else if (cfg.type === "confirm") finish(e.target !== btnCancel);
-        else if (e.target === btnCancel) finish(null);
-        else if (cfg.type === "prompt") {
-          if (cfg.disableOkIfEmpty === true && !inputEl.value.trim()) return;
-          finish(inputEl.value);
-        }
+    // trapDialogFocus hands this Enter only while this dialog is the topmost one.
+    /** @param {KeyboardEvent} e */
+    const onEnter = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (cfg.type === "alert") finish(undefined);
+      else if (cfg.type === "confirm") finish(e.target !== btnCancel);
+      else if (e.target === btnCancel) finish(null);
+      else if (cfg.type === "prompt") {
+        if (cfg.disableOkIfEmpty === true && !inputEl.value.trim()) return;
+        finish(inputEl.value);
       }
     };
 
@@ -2181,7 +2236,6 @@ function showExplorerModal(cfg) {
     };
 
     cleanup = () => {
-      document.removeEventListener("keydown", onKeyDown, true);
       btnOk.removeEventListener("click", onOk);
       btnCancel.removeEventListener("click", onCancel);
       backdrop?.removeEventListener("click", onBackdrop);
@@ -2191,7 +2245,6 @@ function showExplorerModal(cfg) {
       btnOk.removeAttribute("tabindex");
     };
 
-    document.addEventListener("keydown", onKeyDown, true);
     if (isPrompt && cfg.disableOkIfEmpty === true) {
       inputEl.addEventListener("input", syncOkButtonForEmptyField);
     }
@@ -2207,6 +2260,7 @@ function showExplorerModal(cfg) {
     releaseFocus = trapDialogFocus(panel instanceof HTMLElement ? panel : root, {
       initialFocus: isPrompt ? inputEl : btnOk,
       onEscape: onCancel,
+      onEnter,
     });
     if (isPrompt) {
       if (cfg.selectFilenameStem === true) selectFilenameStemInInput(inputEl);
@@ -2759,11 +2813,33 @@ function scrollVirtualRowIntoView(pane, index) {
   wrap.scrollTop = Math.max(0, Math.min(targetScroll, maxScroll));
 }
 
-/** Scroll so `path` is in the virtual window, then re-render rows for that scroll position. */
-function ensurePathVisibleInPane(pane, path) {
+/**
+ * Whether row `index` sits wholly inside its list's viewport, below the header.
+ * @param {"cart" | "pc"} pane
+ * @param {number} index
+ */
+function isVirtualRowInView(pane, index) {
+  const wrap = document.getElementById(`table-wrap-${pane}`);
+  const thead = wrap?.querySelector("thead");
+  if (!wrap || !thead) return false;
+  const theadH = thead.offsetHeight;
+  const rowH = getExplorerRowHeightPx();
+  const rowTop = theadH + index * rowH;
+  return rowTop >= wrap.scrollTop + theadH && rowTop + rowH <= wrap.scrollTop + wrap.clientHeight;
+}
+
+/**
+ * Scroll so `path` is in the virtual window, then re-render rows for that scroll position.
+ * @param {"cart" | "pc"} pane
+ * @param {string} path
+ * @param {{ onlyIfHidden?: boolean }} [opts] `onlyIfHidden`: leave the list where it is when the row
+ *   is already in view, rather than centring it.
+ */
+function ensurePathVisibleInPane(pane, path, { onlyIfHidden = false } = {}) {
   const entries = state[pane].listEntries;
   const idx = entries.findIndex((e) => e.path === path);
   if (idx < 0) return;
+  if (onlyIfHidden && isVirtualRowInView(pane, idx) && findRowInPaneDom(pane, path)) return;
   lastVirtualRange[pane] = null;
   scrollVirtualRowIntoView(pane, idx);
   renderExplorerPane(pane);
@@ -3069,12 +3145,12 @@ async function copyCartToPcPaths(paths, destOverride = null) {
     finishOperationProgress(`Exported ${doneLabel} to This PC.`, false, "cart");
   } catch (e) {
     if (e && e.userCancelledCopy) {
-      await loadBothPanes({ forceRefresh: true });
+      await loadBothPanes({ forceRefresh: true }).catch(logReloadAfterCancelError);
       finishOperationCancelled("Export cancelled.", "cart");
       return;
     }
     if (isCancelledBackendError(e)) {
-      await loadBothPanes({ forceRefresh: true });
+      await loadBothPanes({ forceRefresh: true }).catch(logReloadAfterCancelError);
       finishOperationCancelled(cancelMessageFor(e, "Export"), "cart");
     } else {
       // A failure partway through still copied earlier files; refresh so the panes match disk.
@@ -3130,12 +3206,12 @@ async function copyPcToCartPaths(paths, cartParentOverride = null) {
     finishOperationProgress(`Imported ${doneLabel} to cart.`, false, "pc");
   } catch (e) {
     if (e && e.userCancelledCopy) {
-      await loadBothPanes({ forceRefresh: true });
+      await loadBothPanes({ forceRefresh: true }).catch(logReloadAfterCancelError);
       finishOperationCancelled("Import cancelled.", "pc");
       return;
     }
     if (isCancelledBackendError(e)) {
-      await loadBothPanes({ forceRefresh: true });
+      await loadBothPanes({ forceRefresh: true }).catch(logReloadAfterCancelError);
       finishOperationCancelled(cancelMessageFor(e, "Import"), "pc");
     } else {
       await loadBothPanes({ forceRefresh: true }).catch(() => {});
@@ -3728,7 +3804,8 @@ function updateExplorerControls() {
     title: "Import selected items into the current folder on the cart (Ctrl+Shift+←)",
     disabledTitle: "Import to cart (Ctrl+Shift+←)",
   });
-  // Switching cart or port mid-operation would fight the operation for the serial port.
+  // Switching cart or port mid-operation would fight the operation for the serial port, and Settings
+  // can change both.
   const cartBusyReason = isPaneBusy("cart") ? BUSY_REASON : "";
   setControlEnabled(document.getElementById("select-cart-device"), cartBusyReason, {
     title: "Which cart is plugged in",
@@ -3736,6 +3813,7 @@ function updateExplorerControls() {
   setControlEnabled(document.getElementById("select-usb-com"), cartBusyReason, {
     title: "Which serial port the cart is on",
   });
+  setControlEnabled(document.getElementById("btn-open-settings"), cartBusyReason, { title: "Settings" });
 }
 
 function isKeyboardBypassTarget(el) {
@@ -3848,7 +3926,7 @@ async function deleteSelectedCart() {
   } catch (e) {
     if (isCancelledBackendError(e)) {
       state.cart.selected.clear();
-      await loadCartPane();
+      await loadCartPane().catch(logReloadAfterCancelError);
       finishOperationCancelled(cancelMessageFor(e, "Delete"), "cart");
     } else {
       // Deletes run one at a time, so a failure partway through still removed earlier items.
@@ -3885,7 +3963,7 @@ async function deleteSelectedPc() {
     for (let i = 0; i < n; i++) {
       if (progressCancelRequested) {
         state.pc.selected.clear();
-        await loadPcPane();
+        await loadPcPane().catch(logReloadAfterCancelError);
         finishOperationCancelled("Delete cancelled.", "pc");
         return;
       }
@@ -4043,10 +4121,8 @@ function setupExplorerKeyboard() {
       }
       if (key === "F5") {
         run("refresh", () => {
-          if (pane === "cart") {
-            void refreshUsbComPorts();
-            void loadCartPane({ forceRefresh: true });
-          } else void loadPcPane({ forceRefresh: true });
+          if (pane === "cart") void refreshCartPortsAndPane();
+          else void loadPcPane({ forceRefresh: true });
         });
         return;
       }
@@ -4234,6 +4310,18 @@ async function refreshUsbComPorts(portsOpt) {
   }
 }
 
+/**
+ * Relist the serial ports and reload the cart pane: the hotplug poll, F5 and Refresh on the cart
+ * pane. The port select can change with the list, so the backend is told before the pane reloads.
+ * @param {string[] | undefined} [ports] the list, when the caller already fetched it
+ */
+async function refreshCartPortsAndPane(ports) {
+  await refreshUsbComPorts(ports);
+  await syncPreferredComToBackend();
+  await refreshUsbDetectHint();
+  await loadCartPane({ forceRefresh: true });
+}
+
 const USB_SERIAL_POLL_MS = 2500;
 /** After the tab becomes visible, COM devices can enumerate a few hundred ms late (Windows). Extra polls, single-flight coalesced. */
 const USB_SERIAL_VISIBILITY_BURST_DELAYS_MS = [500, 1500];
@@ -4246,6 +4334,9 @@ async function pollUsbSerialPortsOnChange() {
   if (document.visibilityState !== "visible") return;
   if (isExplorerModalOpen()) return;
   if (isExplorerSettingsOpen()) return;
+  // An operation holds the port. The snapshot is left alone, so the first poll after it ends
+  // still sees the change.
+  if (isPaneBusy("cart") || isPaneBusy("pc")) return;
   if (usbSerialPollInFlight) return;
   usbSerialPollInFlight = true;
   try {
@@ -4257,10 +4348,7 @@ async function pollUsbSerialPortsOnChange() {
     }
     if (serialPortsSnapshot(ports) === usbSerialPortsSnapshot) return;
 
-    await refreshUsbComPorts(ports);
-    await syncPreferredComToBackend();
-    await refreshUsbDetectHint();
-    await loadCartPane({ forceRefresh: true });
+    await refreshCartPortsAndPane(ports);
   } finally {
     usbSerialPollInFlight = false;
   }
@@ -4930,6 +5018,8 @@ function setupExplorerHelpModal() {
 
 function setupExplorerSettings() {
   document.getElementById("btn-open-settings")?.addEventListener("click", () => {
+    // Disabled while the cart pane is busy; this guards a click racing that.
+    if (isPaneBusy("cart")) return;
     void loadExplorerSettings().then(() => setExplorerSettingsOpen(true));
   });
   document.getElementById("btn-close-settings")?.addEventListener("click", () => {
@@ -4975,6 +5065,11 @@ function setupExplorerSettings() {
     }
   });
   document.getElementById("btn-save-explorer-settings")?.addEventListener("click", async () => {
+    // Save can change the cart and the serial port, which a running operation is holding.
+    if (isPaneBusy("cart")) {
+      await showExplorerAlert("Wait for the current operation to finish, then save.");
+      return;
+    }
     const developerMode = document.getElementById("explorer-developer-mode")?.checked ?? false;
     const cartDevice = normalizeCartDeviceSetting(document.getElementById("explorer-cart-device")?.value);
     const previousCartDevice = explorerSettingsCartDeviceAtLoad;
@@ -5009,9 +5104,6 @@ function setupExplorerSettings() {
     explorerSettingsCartDeviceAtLoad = cartDevice;
     setExplorerSettingsOpen(false);
     try {
-      if (developerMode) {
-        await invoke("explorer_open_dev_shell");
-      }
       // Cart first, then the port; the cart pane reloads once even when both changed.
       await applyCartDevice(cartDevice, {
         previous: previousCartDevice,
@@ -5023,6 +5115,14 @@ function setupExplorerSettings() {
       }
     } catch (e) {
       await showExplorerAlert(userFacingErrorMessage(e, { context: "general" }));
+    }
+    // Separately, and after: a log window that fails to open must not keep the cart and port unapplied.
+    if (developerMode) {
+      try {
+        await invoke("explorer_open_dev_shell");
+      } catch (e) {
+        await showExplorerAlert(userFacingErrorMessage(e, { context: "general" }));
+      }
     }
     if (offerEd64ScanAfterSave) {
       setTimeout(() => void maybeOfferEd64AutoScan(), 0);
@@ -5104,10 +5204,14 @@ async function init() {
   setupExplorerKeyboard();
 
   for (const id of ["table-wrap-cart", "table-wrap-pc"]) {
-    document.getElementById(id)?.addEventListener(
+    const wrap = document.getElementById(id);
+    wrap?.addEventListener(
       "scroll",
       () => {
         hideNameTooltip();
+        // Not a scroll away from the menu: the one that brought its row into view as it opened.
+        const opened = contextMenuOpenScroll;
+        if (opened && opened.wrap === wrap && opened.top === wrap.scrollTop && opened.left === wrap.scrollLeft) return;
         hideExplorerContextMenu();
       },
       { passive: true }
@@ -5173,11 +5277,8 @@ async function init() {
       if (action === "back") goBack(pane);
       else if (action === "up") await goUp(pane);
       else if (action === "refresh") {
-        if (pane === "cart") {
-          await refreshUsbComPorts();
-          await refreshUsbDetectHint();
-          await loadCartPane({ forceRefresh: true });
-        } else await loadPcPane({ forceRefresh: true });
+        if (pane === "cart") await refreshCartPortsAndPane();
+        else await loadPcPane({ forceRefresh: true });
       } else if (action === "pick") {
         const picked = await invoke("pick_folder");
         if (picked) navigate(pane, picked, true);

@@ -643,10 +643,10 @@
         <div class="dialog-body">
           <section class="dialog-section">
             <h3 class="dialog-section-title">Appearance</h3>
-            <p class="dialog-section-note">Applies immediately. Not part of Save settings.</p>
+            <p class="dialog-section-note" id="appearance-note">Applies immediately. Not part of Save settings.</p>
             <label class="field">
               <span>Theme</span>
-              <select id="pref-theme">
+              <select id="pref-theme" aria-describedby="appearance-note">
                 <option value="dark">Dark</option>
                 <option value="light">Light</option>
                 <option value="system">Match system</option>
@@ -655,7 +655,7 @@
             </label>
             <label class="field">
               <span>Text size</span>
-              <select id="pref-scale">
+              <select id="pref-scale" aria-describedby="appearance-note">
                 <option value="0.9">Smaller (90%)</option>
                 <option value="1">Default (100%)</option>
                 <option value="1.15">Larger (115%)</option>
@@ -664,7 +664,7 @@
             </label>
             <label class="field">
               <span>Motion</span>
-              <select id="pref-motion">
+              <select id="pref-motion" aria-describedby="appearance-note">
                 <option value="system">Match system</option>
                 <option value="reduced">Reduce animation</option>
               </select>
@@ -728,12 +728,12 @@
             aria-hidden="true"
           >
             <h3 class="dialog-section-title">Windows integration</h3>
-            <p class="dialog-section-note">Acts immediately. Not part of Save settings.</p>
+            <p class="dialog-section-note" id="explorer-sendto-note">Acts immediately. Not part of Save settings.</p>
             <p class="hint">
               Add <strong>Quick upload</strong> to your user <strong>Send to</strong> menu (right-click a file → Send to → Xfer64 upload). A small window opens so you can pick the cart folder before uploading — nothing runs in the background.
             </p>
             <div class="row">
-              <button type="button" class="btn" id="btn-sendto-upload">Add to Send to</button>
+              <button type="button" class="btn" id="btn-sendto-upload" aria-describedby="explorer-sendto-note">Add to Send to</button>
               <span
                 id="explorer-sendto-status"
                 class="explorer-sendto-status"
