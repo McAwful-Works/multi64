@@ -23,14 +23,21 @@ Hues used at more than one alpha are stored as **RGB triples**, with the alpha a
 `--highlight-rgb` exist for this. `--highlight-rgb` is white in dark themes and **black in light** —
 a hairline that lightens a dark surface must darken a light one.
 
-To check the rule still holds, look for literals outside `:root`:
+The rule is checked by a test, so it holds whether or not anyone remembers it:
 
 ```sh
-grep -nE '(#[0-9a-fA-F]{3,8}\b|rgba?\((?!var)[0-9])' crates/*/src/*.css
+cargo test -p multi64 no_colour_literals_outside_the_palette
 ```
 
-The only expected hits are `var(--muted, #9aa0a6)` fallbacks in `explorer.css`, which are dead
-(`--muted` is always defined) and harmless.
+It reads every `.css` file under `crates/multi64/src/` and `crates/xfer64/src/` and fails on any
+declaration outside a `:root` palette block whose value names a colour: a hex literal, a colour
+function called with numbers rather than a token (`rgba(138, 180, 248, 0.12)` is reported,
+`rgba(var(--accent-rgb), 0.12)` is not), or one of the CSS named colours. `transparent` and
+`currentColor` take their colour from the surface, so they are allowed. Each hit is reported with
+its file, line and rule. The test sits beside the two that keep the shared files identical (§3, §5).
+
+`crates/multi64-test-connector-gui/src/styles.css` is deliberately outside all of this: that window
+has a single hardcoded palette, no theme switch and no `appearance.js`.
 
 ### A foreground that does not follow the surface needs its own token
 
@@ -78,9 +85,9 @@ or stale stored value degrades to the default rather than applying an unknown `d
 
 ## 4. Verifying a change
 
-Neither CI nor `check-docs` covers any of this — no job runs `tauri build`, and the CSS, HTML and JS
-are served as-is. Two browser checks carry the weight, both run by serving `crates/<app>/src` over
-plain HTTP and driving it:
+Neither CI nor `check-docs` covers any of this — the §1 test reads the CSS but renders nothing, no
+job runs `tauri build`, and the CSS, HTML and JS are served as-is. Two browser checks carry the
+weight, both run by serving `crates/<app>/src` over plain HTTP and driving it:
 
 - **Computed-style diff.** Walk the DOM recording each element's resolved colour properties, before
   and after. A refactor that is meant to change no rendering must produce a byte-identical

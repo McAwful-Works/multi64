@@ -19,8 +19,8 @@ What they check:
   Auto-detect), opening Settings again, and Refresh ports.
 
 ```sh
-npm install
-npx playwright install chromium   # once per machine
+npm ci
+npx playwright install --with-deps chromium   # once per machine
 npm test
 ```
 

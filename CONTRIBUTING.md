@@ -18,12 +18,26 @@ From the repository root:
 
 ```sh
 cargo fmt --all -- --check
+cargo build -p multi64d                                    # not optional; see below
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo build -p multi64d --release
 cargo build --workspace --release
 ```
 
-CI runs these same four steps on **Ubuntu** and **Windows** (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
+CI's Rust job runs these same six steps, in this order, on **Ubuntu** and **Windows** (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
+
+The two **`multi64d`** builds are not a packaging step. `crates/multi64` declares `resources/multi64d.exe` under `bundle.resources` and its `src-tauri/build.rs` copies the daemon there; `tauri-build` treats a declared resource that is missing as a **hard error**. On a clean clone, skipping them makes `cargo clippy --workspace` fail before it lints anything. Build the daemon once per profile, as CI does — more detail in [CLAUDE.md](CLAUDE.md).
+
+Three further jobs run on **Ubuntu** only, and nothing above covers them:
+
+```sh
+cd crates/xfer64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
+cd crates/multi64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
+make -C n64/agent host-test
+```
+
+The first two drive each app's `index.html` in headless Chromium with `window.__TAURI__` stubbed ([Xfer64](crates/xfer64/e2e/README.md), [Multi64](crates/multi64/e2e/README.md)). The third compiles the cart agent for the **PC**, under ASan and UBSan, and needs only a host `gcc` or `clang` and `make` — nothing from the N64 toolchain.
 
 With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` checks the HTTP surface with no cart attached (`pip install -r scripts/requirements.txt` first). The full `--e2e --assert-echo` run needs hardware and `multi64_test.z64` in **RAW_ECHO** mode. These are not part of CI.
 
@@ -55,7 +69,7 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [crates/multi64d](crates/multi64d) | Reference daemon (`multi64d`) + library API |
 | [crates/multi64-test-connector](crates/multi64-test-connector) | CLI for test ROM / M64T |
 | [crates/multi64-test-connector-gui](crates/multi64-test-connector-gui) | Optional GUI; same WebSocket contract as the CLI |
-| [crates/multi64-sc64-sd](crates/multi64-sc64-sd) | **SC64 SD over USB** — `Sc64SdSession`, FAT32 + exFAT (Xfer64 / `multi64d`); RAM-disk tests in `cargo test` |
+| [crates/multi64-sc64-sd](crates/multi64-sc64-sd) | **SC64 SD over USB** — `Sc64SdSession`, FAT32 + exFAT (Xfer64 and the `sc64-sd-e2e` tool; **not** `multi64d`, which speaks L3 only); RAM-disk tests in `cargo test` |
 | [crates/multi64-ed64-link](crates/multi64-ed64-link) | EverDrive X-series **`usb64`** serial (`RomRead` / `RamRead`) |
 | [crates/ed64pro-link](crates/ed64pro-link) | **`multi64-ed64pro-link`** — EverDrive-64 PRO host link over edlink Gen3 ([spec](docs/spec/ed64-pro-usb-host.md)); scripted-transport tests only, **never run against a cart** |
 | [crates/ed64pro-l2](crates/ed64pro-l2) | **`multi64-ed64pro-l2`** — EverDrive-64 PRO L2 over the cart FIFO and USB link ([spec](docs/spec/l3-over-everdrive-pro.md)); fake-cart tests only, **never run against a cart** |
