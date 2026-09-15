@@ -6,7 +6,7 @@
 //! [`crate::Sc64SdSession`] — recursion, `skip_existing`, cancellation and partial-file cleanup — so
 //! Xfer64 can treat both carts the same. See workspace `docs/spec/ed64-pro-usb-host.md`.
 
-use crate::partition::{cart_path_parts, SessionEntry};
+use crate::partition::{cart_path_parts, fat_names_equal, SessionEntry};
 use multi64_ed64pro_link::{
     dir_option, open_mode, Ed64Pro, Error as LinkError, FileInfo, Transport,
 };
@@ -223,8 +223,9 @@ impl<T: Transport> Ed64ProSdSession<T> {
     /// time, and is deleted from the cart only once its copy is written and has the right size. An
     /// interrupted rename therefore leaves every file under at least one of the two names, though a
     /// folder can be left split between them. It takes as long as downloading and re-uploading the
-    /// entry, and a name differing only in letter case is refused: FAT names ignore case, so the copy
-    /// would land on the original.
+    /// entry, and a name differing only in letter case, accented letters included, is refused: FAT
+    /// names ignore case, so the copy would land on the original. Should the cart fold a pair of
+    /// names this check does not, the copy is not confirmed and nothing is deleted.
     pub fn rename_cart(&self, from: &str, to: &str) -> io::Result<()> {
         let (parent_from, name_from) = cart_path_parts(from);
         let (parent_to, name_to) = cart_path_parts(to);
@@ -243,7 +244,7 @@ impl<T: Transport> Ed64ProSdSession<T> {
         if name_from == name_to {
             return Ok(());
         }
-        if name_from.eq_ignore_ascii_case(&name_to) {
+        if fat_names_equal(&name_from, &name_to) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "The EverDrive-64 PRO renames by copying, so it cannot change only the letter case of a name.",
@@ -278,9 +279,14 @@ impl<T: Transport> Ed64ProSdSession<T> {
             Err(e) if !parent.is_empty() && e.kind() == io::ErrorKind::Other => return Ok(None),
             Err(e) => return Err(e),
         };
-        Ok(list
-            .into_iter()
-            .find(|e| e.name == name || e.name.eq_ignore_ascii_case(&name)))
+        Ok(list.into_iter().find(|e| fat_names_equal(&e.name, &name)))
+    }
+
+    /// Look an entry up by its exact name, with no case folding: proof that this spelling, not
+    /// another one the cart may treat as equal, is listed. Listing errors propagate.
+    fn find_exact(&self, path: &str) -> io::Result<Option<SessionEntry>> {
+        let (parent, name) = cart_path_parts(path);
+        Ok(self.list_dir(&parent)?.into_iter().find(|e| e.name == name))
     }
 
     fn dir_total_bytes(&self, dir: &str) -> io::Result<u64> {
@@ -440,6 +446,18 @@ impl<T: Transport> Ed64ProSdSession<T> {
     fn move_entry(&self, e: &SessionEntry, dest: &str) -> io::Result<()> {
         if e.is_dir {
             self.dev()?.dir_make(dest).map_err(link_err)?;
+            // Files keep their names inside a moved folder. Were `dest` the source folder under
+            // another spelling, every file's copy would check out and each delete would remove the
+            // only copy, so go on only once both folders are listed under their own names.
+            let listed = |path: &str| -> io::Result<bool> {
+                Ok(self.find_exact(path)?.is_some_and(|f| f.is_dir))
+            };
+            if !(listed(&e.path)? && listed(dest)?) {
+                return Err(io::Error::other(format!(
+                    "could not confirm that {dest} is a folder separate from {}; nothing was moved",
+                    e.path
+                )));
+            }
             for child in self.list_dir(&e.path)? {
                 self.move_entry(&child, &join(dest, &child.name))?;
             }
@@ -449,26 +467,61 @@ impl<T: Transport> Ed64ProSdSession<T> {
         self.dev()?.delete(&e.path).map_err(link_err)
     }
 
-    /// Copy a cart file to a new cart path through a temporary file on the PC, and check the copy's
-    /// size before reporting success. A failed copy is deleted; the original is never touched.
+    /// Copy a cart file to a new cart path through a temporary file on the PC, and confirm the copy
+    /// before reporting success.
+    ///
+    /// Confirmed means the source and the copy are both listed, under their own exact names, with
+    /// the source's size. That is checked without case folding on purpose (#131): if the cart
+    /// resolves `dest` to the source, the upload rewrites the source itself, one of the two names
+    /// is then missing from the listing, and the move stops before deleting anything. After a
+    /// failure `dest` is deleted only while the intact source is listed beside it, so the two are
+    /// different files. If neither name holds a complete file, the PC copy is kept, and the error
+    /// says where.
     fn copy_file_within_cart(&self, e: &SessionEntry, dest: &str) -> io::Result<()> {
         let temp = HostTemp::new();
-        let copied = self
-            .copy_file_to_host(&e.path, &temp.0, &mut |_| true)
-            .and_then(|()| self.write_file_from_pc(&temp.0, dest, &mut |_| true))
-            .and_then(|()| match self.find_entry(dest)? {
-                Some(c) if !c.is_dir && c.size == e.size => Ok(()),
-                _ => Err(io::Error::other(format!(
-                    "the copy of {} on the cart does not match the original, which was kept",
-                    e.path
-                ))),
-            });
-        if copied.is_err() {
-            if let Ok(mut dev) = self.dev() {
-                let _ = dev.delete(dest);
-            }
+        // Nothing on the cart has changed yet if this fails.
+        self.copy_file_to_host(&e.path, &temp.0, &mut |_| true)?;
+        let uploaded = self.write_file_from_pc(&temp.0, dest, &mut |_| true);
+
+        let complete = |f: &SessionEntry| !f.is_dir && f.size == e.size;
+        let source = self.find_exact(&e.path);
+        let copy = self.find_exact(dest);
+        let source_intact = matches!(&source, Ok(Some(f)) if complete(f));
+        let copy_listed = matches!(&copy, Ok(Some(f)) if !f.is_dir);
+        let copy_complete = uploaded.is_ok() && matches!(&copy, Ok(Some(f)) if complete(f));
+        if source_intact && copy_complete {
+            return Ok(());
         }
-        copied
+
+        let mut msg = match &uploaded {
+            Err(err) => format!("copying {} to {dest} on the cart failed ({err})", e.path),
+            Ok(()) => format!(
+                "could not confirm that {dest} is a complete copy separate from {}",
+                e.path
+            ),
+        };
+        if source_intact && copy_listed {
+            let removed = self
+                .dev()
+                .and_then(|mut dev| dev.delete(dest).map_err(link_err));
+            msg.push_str(match removed {
+                Ok(()) => "; the copy was removed and the original kept",
+                Err(_) => "; the original was kept, but the copy could not be removed",
+            });
+        } else {
+            msg.push_str("; nothing was deleted");
+        }
+        if !(source_intact || copy_complete) {
+            let kept = temp.keep();
+            msg.push_str(&format!(
+                ". A copy of the original is saved on this PC at {}",
+                kept.display()
+            ));
+        }
+        let kind = uploaded
+            .err()
+            .map_or(io::ErrorKind::Other, |err| err.kind());
+        Err(io::Error::new(kind, msg))
     }
 
     fn remove_entry(&self, e: &SessionEntry, trace: &mut dyn FnMut(&str)) -> io::Result<()> {
@@ -552,11 +605,18 @@ impl HostTemp {
             NEXT.fetch_add(1, Ordering::SeqCst)
         )))
     }
+
+    /// Leave the file in place, and return its path.
+    fn keep(mut self) -> PathBuf {
+        std::mem::take(&mut self.0)
+    }
 }
 
 impl Drop for HostTemp {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        if !self.0.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 }
 
@@ -811,6 +871,34 @@ mod tests {
         assert_eq!(fake.file("backup/deep/b.srm").unwrap(), pattern(CHUNK + 1));
         assert!(fake.is_dir("backup/empty"));
         assert!(!fake.exists("saves"));
+    }
+
+    /// #131: FatFs folds non-ASCII letters too, so `Ä.sav` is `ä.sav` on the card.
+    #[test]
+    fn rename_refuses_a_case_only_change_outside_ascii() {
+        let s = session(FakeEd64Pro::new().with_file("saves/ä.sav", b"only copy"));
+        assert_eq!(
+            s.rename_cart("saves/ä.sav", "saves/Ä.sav")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(s.cart_path_entry_kind("saves/Ä.SAV").unwrap(), Some(false));
+        assert_eq!(fake_of(s).file("saves/ä.sav").unwrap(), b"only copy");
+    }
+
+    /// #131: whatever the host's case folding concluded, a copy that landed on the original must
+    /// not cost the original — neither the source delete after "verifying" it, nor the cleanup.
+    #[test]
+    fn a_copy_that_lands_on_the_original_never_deletes_it() {
+        let data = pattern(CHUNK + 9);
+        let s = session(FakeEd64Pro::new().with_file("saves/ä.sav", &data));
+        let source = s.find_entry("saves/ä.sav").unwrap().unwrap();
+        // Past rename_cart's checks, as if the folding had missed: to this fake, as to FatFs,
+        // `Ä.sav` names the same file.
+        s.move_entry(&source, "saves/Ä.sav")
+            .expect_err("a move onto the source cannot be verified");
+        assert_eq!(fake_of(s).file("saves/ä.sav").unwrap(), data.as_slice());
     }
 
     #[test]
