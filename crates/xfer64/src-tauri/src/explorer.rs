@@ -185,15 +185,6 @@ pub fn fs_list_dir_page(
     })
 }
 
-#[tauri::command]
-pub fn fs_list_dir(path: String) -> Result<Vec<FsEntry>, String> {
-    let p = PathBuf::from(path.trim());
-    if !p.is_dir() {
-        return Err("Not a directory or path does not exist.".into());
-    }
-    read_pc_dir_sorted(&p)
-}
-
 /// Metadata for a single existing file or folder (PC pane — properties / context menu).
 #[tauri::command]
 pub fn fs_path_info(path: String) -> Result<FsEntry, String> {
