@@ -36,7 +36,8 @@ pub const PROTO_MINOR: u8 = 0;
 pub const DEFAULT_MAX_PAYLOAD: u32 = 8192;
 
 /// Largest `MAX_PAYLOAD` a handshake may negotiate (spec §6: ≤ 1 MiB), so no valid frame's
-/// `PAYLOAD_LEN` exceeds it. [`StreamDecoder`] rejects longer headers without waiting for the payload.
+/// `PAYLOAD_LEN` exceeds it. [`StreamDecoder`] and [`Frame::decode`] reject longer headers without
+/// waiting for the payload.
 pub const MAX_PAYLOAD_CEILING: u32 = 1_048_576;
 
 impl Frame {

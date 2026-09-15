@@ -41,8 +41,9 @@ pub fn encode_frame_with_cap(
         return Err(EncodeError::InvalidFrameType(ty));
     }
 
+    // Round-trip, so `Experimental` holding a standard or reserved value is refused too.
     let ch = frame.channel.to_u8();
-    if Channel::from_u8(ch).is_none() {
+    if Channel::from_u8(ch) != Some(frame.channel) {
         return Err(EncodeError::InvalidChannel(ch));
     }
 
@@ -59,4 +60,39 @@ pub fn encode_frame_with_cap(
 
 pub(crate) fn encode_frame(frame: &Frame) -> Result<Vec<u8>, EncodeError> {
     encode_frame_with_cap(frame, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FrameFlags;
+
+    fn on(channel: Channel) -> Frame {
+        Frame {
+            ty: FrameType::Data,
+            channel,
+            flags: FrameFlags::FINAL,
+            request_id: 0,
+            payload: vec![1, 2],
+        }
+    }
+
+    /// `Experimental` only encodes with a value from the experimental range (spec §4).
+    #[test]
+    fn experimental_channel_value_must_be_experimental() {
+        assert_eq!(
+            encode_frame(&on(Channel::Experimental(0x80))).unwrap()[5],
+            0x80
+        );
+        assert_eq!(
+            encode_frame(&on(Channel::Experimental(0xFF))).unwrap()[5],
+            0xFF
+        );
+        for v in [0x00u8, 0x02, 0x03, 0x7F] {
+            assert_eq!(
+                encode_frame(&on(Channel::Experimental(v))).unwrap_err(),
+                EncodeError::InvalidChannel(v)
+            );
+        }
+    }
 }
