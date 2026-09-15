@@ -5,8 +5,9 @@
 #   make symbols                  exported symbols, and what the object leaves undefined
 #   make CART=ed64                build/ed64/m64p_agent.o, for an EverDrive-64 X7 (experimental)
 #   make CART=ed64pro             build/ed64pro/m64p_agent.o, for an EverDrive-64 PRO (experimental)
-#   make host-test                the EverDrive builds' L3 reassembly and the SC64 driver's failure
-#                                 handling, compiled and run on the PC
+#   make host-test                the EverDrive builds' L3 reassembly, the SC64 driver's failure
+#                                 handling and the X7 driver's receive path, compiled and run on
+#                                 the PC
 #
 # For a game with no buildable source, link a flat image at a fixed address instead:
 # templates/link-flat.sh. See docs/integration/cart-agent.md.
@@ -101,6 +102,11 @@ HOST_TEST_SOURCES = tests/reassembly_test.c agent.c $(PROTO)/mem_proto.c
 # tests/sc64_test.c: the real sc64.c with SC64_HOST_TEST routing its PI loads, stores and interrupt
 # mask through a fake cart that can hold the bus busy. It checks that every wait is bounded and every
 # failure is reported, not that the register model matches an SC64.
+#
+# tests/ed64_test.c: the real ed64.c linked against fake pi_io_* functions in place of pi_io.c,
+# modelling the X7's USBCFG register and USB window. It checks that a received message is delivered
+# in order and whole, or reported lost, and that every wait is bounded, not that the model matches
+# an X7, and the X7 driver has never run on one.
 host-test:
 	mkdir -p build/host
 	$(HOSTCC) $(HOST_CFLAGS) -DAGENT_CART_ED64 -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64
@@ -109,6 +115,8 @@ host-test:
 	build/host/reassembly-ed64pro
 	$(HOSTCC) $(HOST_CFLAGS) -DSC64_HOST_TEST -I. -I$(PROTO) tests/sc64_test.c sc64.c -o build/host/sc64
 	build/host/sc64
+	$(HOSTCC) $(HOST_CFLAGS) -I. -I$(PROTO) tests/ed64_test.c ed64.c -o build/host/ed64
+	build/host/ed64
 
 clean:
 	rm -rf build

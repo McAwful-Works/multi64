@@ -8,8 +8,9 @@
  * id, so nothing touches RDRAM.
  *
  * The fake driver copies what each real driver does when a piece does not fit the space the agent
- * offers (the X7 drops the message and reports the loss, the PRO reads what fits), and can lose a
- * piece the way both do when a read fails: consumed, and reported as lost.
+ * offers (the X7 delivers what fits and keeps up to 512 bytes more for the next receive, reporting
+ * anything larger lost; the PRO reads what fits), and can lose a piece the way both do when a read
+ * fails: consumed, and reported as lost. tests/ed64_test.c checks the real X7 driver does that.
  *
  * This checks the byte-stream logic only. It says nothing about whether either driver works on a
  * cart.
@@ -92,14 +93,18 @@ uint32_t FAKE_RECEIVE(uint8_t *dst, uint32_t cap)
     if (n > cap) {
         s_overflows++;
 #if defined(AGENT_CART_ED64)
-        /* ed64_receive drains a message that does not fit and reports the loss: it is gone. */
-        s_next++;
-        s_offset = 0;
-        return FAKE_RECEIVE_LOST;
+        if (n - cap > 512u) {
+            /* ed64_receive drains a message too big even with its 512-byte pending buffer and
+               reports the loss: it is gone. */
+            s_next++;
+            s_offset = 0;
+            return FAKE_RECEIVE_LOST;
+        }
+        /* Otherwise it delivers what fits and keeps the rest for the next receive. */
 #else
         /* ed64pro_receive reads only what fits; the rest waits in the FIFO. */
-        n = cap;
 #endif
+        n = cap;
     }
     memcpy(dst, s_piece[s_next].bytes + s_offset, n);
     s_offset += n;
@@ -339,7 +344,8 @@ static void a_non_data_frame_is_consumed_and_ignored(void)
 
 /*
  * A message larger than all the space the agent offers: a small frame, then filler with no magic,
- * PIECE_BYTES in all. The X7 driver drains and drops the whole message, frame included; the PRO
+ * PIECE_BYTES in all, more than that space plus the X7 driver's 512-byte pending buffer. The X7
+ * driver drains and drops the whole message, frame included; the PRO
  * reads what fits and the rest on the next receive. Either way the agent stays in step and answers
  * the request that follows.
  */
@@ -359,6 +365,29 @@ static void a_message_larger_than_the_receive_space(void)
 #else
     assert(s_sends == 2 && reply_rid(0) == 0x0B16 && reply_rid(1) == 0x0FF1);
 #endif
+}
+
+/*
+ * A frame is handled, and the large request behind it, already mostly buffered, ends in a host piece
+ * that arrives with less than a piece of the receive space free. The X7 driver used to drain and
+ * drop that piece as too large, losing a request that fits. Both drivers now deliver what fits and
+ * the rest on the next receive.
+ */
+static void a_request_ending_with_less_than_a_piece_free(void)
+{
+    uint32_t n1 = frame(f1, 0x10, 0x05A1, 300u - 23u);
+    uint32_t n2 = frame(f2, 0x10, 0x05A2, 7900);
+    uint32_t n3;
+    reset_script();
+    memcpy(junk, f1, n1);
+    memcpy(junk + n1, f2, n2);
+    /* A third request behind the second, so the piece that ends the second is a full one. */
+    n3 = frame(junk + n1 + n2, 0x10, 0x05A3, 600);
+    queue_split(junk, n1 + n2 + n3, HOST_PIECE);
+    ticks(4);
+    assert(s_overflows == 1 && "the piece ending the large request must arrive with too little space");
+    assert(s_lost == 0 && s_sends == 3);
+    assert(reply_rid(0) == 0x05A1 && reply_rid(1) == 0x05A2 && reply_rid(2) == 0x05A3);
 }
 
 /*
@@ -404,6 +433,7 @@ int main(void)
     RUN(a_header_with_an_undefined_type_or_channel_is_skipped);
     RUN(a_non_data_frame_is_consumed_and_ignored);
     RUN(a_message_larger_than_the_receive_space);
+    RUN(a_request_ending_with_less_than_a_piece_free);
     RUN(a_lost_piece_is_not_completed_by_the_next_request);
     printf("reassembly (" CART_NAME "): %d cases passed\n", s_cases);
     return 0;

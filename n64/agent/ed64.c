@@ -36,6 +36,14 @@
    moved by word, so a window offset that is not a word boundary costs nothing extra. */
 static uint32_t s_window[ED_WINDOW / 4u];
 
+/* The part of an L3 message that did not fit the space the caller offered, handed over by the next
+   call before USB is read again. One host message's worth: crates/ed64-l2 puts at most 512 L3 bytes
+   in a DMA@ message, so a message that arrives while the agent's buffer is nearly full is kept. */
+#define ED_PENDING_CAP ED_WINDOW
+static uint8_t s_pending[ED_PENDING_CAP];
+static uint32_t s_pending_off;
+static uint32_t s_pending_len;
+
 static int usb_idle(void)
 {
     uint32_t spins;
@@ -91,10 +99,25 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
     const uint8_t *b;
     uint32_t v;
     uint32_t size;
-    uint32_t keep;
+    uint32_t keep = 0u;
+    uint32_t spill = 0u;
     uint32_t left;
     uint32_t got = 0u;
+    uint32_t spilled = 0u;
     int is_l3;
+
+    if (s_pending_len > 0u) {
+        /* The rest of the last message comes before anything still waiting on USB. */
+        uint32_t n = s_pending_len < cap ? s_pending_len : cap;
+        uint32_t i;
+
+        for (i = 0u; i < n; i++) {
+            dst[i] = s_pending[s_pending_off + i];
+        }
+        s_pending_off += n;
+        s_pending_len -= n;
+        return n;
+    }
 
     if (!usb_idle()) {
         return 0u;
@@ -113,7 +136,15 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
     }
     size = ((uint32_t)b[5] << 16) | ((uint32_t)b[6] << 8) | (uint32_t)b[7];
     is_l3 = b[4] == ED_DATATYPE_L3;
-    keep = (is_l3 && size <= cap) ? size : 0u;
+    if (is_l3) {
+        if (size <= cap) {
+            keep = size;
+        } else if (size - cap <= ED_PENDING_CAP) {
+            /* Too big for the space offered, but not for it and the pending buffer together. */
+            keep = cap;
+            spill = size - cap;
+        }
+    }
 
     /* The payload is padded to 2 bytes on the wire; drain all of it even when keeping none. */
     left = (size + 1u) & ~1u;
@@ -128,6 +159,9 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
         for (i = 0u; i < n && got < keep; i++) {
             dst[got++] = b[i];
         }
+        for (; i < n && spilled < spill; i++) {
+            s_pending[spilled++] = b[i];
+        }
         left -= n;
     }
 
@@ -135,10 +169,13 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
     if (b == 0 || b[0] != 'C' || b[1] != 'M' || b[2] != 'P' || b[3] != 'H') {
         return ED64_RECEIVE_LOST;
     }
-    if (is_l3 && size > cap) {
-        /* Drained, but it did not fit: its L3 bytes are gone. */
+    if (is_l3 && keep + spill != size) {
+        /* Drained, but too big even with the pending buffer: its L3 bytes are gone. */
         return ED64_RECEIVE_LOST;
     }
+    /* Only a message that arrived whole leaves its tail pending; on any loss above, nothing is. */
+    s_pending_off = 0u;
+    s_pending_len = spilled;
     return got;
 }
 

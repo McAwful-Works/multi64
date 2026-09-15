@@ -31,10 +31,13 @@ int ed64_init(void);
 
 /**
  * Receive at most one USB message. If it is a well-formed DMA@ message carrying the L3 datatype
- * and fits in `cap`, copy its payload to `dst` and return the byte count. Returns 0 when nothing
- * is waiting, and also, having drained it, for a message of another datatype. Returns
- * ED64_RECEIVE_LOST when a message was consumed but its L3 bytes were not delivered: a failed read,
- * a bad DMA@ header or CMPH trailer, or an L3 message larger than `cap`.
+ * and fits in `cap`, copy its payload to `dst` and return the byte count. If it is larger than
+ * `cap` by at most 512 bytes (one host message), copy the first `cap` bytes and keep the rest in the
+ * driver, and the next call returns those before reading USB again, as much of them as its own `cap`
+ * allows. Returns 0 when nothing is waiting, and also, having drained it, for a message of another
+ * datatype. Returns ED64_RECEIVE_LOST when a message was consumed but its L3 bytes were not
+ * delivered: a failed read, a bad DMA@ header or CMPH trailer, or an L3 message larger than `cap`
+ * plus 512 bytes. A message reported lost leaves nothing kept back.
  */
 uint32_t ed64_receive(uint8_t *dst, uint32_t cap);
 
