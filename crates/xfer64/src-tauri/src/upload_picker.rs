@@ -27,6 +27,8 @@ pub async fn upload_picker_run(
     app: AppHandle,
     cart_parent: String,
     overwrite: bool,
+    // multi64d's address as the window knows it, the one its cart reads already paused.
+    listen: String,
     state: State<'_, UploadPickerState>,
     cancel: State<'_, ExplorerCancelState>,
 ) -> Result<UploadImportSummary, String> {
@@ -46,6 +48,7 @@ pub async fn upload_picker_run(
                 overwrite,
                 false,
                 None,
+                listen.clone(),
                 Some(app.clone()),
                 cancel.clone(),
                 allow_ed64pro_writes,

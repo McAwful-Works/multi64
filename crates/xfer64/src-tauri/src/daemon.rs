@@ -103,7 +103,6 @@ pub struct DaemonProbe {
     pub daemon_serial: Option<String>,
     /// The COM port pinned in Xfer64, if any. Auto is never resolved here: see below.
     pub explorer_serial: Option<String>,
-    pub needs_yield: bool,
 }
 
 /// Whether multi64d is up and using the same COM port as Xfer64 (conflict).
@@ -121,7 +120,6 @@ pub fn explorer_daemon_probe_snapshot(
             up: false,
             daemon_serial: None,
             explorer_serial,
-            needs_yield: false,
         });
     }
 
@@ -132,7 +130,6 @@ pub fn explorer_daemon_probe_snapshot(
                 up: true,
                 daemon_serial: None,
                 explorer_serial,
-                needs_yield: false,
             });
         }
     };
@@ -144,22 +141,13 @@ pub fn explorer_daemon_probe_snapshot(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    // Older multi64d without `serialActive` defaults to true (assume link held).
-    let serial_active = v
-        .get("serialActive")
-        .and_then(|x| x.as_bool())
-        .unwrap_or(true);
-
-    // True when multi64d still holds the COM port. Xfer64 front end uses `up` (daemon
-    // health) to always release/resume around cart access — COM string match was too brittle
-    // (`COM3` vs `\\.\COM3`, empty `serial` in JSON, etc.).
-    let needs_yield = serial_active;
-
+    // Callers release and resume whenever `up`, not by `serialActive` or a COM match: COM strings
+    // were too brittle (`COM3` vs `\\.\COM3`, an empty `serial`), and a link that is already
+    // released or faulted still needs the resume that pairs with a release.
     Ok(DaemonProbe {
         up: true,
         daemon_serial,
         explorer_serial,
-        needs_yield,
     })
 }
 

@@ -13,7 +13,8 @@ Command line
 Environment (optional)
 ----------------------
   MULTI64_XFER64_COM   Default COM port when not in xfer64-settings.json
-  MULTI64_DAEMON_LISTEN   multi64d HTTP base (default http://127.0.0.1:38765)
+  MULTI64_DAEMON_LISTEN   multi64d HTTP base (default http://127.0.0.1:38765). Headless
+                          upload only: the --picker window uses the main window's address
   MULTI64_XFER64_UPLOAD_NOTIFY=1   Same as --notify (success dialog)
 
 Settings file
