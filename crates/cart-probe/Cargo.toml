@@ -15,3 +15,6 @@ path = "src/lib.rs"
 multi64-sc64-link = { path = "../sc64-link" }
 multi64-ed64pro-link = { path = "../ed64pro-link" }
 serialport = "4"
+
+[dev-dependencies]
+multi64-ed64pro-link = { path = "../ed64pro-link", features = ["fake"] }

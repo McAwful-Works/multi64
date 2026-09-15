@@ -5,7 +5,7 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use multi64d::{
     build_app, http_metadata_router, AppState, CartKind, LinkState, SerialConfig,
-    RELEASE_LOCK_TIMEOUT, ROOT_LOCK_TIMEOUT,
+    RELEASE_LOCK_TIMEOUT, RESUME_LOCK_TIMEOUT, ROOT_LOCK_TIMEOUT,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -324,6 +324,96 @@ async fn release_waits_out_a_short_lock_hold() {
     let state = faulted_state();
     let holder = hold_link_lock(&state, Duration::from_millis(300));
     assert_eq!(post_release(&state).await, StatusCode::OK);
+    assert!(link_is_released(&state));
+    holder.join().unwrap();
+}
+
+fn state_with(link: LinkState) -> Arc<AppState> {
+    let (from_cart, _) = broadcast::channel::<Vec<u8>>(16);
+    Arc::new(AppState::new(
+        SerialConfig {
+            path: "COM_TEST".into(),
+            baud: 115200,
+            clear_serial: false,
+            cart: CartKind::Sc64,
+        },
+        link,
+        from_cart,
+        Vec::new(),
+    ))
+}
+
+async fn post_resume(state: &Arc<AppState>) -> StatusCode {
+    build_app(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/serial/resume")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+#[test]
+fn resume_that_cannot_get_the_link_in_time_fails_without_holding_a_thread() {
+    // One blocking thread, so a refused resume that kept one waiting for the lock would starve
+    // everything after it.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        // #167: resume used to wait for the link lock with no limit, on a blocking-pool thread,
+        // so it hung for the whole of whatever held the link -- past Xfer64's 10 s request.
+        let state = state_with(LinkState::Released);
+        let hold = RESUME_LOCK_TIMEOUT + Duration::from_millis(1500);
+        let holder = hold_link_lock(&state, hold);
+
+        let started = Instant::now();
+        let (a, b) = tokio::join!(post_resume(&state), post_resume(&state));
+        let waited = started.elapsed();
+        assert_eq!(a, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(b, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            waited < RESUME_LOCK_TIMEOUT + Duration::from_millis(1000),
+            "answered at the bound, not when the lock came free: {waited:?}"
+        );
+
+        assert!(!holder.is_finished(), "the lock must still be held");
+        let free_thread = tokio::time::timeout(
+            Duration::from_millis(500),
+            tokio::task::spawn_blocking(|| ()),
+        )
+        .await;
+        assert!(
+            free_thread.is_ok(),
+            "a resume that answered 503 must not leave a thread waiting for the link"
+        );
+
+        while !holder.is_finished() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        holder.join().unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            link_is_released(&state),
+            "a resume that answered 503 leaves the link as it was"
+        );
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_waits_out_a_short_lock_hold() {
+    // A reader iteration holds the lock briefly; resume still gets it and really tries to reopen.
+    // `COM_TEST` does not exist, so that attempt fails with 500 rather than a busy 503.
+    let state = state_with(LinkState::Released);
+    let holder = hold_link_lock(&state, Duration::from_millis(300));
+    assert_eq!(post_resume(&state).await, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(link_is_released(&state));
     holder.join().unwrap();
 }

@@ -45,6 +45,8 @@ A tool that needs to know which cart is attached MAY take `serial` and `cart` fr
 
 `POST /v1/serial/resume` is **idempotent**: if the link is already active (e.g. nested release/resume from Xfer64), the handler succeeds without opening a second serial handle. This short-circuit applies to a **live** link only — a link that failed on I/O is *faulted*, not active, so resume always reopens it (§1.3).
 
+`POST /v1/serial/resume` waits for the serial link the same way, also at most **2 seconds**. If the link is still in use then, the daemon answers **`503 Service Unavailable`** with a plain-text body and **does not resume**: the link stays as it was, and that request never reopens the port later. Resumes waiting for the link are served in the order they arrived; a resume that answered `503` is no longer waiting. The bound covers only the wait: once the daemon holds the link, opening the port takes as long as the cart's `open` does (with `--cart ed64pro`, a whole handshake). A client MAY retry after a `503`. It MUST NOT assume the link is active until a resume succeeds, since a released link is never reopened on its own. The wait and a normal open stay well under the 10-second timeout Xfer64 puts on this request.
+
 While released, WebSocket binary writes to the cart are ignored; clients should tolerate brief disconnect-like behavior until resume.
 
 ### 1.3 Link faults and recovery

@@ -359,10 +359,35 @@ impl<T: Transport> Ed64Pro<T> {
     ///
     /// That data arrives raw on the same serial stream as command replies, so do not interleave
     /// this with commands while a ROM is streaming.
+    ///
+    /// Like [`io::Read::read`], a read that fails after taking some bytes returns those bytes, and
+    /// the failure, if it persists, surfaces on the next call. Only a failure before the first byte
+    /// is an error, so ROM output already taken off the port is never thrown away.
     pub fn usb_read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let n = (self.io.bytes_to_read()? as usize).min(buf.len());
-        self.io.read_exact(&mut buf[..n])?;
-        Ok(n)
+        let want = (self.io.bytes_to_read()? as usize).min(buf.len());
+        let mut got = 0;
+        while got < want {
+            match self.io.read(&mut buf[got..want]) {
+                Ok(0) if got == 0 => {
+                    return Err(Error::Io(io::ErrorKind::UnexpectedEof.into()));
+                }
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if got == 0 => return Err(e.into()),
+                Err(e) => {
+                    tracing::debug!(
+                        target: "multi64_ed64pro_link",
+                        error = %e,
+                        kept = got,
+                        wanted = want,
+                        "USB read failed partway; returning the bytes already read"
+                    );
+                    break;
+                }
+            }
+        }
+        Ok(got)
     }
 
     /// Drop whatever has already arrived and not been read (edlink's `FlushPort`).
@@ -713,6 +738,99 @@ mod tests {
         let mut dev = connected(&[&OK[..], &status(0x05)].concat());
         assert!(dev.file_exists("ed64/a.z64").unwrap());
         assert!(!dev.dir_exists("nope").unwrap());
+    }
+
+    /// A transport over the fake cart that hands out at most 3 bytes per read and, once armed, fails
+    /// a single read after `budget` more bytes, as a port that hiccups mid-read would.
+    #[cfg(feature = "fake")]
+    struct Hiccup {
+        inner: crate::fake::FakeEd64Pro,
+        budget: Option<usize>,
+    }
+
+    #[cfg(feature = "fake")]
+    impl io::Read for Hiccup {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let mut cap = buf.len().min(3);
+            if let Some(left) = self.budget {
+                if left == 0 {
+                    self.budget = None;
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "hiccup"));
+                }
+                cap = cap.min(left);
+            }
+            let n = io::Read::read(&mut self.inner, &mut buf[..cap])?;
+            if let Some(left) = &mut self.budget {
+                *left -= n;
+            }
+            Ok(n)
+        }
+    }
+
+    #[cfg(feature = "fake")]
+    impl io::Write for Hiccup {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            io::Write::write(&mut self.inner, buf)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            io::Write::flush(&mut self.inner)
+        }
+    }
+
+    #[cfg(feature = "fake")]
+    impl Transport for Hiccup {
+        fn set_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+            self.inner.set_timeout(timeout)
+        }
+        fn clear_input(&mut self) -> io::Result<()> {
+            self.inner.clear_input()
+        }
+        fn bytes_to_read(&mut self) -> io::Result<u32> {
+            self.inner.bytes_to_read()
+        }
+    }
+
+    /// #167: `usb_read` used `read_exact`, so a read that failed partway threw away the ROM output
+    /// it had already taken off the port. It now returns what it got; the rest comes next call.
+    #[cfg(feature = "fake")]
+    #[test]
+    fn usb_read_keeps_what_it_read_before_a_failed_read() {
+        let hiccup = Hiccup {
+            inner: crate::fake::FakeEd64Pro::new(),
+            budget: None,
+        };
+        let mut dev = Ed64Pro::connect(hiccup).expect("handshake");
+        dev.transport_mut().inner.push_usb(b"hello world");
+        dev.transport_mut().budget = Some(5);
+
+        let mut buf = [0u8; 16];
+        let n = dev
+            .usb_read(&mut buf)
+            .expect("bytes already read are returned");
+        assert_eq!(&buf[..n], b"hello");
+        let m = dev.usb_read(&mut buf).expect("the port recovered");
+        assert_eq!(&buf[..m], b" world", "nothing was lost across the failure");
+    }
+
+    /// A read that fails before taking anything still reports the error.
+    #[cfg(feature = "fake")]
+    #[test]
+    fn usb_read_reports_a_failure_before_any_byte() {
+        let hiccup = Hiccup {
+            inner: crate::fake::FakeEd64Pro::new(),
+            budget: None,
+        };
+        let mut dev = Ed64Pro::connect(hiccup).expect("handshake");
+        dev.transport_mut().inner.push_usb(b"log");
+        dev.transport_mut().budget = Some(0);
+        let mut buf = [0u8; 16];
+        let err = dev.usb_read(&mut buf).unwrap_err();
+        assert!(
+            matches!(err, Error::Io(ref e) if e.kind() == io::ErrorKind::BrokenPipe),
+            "{err}"
+        );
+        assert_eq!(dev.usb_read(&mut buf).unwrap(), 3);
+        assert_eq!(&buf[..3], b"log");
     }
 
     #[test]

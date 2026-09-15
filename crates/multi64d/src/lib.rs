@@ -2,7 +2,7 @@
 //!
 //! - **`GET /`** — metadata, including whether the daemon holds the serial link (`serialActive`). Waits at most [`ROOT_LOCK_TIMEOUT`] for the link; one still in use after that is reported as held and busy (`serialBusy`) rather than waited out.
 //! - **`POST /v1/serial/release`** — drop the serial link so another process (e.g. Xfer64) can open the COM port. WebSocket writes are ignored while released. If the link is still in use after [`RELEASE_LOCK_TIMEOUT`] (a long write, a slow reopen), answers **`503`** and does not release, then or later.
-//! - **`POST /v1/serial/resume`** — reopen the same serial device and continue serving.
+//! - **`POST /v1/serial/resume`** — reopen the same serial device and continue serving. If the link is still in use after [`RESUME_LOCK_TIMEOUT`], answers **`503`** and does not resume, then or later.
 //!
 //! Full API details: **`docs/spec/daemon-api-v1.md`**.
 
@@ -43,6 +43,11 @@ pub const SERIAL_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 /// releasing (`docs/spec/daemon-api-v1.md` §1.2). Well under Xfer64's 5 s request timeout, so the
 /// caller hears the refusal instead of timing out while the release is still queued.
 pub const RELEASE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Longest `POST /v1/serial/resume` waits for the link lock before answering `503` without
+/// resuming (`docs/spec/daemon-api-v1.md` §1.2). The reopen that follows is not bounded by this;
+/// the two together stay well under Xfer64's 10 s request timeout.
+pub const RESUME_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Longest `GET /` waits for the link lock before reporting the link busy (`serialBusy`,
 /// `docs/spec/daemon-api-v1.md` §1.1). Outlasts a reader iteration (50 ms) and is well under the
@@ -190,8 +195,8 @@ pub enum LinkState {
 /// Take the link lock from blocking code (`spawn_blocking`, plain threads); panics on a runtime
 /// worker.
 ///
-/// The lock is tokio's rather than std's so that `GET /` and `POST /v1/serial/release` can wait for
-/// it asynchronously with a deadline: waiters are served in arrival order, and one that gives up
+/// The lock is tokio's rather than std's so that `GET /`, `POST /v1/serial/release` and
+/// `POST /v1/serial/resume` can wait for it asynchronously with a deadline: waiters are served in arrival order, and one that gives up
 /// leaves the queue instead of keeping a thread parked on the lock. It does not poison either, so
 /// one panic under the lock cannot wedge every later request.
 fn lock_link(link: &Mutex<LinkState>) -> MutexGuard<'_, LinkState> {
@@ -395,28 +400,47 @@ async fn post_serial_release(State(state): State<Arc<AppState>>) -> impl IntoRes
     }
 }
 
+fn resumed_response() -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        r#"{"resumed":true}"#.as_bytes().to_vec(),
+    )
+        .into_response()
+}
+
 async fn post_serial_resume(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Bounded like release: a wait that runs out leaves the lock's queue, so a resume that answered
+    // 503 holds no thread and never reopens the port later.
+    let Ok(mut link) =
+        tokio::time::timeout(RESUME_LOCK_TIMEOUT, state.link.clone().lock_owned()).await
+    else {
+        tracing::warn!(
+            timeout = ?RESUME_LOCK_TIMEOUT,
+            "serial resume refused: link busy"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "serial link busy; not resumed, try again\n",
+        )
+            .into_response();
+    };
+    if matches!(&*link, LinkState::Active(_)) {
+        // Idempotent: Xfer64 may call resume in nested `withCartDaemonYield` (e.g. copy then
+        // refresh list). A second `open_pipe` would fail with "Access denied" while the first
+        // handle is still active. A link that failed on I/O is `Faulted`, not `Active`, so this
+        // early return never hides a dead pipe.
+        return resumed_response();
+    }
     let cfg = state.serial_cfg.clone();
-    let link = state.link.clone();
+    // Opening the port blocks (for the PRO, a whole handshake), so do it off the runtime. The
+    // guard moves with it, so nothing else sees the link until the open has succeeded or failed.
     let res = tokio::task::spawn_blocking(move || {
-        let mut g = lock_link(&link);
-        if matches!(&*g, LinkState::Active(_)) {
-            // Idempotent: Xfer64 may call resume in nested `withCartDaemonYield` (e.g. copy
-            // then refresh list). A second `open_pipe` would fail with "Access denied" while
-            // the first handle is still active. A link that failed on I/O is `Faulted`, not
-            // `Active`, so this early return never hides a dead pipe.
-            return Ok::<_, String>(());
-        }
-        *g = LinkState::Active(open_pipe(&cfg).map_err(|e| e.to_string())?);
-        Ok(())
+        *link = LinkState::Active(open_pipe(&cfg).map_err(|e| e.to_string())?);
+        Ok::<_, String>(())
     })
     .await;
     match res {
-        Ok(Ok(())) => (
-            [(header::CONTENT_TYPE, "application/json")],
-            r#"{"resumed":true}"#.as_bytes().to_vec(),
-        )
-            .into_response(),
+        Ok(Ok(())) => resumed_response(),
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("join: {e}")).into_response(),
     }
