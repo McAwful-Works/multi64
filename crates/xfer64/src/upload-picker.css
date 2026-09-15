@@ -33,10 +33,6 @@ body.upload-picker-root {
   background: var(--bg);
 }
 
-.upload-picker-boot[hidden] {
-  display: none !important;
-}
-
 .upload-picker-boot-inner {
   display: flex;
   flex-direction: column;
@@ -247,10 +243,6 @@ body.upload-picker-booting {
   min-width: 0;
 }
 
-.upload-picker-error[hidden] {
-  display: none !important;
-}
-
 .upload-picker-footer {
   flex-shrink: 0;
   display: flex;
@@ -315,17 +307,9 @@ body.upload-picker-booting {
   line-height: 0;
 }
 
-.upload-picker-auto-cancel[hidden] {
-  display: none !important;
-}
-
 .upload-picker-auto-cancel .btn-icon-svg {
   width: 0.95rem;
   height: 0.95rem;
-}
-
-.upload-picker-status-bar[hidden] {
-  display: none !important;
 }
 
 .upload-picker-status-text {

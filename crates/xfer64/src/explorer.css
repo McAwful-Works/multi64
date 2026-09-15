@@ -360,10 +360,6 @@ body.explorer-modal-open {
   border-radius: var(--radius-sm);
 }
 
-.explorer-help-panel[hidden] {
-  display: none !important;
-}
-
 .explorer-about-body .explorer-about-name {
   margin: 0 0 0.35rem;
   font-size: var(--font-lg);
@@ -423,10 +419,6 @@ body.explorer-modal-open {
   font-weight: 500;
   color: var(--accent);
   line-height: 1.2;
-}
-
-.explorer-usb-loading[hidden] {
-  display: none !important;
 }
 
 .explorer-loading-spinner--sm {
@@ -1222,10 +1214,6 @@ body.explorer-dragging .explorer-table tbody tr {
   gap: 0.45rem;
   font-size: var(--font-md);
   color: var(--muted);
-}
-
-.explorer-sendto-status[hidden] {
-  display: none;
 }
 
 #btn-sendto-upload.explorer-sendto-upload--busy,

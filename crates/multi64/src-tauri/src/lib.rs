@@ -432,6 +432,9 @@ pub struct SerialPortOptions {
     pub auto: Option<String>,
     /// Set whenever `auto` is `None`: why Auto has no port.
     pub auto_warning: Option<String>,
+    /// More than one cart, so Start refuses to guess. `auto_warning` is set for no cart too, and
+    /// with Cart on Auto-detect the two need different hints: no cart only means Start probes.
+    pub ambiguous: bool,
 }
 
 /// Enumerate the ports once and derive both the list and the auto pick from it.
@@ -440,11 +443,16 @@ pub struct SerialPortOptions {
 /// enumerations per refresh — plus a window where a cart plugged in between the two calls could
 /// be picked as `auto` while being absent from the list the dropdown was built from.
 fn serial_port_options() -> SerialPortOptions {
-    let ports = serialport::available_ports().unwrap_or_default();
+    options_from(serialport::available_ports().unwrap_or_default())
+}
+
+/// [`serial_port_options`] for one given enumeration.
+fn options_from(ports: Vec<serialport::SerialPortInfo>) -> SerialPortOptions {
     let auto = pick_auto(&ports);
     SerialPortOptions {
-        ports: ports.into_iter().map(|p| p.port_name).collect(),
+        ambiguous: matches!(auto, AutoPort::Ambiguous(_)),
         auto_warning: auto.problem(),
+        ports: ports.into_iter().map(|p| p.port_name).collect(),
         auto: auto.port(),
     }
 }
@@ -2080,10 +2088,31 @@ mod port_selection_tests {
             ports: vec!["COM5".into()],
             auto: None,
             auto_warning: AutoPort::NoCart.problem(),
+            ambiguous: false,
         })
         .unwrap();
         assert!(json["auto"].is_null());
         assert!(json["autoWarning"].is_string());
+        assert_eq!(json["ambiguous"], false);
+    }
+
+    /// No cart and two carts both leave `auto` empty with a warning; only two carts is ambiguous,
+    /// because only then does Start refuse rather than probe.
+    #[test]
+    fn options_flag_only_more_than_one_cart_as_ambiguous() {
+        let two = options_from(vec![sc64_windows("COM8"), sc64_windows("COM4")]);
+        assert!(two.ambiguous);
+        assert!(two.auto.is_none() && two.auto_warning.is_some());
+
+        let none = options_from(vec![ch340("COM5")]);
+        assert!(!none.ambiguous);
+        assert!(none.auto.is_none() && none.auto_warning.is_some());
+
+        let one = options_from(vec![ch340("COM5"), sc64_windows("COM4")]);
+        assert!(!one.ambiguous);
+        assert_eq!(one.auto.as_deref(), Some("COM4"));
+        assert!(one.auto_warning.is_none());
+        assert_eq!(one.ports, ["COM5", "COM4"]);
     }
 }
 

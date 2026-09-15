@@ -29,7 +29,7 @@ async function refreshStatus() {
 }
 
 /** The last port enumeration's auto pick, kept so a cart change can re-render without re-enumerating. */
-let lastAuto = { auto: null, autoWarning: null };
+let lastAuto = { auto: null, autoWarning: null, ambiguous: false };
 
 const EVERDRIVE_AUTO_HINT =
   "For a fixed Cart type, Auto-detect finds only a SummerCart64. Pick the EverDrive's serial port, or set Cart to Auto-detect.";
@@ -53,8 +53,12 @@ const CART_HINTS = {
 async function refreshPorts() {
   // One call, one port enumeration: asking for the list and the auto pick separately enumerated
   // twice and could disagree if a cart was plugged in between the two.
-  const { ports, auto, autoWarning } = await invoke("get_serial_port_options");
-  lastAuto = { auto, autoWarning };
+  return applyPortOptions(await invoke("get_serial_port_options"));
+}
+
+/** Rebuild the Serial port dropdown from one enumeration, keeping the selection if still listed. */
+function applyPortOptions({ ports, auto, autoWarning, ambiguous }) {
+  lastAuto = { auto, autoWarning, ambiguous: !!ambiguous };
   const sel = document.getElementById("serial-port");
   const selected = sel.value;
   sel.innerHTML = "";
@@ -76,15 +80,21 @@ async function refreshPorts() {
 
 /**
  * Both hints depend on the cart being edited, so they re-render when it changes. The Auto options
- * read plain "Auto-detect" in both dropdowns; what Auto found is said in the hints. What was found
- * is about the cart, so it goes under Cart; the Serial port hint names the port only when Cart does
- * not, and warns when Auto cannot pick one for this cart. The backend enforces the same rule: Auto
- * never gives an EverDrive a port, SC64's included.
+ * read plain "Auto-detect" in both dropdowns; what Auto found is said in the hints.
+ *
+ * - Cart on Auto-detect: what was found is about the cart, so it goes under Cart — the
+ *   SummerCart64's port, or that Start bridge tests each serial port. Only more than one
+ *   SummerCart64 warns, under Serial port, because that is the one case Start refuses.
+ * - Cart on SummerCart64: the Serial port hint names the port, or warns there is none to use.
+ * - A chosen EverDrive: the Serial port hint warns that Auto-detect gives it no port.
+ *
+ * A port picked by hand needs no Serial port hint. The backend enforces the same rules
+ * (`plan_start`): Auto never gives an EverDrive a port, SC64's included.
  */
 function renderCartAndAuto() {
   const cart = knownCart(document.getElementById("cart").value);
   const everdrive = cart === "ed64" || cart === "ed64pro";
-  const { auto, autoWarning } = lastAuto;
+  const { auto, autoWarning, ambiguous } = lastAuto;
   const sel = document.getElementById("serial-port");
   const onAuto = sel.value === "";
   const optAuto = sel.options[0];
@@ -98,9 +108,10 @@ function renderCartAndAuto() {
     // A port picked by hand is the only one Start looks at, whatever is on USB elsewhere.
     cartText = `Start bridge identifies the cart on ${sel.value}.`;
   } else if (cart === "auto") {
+    // More than one SummerCart64 is said under Serial port, where the user picks one.
     cartText = auto
       ? `Found a SummerCart64 on ${auto}.`
-      : autoWarning
+      : ambiguous
         ? ""
         : "No SummerCart64 found by its USB IDs. Start bridge tests each serial port until a cart answers.";
   }
@@ -109,20 +120,22 @@ function renderCartAndAuto() {
   cartHint.hidden = !cartText;
   cartHint.classList.toggle("hint-warning", everdrive);
 
-  // Under Serial port: only on Auto. It warns when Auto cannot pick a port for this cart, and names
-  // the port Auto picked when Cart is set to SummerCart64 (on Auto-detect, the Cart hint names it).
-  // A port picked by hand needs no hint. (Cart Auto-detect with nothing on USB is fine: Start probes.)
+  // Under Serial port: only on Auto. It warns when Start would refuse, and names the port Auto
+  // picked when Cart is set to SummerCart64 (on Auto-detect, the Cart hint names it). Cart on
+  // Auto-detect with no SummerCart64 gets nothing here: Start probes each port, so nothing is wrong.
   let portText = "";
   let portWarn = false;
   if (onAuto) {
     if (everdrive) {
       portText = EVERDRIVE_AUTO_HINT;
       portWarn = true;
-    } else if (autoWarning) {
-      portText = autoWarning;
+    } else if (ambiguous) {
+      portText = autoWarning || "";
       portWarn = true;
     } else if (cart === "sc64") {
-      portText = auto ? `Uses ${auto}.` : "No SummerCart64 found. Plug it in, or pick its serial port.";
+      portText = auto
+        ? `Uses ${auto}.`
+        : autoWarning || "No SummerCart64 found. Plug it in, or pick its serial port.";
       portWarn = !auto;
     }
   }
@@ -170,10 +183,17 @@ function readSettingsFromForm() {
   };
 }
 
-async function loadSettings() {
+/**
+ * Fill the form from the saved settings and one fresh port enumeration. Both are fetched before
+ * anything is written, so when `isCurrent()` says Settings was opened or closed again while the
+ * backend answered, this returns false having touched nothing; otherwise it returns true.
+ */
+async function loadSettings(isCurrent = () => true) {
   const s = await invoke("get_settings");
+  const options = await invoke("get_serial_port_options");
+  if (!isCurrent()) return false;
   applySettingsToForm(s);
-  await refreshPorts();
+  applyPortOptions(options);
   const saved = s.serialPort;
   const sel = document.getElementById("serial-port");
   if (saved && [...sel.options].some((o) => o.value === saved)) {
@@ -186,6 +206,7 @@ async function loadSettings() {
   updateDevPanel();
   updateLogPresetVisibility();
   updateStartMinimizedGate();
+  return true;
 }
 
 function updateDevPanel() {
@@ -289,11 +310,39 @@ function returnFocus(saved, fallbackId) {
 /** What had focus before Settings opened. */
 let settingsReturnFocus = null;
 
+/**
+ * Bumped on every open and close. Each opens or closes with a reload that finishes later; one
+ * whose generation has moved on must not refill the form or move focus.
+ */
+let settingsGeneration = 0;
+
+/** True for the whole of a Save: closing is locked so the form cannot close or reopen mid-save. */
+let settingsSaving = false;
+
+function setSettingsSaving(saving) {
+  settingsSaving = saving;
+  for (const id of ["btn-save", "btn-cancel-settings", "btn-close-settings"]) {
+    document.getElementById(id).disabled = saving;
+  }
+  // Disabling Save dropped its focus; a failed Save leaves Settings open, so give it back.
+  const panel = document.getElementById("settings-panel");
+  if (!saving && !panel.hidden && !panel.contains(document.activeElement)) {
+    document.getElementById("btn-save").focus();
+  }
+}
+
 function setSettingsOpen(open) {
   const panel = document.getElementById("settings-panel");
   const backdrop = document.getElementById("settings-backdrop");
   const opener = document.getElementById("btn-open-settings");
+  const generation = ++settingsGeneration;
+  const isCurrent = () => generation === settingsGeneration;
   if (open && panel.hidden) settingsReturnFocus = document.activeElement;
+  if (!open && !document.getElementById("discard-panel").hidden) {
+    // The confirm asks about this Settings form; it must not outlive it.
+    setDiscardOpen(false);
+    discardReturnFocus = null;
+  }
   showInlineError("settings-error", "");
   panel.hidden = !open;
   backdrop.hidden = !open;
@@ -302,23 +351,29 @@ function setSettingsOpen(open) {
   syncDialogOpen();
   if (open) {
     // Start from last saved values; do not apply draft toggles until Save.
-    void loadSettings().then(() => {
-      // Closed again before loading finished: nothing to snapshot or focus.
-      if (panel.hidden) return;
+    void loadSettings(isCurrent).then((applied) => {
+      // Closed (or reopened) before loading finished: nothing to snapshot or focus.
+      if (!applied || !isCurrent() || panel.hidden) return;
       settingsSnapshot = JSON.stringify(readSettingsFromForm());
       document.getElementById("btn-close-settings").focus();
     });
   } else {
     // Discard unsaved edits; only "Save settings" calls set_settings on the backend.
-    void loadSettings().then(() => {
+    void loadSettings(isCurrent).then((applied) => {
+      // Reopened before this reload finished: the form and focus belong to the new open now.
+      if (!applied || !isCurrent()) return;
       returnFocus(settingsReturnFocus, opener.id);
       settingsReturnFocus = null;
     });
   }
 }
 
-/** Close icon, backdrop and Esc: ask first when the form has unsaved edits. Save closes directly. */
+/**
+ * Close icon, backdrop and Esc: ask first when the form has unsaved edits. Save closes directly.
+ * Does nothing while a Save is running; that Save closes Settings itself when it succeeds.
+ */
 function requestCloseSettings() {
+  if (settingsSaving) return;
   if (settingsHaveUnsavedEdits()) {
     setDiscardOpen(true);
   } else {
@@ -497,7 +552,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("btn-save").addEventListener("click", async () => {
+    if (settingsSaving) return;
     showInlineError("settings-error", "");
+    setSettingsSaving(true);
     try {
       const settings = readSettingsFromForm();
       await invoke("set_settings", { settings });
@@ -509,6 +566,8 @@ window.addEventListener("DOMContentLoaded", async () => {
     } catch (e) {
       console.error("set_settings:", e);
       showInlineError("settings-error", `Settings were not saved: ${e}`);
+    } finally {
+      setSettingsSaving(false);
     }
   });
   document.getElementById("btn-log-clear").addEventListener("click", async () => {
