@@ -44,9 +44,9 @@ fn upload_summary_description(summary: &UploadImportSummary) -> String {
 }
 
 /// Whether to pause multi64d before opening the cart's serial port: whenever it answers, as the
-/// main window does. `needs_yield` (`serialActive`) is not enough: a link another Xfer64 has
-/// already released, or one that faulted, reports false, and skipping the release then also skipped
-/// the resume, leaving the bridge released once both were done.
+/// main window does. Its `serialActive` is not enough: a link another Xfer64 has already released,
+/// or one that faulted, reports false, and skipping the release then also skipped the resume,
+/// leaving the bridge released once both were done.
 fn should_release(probe: &daemon::DaemonProbe) -> bool {
     probe.up
 }
@@ -186,6 +186,10 @@ pub fn parse_upload_args() -> Result<UploadCliArgs, String> {
 ///
 /// `allow_ed64pro_writes` must be true to write to an EverDrive-64 PRO: the picker passes it after
 /// asking the user, the CLI only with `--experimental-ed64pro-writes`.
+///
+/// `listen` is the multi64d address to pause and resume. The picker passes the one its window uses
+/// (and its folder listing already paused), so it matches the main window; the CLI, which has no
+/// window, passes [`daemon::default_listen`].
 #[allow(clippy::too_many_arguments)]
 pub fn run_headless_import_upload(
     paths: Vec<PathBuf>,
@@ -193,6 +197,7 @@ pub fn run_headless_import_upload(
     overwrite: bool,
     notify_on_success: bool,
     com_override: Option<String>,
+    listen: String,
     app: Option<AppHandle>,
     cancel: ExplorerCancelState,
     allow_ed64pro_writes: bool,
@@ -222,8 +227,6 @@ pub fn run_headless_import_upload(
         }
     }
 
-    let listen =
-        std::env::var("MULTI64_DAEMON_LISTEN").unwrap_or_else(|_| "http://127.0.0.1:38765".into());
     let probe = daemon::explorer_daemon_probe_snapshot(&st, &snap, &listen)?;
 
     let dev = ExplorerDevLog::new_without_app();
@@ -424,6 +427,7 @@ pub fn run_cli_upload_from_args(args: UploadCliArgs) -> Result<(), String> {
         args.overwrite,
         args.notify,
         com,
+        daemon::default_listen(),
         None,
         ExplorerCancelState::default(),
         args.allow_ed64pro_writes,
@@ -494,23 +498,23 @@ mod tests {
             .is_none());
     }
 
-    fn probe(up: bool, needs_yield: bool) -> daemon::DaemonProbe {
+    fn probe(up: bool, daemon_serial: Option<&str>) -> daemon::DaemonProbe {
         daemon::DaemonProbe {
             up,
-            daemon_serial: None,
+            daemon_serial: daemon_serial.map(str::to_string),
             explorer_serial: None,
-            needs_yield,
         }
     }
 
     /// The main window releases whenever multi64d answers; the CLI and Quick upload must too. A
     /// link another Xfer64 already released, or one that faulted, reports `serialActive: false`,
     /// and skipping the release then also skips the resume that would have restored the bridge.
+    /// The probe no longer carries `serialActive` at all, so only `up` can decide.
     #[test]
     fn a_reachable_daemon_is_released_even_with_no_active_link() {
-        assert!(should_release(&probe(true, true)));
-        assert!(should_release(&probe(true, false)));
-        assert!(!should_release(&probe(false, false)));
+        assert!(should_release(&probe(true, Some("COM4"))));
+        assert!(should_release(&probe(true, None)));
+        assert!(!should_release(&probe(false, None)));
     }
 
     /// A release that failed may still apply later (a timed-out request the daemon finishes), so a
