@@ -5,7 +5,7 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use multi64d::{
     build_app, http_metadata_router, AppState, CartKind, LinkState, SerialConfig,
-    RELEASE_LOCK_TIMEOUT,
+    RELEASE_LOCK_TIMEOUT, ROOT_LOCK_TIMEOUT,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,6 +28,7 @@ async fn get_root_returns_service_json() {
     assert_eq!(v["serial"], "");
     assert_eq!(v["cart"], "");
     assert_eq!(v["serialActive"], false);
+    assert_eq!(v["serialBusy"], false);
 }
 
 #[tokio::test]
@@ -180,7 +181,7 @@ fn hold_link_lock(state: &Arc<AppState>, hold: Duration) -> std::thread::JoinHan
     let link = state.link.clone();
     let (locked_tx, locked_rx) = std::sync::mpsc::channel();
     let holder = std::thread::spawn(move || {
-        let _g = link.lock().unwrap();
+        let _g = link.blocking_lock();
         locked_tx.send(()).unwrap();
         std::thread::sleep(hold);
     });
@@ -203,36 +204,118 @@ async fn post_release(state: &Arc<AppState>) -> StatusCode {
 }
 
 fn link_is_released(state: &AppState) -> bool {
-    matches!(&*state.link.lock().unwrap(), LinkState::Released)
+    let link = state.link.try_lock().expect("nothing else holds the link");
+    matches!(&*link, LinkState::Released)
+}
+
+#[test]
+fn release_that_cannot_get_the_link_in_time_fails_and_never_applies_late() {
+    // One blocking thread, so a refused release that kept one waiting for the lock would starve
+    // everything after it.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        // #137: the release used to wait out the lock however long it took and apply whenever it
+        // got it, after Xfer64's 5 s request had given up and skipped its resume, leaving the
+        // bridge released for good.
+        let state = faulted_state();
+        let hold = RELEASE_LOCK_TIMEOUT + Duration::from_millis(1500);
+        let holder = hold_link_lock(&state, hold);
+
+        // Two at once, as a client retrying during a long write might send.
+        let started = Instant::now();
+        let (a, b) = tokio::join!(post_release(&state), post_release(&state));
+        let waited = started.elapsed();
+        assert_eq!(a, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(b, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            waited < RELEASE_LOCK_TIMEOUT + Duration::from_millis(1000),
+            "answered at the bound, not when the lock came free: {waited:?}"
+        );
+
+        // #167: a refused release used to keep a blocking-pool thread parked on the lock until
+        // the holder let go. The lock is still held here, so a parked waiter would still be
+        // parked.
+        assert!(!holder.is_finished(), "the lock must still be held");
+        let free_thread = tokio::time::timeout(
+            Duration::from_millis(500),
+            tokio::task::spawn_blocking(|| ()),
+        )
+        .await;
+        assert!(
+            free_thread.is_ok(),
+            "a release that answered 503 must not leave a thread waiting for the link"
+        );
+
+        while !holder.is_finished() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        holder.join().unwrap();
+        // Give any abandoned wait time to take the lock it was queued for.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !link_is_released(&state),
+            "a release that answered 503 must not take effect afterwards"
+        );
+
+        // The next release, with the lock free, works as normal.
+        assert_eq!(post_release(&state).await, StatusCode::OK);
+        assert!(link_is_released(&state));
+    });
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn release_that_cannot_get_the_link_in_time_fails_and_never_applies_late() {
-    // #137: the release used to wait out the lock however long it took and apply whenever it got
-    // it, after Xfer64's 5 s request had given up and skipped its resume, leaving the bridge
-    // released for good.
+async fn root_reports_a_busy_link_instead_of_waiting_for_it() {
+    // #167: `GET /` used to wait for the link lock with no limit, so it hung for the whole of a
+    // long cart write -- past the 2 s Xfer64 gives it.
     let state = faulted_state();
-    let hold = RELEASE_LOCK_TIMEOUT + Duration::from_millis(1500);
+    let hold = ROOT_LOCK_TIMEOUT + Duration::from_millis(2500);
     let holder = hold_link_lock(&state, hold);
 
     let started = Instant::now();
-    let status = post_release(&state).await;
+    let v = get_root(&state).await;
     let waited = started.elapsed();
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(
-        waited < RELEASE_LOCK_TIMEOUT + Duration::from_millis(1000),
+        waited < ROOT_LOCK_TIMEOUT + Duration::from_millis(1000),
         "answered at the bound, not when the lock came free: {waited:?}"
     );
+    assert_eq!(v["serialBusy"], true, "{v}");
+    assert_eq!(
+        v["serialActive"], true,
+        "a busy link is reported as held, so a client releases before opening the port: {v}"
+    );
+    assert_eq!(v["serial"], "COM_TEST");
+    assert_eq!(v["cart"], "sc64");
 
-    tokio::task::spawn_blocking(move || holder.join().unwrap())
+    while !holder.is_finished() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    holder.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn root_waits_out_a_short_lock_hold() {
+    // A reader iteration holds the lock for at most 50 ms; `GET /` still reports the real state.
+    let state = faulted_state();
+    let holder = hold_link_lock(&state, Duration::from_millis(100));
+    let v = get_root(&state).await;
+    assert_eq!(v["serialBusy"], false, "{v}");
+    assert_eq!(v["serialActive"], false, "{v}");
+    holder.join().unwrap();
+}
+
+async fn get_root(state: &Arc<AppState>) -> serde_json::Value {
+    let res = build_app(state.clone())
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
         .await
         .unwrap();
-    // Give the abandoned wait time to take the lock it was queued for.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(
-        !link_is_released(&state),
-        "a release that answered 503 must not take effect afterwards"
-    );
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]

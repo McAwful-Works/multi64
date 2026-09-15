@@ -1,6 +1,7 @@
 //! Reference **multi64d** server: HTTP metadata, health check, and a **WebSocket** that carries the bidirectional **L3 octet stream** to/from the flash cart.
 //!
-//! - **`POST /v1/serial/release`** — drop the serial link so another process (e.g. Xfer64) can open the COM port. WebSocket writes are ignored while released.
+//! - **`GET /`** — metadata, including whether the daemon holds the serial link (`serialActive`). Waits at most [`ROOT_LOCK_TIMEOUT`] for the link; one still in use after that is reported as held and busy (`serialBusy`) rather than waited out.
+//! - **`POST /v1/serial/release`** — drop the serial link so another process (e.g. Xfer64) can open the COM port. WebSocket writes are ignored while released. If the link is still in use after [`RELEASE_LOCK_TIMEOUT`] (a long write, a slow reopen), answers **`503`** and does not release, then or later.
 //! - **`POST /v1/serial/resume`** — reopen the same serial device and continue serving.
 //!
 //! Full API details: **`docs/spec/daemon-api-v1.md`**.
@@ -20,11 +21,9 @@ use multi64_ed64pro_l2::Ed64ProL2Pipe;
 use multi64_sc64_l2::Sc64L2Pipe;
 use serde::{Deserialize, Serialize};
 use std::io;
-use std::sync::atomic::AtomicU8;
-use std::sync::atomic::Ordering::SeqCst;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex, MutexGuard};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -34,12 +33,21 @@ pub const SERIAL_READ_TIMEOUT: Duration = Duration::from_millis(50);
 /// Serial timeout while writing a WebSocket message to the cart. The serial port has one timeout
 /// for both directions, so writes swap this in and restore [`SERIAL_READ_TIMEOUT`] afterwards;
 /// otherwise a device that took longer than 50 ms to accept a packet would get half of it.
+///
+/// Governs SC64 and X7 writes only. `Ed64ProL2Pipe::set_timeout` sets its own read polling and
+/// never the port, so a PRO write keeps the 2 s operation timeout its link set at open; the fault
+/// handling in [`write_to_link`] is the same for every cart.
 pub const SERIAL_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Longest `POST /v1/serial/release` waits for the link lock before answering `503` without
 /// releasing (`docs/spec/daemon-api-v1.md` §1.2). Well under Xfer64's 5 s request timeout, so the
 /// caller hears the refusal instead of timing out while the release is still queued.
 pub const RELEASE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Longest `GET /` waits for the link lock before reporting the link busy (`serialBusy`,
+/// `docs/spec/daemon-api-v1.md` §1.1). Outlasts a reader iteration (50 ms) and is well under the
+/// 2 s Xfer64 gives this request.
+pub const ROOT_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// How long to wait before retrying `open` after the link faulted (cart unplugged, device reset).
 const REOPEN_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -179,11 +187,15 @@ pub enum LinkState {
     Faulted,
 }
 
-/// `LinkState` holds no invariant that a panic can break, so recover the guard instead of
-/// propagating poison: one panic under the lock would otherwise wedge every later request, and
-/// `root` has no error channel to report it on.
+/// Take the link lock from blocking code (`spawn_blocking`, plain threads); panics on a runtime
+/// worker.
+///
+/// The lock is tokio's rather than std's so that `GET /` and `POST /v1/serial/release` can wait for
+/// it asynchronously with a deadline: waiters are served in arrival order, and one that gives up
+/// leaves the queue instead of keeping a thread parked on the lock. It does not poison either, so
+/// one panic under the lock cannot wedge every later request.
 fn lock_link(link: &Mutex<LinkState>) -> MutexGuard<'_, LinkState> {
-    link.lock().unwrap_or_else(|e| e.into_inner())
+    link.blocking_lock()
 }
 
 /// Shared Axum state: serial link (optional when released) and broadcast of cart-originated L3 chunks.
@@ -223,6 +235,10 @@ struct RootResponse<'a> {
     /// open the port.
     #[serde(rename = "serialActive")]
     serial_active: bool,
+    /// `true` when the link was still in use after [`ROOT_LOCK_TIMEOUT`], so its state could not be
+    /// read; `serialActive` is then `true`.
+    #[serde(rename = "serialBusy")]
+    serial_busy: bool,
     /// The `--cart` mapping the daemon was started for (`sc64`, `ed64`, `ed64pro`), so a tool that
     /// shares the cart (Xfer64) need not probe ports to learn it.
     cart: &'a str,
@@ -302,6 +318,7 @@ async fn root_metadata_only() -> impl IntoResponse {
         websocket_path: "/ws",
         serial: String::new(),
         serial_active: false,
+        serial_busy: false,
         cart: "",
     })
     .unwrap_or_else(|_| b"{}".to_vec());
@@ -318,20 +335,24 @@ pub fn http_metadata_router() -> Router {
 async fn root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Configured serial device (same when link is temporarily released for Xfer64).
     let serial = state.serial_cfg.path.clone();
-    // The link mutex is held across blocking serial I/O by the reader loop and by
-    // `post_serial_resume`, so taking it here would park a runtime worker for that whole window.
-    // Xfer64 polls this route before every cart operation.
-    let link = state.link.clone();
-    let serial_active =
-        tokio::task::spawn_blocking(move || matches!(&*lock_link(&link), LinkState::Active(_)))
-            .await
-            .unwrap_or(false);
+    // The link lock is held across blocking serial I/O -- for the whole of each WebSocket message
+    // written to the cart, and while a link is reopened -- so wait for it only briefly. Xfer64
+    // polls this route before every cart operation and gives it 2 s. The wait parks no thread, and
+    // one that runs out leaves the lock's queue.
+    let (serial_active, serial_busy) =
+        match tokio::time::timeout(ROOT_LOCK_TIMEOUT, state.link.lock()).await {
+            Ok(link) => (matches!(&*link, LinkState::Active(_)), false),
+            // Whatever holds the link is using the port or opening it, so report it held: a client
+            // then releases before opening the port, and hears 503 if the link is still busy.
+            Err(_) => (true, true),
+        };
     let body = serde_json::to_vec(&RootResponse {
         service: "multi64d",
         version: env!("CARGO_PKG_VERSION"),
         websocket_path: "/ws",
         serial,
         serial_active,
+        serial_busy,
         cart: state.serial_cfg.cart.as_str(),
     })
     .unwrap_or_else(|_| b"{}".to_vec());
@@ -345,52 +366,26 @@ async fn health() -> impl IntoResponse {
     )
 }
 
-/// [`post_serial_release`]'s queued lock wait and its [`RELEASE_LOCK_TIMEOUT`] race to move this
-/// from `RELEASE_PENDING`; whichever wins decides, so a release that answered 503 never applies.
-const RELEASE_PENDING: u8 = 0;
-const RELEASE_APPLIED: u8 = 1;
-const RELEASE_ABANDONED: u8 = 2;
-
 async fn post_serial_release(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let link = state.link.clone();
-    let decision = Arc::new(AtomicU8::new(RELEASE_PENDING));
-    let mut wait = tokio::task::spawn_blocking({
-        let decision = decision.clone();
-        move || {
-            let mut g = lock_link(&link);
-            if decision
-                .compare_exchange(RELEASE_PENDING, RELEASE_APPLIED, SeqCst, SeqCst)
-                .is_ok()
-            {
-                // Assigning over the guard drops the pipe — and closes the COM port — before the
-                // lock is released, so the caller cannot see 200 while the handle is still open.
-                *g = LinkState::Released;
-            }
-        }
-    });
-    let joined = match tokio::time::timeout(RELEASE_LOCK_TIMEOUT, &mut wait).await {
-        Ok(joined) => joined,
-        Err(_)
-            if decision
-                .compare_exchange(RELEASE_PENDING, RELEASE_ABANDONED, SeqCst, SeqCst)
-                .is_ok() =>
-        {
-            // The blocking wait stays queued until whatever holds the link lets go, then sees
-            // `RELEASE_ABANDONED` and leaves the link alone.
-            tracing::warn!(
-                timeout = ?RELEASE_LOCK_TIMEOUT,
-                "serial release refused: link busy"
-            );
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "serial link busy; not released, try again\n",
-            )
-                .into_response();
-        }
-        // The lock came free just as the bound ran out, and the release is being applied now.
-        Err(_) => wait.await,
+    // Queued behind whatever holds the link, in arrival order. A wait that runs out leaves the
+    // queue, so a release that answered 503 holds no thread and can never apply later.
+    let Ok(mut link) =
+        tokio::time::timeout(RELEASE_LOCK_TIMEOUT, state.link.clone().lock_owned()).await
+    else {
+        tracing::warn!(
+            timeout = ?RELEASE_LOCK_TIMEOUT,
+            "serial release refused: link busy"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "serial link busy; not released, try again\n",
+        )
+            .into_response();
     };
-    match joined {
+    // Closing the COM port can block, so drop the pipe off the runtime. Assigning over the guard
+    // drops it -- and closes the port -- before the lock is released, so the caller cannot see 200
+    // while the handle is still open.
+    match tokio::task::spawn_blocking(move || *link = LinkState::Released).await {
         Ok(()) => (
             [(header::CONTENT_TYPE, "application/json")],
             r#"{"released":true}"#.as_bytes().to_vec(),
@@ -729,6 +724,8 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The link lock is tokio's; the fake's log is shared with plain test code.
+    use std::sync::{Mutex as StdMutex, MutexGuard as StdMutexGuard};
 
     fn secs(s: u64) -> Duration {
         Duration::from_secs(s)
@@ -749,10 +746,10 @@ mod tests {
         pub read_fails: bool,
     }
 
-    pub struct FakePipe(pub Arc<Mutex<FakeLog>>);
+    pub struct FakePipe(pub Arc<StdMutex<FakeLog>>);
 
     impl FakePipe {
-        fn log(&self) -> MutexGuard<'_, FakeLog> {
+        fn log(&self) -> StdMutexGuard<'_, FakeLog> {
             self.0.lock().unwrap()
         }
 
@@ -785,8 +782,8 @@ mod tests {
     }
 
     /// An active link over a fake pipe, set up the way [`open_pipe`] leaves a real one.
-    fn fake_link(log: FakeLog) -> (Arc<Mutex<LinkState>>, Arc<Mutex<FakeLog>>) {
-        let log = Arc::new(Mutex::new(log));
+    fn fake_link(log: FakeLog) -> (Arc<Mutex<LinkState>>, Arc<StdMutex<FakeLog>>) {
+        let log = Arc::new(StdMutex::new(log));
         let mut pipe = CartPipe::Fake(FakePipe(log.clone()));
         pipe.set_timeout(SERIAL_READ_TIMEOUT).unwrap();
         (Arc::new(Mutex::new(LinkState::Active(pipe))), log)
