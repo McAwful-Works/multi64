@@ -50,12 +50,20 @@ impl FrameType {
     }
 }
 
+/// Logical channel (spec §4).
+///
+/// `0x03`–`0x7F` are reserved for future standard channels. They have no variant: a v1 peer does not
+/// send them, so a header carrying one fails to decode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
 pub enum Channel {
-    Application = 0x00,
-    Log = 0x01,
-    Control = 0x02,
+    /// `0x00`
+    Application,
+    /// `0x01`
+    Log,
+    /// `0x02`
+    Control,
+    /// `0x80`–`0xFF`: private use between named implementations. Any other value fails to encode.
+    Experimental(u8),
 }
 
 impl Channel {
@@ -64,12 +72,18 @@ impl Channel {
             0x00 => Self::Application,
             0x01 => Self::Log,
             0x02 => Self::Control,
+            0x80..=0xFF => Self::Experimental(v),
             _ => return None,
         })
     }
 
     pub fn to_u8(self) -> u8 {
-        self as u8
+        match self {
+            Self::Application => 0x00,
+            Self::Log => 0x01,
+            Self::Control => 0x02,
+            Self::Experimental(v) => v,
+        }
     }
 }
 

@@ -9,6 +9,8 @@ pub enum DecodeError {
     BadMagic,
     UnknownFrameType(u8),
     InvalidChannel(u8),
+    /// `PAYLOAD_LEN` exceeds [`MAX_PAYLOAD_CEILING`], so no handshake can have allowed it.
+    PayloadTooLarge(u32),
     PayloadLengthMismatch,
     InvalidPayloadLength,
 }
@@ -20,6 +22,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::BadMagic => write!(f, "bad magic"),
             DecodeError::UnknownFrameType(b) => write!(f, "unknown frame type 0x{b:02x}"),
             DecodeError::InvalidChannel(b) => write!(f, "invalid channel 0x{b:02x}"),
+            DecodeError::PayloadTooLarge(len) => write!(
+                f,
+                "payload length {len} exceeds the protocol ceiling {MAX_PAYLOAD_CEILING}"
+            ),
             DecodeError::PayloadLengthMismatch => write!(f, "payload length mismatch"),
             DecodeError::InvalidPayloadLength => {
                 write!(f, "invalid payload length for message type")
@@ -30,42 +36,71 @@ impl std::fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
-pub fn decode_frame(buf: &[u8]) -> Result<(Frame, usize), DecodeError> {
+/// A 16-byte header whose fields all passed validation.
+struct Header {
+    ty: FrameType,
+    channel: Channel,
+    flags: FrameFlags,
+    request_id: u32,
+    payload_len: usize,
+}
+
+impl Header {
+    fn into_frame(self, payload: Vec<u8>) -> Frame {
+        Frame {
+            ty: self.ty,
+            channel: self.channel,
+            flags: self.flags,
+            request_id: self.request_id,
+            payload,
+        }
+    }
+}
+
+/// Validate the header at the start of `buf` without needing its payload: `TYPE` and `CHANNEL` must
+/// decode, and `PAYLOAD_LEN` must not exceed [`MAX_PAYLOAD_CEILING`], the largest `MAX_PAYLOAD` a
+/// handshake can negotiate (spec §6). Neither decoder tracks the handshake, so neither can use the
+/// negotiated value.
+fn parse_header(buf: &[u8]) -> Result<Header, DecodeError> {
     if buf.len() < HEADER_LEN {
         return Err(DecodeError::TooShort);
     }
     if buf[0..4] != MAGIC {
         return Err(DecodeError::BadMagic);
     }
-    let ty = buf[4];
-    let ty_e = FrameType::from_u8(ty).ok_or(DecodeError::UnknownFrameType(ty))?;
-    let ch = buf[5];
-    let channel = Channel::from_u8(ch).ok_or(DecodeError::InvalidChannel(ch))?;
-    let flags = FrameFlags(u16::from_be_bytes([buf[6], buf[7]]));
-    let request_id = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
-    let payload_len = u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]) as usize;
-    let total = HEADER_LEN + payload_len;
+    let ty = FrameType::from_u8(buf[4]).ok_or(DecodeError::UnknownFrameType(buf[4]))?;
+    let channel = Channel::from_u8(buf[5]).ok_or(DecodeError::InvalidChannel(buf[5]))?;
+    let payload_len = u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]);
+    if payload_len > MAX_PAYLOAD_CEILING {
+        return Err(DecodeError::PayloadTooLarge(payload_len));
+    }
+    Ok(Header {
+        ty,
+        channel,
+        flags: FrameFlags(u16::from_be_bytes([buf[6], buf[7]])),
+        request_id: u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]),
+        payload_len: payload_len as usize,
+    })
+}
+
+/// Parse one complete frame from the start of `buf`, returning it and the bytes it used.
+///
+/// [`DecodeError::TooShort`] means more bytes could complete the frame. A header that no amount of
+/// further input can make valid is reported as such, even before its payload has arrived.
+pub fn decode_frame(buf: &[u8]) -> Result<(Frame, usize), DecodeError> {
+    let header = parse_header(buf)?;
+    let total = HEADER_LEN + header.payload_len;
     if buf.len() < total {
         return Err(DecodeError::TooShort);
     }
-    let payload = buf[HEADER_LEN..total].to_vec();
-    Ok((
-        Frame {
-            ty: ty_e,
-            channel,
-            flags,
-            request_id,
-            payload,
-        },
-        total,
-    ))
+    Ok((header.into_frame(buf[HEADER_LEN..total].to_vec()), total))
 }
 
 /// Incremental decoder: buffers bytes, emits frames, resynchronizes on `M64B`.
 ///
-/// Chunk boundaries are arbitrary: a trailing partial magic is kept for the next push. A header whose
-/// `TYPE`, `CHANNEL` or `PAYLOAD_LEN` is invalid is rejected as soon as its 16 bytes are buffered, one
-/// byte is dropped, and the search for `M64B` resumes.
+/// Chunk boundaries are arbitrary: a trailing partial magic is kept for the next push. A header that
+/// [`decode_frame`] would reject (bad `TYPE`, `CHANNEL` or `PAYLOAD_LEN`) is rejected as soon as its
+/// 16 bytes are buffered, one byte is dropped, and the search for `M64B` resumes.
 pub struct StreamDecoder {
     buf: Vec<u8>,
 }
@@ -102,45 +137,25 @@ impl StreamDecoder {
             if self.buf.len() < HEADER_LEN {
                 return;
             }
-            if !header_is_plausible(&self.buf[..HEADER_LEN]) {
-                // Noise that happens to contain `M64B`: never wait on the payload it claims.
+            let Ok(header) = parse_header(&self.buf) else {
+                // Noise that happens to contain `M64B`: never wait on the payload it claims. Drop
+                // one byte and search again.
                 self.buf.drain(..1);
                 continue;
-            }
-            let payload_len =
-                u32::from_be_bytes([self.buf[12], self.buf[13], self.buf[14], self.buf[15]])
-                    as usize;
-            let total = HEADER_LEN + payload_len;
+            };
+            let total = HEADER_LEN + header.payload_len;
             if self.buf.len() < total {
                 return;
             }
-            match decode_frame(&self.buf[..total]) {
-                Ok((frame, n)) => {
-                    debug_assert_eq!(n, total);
-                    self.buf.drain(..total);
-                    emit(frame);
-                }
-                Err(_) => {
-                    // Lose sync: drop one byte and search again for M64B.
-                    self.buf.drain(..1);
-                }
-            }
+            let frame = header.into_frame(self.buf[HEADER_LEN..total].to_vec());
+            self.buf.drain(..total);
+            emit(frame);
         }
     }
 }
 
 fn find_magic(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == MAGIC)
-}
-
-/// Validate a 16-byte header before waiting for its payload: `TYPE` and `CHANNEL` must decode and
-/// `PAYLOAD_LEN` must not exceed [`MAX_PAYLOAD_CEILING`], the largest `MAX_PAYLOAD` a handshake can
-/// negotiate (spec §6). The decoder does not track the handshake, so it cannot use the negotiated value.
-fn header_is_plausible(header: &[u8]) -> bool {
-    FrameType::from_u8(header[4]).is_some()
-        && Channel::from_u8(header[5]).is_some()
-        && u32::from_be_bytes([header[12], header[13], header[14], header[15]])
-            <= MAX_PAYLOAD_CEILING
 }
 
 #[cfg(test)]
@@ -258,6 +273,69 @@ mod stream_tests {
             let mut got = Vec::new();
             dec.push_bytes(&bytes, |fr| got.push(fr));
             assert_eq!(got.len(), 3);
+        }
+    }
+
+    /// `decode_frame` enforces the same ceiling as `StreamDecoder`: a header over it is an error from
+    /// the header alone, not `TooShort` (which tells a caller to wait for bytes that must not come).
+    #[test]
+    fn decode_frame_rejects_payload_over_ceiling() {
+        let header = corrupt_header(FrameType::Data.to_u8(), 0x00, MAX_PAYLOAD_CEILING + 1);
+        let too_large = DecodeError::PayloadTooLarge(MAX_PAYLOAD_CEILING + 1);
+        assert_eq!(decode_frame(&header).unwrap_err(), too_large);
+
+        let mut whole = header;
+        whole.resize(HEADER_LEN + MAX_PAYLOAD_CEILING as usize + 1, 0x5A);
+        assert_eq!(decode_frame(&whole).unwrap_err(), too_large);
+        assert_eq!(Frame::decode(&whole).unwrap_err(), too_large);
+    }
+
+    fn frame_on_channel(channel: u8, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = corrupt_header(FrameType::Data.to_u8(), channel, payload.len() as u32);
+        bytes[7] = FrameFlags::FINAL.bits() as u8;
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    /// Spec §4: `0x80`–`0xFF` are experimental channels, so a frame on one is a valid frame.
+    #[test]
+    fn experimental_channels_are_accepted() {
+        for ch in [0x80u8, 0xC3, 0xFF] {
+            let mut bytes = frame_on_channel(ch, b"xp");
+            let (frame, n) = decode_frame(&bytes).unwrap();
+            assert_eq!(n, bytes.len());
+            assert_eq!(frame.channel.to_u8(), ch);
+            assert_eq!(
+                frame.encode().unwrap(),
+                bytes,
+                "channel 0x{ch:02x} round-trips"
+            );
+
+            bytes.extend_from_slice(&valid_frames(1));
+            let mut dec = StreamDecoder::new();
+            let mut got = Vec::new();
+            dec.push_bytes(&bytes, |fr| got.push(fr));
+            assert_eq!(got.len(), 2, "channel 0x{ch:02x}");
+            assert_eq!(got[0].channel.to_u8(), ch);
+            assert_eq!(got[0].payload, b"xp");
+        }
+    }
+
+    /// Spec §4: `0x03`–`0x7F` are reserved for future standard channels, which a v1 peer does not
+    /// send, so they still mark a header as noise.
+    #[test]
+    fn reserved_channels_are_still_rejected() {
+        for ch in [0x03u8, 0x7F] {
+            assert_eq!(
+                decode_frame(&frame_on_channel(ch, b"xp")).unwrap_err(),
+                DecodeError::InvalidChannel(ch)
+            );
+            let mut bytes = corrupt_header(FrameType::Data.to_u8(), ch, 1000);
+            bytes.extend_from_slice(&valid_frames(2));
+            let mut dec = StreamDecoder::new();
+            let mut got = Vec::new();
+            dec.push_bytes(&bytes, |fr| got.push(fr));
+            assert_eq!(got.len(), 2, "channel 0x{ch:02x}");
         }
     }
 
