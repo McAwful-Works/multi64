@@ -66,6 +66,9 @@
         "fragmentPaths": [
           "windows/wix-sendto-uninstall.wxs"
         ],
+        "componentGroupRefs": [
+          "Xfer64InstallerActions"
+        ],
         "bannerPath": "windows/wix-banner.bmp",
         "dialogImagePath": "windows/wix-dialog.bmp"
       }

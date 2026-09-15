@@ -2,6 +2,21 @@
 <!-- Generated from wix-sendto-uninstall.ps1; do not edit by hand. -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
+    <!--
+      Anchor for the fragment. WiX links a Fragment only when something references it, and Tauri
+      exposes no customActionRefs, so without a referencable element here light silently drops this
+      whole file: the MSI uninstall then never ran Xfer64RemoveSendTo and left the Send to shortcut
+      pointing at a deleted exe. Referenced from tauri.conf.json via
+      bundle.windows.wix.componentGroupRefs, as Multi64's wix-xfer64-option.wxs does.
+    -->
+    <ComponentGroup Id="Xfer64InstallerActions" />
+    <!--
+      SystemFolder is a standard MSI directory but is not among the ones Tauri emits into main.wxs,
+      so once this fragment is linked, a custom action naming it fails with LGHT0094. Declare it here.
+    -->
+    <DirectoryRef Id="TARGETDIR">
+      <Directory Id="SystemFolder" Name="System" />
+    </DirectoryRef>
     <CustomAction Id="Xfer64RemoveSendTo"
       Directory="SystemFolder"
       Execute="deferred"

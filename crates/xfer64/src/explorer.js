@@ -91,7 +91,14 @@ async function withCartDaemonYield(fn, opts = {}) {
     );
     if (!ok) return true;
   }
-  await invoke("explorer_daemon_release", { listen });
+  try {
+    await invoke("explorer_daemon_release", { listen });
+  } catch (releaseError) {
+    // A release that failed or timed out may still be applied by multi64d once it gets the link,
+    // and nothing would resume it after that. Resume anyway; the release error is what to report.
+    await invoke("explorer_daemon_resume", { listen }).catch(() => {});
+    throw releaseError;
+  }
   // Released and resumed separately so a resume failure can be reported without masking
   // the operation's own error. If resume fails, multi64d keeps ignoring WebSocket writes
   // and the bridge is silently dead -- the user has to be told.
@@ -2455,11 +2462,21 @@ async function applySavedCartFolderFromSettings() {
   } catch {
     return;
   }
-  const path = await probeSavedCartFolderReachable(
+  const { status, path } = await probeSavedCartFolderReachable(
     invoke,
     normalizeUsbPath(String(settings?.quickUploadCartPath ?? "")),
+    {
+      withBridge: async (check) => {
+        let result;
+        await withCartDaemonYield(async () => {
+          result = await check();
+        });
+        return result;
+      },
+    },
   );
-  if (!path) return;
+  // A cart that couldn't be read starts at its root, but the saved folder is kept for next time.
+  if (status !== "ok") return;
   state.cart.path = path;
   state.cart.history = [path];
   state.cart.histIndex = 0;
@@ -5138,11 +5155,9 @@ async function init() {
   await loadExplorerSettings();
   void refreshEd64LinearHintBases();
 
+  // Restores the saved port when it is plugged in. One that isn't stays on Auto-detect: setting the
+  // select to it anyway left the select blank.
   await refreshUsbComPorts();
-  const usbCom = localStorage.getItem(LS_USB_COM);
-  if (usbCom && document.getElementById("select-usb-com")) {
-    document.getElementById("select-usb-com").value = usbCom;
-  }
   await syncPreferredComToBackend();
   await refreshUsbDetectHint();
 

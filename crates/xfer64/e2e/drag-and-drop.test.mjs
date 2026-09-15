@@ -62,8 +62,18 @@ async function serveFrontend() {
  * Every `invoke` is recorded; the handler table answers the commands a boot and a copy need. An
  * unknown command resolves to null rather than throwing, so a command added elsewhere in the app
  * does not break these checks — only a command this file asserts on has to be kept in step.
+ *
+ * `scenario` sets up a fresh page for the checks at the end of this file (none for the main run):
+ * - `settings`: fields merged into the settings file
+ * - `localStorage`: keys written before the page loads
+ * - `daemonUp`: multi64d answers the probe
+ * - `releaseFails`: `explorer_daemon_release` rejects, as a timed-out request does
+ * - `listFails`: cart paths whose listing rejects, or `"all"`
+ * - `pickerPaths`: the files Quick upload was opened with
  */
-function installTauriStub() {
+function installTauriStub(scenario = {}) {
+  const sc = scenario || {};
+  for (const [k, v] of Object.entries(sc.localStorage || {})) localStorage.setItem(k, v);
   const calls = [];
   window.__TAURI_CALLS__ = calls;
   // Commands whose (possibly delayed) answer has been returned, in order.
@@ -92,6 +102,12 @@ function installTauriStub() {
   let settings = {
     developerMode: false, preferredCom: "", cartDevice: "auto", ed64RomLinearBase: null,
     savedCartFolder: "", quickUploadCartPath: "", quickUploadOverwrite: false, autoDetect: true,
+    ...(sc.settings || {}),
+  };
+  // `__TAURI_LIST_FAILS__` replaces `sc.listFails` mid-run: a cart that becomes readable.
+  const listFails = (path) => {
+    const f = window.__TAURI_LIST_FAILS__ ?? sc.listFails;
+    return f === "all" || (Array.isArray(f) && f.includes(path));
   };
 
   const handlers = {
@@ -104,12 +120,22 @@ function installTauriStub() {
     // A check sets `__TAURI_NO_SUGGEST__` to play a cart whose port Auto-detect can't pick.
     cart_serial_suggest_port: () => (window.__TAURI_NO_SUGGEST__ ? null : "COM3"),
     cart_serial_probe_status: () => ({ resolvedPort: "COM3", mode: settings.cartDevice, detectedKind: "sc64", message: null }),
-    cart_serial_list_dir_page: () => listing(cartEntries),
+    cart_serial_list_dir_page: (a) => {
+      if (listFails(a.path)) throw new Error("Couldn't open the serial port: access denied.");
+      return listing(cartEntries);
+    },
     fs_list_dir_page: () => listing(window.__TAURI_LONG_PC__ ? longPcEntries : pcEntries),
     // The EverDrive SD base scan, finding nothing: it ends in an alert.
     cart_serial_probe_ed64_linear_base: () => ({ candidates: [], basesChecked: 12 }),
     xfer64_app_version: () => "0.0.0-test",
-    explorer_daemon_probe: () => ({ up: false }),
+    explorer_daemon_probe: () => ({ up: sc.daemonUp === true }),
+    explorer_daemon_release: () => {
+      if (sc.releaseFails) throw new Error("POST http://127.0.0.1:38765/v1/serial/release: timeout");
+      return null;
+    },
+    upload_picker_get_paths: () => sc.pickerPaths || [],
+    // Held open until a check settles it through `__FINISH_UPLOAD__`.
+    upload_picker_run: () => new Promise((resolve, reject) => { window.__FINISH_UPLOAD__ = { resolve, reject }; }),
     build_fs_copy_plan: (a) => (a.srcPaths || []).map((p) =>
       step({ mode: "fs", srcPc: p, destPc: `${a.destDir}\\${p.split("\\").pop()}` })),
     build_cart_import_plan: (a) => (a.fromPcPaths || []).map((p) =>
@@ -838,6 +864,152 @@ await reset();
 }
 
 check("the page logged no errors", consoleErrors.length === 0, consoleErrors.join(" | "));
+
+// --- fresh pages: the bridge, the saved cart folder, Quick upload ---------
+/** Open `file` in its own page, with the stub playing `scenario`. */
+async function openScenario(file, scenario) {
+  const p = await browser.newPage({ viewport: { width: 1100, height: 700 } });
+  await p.addInitScript(installTauriStub, scenario);
+  await p.goto(`${origin}/${file}`);
+  return p;
+}
+const callsIn = (p) => p.evaluate(() => window.__TAURI_CALLS__);
+const until = (p, fn, timeout = 5000) => p.waitForFunction(fn, null, { timeout }).then(() => true, () => false);
+const callLog = (calls) => calls.map((c) => (c.args?.path !== undefined ? `${c.cmd}(${c.args.path})` : c.cmd)).join(",");
+/** Call `i` ran with the bridge paused: after a release, with the resume still to come. */
+const whilePaused = (calls, i) => {
+  if (i < 0) return false;
+  const release = calls.slice(0, i).map((c) => c.cmd).lastIndexOf("explorer_daemon_release");
+  return release >= 0 &&
+    !calls.slice(release, i).some((c) => c.cmd === "explorer_daemon_resume") &&
+    calls.slice(i + 1).some((c) => c.cmd === "explorer_daemon_resume");
+};
+const clearedSavedFolder = (calls) =>
+  calls.filter((c) => c.cmd === "explorer_set_quick_upload_cart_path" && c.args.path === "");
+
+{
+  // The bridge holds the serial port and the cart can't be read; COM9 was saved and is unplugged.
+  const p = await openScenario("index.html", {
+    daemonUp: true,
+    listFails: "all",
+    settings: { quickUploadCartPath: "roms" },
+    localStorage: { "multi64.explorer.usbCom": "COM9" },
+  });
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "fs_list_dir_page"));
+  await p.waitForTimeout(400);
+  const calls = await callsIn(p);
+  const probed = calls.findIndex((c) => c.cmd === "cart_serial_list_dir_page" && c.args.path === "roms");
+  check("at startup the saved cart folder is checked with the bridge paused", whilePaused(calls, probed), callLog(calls));
+  check("and a cart that can't be read leaves the saved cart folder alone",
+    probed >= 0 && clearedSavedFolder(calls).length === 0, callLog(calls));
+  const port = await p.evaluate(() => {
+    const s = document.getElementById("select-usb-com");
+    return { index: s.selectedIndex, value: s.value, label: s.selectedOptions[0]?.textContent ?? null };
+  });
+  check("a saved serial port that is unplugged at startup leaves the Serial port select on Auto-detect, not blank",
+    port.index === 0 && port.value === "" && port.label === "Auto-detect", JSON.stringify(port));
+  await p.close();
+}
+
+{
+  const p = await openScenario("index.html", { settings: { quickUploadCartPath: "gone" }, listFails: ["gone"] });
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "fs_list_dir_page"));
+  await p.waitForTimeout(400);
+  const calls = await callsIn(p);
+  check("a saved cart folder is cleared once the cart lists and the folder really is missing",
+    clearedSavedFolder(calls).length === 1, callLog(calls));
+  await p.close();
+}
+
+{
+  // The release request times out; multi64d may still apply it afterwards.
+  const p = await openScenario("index.html", { daemonUp: true, releaseFails: true });
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "explorer_daemon_release"));
+  await p.waitForTimeout(400);
+  const seen = (await callsIn(p)).map((c) => c.cmd);
+  const released = seen.indexOf("explorer_daemon_release");
+  check("a release that fails or times out is still followed by a resume",
+    released >= 0 && seen.indexOf("explorer_daemon_resume", released) > released, seen.join(","));
+  await p.close();
+}
+
+{
+  const p = await openScenario("upload-picker.html", {
+    daemonUp: true,
+    pickerPaths: ["C:\\dl\\game.z64"],
+    settings: { quickUploadCartPath: "roms" },
+  });
+  const ready = await until(p, () => document.getElementById("upload-picker-btn-upload")?.disabled === false);
+  const calls = await callsIn(p);
+  const lists = calls.map((c, i) => (c.cmd === "cart_serial_list_dir_page" ? i : -1)).filter((i) => i >= 0);
+  check("Quick upload checks its saved folder and lists the cart with the bridge paused",
+    ready && lists.length >= 2 && lists.every((i) => whilePaused(calls, i)), callLog(calls));
+
+  const progress = (payload) => p.evaluate((pl) => window.__TAURI_LISTENERS__["explorer-progress"]({ payload: pl }), payload);
+  const status = () => p.evaluate(() => {
+    const bar = document.getElementById("upload-picker-status-bar");
+    return {
+      text: document.getElementById("upload-picker-status-text").textContent,
+      warning: bar.classList.contains("upload-picker-status-bar--warning"),
+      success: bar.classList.contains("upload-picker-status-bar--success"),
+    };
+  });
+  const startUpload = async () => {
+    await p.evaluate(() => { window.__FINISH_UPLOAD__ = null; });
+    await p.click("#upload-picker-btn-upload");
+    return until(p, () => Boolean(window.__FINISH_UPLOAD__) && typeof window.__TAURI_LISTENERS__["explorer-progress"] === "function");
+  };
+
+  const started = await startUpload();
+  await progress({ done: 0, total: 200, message: 'Uploading to cart — "game.z64"…' });
+  await progress({ done: 50, total: 200 });
+  const midFile = (await status()).text;
+  check("Quick upload progress keeps the file name on updates that carry none",
+    started && midFile === 'Uploading to cart — "game.z64" (25%)…', midFile);
+
+  await p.evaluate(() => window.__FINISH_UPLOAD__.resolve({
+    uploaded: 1,
+    skipped: 0,
+    resumeWarning: "The Multi64 bridge was paused for this upload and could not be resumed: connection refused.",
+  }));
+  await until(p, () => !document.body.classList.contains("upload-picker-uploading"));
+  const done = await status();
+  check("a bridge that couldn't be resumed after Quick upload shows as a warning after the summary, not as success",
+    done.warning && !done.success && done.text.startsWith("Uploaded 1 file to cart.") && done.text.includes("could not be resumed"),
+    JSON.stringify(done));
+
+  const restarted = await startUpload();
+  await p.click("#upload-picker-btn-close");
+  await progress({ done: 150, total: 200, message: 'Uploading to cart — "game.z64"…' });
+  await progress({ done: 180, total: 200 });
+  const cancelling = (await status()).text;
+  check("and a progress update doesn't overwrite Cancelling…", restarted && cancelling === "Cancelling…", cancelling);
+  await p.evaluate(() => window.__FINISH_UPLOAD__.reject("Cancelled"));
+  await p.close();
+}
+
+{
+  const p = await openScenario("upload-picker.html", {
+    daemonUp: true,
+    listFails: "all",
+    pickerPaths: ["C:\\dl\\game.z64"],
+    settings: { quickUploadCartPath: "roms" },
+  });
+  await until(p, () => !document.body.classList.contains("upload-picker-booting"));
+  await p.waitForTimeout(300);
+  const destination = () => p.evaluate(() => document.getElementById("upload-picker-selection").textContent);
+  const whileUnreadable = { destination: await destination(), cleared: clearedSavedFolder(await callsIn(p)).length };
+  check("Quick upload keeps its saved folder while the cart can't be read",
+    whileUnreadable.destination === "Destination: /roms" && whileUnreadable.cleared === 0, JSON.stringify(whileUnreadable));
+
+  // The cart becomes readable: the reconnect poll lists it, and the saved folder is still the destination.
+  await p.evaluate(() => { window.__TAURI_LIST_FAILS__ = []; });
+  const reconnected = await until(p, () => document.getElementById("upload-picker-btn-upload")?.disabled === false, 6000);
+  const afterReconnect = { reconnected, destination: await destination(), cleared: clearedSavedFolder(await callsIn(p)).length };
+  check("and uploads there once the cart can be read",
+    reconnected && afterReconnect.destination === "Destination: /roms" && afterReconnect.cleared === 0, JSON.stringify(afterReconnect));
+  await p.close();
+}
 
 // --- report --------------------------------------------------------------
 await browser.close();

@@ -43,12 +43,68 @@ fn upload_summary_description(summary: &UploadImportSummary) -> String {
     }
 }
 
+/// Whether to pause multi64d before opening the cart's serial port: whenever it answers, as the
+/// main window does. `needs_yield` (`serialActive`) is not enough: a link another Xfer64 has
+/// already released, or one that faulted, reports false, and skipping the release then also skipped
+/// the resume, leaving the bridge released once both were done.
+fn should_release(probe: &daemon::DaemonProbe) -> bool {
+    probe.up
+}
+
+/// Run `op` with multi64d paused when `release_needed`, then resume it.
+///
+/// Returns `op`'s result and, separately, why the resume failed, if it did. A resume is attempted
+/// after every release attempt, including one that failed or timed out: multi64d may still apply
+/// a late release, and nothing else would resume it. `op` never runs without a release.
+fn with_daemon_released<T>(
+    release_needed: bool,
+    release: impl FnOnce() -> Result<(), String>,
+    op: impl FnOnce() -> Result<T, String>,
+    resume: impl FnOnce() -> Result<(), String>,
+) -> (Result<T, String>, Option<String>) {
+    if !release_needed {
+        return (op(), None);
+    }
+    if let Err(e) = release() {
+        return (Err(e), resume().err());
+    }
+    let result = op();
+    (result, resume().err())
+}
+
+/// The upload's outcome, with a failed resume attached rather than discarded: multi64d stays
+/// released and silently ignores WebSocket writes, so a live L3 session dies with no diagnostic.
+/// A successful upload carries it as [`UploadImportSummary::resume_warning`]; a failed one appends
+/// it to the error after a blank line.
+fn attach_resume_failure(
+    result: Result<UploadImportSummary, String>,
+    resume_error: Option<String>,
+) -> Result<UploadImportSummary, String> {
+    let warning = resume_error.map(|e| {
+        format!(
+            "The Multi64 bridge was paused for this upload and could not be resumed ({e}). Use Restart bridge in Multi64."
+        )
+    });
+    match (result, warning) {
+        (Ok(summary), warning) => Ok(UploadImportSummary {
+            resume_warning: warning,
+            ..summary
+        }),
+        (Err(e), Some(warning)) => Err(format!("{e}\n\n{warning}")),
+        (Err(e), None) => Err(e),
+    }
+}
+
 /// Result of [`run_headless_import_upload`] (picker UI and CLI share the same import loop).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadImportSummary {
     pub uploaded: u32,
     pub skipped: u32,
+    /// Set when the upload succeeded but multi64d could not be resumed afterwards. Quick upload
+    /// shows it as a warning after the summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,162 +225,172 @@ pub fn run_headless_import_upload(
     let listen =
         std::env::var("MULTI64_DAEMON_LISTEN").unwrap_or_else(|_| "http://127.0.0.1:38765".into());
     let probe = daemon::explorer_daemon_probe_snapshot(&st, &snap, &listen)?;
-    let released = probe.needs_yield && probe.up;
-    if released {
-        daemon::explorer_daemon_release_listen(&listen)?;
-    }
 
     let dev = ExplorerDevLog::new_without_app();
     let notify_env = std::env::var("MULTI64_XFER64_UPLOAD_NOTIFY").unwrap_or_default();
     let notify_ok =
         notify_on_success || notify_env == "1" || notify_env.eq_ignore_ascii_case("true");
 
-    let result = cart_serial_sd::with_session(&dev, "cli_upload", &st, &snap, |session| {
-        cart_serial_sd::require_ed64pro_write_consent_for(session, allow_ed64pro_writes)?;
-        let plan = copy_plan::build_pc_import_plan(session, &paths, &cart_parent)?;
-        if plan.is_empty() {
-            return Err("Nothing to copy (paths missing or not supported).".into());
-        }
-        let total_bytes: u64 = plan
-            .iter()
-            .filter(|s| s.mode == "import")
-            .map(|s| s.bytes)
-            .sum();
-        let t_total = total_bytes.max(1);
+    let upload = || {
+        cart_serial_sd::with_session(&dev, "cli_upload", &st, &snap, |session| {
+            cart_serial_sd::require_ed64pro_write_consent_for(session, allow_ed64pro_writes)?;
+            let plan = copy_plan::build_pc_import_plan(session, &paths, &cart_parent)?;
+            if plan.is_empty() {
+                return Err("Nothing to copy (paths missing or not supported).".into());
+            }
+            let total_bytes: u64 = plan
+                .iter()
+                .filter(|s| s.mode == "import")
+                .map(|s| s.bytes)
+                .sum();
+            let t_total = total_bytes.max(1);
 
-        if let Some(ref app) = app {
-            emit_explorer_progress_full(
-                app,
-                0,
-                t_total,
-                Some("Uploading to cart…".into()),
-                None,
-                None,
-            );
-        }
-
-        let mut uploaded = 0u32;
-        let mut skipped = 0u32;
-        let mut done_base = 0u64;
-        for step in plan {
-            if cancel.is_cancelled() {
-                return Err("Cancelled".into());
-            }
-            if step.mode != "import" {
-                continue;
-            }
-            let src = PathBuf::from(
-                step.src_pc
-                    .as_ref()
-                    .ok_or("internal: import step missing src_pc")?,
-            );
-            let cart_path = step
-                .cart_path
-                .as_ref()
-                .ok_or("internal: import step missing cart_path")?;
-            // Directory steps carry mode "import" too, so they must be handled before the file
-            // path below -- otherwise import_pc_file_to_cart_in_session rejects them with
-            // "Source is not a file." and the whole upload aborts on the first subfolder.
-            if step.is_dir {
-                match session.cart_path_entry_kind(cart_path) {
-                    Ok(Some(true)) => {}
-                    Ok(Some(false)) => {
-                        return Err(
-                            "Cannot copy folder over an existing file on the cart.".to_string()
-                        )
-                    }
-                    _ => session
-                        .mkdir_cart(cart_path)
-                        .map_err(|e| format!("{cart_path}: {e}"))?,
-                }
-                continue;
-            }
-            // Re-check on the live session: the plan is built once, so later steps can target the
-            // same cart path as an earlier import (same basename from different PC paths) and
-            // would still carry `conflict_if_exists: false` from plan time.
-            match session
-                .cart_path_entry_kind(cart_path)
-                .map_err(|e| e.to_string())?
-            {
-                Some(true) => {
-                    return Err("Cannot copy file over an existing folder on the cart.".into());
-                }
-                Some(false) if !overwrite => {
-                    eprintln!("skip (exists on cart): {cart_path}");
-                    skipped += 1;
-                    done_base += step.bytes;
-                    if let Some(ref app) = app {
-                        let label = path_label_for_progress_msg(cart_path);
-                        emit_explorer_progress_full(
-                            app,
-                            done_base,
-                            t_total,
-                            Some(format!("Uploading to cart — skipping \"{label}\"…")),
-                            None,
-                            None,
-                        );
-                    }
-                    continue;
-                }
-                _ => {}
-            }
-            let label = path_label_for_progress_msg(cart_path);
-            let msg = format!("Uploading to cart — \"{label}\"…");
-
-            if let Some(ref app) = app {
-                emit_explorer_progress_full(app, done_base, t_total, Some(msg.clone()), None, None);
-                cart_serial_sd::import_pc_file_to_cart_in_session(
-                    session,
-                    &src,
-                    cart_path,
-                    overwrite,
-                    &cancel,
-                    |written| emit_explorer_progress(app, done_base + written, t_total),
-                )?;
-                uploaded += 1;
-                done_base += step.bytes;
-                emit_explorer_progress_full(app, done_base, t_total, Some(msg), None, None);
-            } else {
-                cart_serial_sd::import_pc_file_to_cart_in_session(
-                    session,
-                    &src,
-                    cart_path,
-                    overwrite,
-                    &cancel,
-                    |_| {},
-                )?;
-                uploaded += 1;
-                done_base += step.bytes;
-            }
-            eprintln!("uploaded: {}  ->  {cart_path}", src.display());
-        }
-        Ok(UploadImportSummary { uploaded, skipped })
-    });
-
-    // Report a failed resume rather than discarding it: multi64d stays released and silently
-    // ignores WebSocket writes, so a live L3 session dies with no diagnostic.
-    if released {
-        if let Err(e) = daemon::explorer_daemon_resume_listen(&listen) {
-            eprintln!("warning: {e}");
             if let Some(ref app) = app {
                 emit_explorer_progress_full(
                     app,
                     0,
-                    1,
-                    Some(format!("Upload finished. {e}")),
+                    t_total,
+                    Some("Uploading to cart…".into()),
                     None,
                     None,
                 );
             }
-        }
-    }
 
-    let summary = result?;
+            let mut uploaded = 0u32;
+            let mut skipped = 0u32;
+            let mut done_base = 0u64;
+            for step in plan {
+                if cancel.is_cancelled() {
+                    return Err("Cancelled".into());
+                }
+                if step.mode != "import" {
+                    continue;
+                }
+                let src = PathBuf::from(
+                    step.src_pc
+                        .as_ref()
+                        .ok_or("internal: import step missing src_pc")?,
+                );
+                let cart_path = step
+                    .cart_path
+                    .as_ref()
+                    .ok_or("internal: import step missing cart_path")?;
+                // Directory steps carry mode "import" too, so they must be handled before the file
+                // path below -- otherwise import_pc_file_to_cart_in_session rejects them with
+                // "Source is not a file." and the whole upload aborts on the first subfolder.
+                if step.is_dir {
+                    match session.cart_path_entry_kind(cart_path) {
+                        Ok(Some(true)) => {}
+                        Ok(Some(false)) => {
+                            return Err(
+                                "Cannot copy folder over an existing file on the cart.".to_string()
+                            )
+                        }
+                        _ => session
+                            .mkdir_cart(cart_path)
+                            .map_err(|e| format!("{cart_path}: {e}"))?,
+                    }
+                    continue;
+                }
+                // Re-check on the live session: the plan is built once, so later steps can target the
+                // same cart path as an earlier import (same basename from different PC paths) and
+                // would still carry `conflict_if_exists: false` from plan time.
+                match session
+                    .cart_path_entry_kind(cart_path)
+                    .map_err(|e| e.to_string())?
+                {
+                    Some(true) => {
+                        return Err("Cannot copy file over an existing folder on the cart.".into());
+                    }
+                    Some(false) if !overwrite => {
+                        eprintln!("skip (exists on cart): {cart_path}");
+                        skipped += 1;
+                        done_base += step.bytes;
+                        if let Some(ref app) = app {
+                            let label = path_label_for_progress_msg(cart_path);
+                            emit_explorer_progress_full(
+                                app,
+                                done_base,
+                                t_total,
+                                Some(format!("Uploading to cart — skipping \"{label}\"…")),
+                                None,
+                                None,
+                            );
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+                let label = path_label_for_progress_msg(cart_path);
+                let msg = format!("Uploading to cart — \"{label}\"…");
+
+                if let Some(ref app) = app {
+                    emit_explorer_progress_full(
+                        app,
+                        done_base,
+                        t_total,
+                        Some(msg.clone()),
+                        None,
+                        None,
+                    );
+                    cart_serial_sd::import_pc_file_to_cart_in_session(
+                        session,
+                        &src,
+                        cart_path,
+                        overwrite,
+                        &cancel,
+                        |written| emit_explorer_progress(app, done_base + written, t_total),
+                    )?;
+                    uploaded += 1;
+                    done_base += step.bytes;
+                    emit_explorer_progress_full(app, done_base, t_total, Some(msg), None, None);
+                } else {
+                    cart_serial_sd::import_pc_file_to_cart_in_session(
+                        session,
+                        &src,
+                        cart_path,
+                        overwrite,
+                        &cancel,
+                        |_| {},
+                    )?;
+                    uploaded += 1;
+                    done_base += step.bytes;
+                }
+                eprintln!("uploaded: {}  ->  {cart_path}", src.display());
+            }
+            Ok(UploadImportSummary {
+                uploaded,
+                skipped,
+                resume_warning: None,
+            })
+        })
+    };
+
+    let (result, resume_error) = with_daemon_released(
+        should_release(&probe),
+        || daemon::explorer_daemon_release_listen(&listen),
+        upload,
+        || daemon::explorer_daemon_resume_listen(&listen),
+    );
+    let summary = attach_resume_failure(result, resume_error)?;
+    if let Some(warning) = &summary.resume_warning {
+        eprintln!("warning: {warning}");
+    }
     if notify_ok {
+        let (description, level) = match &summary.resume_warning {
+            Some(warning) => (
+                format!("{}\n\n{warning}", upload_summary_description(&summary)),
+                rfd::MessageLevel::Warning,
+            ),
+            None => (
+                upload_summary_description(&summary),
+                rfd::MessageLevel::Info,
+            ),
+        };
         let _ = rfd::MessageDialog::new()
             .set_title("Xfer64 — Quick upload")
-            .set_description(upload_summary_description(&summary))
-            .set_level(rfd::MessageLevel::Info)
+            .set_description(description)
+            .set_level(level)
             .show();
     }
     Ok(summary)
@@ -383,7 +449,113 @@ mod tests {
     use super::*;
 
     fn describe(uploaded: u32, skipped: u32) -> String {
-        upload_summary_description(&UploadImportSummary { uploaded, skipped })
+        upload_summary_description(&UploadImportSummary {
+            uploaded,
+            skipped,
+            resume_warning: None,
+        })
+    }
+
+    /// A failed resume after Quick upload must reach the user as its own warning, not as a progress
+    /// line the success message then replaces.
+    #[test]
+    fn a_failed_resume_is_kept_with_the_upload_outcome() {
+        let ok = attach_resume_failure(
+            Ok(UploadImportSummary {
+                uploaded: 2,
+                skipped: 0,
+                resume_warning: None,
+            }),
+            Some("HTTP 500".to_string()),
+        )
+        .unwrap();
+        assert_eq!(ok.uploaded, 2);
+        let warning = ok.resume_warning.as_deref().unwrap();
+        assert!(warning.contains("could not be resumed") && warning.contains("HTTP 500"));
+        let json = serde_json::to_value(&ok).unwrap();
+        assert_eq!(json["resumeWarning"], warning);
+
+        let err =
+            attach_resume_failure(Err("Cancelled".into()), Some("HTTP 500".into())).unwrap_err();
+        assert!(err.starts_with("Cancelled\n\n") && err.contains("HTTP 500"));
+
+        let clean = attach_resume_failure(
+            Ok(UploadImportSummary {
+                uploaded: 1,
+                skipped: 0,
+                resume_warning: None,
+            }),
+            None,
+        )
+        .unwrap();
+        assert!(serde_json::to_value(&clean)
+            .unwrap()
+            .get("resumeWarning")
+            .is_none());
+    }
+
+    fn probe(up: bool, needs_yield: bool) -> daemon::DaemonProbe {
+        daemon::DaemonProbe {
+            up,
+            daemon_serial: None,
+            explorer_serial: None,
+            needs_yield,
+        }
+    }
+
+    /// The main window releases whenever multi64d answers; the CLI and Quick upload must too. A
+    /// link another Xfer64 already released, or one that faulted, reports `serialActive: false`,
+    /// and skipping the release then also skips the resume that would have restored the bridge.
+    #[test]
+    fn a_reachable_daemon_is_released_even_with_no_active_link() {
+        assert!(should_release(&probe(true, true)));
+        assert!(should_release(&probe(true, false)));
+        assert!(!should_release(&probe(false, false)));
+    }
+
+    /// A release that failed may still apply later (a timed-out request the daemon finishes), so a
+    /// resume is always attempted after one was tried, and the cart is never opened.
+    #[test]
+    fn resume_is_attempted_when_the_release_fails() {
+        use std::cell::Cell;
+        let ran = Cell::new(false);
+        let resumed = Cell::new(0);
+        let (result, warning) = with_daemon_released(
+            true,
+            || Err("POST http://127.0.0.1:38765/v1/serial/release: timeout".to_string()),
+            || {
+                ran.set(true);
+                Ok(())
+            },
+            || {
+                resumed.set(resumed.get() + 1);
+                Ok(())
+            },
+        );
+        assert!(result.unwrap_err().contains("timeout"));
+        assert!(warning.is_none(), "the resume itself succeeded");
+        assert!(!ran.get(), "the cart must not be opened without a release");
+        assert_eq!(resumed.get(), 1);
+    }
+
+    #[test]
+    fn a_failed_resume_comes_back_beside_the_result() {
+        let (result, warning) = with_daemon_released(
+            true,
+            || Ok(()),
+            || Ok(7),
+            || Err("connection refused".to_string()),
+        );
+        assert_eq!(result, Ok(7));
+        assert!(warning.unwrap().contains("connection refused"));
+    }
+
+    #[test]
+    fn nothing_is_released_or_resumed_when_the_daemon_is_down() {
+        let (result, warning) =
+            with_daemon_released(false, || panic!("released"), || Ok(1), || panic!("resumed"));
+        assert_eq!(result, Ok(1));
+        assert!(warning.is_none());
     }
 
     #[test]
