@@ -95,7 +95,7 @@ int ed64pro_init(void)
     /* Anything already waiting would be read as the status reply. */
     while (drained < DRAIN_LIMIT) {
         uint32_t n = ed64pro_receive(s_scratch, sizeof(s_scratch));
-        if (n == 0u) {
+        if (n == 0u || n == ED64PRO_RECEIVE_LOST) {
             break;
         }
         drained += n;
@@ -110,7 +110,11 @@ int ed64pro_init(void)
     }
 
     for (spins = 0u; got < sizeof(status) && spins < STATUS_SPINS; spins++) {
-        got += ed64pro_receive(status + got, sizeof(status) - got);
+        uint32_t n = ed64pro_receive(status + got, sizeof(status) - got);
+        if (n == ED64PRO_RECEIVE_LOST) {
+            return 0;
+        }
+        got += n;
     }
     return got == sizeof(status) && status[0] == STATUS_KEY && status[1] == PROTOCOL_ID &&
            status[2] == DEVICE_ID_ED64PRO;
@@ -127,9 +131,13 @@ uint32_t ed64pro_receive(uint8_t *dst, uint32_t cap)
     if (n > cap) {
         n = cap;
     }
-    if (n == 0u || !pi_io_load_port(dst, REG_FIFODATA, n)) {
-        /* A failed load has still drained some bytes; the L3 layer resynchronises. */
+    if (n == 0u) {
         return 0u;
+    }
+    if (!pi_io_load_port(dst, REG_FIFODATA, n)) {
+        /* A failed load has still drained some bytes: say so, and the agent drops the partial
+           frame they belonged to (#151). */
+        return ED64PRO_RECEIVE_LOST;
     }
     return n;
 }

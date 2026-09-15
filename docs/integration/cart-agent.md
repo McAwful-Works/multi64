@@ -140,9 +140,14 @@ What differs from the SC64 build:
   of the EverDrive code and stays byte-identical to the one that has run on hardware.
 - **Frames are reassembled.** An SC64 packet carries a whole L3 frame. The EverDrive hosts send
   512-byte messages (X7) or 1024-byte FIFO writes (PRO), so these builds collect bytes across
-  receives and ticks, find frames by their magic, and discard a partial frame that has waited 60
-  ticks, so a lost piece cannot swallow the host's retry. `make host-test` runs this logic on a PC
-  against a fake driver for both carts, and CI runs it on every change.
+  receives and ticks, and find frames by their magic, skipping a header whose type, channel or length
+  the protocol does not allow. When the driver reports a lost piece (a failed read, a bad `DMA@`
+  header or `CMPH` trailer, a message too large to keep) the partial frame is dropped at once, so it
+  cannot be completed with a later request's bytes; one the driver cannot see go missing is
+  discarded after waiting 60 ticks, so it cannot swallow the host's retry for long. L3 frames carry no
+  checksum, so neither check can catch a loss that goes unreported and is then filled out by bytes
+  that happen to form a plausible frame. `make host-test` runs this logic on a PC against a fake
+  driver for both carts, and CI runs it on every change.
 - **Nothing is staged in ROM space.** libdragon's X7 driver copies received packets to the top of the
   ROM window; this one reads straight out of the cart's USB window. The PRO needs no staging.
 - **A reply holds the tick while it is sent.** The X7 driver waits for the cart after each 512-byte

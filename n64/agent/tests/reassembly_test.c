@@ -8,8 +8,8 @@
  * id, so nothing touches RDRAM.
  *
  * The fake driver copies what each real driver does when a piece does not fit the space the agent
- * offers (the X7 drops the message, the PRO reads what fits), and can lose a piece the way both do
- * when a read fails: consumed, and reported as nothing waiting.
+ * offers (the X7 drops the message and reports the loss, the PRO reads what fits), and can lose a
+ * piece the way both do when a read fails: consumed, and reported as lost.
  *
  * This checks the byte-stream logic only. It says nothing about whether either driver works on a
  * cart.
@@ -25,6 +25,7 @@
 #include "ed64pro.h"
 #define FAKE_INIT ed64pro_init
 #define FAKE_RECEIVE ed64pro_receive
+#define FAKE_RECEIVE_LOST ED64PRO_RECEIVE_LOST
 #define FAKE_SEND ed64pro_send
 #define CART_NAME "ed64pro"
 /* The PRO host writes the cart FIFO in blocks of up to 1024 bytes. */
@@ -33,6 +34,7 @@
 #include "ed64.h"
 #define FAKE_INIT ed64_init
 #define FAKE_RECEIVE ed64_receive
+#define FAKE_RECEIVE_LOST ED64_RECEIVE_LOST
 #define FAKE_SEND ed64_send
 #define CART_NAME "ed64"
 /* The X7 host sends 512-byte DMA@ messages. */
@@ -81,19 +83,19 @@ uint32_t FAKE_RECEIVE(uint8_t *dst, uint32_t cap)
     s_given_this_tick = 1;
     if (s_piece[s_next].lost) {
         /* Consumed but not delivered, as when usb_pull fails or a CMPH trailer does not match
-           (ed64.c), or a FIFO load fails (ed64pro.c): the driver returns 0 and says no more. */
+           (ed64.c), or a FIFO load fails (ed64pro.c): the driver reports the loss. */
         s_next++;
         s_lost++;
-        return 0;
+        return FAKE_RECEIVE_LOST;
     }
     n = s_piece[s_next].len - s_offset;
     if (n > cap) {
         s_overflows++;
 #if defined(AGENT_CART_ED64)
-        /* ed64_receive drains a message that does not fit and returns 0: it is gone. */
+        /* ed64_receive drains a message that does not fit and reports the loss: it is gone. */
         s_next++;
         s_offset = 0;
-        return 0;
+        return FAKE_RECEIVE_LOST;
 #else
         /* ed64pro_receive reads only what fits; the rest waits in the FIFO. */
         n = cap;
@@ -139,14 +141,12 @@ static void queue(const uint8_t *b, uint32_t n)
     s_pieces++;
 }
 
-#ifdef TEST_KNOWN_BUG_151
-/** A piece the host sent that the driver consumes and never delivers. Only #151's case uses it. */
+/** A piece the host sent that the driver consumes and never delivers. */
 static void queue_lost(const uint8_t *b, uint32_t n)
 {
     queue(b, n);
     s_piece[s_pieces - 1].lost = 1;
 }
-#endif
 
 static void queue_split(const uint8_t *b, uint32_t n, uint32_t size)
 {
@@ -309,6 +309,23 @@ static void an_impossible_length_is_skipped(void)
     assert(s_sends == 1 && reply_rid(0) == 0x5151);
 }
 
+/*
+ * Bytes that spell the magic but not a header the protocol defines, each claiming a payload long
+ * enough to swallow the request behind it: an undefined TYPE, then DATA on a reserved CHANNEL.
+ * Waiting for either claimed length would hold the real request until it went stale (#151).
+ */
+static void a_header_with_an_undefined_type_or_channel_is_skipped(void)
+{
+    uint32_t n = frame(f1, 0x10, 0x5152, 0);
+    reset_script();
+    memcpy(junk, "M64B\x7e\x00\x00\x01\x00\x00\x00\x00\x00\x00\x01\x00", 16);
+    memcpy(junk + 16, "M64B\x10\x03\x00\x01\x00\x00\x00\x00\x00\x00\x01\x00", 16);
+    memcpy(junk + 32, f1, n);
+    queue(junk, 32 + n);
+    tick();
+    assert(s_sends == 1 && reply_rid(0) == 0x5152);
+}
+
 static void a_non_data_frame_is_consumed_and_ignored(void)
 {
     uint32_t n1 = frame(f1, 0x20, 0x0009, 0); /* HEARTBEAT: not handled */
@@ -344,15 +361,12 @@ static void a_message_larger_than_the_receive_space(void)
 #endif
 }
 
-#ifdef TEST_KNOWN_BUG_151
 /*
- * Bug #151, still open. Reassembly trusts a partial frame's payload_len, so when a middle piece of a
- * request is lost, the next request's bytes fill out the claimed length and the spliced bytes are
- * handled as a real request. Here the first request's rid survives in its first piece, so the
- * spliced frame would be answered with that rid.
- *
- * Off by default (make host-test KNOWN_BUG_151=1) because it fails until #151 is fixed. The fix for
- * #151 must turn it on by default, in the same change.
+ * Bug #151. Reassembly used to trust a partial frame's payload_len, so when a middle piece of a
+ * request was lost, the next request's bytes filled out the claimed length and the spliced bytes
+ * were handled as a real request. Here the first request's rid survives in its first piece, so a
+ * spliced frame would be answered with that rid. The driver reports the loss, and the agent drops
+ * the partial frame.
  */
 static void a_lost_piece_is_not_completed_by_the_next_request(void)
 {
@@ -372,7 +386,6 @@ static void a_lost_piece_is_not_completed_by_the_next_request(void)
     }
     assert(s_sends == 1 && reply_rid(0) == 0x0B0B && "the request after the loss must be answered");
 }
-#endif
 
 static int s_cases;
 #define RUN(test) (test(), s_cases++)
@@ -388,11 +401,10 @@ int main(void)
     RUN(two_frames_in_one_piece);
     RUN(a_stale_partial_frame_does_not_swallow_the_retry);
     RUN(an_impossible_length_is_skipped);
+    RUN(a_header_with_an_undefined_type_or_channel_is_skipped);
     RUN(a_non_data_frame_is_consumed_and_ignored);
     RUN(a_message_larger_than_the_receive_space);
-#ifdef TEST_KNOWN_BUG_151
     RUN(a_lost_piece_is_not_completed_by_the_next_request);
-#endif
     printf("reassembly (" CART_NAME "): %d cases passed\n", s_cases);
     return 0;
 }

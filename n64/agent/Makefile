@@ -5,8 +5,8 @@
 #   make symbols                  exported symbols, and what the object leaves undefined
 #   make CART=ed64                build/ed64/m64p_agent.o, for an EverDrive-64 X7 (experimental)
 #   make CART=ed64pro             build/ed64pro/m64p_agent.o, for an EverDrive-64 PRO (experimental)
-#   make host-test                the EverDrive builds' L3 reassembly, compiled and run on the PC
-#   make host-test KNOWN_BUG_151=1  same, plus the case for open bug #151 (fails until it is fixed)
+#   make host-test                the EverDrive builds' L3 reassembly and the SC64 driver's failure
+#                                 handling, compiled and run on the PC
 #
 # For a game with no buildable source, link a flat image at a fixed address instead:
 # templates/link-flat.sh. See docs/integration/cart-agent.md.
@@ -93,26 +93,22 @@ symbols: $(BUILD)/m64p_agent.o
 
 # The EverDrive builds' L3 reassembly, compiled for the PC and run under ASan and UBSan, once per
 # cart, with tests/reassembly_test.c standing in for the driver. Needs a host gcc or clang, not
-# the N64 toolchain. CI runs it; it says nothing about either driver on a cart.
+# the N64 toolchain. CI runs it; it says nothing about any driver on a cart.
 HOSTCC ?= cc
 HOST_CFLAGS ?= -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -Wall -Wextra
 HOST_TEST_SOURCES = tests/reassembly_test.c agent.c $(PROTO)/mem_proto.c
 
-# make host-test KNOWN_BUG_151=1 also builds the case for bug #151 (a request missing a lost piece
-# is completed by the next request's bytes and handled). It fails until #151 is fixed, so it is off
-# by default to keep CI green; the fix for #151 must turn it on by default, in the same change.
-KNOWN_BUG_151 ?= 0
-HOST_TEST_DEFINES =
-ifeq ($(KNOWN_BUG_151),1)
-  HOST_TEST_DEFINES += -DTEST_KNOWN_BUG_151
-endif
-
+# tests/sc64_test.c: the real sc64.c with SC64_HOST_TEST routing its PI loads, stores and interrupt
+# mask through a fake cart that can hold the bus busy. It checks that every wait is bounded and every
+# failure is reported, not that the register model matches an SC64.
 host-test:
 	mkdir -p build/host
-	$(HOSTCC) $(HOST_CFLAGS) $(HOST_TEST_DEFINES) -DAGENT_CART_ED64 -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64
+	$(HOSTCC) $(HOST_CFLAGS) -DAGENT_CART_ED64 -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64
 	build/host/reassembly-ed64
-	$(HOSTCC) $(HOST_CFLAGS) $(HOST_TEST_DEFINES) -DAGENT_CART_ED64PRO -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64pro
+	$(HOSTCC) $(HOST_CFLAGS) -DAGENT_CART_ED64PRO -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64pro
 	build/host/reassembly-ed64pro
+	$(HOSTCC) $(HOST_CFLAGS) -DSC64_HOST_TEST -I. -I$(PROTO) tests/sc64_test.c sc64.c -o build/host/sc64
+	build/host/sc64
 
 clean:
 	rm -rf build
