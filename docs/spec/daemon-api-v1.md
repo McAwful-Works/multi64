@@ -40,13 +40,15 @@ A tool that needs to know which cart is attached MAY take `serial` and `cart` fr
 | `POST /v1/serial/release` | `{"released":true}` |
 | `POST /v1/serial/resume` | `{"resumed":true}` |
 
+`POST /v1/serial/release` waits at most **2 seconds** for the serial link. The daemon holds the link for each cart read (at most 50 ms), for the whole of each WebSocket message it writes to the cart, and while it reopens a faulted link, so a large message or a slow reopen can outlast that. The daemon then answers **`503 Service Unavailable`** with a plain-text body and **does not release**: the link stays as it was, and that request never takes effect later. After a `503` a client MUST NOT open the port; it MAY retry the release. The bound is well below the 5-second timeout Xfer64 puts on this request, so Xfer64 hears the refusal before it gives up. A client whose own request timed out cannot tell whether the release was applied, and SHOULD call resume anyway, which is harmless on an active link (below).
+
 `POST /v1/serial/resume` is **idempotent**: if the link is already active (e.g. nested release/resume from Xfer64), the handler succeeds without opening a second serial handle. This short-circuit applies to a **live** link only — a link that failed on I/O is *faulted*, not active, so resume always reopens it (§1.3).
 
 While released, WebSocket binary writes to the cart are ignored; clients should tolerate brief disconnect-like behavior until resume.
 
 ### 1.3 Link faults and recovery
 
-The link is **faulted** whenever the daemon wants the port but does not hold it. Two things put it there: a serial read failing with a real I/O error — the cart unplugged, the USB-CDC device reset — and a **failed open at startup** (§1.3.1). Faulted is distinct from released:
+The link is **faulted** whenever the daemon wants the port but does not hold it. Three things put it there: a serial read failing with a real I/O error — the cart unplugged, the USB-CDC device reset — a **write to the cart that fails or times out** (§1.3.2), and a **failed open at startup** (§1.3.1). Faulted is distinct from released:
 
 - The dead handle is **dropped**, so the COM port is free for another process.
 - `serialActive` in **`GET /`** becomes `false`. Clients MUST NOT read `serialActive: true` as proof the link works; they only ever learn otherwise from this field.
@@ -64,6 +66,10 @@ If the configured serial device cannot be opened when the daemon starts, it **lo
 This matters to anything supervising the process. A daemon that exited on a missing port could not be started at all while the cart was unplugged, which is exactly when a managing GUI most needs it running: there would be no process left to notice the cart arriving. Supervisors MUST NOT treat "started" as evidence that a cart is present — **`serialActive`** in `GET /` is the only signal for that (§1.1).
 
 The `--serial` requirement in §5.1 is about *configuration*: a device must be **named**, from the CLI, the environment or a config file. It does not have to be **present**.
+
+#### 1.3.2 A failed write faults the link
+
+Writes to the cart are not bound by the 50 ms read timeout. With `--cart sc64` and `--cart ed64`, each serial write call may take up to **1 second** to make progress. The PRO pipe keeps its link's own timeouts. A write that still fails or times out may already have sent part of the WebSocket message, and the cart would read whatever followed as the rest of it. The daemon therefore clears the serial buffers and faults the link instead of sending more. The rest of that message is lost, and recovery follows §1.3.
 
 ### 1.4 Origin policy
 

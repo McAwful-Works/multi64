@@ -20,15 +20,26 @@ use multi64_ed64pro_l2::Ed64ProL2Pipe;
 use multi64_sc64_l2::Sc64L2Pipe;
 use serde::{Deserialize, Serialize};
 use std::io;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
-/// Serial read timeout. Bounds how long the cart reader holds the link mutex per iteration, so it
-/// also bounds how long `POST /v1/serial/release` waits for its turn.
+/// Serial read timeout. Bounds how long the cart reader holds the link mutex per iteration.
 pub const SERIAL_READ_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// Serial timeout while writing a WebSocket message to the cart. The serial port has one timeout
+/// for both directions, so writes swap this in and restore [`SERIAL_READ_TIMEOUT`] afterwards;
+/// otherwise a device that took longer than 50 ms to accept a packet would get half of it.
+pub const SERIAL_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Longest `POST /v1/serial/release` waits for the link lock before answering `503` without
+/// releasing (`docs/spec/daemon-api-v1.md` §1.2). Well under Xfer64's 5 s request timeout, so the
+/// caller hears the refusal instead of timing out while the release is still queued.
+pub const RELEASE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long to wait before retrying `open` after the link faulted (cart unplugged, device reset).
 const REOPEN_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -93,6 +104,9 @@ pub enum CartPipe {
     Sc64(Sc64L2Pipe),
     Ed64(Ed64L2Pipe),
     Ed64Pro(Ed64ProL2Pipe),
+    /// Scripted pipe for the unit tests, which have no cart.
+    #[cfg(test)]
+    Fake(tests::FakePipe),
 }
 
 impl CartPipe {
@@ -101,6 +115,8 @@ impl CartPipe {
             CartPipe::Sc64(p) => p.set_timeout(t),
             CartPipe::Ed64(p) => p.set_timeout(t),
             CartPipe::Ed64Pro(p) => p.set_timeout(t),
+            #[cfg(test)]
+            CartPipe::Fake(p) => p.set_timeout(t),
         }
     }
 
@@ -109,6 +125,8 @@ impl CartPipe {
             CartPipe::Sc64(p) => p.clear_serial_buffers(),
             CartPipe::Ed64(p) => p.clear_serial_buffers(),
             CartPipe::Ed64Pro(p) => p.clear_serial_buffers(),
+            #[cfg(test)]
+            CartPipe::Fake(p) => p.clear_serial_buffers(),
         }
     }
 
@@ -117,6 +135,8 @@ impl CartPipe {
             CartPipe::Sc64(p) => p.write_l3_stream(buf),
             CartPipe::Ed64(p) => p.write_l3_stream(buf),
             CartPipe::Ed64Pro(p) => p.write_l3_stream(buf),
+            #[cfg(test)]
+            CartPipe::Fake(p) => p.write_l3_stream(buf),
         }
     }
 
@@ -125,6 +145,8 @@ impl CartPipe {
             CartPipe::Sc64(p) => p.read_l3_bytes(out),
             CartPipe::Ed64(p) => p.read_l3_bytes(out),
             CartPipe::Ed64Pro(p) => p.read_l3_bytes(out),
+            #[cfg(test)]
+            CartPipe::Fake(p) => p.read_l3_bytes(out),
         }
     }
 }
@@ -323,12 +345,52 @@ async fn health() -> impl IntoResponse {
     )
 }
 
+/// [`post_serial_release`]'s queued lock wait and its [`RELEASE_LOCK_TIMEOUT`] race to move this
+/// from `RELEASE_PENDING`; whichever wins decides, so a release that answered 503 never applies.
+const RELEASE_PENDING: u8 = 0;
+const RELEASE_APPLIED: u8 = 1;
+const RELEASE_ABANDONED: u8 = 2;
+
 async fn post_serial_release(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let link = state.link.clone();
-    // Assigning over the guard drops the pipe — and closes the COM port — before the lock
-    // is released, so the caller cannot see 200 while the handle is still open.
-    let res = tokio::task::spawn_blocking(move || *lock_link(&link) = LinkState::Released).await;
-    match res {
+    let decision = Arc::new(AtomicU8::new(RELEASE_PENDING));
+    let mut wait = tokio::task::spawn_blocking({
+        let decision = decision.clone();
+        move || {
+            let mut g = lock_link(&link);
+            if decision
+                .compare_exchange(RELEASE_PENDING, RELEASE_APPLIED, SeqCst, SeqCst)
+                .is_ok()
+            {
+                // Assigning over the guard drops the pipe — and closes the COM port — before the
+                // lock is released, so the caller cannot see 200 while the handle is still open.
+                *g = LinkState::Released;
+            }
+        }
+    });
+    let joined = match tokio::time::timeout(RELEASE_LOCK_TIMEOUT, &mut wait).await {
+        Ok(joined) => joined,
+        Err(_)
+            if decision
+                .compare_exchange(RELEASE_PENDING, RELEASE_ABANDONED, SeqCst, SeqCst)
+                .is_ok() =>
+        {
+            // The blocking wait stays queued until whatever holds the link lets go, then sees
+            // `RELEASE_ABANDONED` and leaves the link alone.
+            tracing::warn!(
+                timeout = ?RELEASE_LOCK_TIMEOUT,
+                "serial release refused: link busy"
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "serial link busy; not released, try again\n",
+            )
+                .into_response();
+        }
+        // The lock came free just as the bound ran out, and the release is being applied now.
+        Err(_) => wait.await,
+    };
+    match joined {
         Ok(()) => (
             [(header::CONTENT_TYPE, "application/json")],
             r#"{"released":true}"#.as_bytes().to_vec(),
@@ -509,9 +571,9 @@ pub async fn cart_reader_loop(state: Arc<AppState>) {
             Ok(Ok(ReadChunk::BackingOff)) => {
                 tokio::time::sleep(REOPEN_RETRY_INTERVAL).await;
             }
+            // `read_once` has already moved the link to `Faulted`; the next pass reopens it.
             Ok(Err(e)) => {
                 tracing::error!(error = %e, "read from cart; dropping serial link");
-                mark_faulted(&state.link).await;
             }
             Err(e) => {
                 tracing::error!(error = %e, "cart reader join");
@@ -522,7 +584,8 @@ pub async fn cart_reader_loop(state: Arc<AppState>) {
 }
 
 /// One pass over the link: reopen it if faulted (and `may_reopen`), otherwise read whatever is
-/// queued into `buf`.
+/// queued into `buf`. A read error faults the link before the lock is released, so no release or
+/// resume can land between the failure and the fault.
 fn read_once(
     link: &Arc<Mutex<LinkState>>,
     cfg: &SerialConfig,
@@ -548,28 +611,53 @@ fn read_once(
                 })
             }
         },
-        LinkState::Active(p) => {
-            let n = p.read_l3_bytes(buf)?;
-            if n == 0 {
-                Ok(ReadChunk::Empty)
-            } else {
-                // Right-size before this enters the broadcast: a 256-slot channel holding
-                // full-capacity 64 KiB buffers would pin 16 MiB.
-                Ok(ReadChunk::Data(buf[..n].to_vec()))
+        LinkState::Active(p) => match p.read_l3_bytes(buf) {
+            Ok(0) => Ok(ReadChunk::Empty),
+            // Right-size before this enters the broadcast: a 256-slot channel holding
+            // full-capacity 64 KiB buffers would pin 16 MiB.
+            Ok(n) => Ok(ReadChunk::Data(buf[..n].to_vec())),
+            Err(e) => {
+                // Dropping the dead pipe here frees the port for a reopen.
+                *g = LinkState::Faulted;
+                Err(e)
             }
-        }
+        },
     }
 }
 
-async fn mark_faulted(link: &Arc<Mutex<LinkState>>) {
-    let link = link.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        let mut g = lock_link(&link);
-        if matches!(&*g, LinkState::Active(_)) {
-            *g = LinkState::Faulted;
+/// Write one WebSocket message's L3 octets to the cart, or drop them while the link is down.
+///
+/// A write that fails or times out faults the link: an unknown part of the message has gone out,
+/// and the cart would read whatever followed as the rest of it.
+fn write_to_link(link: &Mutex<LinkState>, data: &[u8]) -> io::Result<()> {
+    let mut g = lock_link(link);
+    match &mut *g {
+        LinkState::Released => {
+            tracing::debug!("write to cart ignored (serial released)");
+            Ok(())
         }
-    })
-    .await;
+        LinkState::Faulted => {
+            tracing::debug!("write to cart ignored (serial link down)");
+            Ok(())
+        }
+        LinkState::Active(p) => match write_with_write_timeout(p, data) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if let Err(clear) = p.clear_serial_buffers() {
+                    tracing::debug!(error = %clear, "clear serial buffers after failed write");
+                }
+                *g = LinkState::Faulted;
+                Err(e)
+            }
+        },
+    }
+}
+
+/// [`CartPipe::write_l3_stream`] under [`SERIAL_WRITE_TIMEOUT`], restoring the read timeout after.
+fn write_with_write_timeout(p: &mut CartPipe, data: &[u8]) -> io::Result<()> {
+    p.set_timeout(SERIAL_WRITE_TIMEOUT)?;
+    p.write_l3_stream(data)?;
+    p.set_timeout(SERIAL_READ_TIMEOUT)
 }
 
 async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
@@ -591,23 +679,10 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
                 match msg {
                     Some(Ok(Message::Binary(data))) => {
                         let link = state.link.clone();
-                        let res = tokio::task::spawn_blocking(move || {
-                            let mut g = lock_link(&link);
-                            match &mut *g {
-                                LinkState::Released => {
-                                    tracing::debug!("write to cart ignored (serial released)");
-                                    Ok(())
-                                }
-                                LinkState::Faulted => {
-                                    tracing::debug!("write to cart ignored (serial link down)");
-                                    Ok(())
-                                }
-                                LinkState::Active(p) => p.write_l3_stream(&data),
-                            }
-                        }).await;
+                        let res = tokio::task::spawn_blocking(move || write_to_link(&link, &data)).await;
                         match res {
                             Ok(Ok(())) => {}
-                            Ok(Err(e)) => tracing::warn!(error = %e, "write to cart"),
+                            Ok(Err(e)) => tracing::error!(error = %e, "write to cart; dropping serial link"),
                             Err(e) => tracing::error!(error = %e, "write join"),
                         }
                     }
@@ -657,6 +732,127 @@ mod tests {
 
     fn secs(s: u64) -> Duration {
         Duration::from_secs(s)
+    }
+
+    /// What a [`FakePipe`] has been asked to do, shared with the test that scripted it.
+    #[derive(Debug, Default)]
+    pub struct FakeLog {
+        /// Timeout most recently passed to `set_timeout`.
+        pub timeout: Duration,
+        /// Bytes that reached the "wire", including the front of a write that was cut off.
+        pub written: Vec<u8>,
+        pub clears: usize,
+        /// A write shorter than this timeout is cut off halfway, as serialport does when a stalled
+        /// device outlasts `WriteTotalTimeoutConstant` / `poll`.
+        pub write_needs: Duration,
+        /// `read_l3_bytes` fails with a hard I/O error, as for an unplugged cart.
+        pub read_fails: bool,
+    }
+
+    pub struct FakePipe(pub Arc<Mutex<FakeLog>>);
+
+    impl FakePipe {
+        fn log(&self) -> MutexGuard<'_, FakeLog> {
+            self.0.lock().unwrap()
+        }
+
+        pub fn set_timeout(&mut self, t: Duration) -> io::Result<()> {
+            self.log().timeout = t;
+            Ok(())
+        }
+
+        pub fn clear_serial_buffers(&mut self) -> io::Result<()> {
+            self.log().clears += 1;
+            Ok(())
+        }
+
+        pub fn write_l3_stream(&mut self, buf: &[u8]) -> io::Result<()> {
+            let mut log = self.log();
+            if log.timeout < log.write_needs {
+                log.written.extend_from_slice(&buf[..buf.len() / 2]);
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "write timed out"));
+            }
+            log.written.extend_from_slice(buf);
+            Ok(())
+        }
+
+        pub fn read_l3_bytes(&mut self, _out: &mut [u8]) -> io::Result<usize> {
+            if self.log().read_fails {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "device gone"));
+            }
+            Ok(0)
+        }
+    }
+
+    /// An active link over a fake pipe, set up the way [`open_pipe`] leaves a real one.
+    fn fake_link(log: FakeLog) -> (Arc<Mutex<LinkState>>, Arc<Mutex<FakeLog>>) {
+        let log = Arc::new(Mutex::new(log));
+        let mut pipe = CartPipe::Fake(FakePipe(log.clone()));
+        pipe.set_timeout(SERIAL_READ_TIMEOUT).unwrap();
+        (Arc::new(Mutex::new(LinkState::Active(pipe))), log)
+    }
+
+    fn state_name(link: &Mutex<LinkState>) -> &'static str {
+        match &*lock_link(link) {
+            LinkState::Active(_) => "active",
+            LinkState::Released => "released",
+            LinkState::Faulted => "faulted",
+        }
+    }
+
+    fn test_cfg() -> SerialConfig {
+        SerialConfig {
+            path: "multi64d-no-such-port".into(),
+            baud: 115_200,
+            clear_serial: false,
+            cart: CartKind::Sc64,
+        }
+    }
+
+    #[test]
+    fn a_failed_read_faults_the_link_before_the_lock_is_released() {
+        // #139: the fault used to be recorded by a second lock acquisition, so a release + resume
+        // in between got its fresh link faulted, and a resume alone was told the dead link was up.
+        let (link, _log) = fake_link(FakeLog {
+            read_fails: true,
+            ..FakeLog::default()
+        });
+        let mut buf = [0u8; 16];
+        assert!(read_once(&link, &test_cfg(), &mut buf, true).is_err());
+        assert_eq!(state_name(&link), "faulted");
+    }
+
+    #[test]
+    fn a_write_slower_than_the_read_timeout_is_not_cut_off() {
+        // #138: the 50 ms read timeout used to govern writes too, so a device that took longer
+        // than that to accept a packet got half of it.
+        let (link, log) = fake_link(FakeLog {
+            write_needs: Duration::from_millis(200),
+            ..FakeLog::default()
+        });
+        let data: Vec<u8> = (0..=255).collect();
+        write_to_link(&link, &data).expect("write within the write timeout succeeds");
+        let log = log.lock().unwrap();
+        assert_eq!(log.written, data, "the whole message reached the wire");
+        assert_eq!(
+            log.timeout, SERIAL_READ_TIMEOUT,
+            "the reader gets its short timeout back"
+        );
+        drop(log);
+        assert_eq!(state_name(&link), "active");
+    }
+
+    #[test]
+    fn a_cut_off_write_faults_the_link_and_clears_its_buffers() {
+        // #138: a partial write used to be logged and nothing else, leaving the cart to read the
+        // next packet's header as payload.
+        let (link, log) = fake_link(FakeLog {
+            write_needs: Duration::MAX,
+            ..FakeLog::default()
+        });
+        assert!(write_to_link(&link, &[0u8; 64]).is_err());
+        assert_eq!(log.lock().unwrap().clears, 1, "buffers cleared");
+        assert_eq!(state_name(&link), "faulted");
     }
 
     #[test]
