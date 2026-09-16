@@ -13,6 +13,11 @@
 //! So this parses the MBR and boot sector itself, walks the root's FAT chain itself, and decodes
 //! the entry sets itself. Nothing it reports passes through `ExFatFs`.
 //!
+//! It was the first explanation (#189, since fixed). The tool is kept as an independent check of
+//! what is really on the media: its verdict now says whether the root ends inside its own chain and
+//! gives the entry count to compare with multi64's listing. It has since confirmed the chained-root
+//! import (#198) and the session read cache (#199) left nothing behind.
+//!
 //! **Read-only.** It issues no writes. `sd_deinit` runs unconditionally, so the card is never left
 //! locked to the PC side with the console unable to boot.
 //!
@@ -240,23 +245,35 @@ fn walk(link: &mut Sc64Link, args: &Args) -> io::Result<()> {
         None => println!("  no end-of-directory marker inside the chain"),
     }
 
-    // --- the verdict this tool exists to give --------------------------------------------------
+    // --- the verdict ----------------------------------------------------------------------------
+    //
+    // This used to decide between the two explanations in the module doc for one card, and printed
+    // that card's conclusion whenever it saw enough `rdr*` names. What holds for any card is
+    // structural: whether the root ends where its own chain says it does, and how many entries a
+    // reader independent of multi64 finds there, for comparison with multi64's own listing.
     println!("\n=== verdict");
-    if rdr > 100 {
-        println!(
-            "  The reader's files ARE on the media: {rdr} of them, across {} root clusters.",
+    let hit_limit = chain.len() >= args.max_clusters;
+    match end_marker {
+        Some(_) => println!(
+            "  The root ends inside its own {}-cluster chain, holding {} entries.",
+            chain.len(),
+            names.len()
+        ),
+        None if hit_limit => println!(
+            "  Stopped at --max-clusters {} before finding the end of the root; raise it to walk \
+             further.",
+            args.max_clusters
+        ),
+        None => println!(
+            "  WARNING  no end-of-directory marker in the root's {}-cluster chain. Either every \
+             slot is in use, or the chain ends early, which would mean a damaged FAT.",
             chain.len()
-        );
-        println!("  The cart's own listing showed 1. So multi64's listing truncates a chained");
-        println!("  root — the read-side twin of #175, reproduced on hardware.");
-    } else if rdr <= 2 {
-        println!("  The reader's files are NOT on the media ({rdr} found).");
-        println!("  The writes never flushed before the card was pulled, so the short listing was");
-        println!("  a test artifact, not a multi64 bug. Refill the card and eject it safely.");
-    } else {
-        println!(
-            "  Inconclusive: {rdr} rdr* names on the media. Neither explanation fits cleanly."
-        );
+        ),
     }
+    println!(
+        "  Compare {} with the cart's own listing (Xfer64, or `CartSession::list_dir(\"/\")`). They",
+        names.len()
+    );
+    println!("  should agree; a difference means multi64's reader and the media disagree.");
     Ok(())
 }
