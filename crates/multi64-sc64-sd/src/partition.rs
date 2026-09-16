@@ -19,9 +19,7 @@ use crate::mem_disk::{PartitionDisk, RamPartitionDisk};
 use fatfs::{FileAttributes as FatFileAttributes, FileSystem, FsOptions};
 use hadris_common::types::endian::{Endian, LittleEndian};
 use hadris_common::types::number::{U16, U32, U64};
-use hadris_fat::exfat::{
-    ExFatFileEntry, ExFatFs, RawFileDirectoryEntry, RawFileNameEntry, RawStreamExtensionEntry,
-};
+use hadris_fat::exfat::{ExFatFileEntry, ExFatFs, RawFileNameEntry, RawStreamExtensionEntry};
 use std::io;
 use std::io::prelude::*;
 use std::io::BufReader;
@@ -2169,16 +2167,11 @@ fn rename_cart_exfat(
     let name_to = cart_path_parts(to_rel).1;
     let disk = vol.partition_disk_rw(part_start, part_bytes);
     let fs = ExFatFs::open(disk).map_err(exfat_err)?;
-    let old = fs.open_path(from_rel).map_err(exfat_err)?;
-    let parent_dir = if parent_path.is_empty() {
-        fs.root_dir()
-    } else {
-        fs.open_dir(&parent_path).map_err(exfat_err)?
-    };
+    let old = exfat_resolve_entry_vol(vol, part_start, part_bytes, fs.info(), from_rel)?;
     let (dir, old_slot) = exfat_locate_entry_set(
         &fs,
         from_rel,
-        &ExfatEntryIdentity::of(&old),
+        &ExfatEntryIdentity::of_decoded(&old),
         vol,
         part_start,
         part_bytes,
@@ -2188,11 +2181,21 @@ fn rename_cart_exfat(
     } else {
         format!("{parent_path}/{name_to}")
     };
-    if let Some(candidate) = parent_dir.find(&name_to).map_err(exfat_err)? {
+    // The destination check reads the parent through this crate's own resolver: hadris's `find`
+    // cannot see a name past the parent's first cluster, so it would report "free" for a name that
+    // is really there and the rename would create a duplicate (#190).
+    let existing = {
+        let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
+        let parent_slots = exfat_resolve_dir_slots(&mut read_at, fs.info(), &parent_path)?;
+        exfat_list_entries(&parent_slots, &mut read_at)?
+            .into_iter()
+            .find(|e| fat_names_equal(&e.name, &name_to))
+    };
+    if let Some(candidate) = existing {
         let (_, cand_slot) = exfat_locate_entry_set(
             &fs,
             &to_path,
-            &ExfatEntryIdentity::of(&candidate),
+            &ExfatEntryIdentity::of_decoded(&candidate),
             vol,
             part_start,
             part_bytes,
@@ -2275,7 +2278,7 @@ fn exfat_invalid_filename_char(c: char) -> bool {
 
 fn exfat_build_rename_entry_set_bytes(
     fs: &ExFatFs<PartitionDiskUnion>,
-    entry: &ExFatFileEntry,
+    entry: &ExfatDecodedEntry,
     new_name: &str,
 ) -> io::Result<Vec<[u8; 32]>> {
     exfat_validate_rename_name(new_name)?;
@@ -2283,25 +2286,15 @@ fn exfat_build_rename_entry_set_bytes(
     let name_len = name_utf16.len();
     let name_entry_count = (name_len + EXFAT_CHARS_PER_NAME_ENTRY - 1) / EXFAT_CHARS_PER_NAME_ENTRY;
     let secondary_count = (1 + name_entry_count) as u8;
-    let (create_ts, create_10ms, create_utc) = entry.created.to_raw();
-    let (modify_ts, modify_10ms, modify_utc) = entry.modified.to_raw();
-    let (access_ts, _, access_utc) = entry.accessed.to_raw();
-    let file_entry = RawFileDirectoryEntry {
-        entry_type: EXFAT_ENTRY_FILE_DIRECTORY,
-        secondary_count,
-        set_checksum: U16::<LittleEndian>::new(0),
-        file_attributes: U16::<LittleEndian>::new(entry.attributes.bits()),
-        reserved1: U16::<LittleEndian>::new(0),
-        create_timestamp: U32::<LittleEndian>::new(create_ts),
-        last_modified_timestamp: U32::<LittleEndian>::new(modify_ts),
-        last_accessed_timestamp: U32::<LittleEndian>::new(access_ts),
-        create_10ms_increment: create_10ms,
-        last_modified_10ms_increment: modify_10ms,
-        create_utc_offset: create_utc,
-        last_modified_utc_offset: modify_utc,
-        last_accessed_utc_offset: access_utc,
-        reserved2: [0; 7],
-    };
+    // Keep the File entry as it is on disk and change only what a rename must: the secondary
+    // count, and the checksum, recomputed once the set is built. Timestamps, attributes and the
+    // reserved bytes are copied rather than rebuilt, so a rename cannot alter them — rebuilding
+    // through hadris's `ExFatTimestamp` would clamp `increment_10ms` and rewrite an invalid UTC
+    // offset, quietly changing a file's times on every rename.
+    let mut file_entry = entry.primary;
+    file_entry[1] = secondary_count;
+    file_entry[2] = 0;
+    file_entry[3] = 0;
     let flags = 0x01u8 | if entry.no_fat_chain { 0x02 } else { 0x00 };
     let stream_entry = RawStreamExtensionEntry {
         entry_type: EXFAT_ENTRY_STREAM_EXT,
@@ -2316,7 +2309,7 @@ fn exfat_build_rename_entry_set_bytes(
         data_length: U64::<LittleEndian>::new(entry.data_length),
     };
     let mut out = Vec::with_capacity(1 + secondary_count as usize);
-    out.push(exfat_struct_to_entry_bytes(&file_entry));
+    out.push(file_entry);
     out.push(exfat_struct_to_entry_bytes(&stream_entry));
     for chunk in name_utf16.chunks(EXFAT_CHARS_PER_NAME_ENTRY) {
         let mut file_name = [0u8; 30];
@@ -2864,6 +2857,10 @@ struct ExfatDecodedEntry {
     data_length: u64,
     valid_data_length: u64,
     no_fat_chain: bool,
+    /// The File entry slot exactly as it is on disk. A rename rewrites the entry set, and copying
+    /// this keeps the timestamps, attributes and reserved bytes byte-identical rather than
+    /// rebuilding them from parsed values (#190).
+    primary: [u8; 32],
 }
 
 impl ExfatDecodedEntry {
@@ -2929,6 +2926,7 @@ fn exfat_decode_entry_set<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
             valid_data_length: u64_at(&stream, 8),
             // Stream Extension general secondary flags, bit 1: NoFatChain.
             no_fat_chain: stream[1] & 0x02 != 0,
+            primary,
         },
         secondaries,
     )))
@@ -4045,6 +4043,59 @@ mod fs_tests {
             before.len() - 1,
             "only the deleted entry may disappear: {after:?}"
         );
+    }
+
+    /// #190: renaming an entry whose set already lives past the root's first cluster. The rename
+    /// resolved its source through hadris's `open_path`, which cannot see one there.
+    ///
+    /// Also pins the entry set being *copied* rather than rebuilt: the File entry's timestamps,
+    /// attributes and reserved bytes must come through a rename byte-identical. Rebuilding them
+    /// through hadris's `ExFatTimestamp` clamps `increment_10ms` and rewrites an invalid UTC
+    /// offset, which would alter a file's times every time it was renamed.
+    ///
+    /// Break [`exfat_resolve_entry`] as described on the read test above to watch it fail.
+    #[test]
+    fn exfat_rename_an_entry_past_the_first_root_cluster() {
+        let fx = exfat_chained_root(3);
+        // First move it out of the first cluster; this rename is setup, not the case under test.
+        let moved = format!("moved-{}.z64", "y".repeat(40));
+        rename_cart_exfat(&fx.vol, 0, fx.part_bytes, "rom.z64", &moved).expect("setup rename");
+
+        let slots_before = raw_dir_slots(&fx.arc, &fx.info, &fx.chain);
+        let (idx_before, _) = in_use_names(&slots_before)
+            .into_iter()
+            .find(|(_, n)| *n == moved)
+            .expect("fixture: the moved entry should be in the chain");
+        let stamps_before: Vec<u8> = slots_before[idx_before][8..25].to_vec();
+
+        // The source entry now sits past the first cluster: this is the rename hadris could not do.
+        let final_name = "renamed-again.z64";
+        rename_cart_exfat(&fx.vol, 0, fx.part_bytes, &moved, final_name)
+            .expect("the source entry is past the first cluster; the rename must still find it");
+
+        let slots_after = raw_dir_slots(&fx.arc, &fx.info, &fx.chain);
+        let names_after = in_use_names(&slots_after);
+        let (idx_after, _) = names_after
+            .iter()
+            .find(|(_, n)| n == final_name)
+            .cloned()
+            .expect("the new name must be in the directory");
+        assert!(
+            !names_after.iter().any(|(_, n)| *n == moved),
+            "the old name must be gone: {names_after:?}"
+        );
+        assert_eq!(
+            slots_after[idx_after][8..25].to_vec(),
+            stamps_before,
+            "a rename must carry the File entry's timestamps through unchanged"
+        );
+
+        let back = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)),
+            final_name,
+        )
+        .expect("read the file back under its new name");
+        assert_eq!(back, fx.rom, "a rename must not disturb the file's data");
     }
 
     /// #189: a root spanning more than one cluster must list every entry, including those in its
