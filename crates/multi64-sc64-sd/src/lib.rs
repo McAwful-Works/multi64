@@ -38,6 +38,7 @@ mod ed64_linear;
 mod link;
 mod mem_disk;
 mod partition;
+mod sd_read_cache;
 
 pub use cart_session::CartSession;
 #[cfg(feature = "ed64pro")]
