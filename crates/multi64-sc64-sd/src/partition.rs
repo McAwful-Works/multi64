@@ -20,8 +20,7 @@ use fatfs::{FileAttributes as FatFileAttributes, FileSystem, FsOptions};
 use hadris_common::types::endian::{Endian, LittleEndian};
 use hadris_common::types::number::{U16, U32, U64};
 use hadris_fat::exfat::{
-    ExFatDir, ExFatFileEntry, ExFatFs, FileAttributes as ExFatFileAttributes,
-    RawFileDirectoryEntry, RawFileNameEntry, RawStreamExtensionEntry,
+    ExFatFileEntry, ExFatFs, RawFileDirectoryEntry, RawFileNameEntry, RawStreamExtensionEntry,
 };
 use std::io;
 use std::io::prelude::*;
@@ -1529,6 +1528,22 @@ impl ExfatDirSlots {
         is_contiguous: bool,
         size: u64,
     ) -> io::Result<Self> {
+        let mut disk = vol.partition_disk_ro(part_start, part_bytes);
+        Self::load_on_disk(&mut disk, info, first_cluster, is_contiguous, size)
+    }
+
+    /// As [`load`](Self::load), but walking the FAT on a disk the caller already owns.
+    ///
+    /// Listing needs this: `ExFatFs::open` consumes its disk, so a path that reads the volume
+    /// itself cannot also hold a filesystem, and [`ExfatVolumeSource`] has no variant for the
+    /// EverDrive disk anyway. The chain walk is identical either way.
+    fn load_on_disk(
+        disk: &mut impl PartitionDisk,
+        info: &hadris_fat::exfat::ExFatInfo,
+        first_cluster: u32,
+        is_contiguous: bool,
+        size: u64,
+    ) -> io::Result<Self> {
         let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidData, msg.to_string());
         let cluster_bytes = info.bytes_per_cluster as u64;
         if cluster_bytes < Self::SLOT_BYTES || !info.is_valid_cluster(first_cluster) {
@@ -1546,10 +1561,9 @@ impl ExfatDirSlots {
                 clusters.push(c);
             }
         } else {
-            let mut disk = vol.partition_disk_ro(part_start, part_bytes);
             let mut c = first_cluster;
             while size == 0 || (clusters.len() as u64) < size_clusters {
-                let next = exfat_read_fat_entry_inner(&mut disk, info, c)?;
+                let next = exfat_read_fat_entry_inner(disk, info, c)?;
                 // End of chain, or anything else that is not a data cluster: nothing after it is
                 // provably part of this directory.
                 if !info.is_valid_cluster(next) {
@@ -2717,62 +2731,215 @@ fn list_dir_fat<D: Read + Write + Seek>(disk: D, path: &str) -> io::Result<Vec<S
     Ok(out)
 }
 
-fn list_dir_exfat<D: Read + Write + Seek>(disk: D, path: &str) -> io::Result<Vec<SessionEntry>> {
-    let fs = ExFatFs::open(disk).map_err(|e| io::Error::other(e.to_string()))?;
-    let trimmed = path.trim().replace('\\', "/");
-    let trimmed = trimmed.trim_start_matches('/');
-    let segs: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
-
-    let mut dir = fs.root_dir();
-    if segs.is_empty() {
-        return collect_hadris_exfat_entries(&dir, "");
-    }
-
-    for (i, seg) in segs.iter().enumerate() {
-        if i + 1 == segs.len() {
-            let sub = dir
-                .open_dir(seg)
-                .map_err(|e| io::Error::other(e.to_string()))?;
-            let parent_prefix = segs.join("/");
-            return collect_hadris_exfat_entries(&sub, &parent_prefix);
-        }
-        dir = dir
-            .open_dir(seg)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-    }
-
-    unreachable!("exFAT path navigation always returns when path segments are non-empty");
+/// One in-use exFAT entry set, decoded from raw slots.
+///
+/// hadris's own `parse_entry_set` cannot be used: `exfat::entry` is a private module and the
+/// re-export list omits it. The layout is exFAT's own — attributes at File entry byte 4, and
+/// NameLength (3), ValidDataLength (8), FirstCluster (20) and DataLength (24) in the Stream
+/// Extension, which the File Name entries follow.
+struct ExfatDecodedEntry {
+    name: String,
+    attributes: u16,
+    first_cluster: u32,
+    data_length: u64,
+    valid_data_length: u64,
+    no_fat_chain: bool,
 }
 
-fn collect_hadris_exfat_entries<DATA: Read + Seek>(
-    dir: &ExFatDir<'_, DATA>,
-    prefix: &str,
-) -> io::Result<Vec<SessionEntry>> {
+impl ExfatDecodedEntry {
+    const ATTR_HIDDEN: u16 = 0x02;
+    const ATTR_DIRECTORY: u16 = 0x10;
+
+    fn is_dir(&self) -> bool {
+        self.attributes & Self::ATTR_DIRECTORY != 0
+    }
+
+    fn is_hidden(&self) -> bool {
+        self.attributes & Self::ATTR_HIDDEN != 0
+    }
+}
+
+/// Decodes the entry set whose File entry is at `primary_slot`, with the number of secondary slots
+/// it occupies. `None` when the slots there are not a well-formed set.
+fn exfat_decode_entry_set<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
+    slots: &mut ExfatSlotReader<'_, R>,
+    primary_slot: u64,
+    slot_count: u64,
+) -> io::Result<Option<(ExfatDecodedEntry, u64)>> {
+    let primary = slots.slot(primary_slot)?;
+    if primary[0] != EXFAT_ENTRY_FILE_DIRECTORY {
+        return Ok(None);
+    }
+    let secondaries = u64::from(primary[1]);
+    if !(2..=18).contains(&secondaries) || primary_slot + secondaries >= slot_count {
+        return Ok(None);
+    }
+    let stream = slots.slot(primary_slot + 1)?;
+    if stream[0] != EXFAT_ENTRY_STREAM_EXT {
+        return Ok(None);
+    }
+    let name_len = usize::from(stream[3]);
+    let mut units: Vec<u16> = Vec::with_capacity(name_len);
+    for s in primary_slot + 2..=primary_slot + secondaries {
+        if units.len() >= name_len {
+            break;
+        }
+        let entry = slots.slot(s)?;
+        if entry[0] != EXFAT_ENTRY_FILE_NAME {
+            return Ok(None);
+        }
+        for unit in entry[2..].chunks_exact(2) {
+            if units.len() >= name_len {
+                break;
+            }
+            units.push(u16::from_le_bytes([unit[0], unit[1]]));
+        }
+    }
+    if units.len() != name_len {
+        return Ok(None);
+    }
+    let u32_at = |s: &[u8; 32], at: usize| u32::from_le_bytes(s[at..at + 4].try_into().unwrap());
+    let u64_at = |s: &[u8; 32], at: usize| u64::from_le_bytes(s[at..at + 8].try_into().unwrap());
+    Ok(Some((
+        ExfatDecodedEntry {
+            name: String::from_utf16_lossy(&units),
+            attributes: u16::from_le_bytes([primary[4], primary[5]]),
+            first_cluster: u32_at(&stream, 20),
+            data_length: u64_at(&stream, 24),
+            valid_data_length: u64_at(&stream, 8),
+            // Stream Extension general secondary flags, bit 1: NoFatChain.
+            no_fat_chain: stream[1] & 0x02 != 0,
+        },
+        secondaries,
+    )))
+}
+
+/// Every in-use entry set in `dir`, following the directory's real cluster chain (#189).
+fn exfat_list_entries(
+    dir: &ExfatDirSlots,
+    disk: &mut impl PartitionDisk,
+) -> io::Result<Vec<ExfatDecodedEntry>> {
+    const END_OF_DIRECTORY: u8 = 0x00;
+    let count = dir.slot_count();
     let mut out = Vec::new();
-    let path_prefix = if prefix.is_empty() {
-        String::new()
-    } else {
-        format!("{prefix}/")
-    };
-    for r in dir.entries() {
-        let e = r.map_err(|e| io::Error::other(e.to_string()))?;
-        let name = e.name.clone();
-        if name == "." || name == ".." {
+    let mut slots = ExfatSlotReader::new(dir, |at, buf: &mut [u8]| {
+        disk.seek(SeekFrom::Start(at))?;
+        disk.read_exact(buf)
+    });
+    let mut i = 0;
+    while i < count {
+        let primary = slots.slot(i)?;
+        if primary[0] == END_OF_DIRECTORY {
+            break;
+        }
+        // A freed set has the in-use bit clear (#127); skip it without ending the directory.
+        if primary[0] & EXFAT_ENTRY_IN_USE == 0 {
+            i += 1;
             continue;
         }
-        let is_dir = e.is_directory();
-        let size = if is_dir { 0 } else { e.size() };
-        let path = if path_prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{path_prefix}{name}")
-        };
-        let hidden = e.attributes.contains(ExFatFileAttributes::HIDDEN) || name.starts_with('.');
+        match exfat_decode_entry_set(&mut slots, i, count)? {
+            Some((entry, secondaries)) => {
+                out.push(entry);
+                i += 1 + secondaries;
+            }
+            None => i += 1,
+        }
+    }
+    Ok(out)
+}
+
+/// The volume's exFAT parameters, read straight from its boot sector.
+///
+/// Listing cannot take these from `ExFatFs::open`, which consumes the disk. Every field of
+/// `ExFatInfo` is public, so they are simply read here.
+fn exfat_info_from_disk(disk: &mut impl PartitionDisk) -> io::Result<hadris_fat::exfat::ExFatInfo> {
+    let invalid = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
+    let mut bs = [0u8; 512];
+    disk.seek(SeekFrom::Start(0))?;
+    disk.read_exact(&mut bs)?;
+    if &bs[3..11] != b"EXFAT   " {
+        return Err(invalid("not an exFAT boot sector"));
+    }
+    let u32_at = |at: usize| u32::from_le_bytes(bs[at..at + 4].try_into().unwrap());
+    if bs[108] < 9 || bs[108] > 12 || bs[109] > 25 {
+        return Err(invalid("exFAT boot sector has implausible geometry"));
+    }
+    let bytes_per_sector = 1usize << bs[108];
+    let sectors_per_cluster = 1usize << bs[109];
+    Ok(hadris_fat::exfat::ExFatInfo {
+        bytes_per_sector,
+        sectors_per_cluster,
+        bytes_per_cluster: bytes_per_sector * sectors_per_cluster,
+        fat_offset: u64::from(u32_at(80)) * bytes_per_sector as u64,
+        fat_length: u64::from(u32_at(84)) * bytes_per_sector as u64,
+        cluster_heap_offset: u64::from(u32_at(88)) * bytes_per_sector as u64,
+        cluster_count: u32_at(92),
+        root_cluster: u32_at(96),
+        volume_serial: u32_at(100),
+        fat_count: bs[110],
+    })
+}
+
+/// Slot map of the directory at `path`, resolved segment by segment through this crate's own
+/// chain-following reader.
+///
+/// The root is loaded as a FAT chain with no recorded size. hadris instead pins the root
+/// contiguous (`root_contiguous = true`, `root_size = 0`), so its iterator steps to the
+/// *physically* next cluster when the first is exhausted and stops at the first zero byte it finds
+/// there — which on a real card listed 74 of 1273 entries and made the rest unopenable (#189).
+fn exfat_resolve_dir_on_disk(
+    disk: &mut impl PartitionDisk,
+    info: &hadris_fat::exfat::ExFatInfo,
+    path: &str,
+) -> io::Result<ExfatDirSlots> {
+    let mut dir = ExfatDirSlots::load_on_disk(disk, info, info.root_cluster, false, 0)?;
+    let trimmed = path.trim().replace('\\', "/");
+    for seg in trimmed.split('/').filter(|s| !s.is_empty()) {
+        let found = exfat_list_entries(&dir, disk)?
+            .into_iter()
+            .find(|e| fat_names_equal(&e.name, seg))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, format!("no such folder: {seg}"))
+            })?;
+        if !found.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not a folder: {seg}"),
+            ));
+        }
+        dir = ExfatDirSlots::load_on_disk(
+            disk,
+            info,
+            found.first_cluster,
+            found.no_fat_chain,
+            found.data_length,
+        )?;
+    }
+    Ok(dir)
+}
+
+fn list_dir_exfat<D: PartitionDisk>(mut disk: D, path: &str) -> io::Result<Vec<SessionEntry>> {
+    let info = exfat_info_from_disk(&mut disk)?;
+    let dir = exfat_resolve_dir_on_disk(&mut disk, &info, path)?;
+    let normalized = path.trim().replace('\\', "/");
+    let segs: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+    let path_prefix = if segs.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", segs.join("/"))
+    };
+    let mut out = Vec::new();
+    for e in exfat_list_entries(&dir, &mut disk)? {
+        if e.name == "." || e.name == ".." {
+            continue;
+        }
+        let is_dir = e.is_dir();
+        let hidden = e.is_hidden() || e.name.starts_with('.');
         out.push(SessionEntry {
-            name,
-            path,
+            path: format!("{path_prefix}{}", e.name),
+            name: e.name,
             is_dir,
-            size,
+            size: if is_dir { 0 } else { e.valid_data_length },
             hidden,
         });
     }
@@ -3686,6 +3853,47 @@ mod fs_tests {
         assert_eq!(after.len(), before.len(), "{names:?}");
         let old_types: Vec<u8> = slots[old_idx..old_idx + 3].iter().map(|s| s[0]).collect();
         assert_eq!(old_types, [0x05, 0x40, 0x41]);
+    }
+
+    /// #189: a root spanning more than one cluster must list every entry, including those in its
+    /// later clusters. hadris pins the root contiguous with size 0, so its iterator steps to the
+    /// physically next cluster and stops at the first zero byte there. On a real card that listed
+    /// 74 of 1273 entries, and the rest could not be opened at all.
+    #[test]
+    fn exfat_list_dir_reads_a_root_past_its_first_cluster() {
+        // Only 3 free slots left, so the longer name cannot fit in the first cluster: its entry set
+        // lands in the chain's second cluster, which is exactly where a contiguous reader cannot
+        // look, and which is not the cluster physically following the first.
+        let fx = exfat_chained_root(3);
+        let before = in_use_names(&raw_dir_slots(&fx.arc, &fx.info, &fx.chain));
+        let (_, old_name) = before
+            .iter()
+            .find(|(_, n)| n.starts_with("f00"))
+            .cloned()
+            .unwrap();
+        let new_name = format!("renamed-{}.bin", "y".repeat(32));
+        rename_cart_exfat(&fx.vol, 0, fx.part_bytes, &old_name, &new_name).expect("rename");
+
+        let names: Vec<String> =
+            list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)), "/")
+                .expect("list")
+                .into_iter()
+                .map(|e| e.name)
+                .collect();
+
+        assert!(
+            names.contains(&new_name),
+            "the renamed entry is in the root's second cluster and must still be listed: {names:?}"
+        );
+        assert!(
+            !names.contains(&old_name),
+            "the freed entry set must not be listed: {names:?}"
+        );
+        assert_eq!(
+            names.len(),
+            before.len(),
+            "every entry must be listed exactly once: {names:?}"
+        );
     }
 
     #[test]
