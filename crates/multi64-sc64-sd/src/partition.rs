@@ -1033,44 +1033,8 @@ fn write_file_exfat_streaming(
     }
     let (name, parents) = parts.split_last().unwrap();
 
-    let mut made_a_directory = false;
-    let mut path_prefix = String::new();
-    for p in parents {
-        let next_path = if path_prefix.is_empty() {
-            p.to_string()
-        } else {
-            format!("{path_prefix}/{p}")
-        };
-        let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
-        let parent = exfat_resolve_dir_slots(&mut read_at, &info, &path_prefix)?;
-        let existing = exfat_list_entries(&parent, &mut read_at)?
-            .into_iter()
-            .find(|e| fat_names_equal(&e.name, p));
-        match existing {
-            Some(e) if e.is_dir() => {}
-            Some(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "a file already exists with that name",
-                ))
-            }
-            None => {
-                exfat_create_dir_in(&fs, &info, vol, part_start, part_bytes, &parent, p)?;
-                made_a_directory = true;
-            }
-        }
-        path_prefix = next_path;
-    }
-
-    // A directory's entry set is written straight to the volume, but the cluster behind it is only
-    // marked in hadris's in-memory bitmap. Persist that here rather than relying on the file create
-    // below to do it: that can fail — an invalid leaf name, a full directory — and then the
-    // directory exists on the card with its cluster still marked free, ready to be handed out
-    // twice. Only when something was actually created, since flushing the bitmap is a whole-bitmap
-    // write and the dominant cost of an operation (#196).
-    if made_a_directory {
-        fs.sync_bitmap().map_err(exfat_err)?;
-    }
+    // Any folder made here is already on the card, bitmap included, whatever happens to the file.
+    let path_prefix = exfat_create_missing_dirs(&fs, &info, vol, part_start, part_bytes, parents)?;
 
     let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
     let parent = exfat_resolve_dir_slots(&mut read_at, &info, &path_prefix)?;
@@ -1991,31 +1955,7 @@ fn mkdir_cart_exfat(
         .filter(|s| !s.is_empty())
         .collect();
     let info = fs.info().clone();
-    let mut path_prefix = String::new();
-    for p in parts {
-        let next_path = if path_prefix.is_empty() {
-            p.to_string()
-        } else {
-            format!("{path_prefix}/{p}")
-        };
-        let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
-        let parent = exfat_resolve_dir_slots(&mut read_at, &info, &path_prefix)?;
-        let existing = exfat_list_entries(&parent, &mut read_at)?
-            .into_iter()
-            .find(|e| fat_names_equal(&e.name, p));
-        match existing {
-            Some(e) if e.is_dir() => {}
-            Some(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "a file already exists with that name",
-                ))
-            }
-            None => exfat_create_dir_in(&fs, &info, vol, part_start, part_bytes, &parent, p)?,
-        }
-        path_prefix = next_path;
-    }
-    fs.sync_bitmap().map_err(exfat_err)?;
+    exfat_create_missing_dirs(&fs, &info, vol, part_start, part_bytes, &parts)?;
     drop(fs);
     vol.flush_serial()?;
     Ok(())
@@ -2274,45 +2214,108 @@ fn exfat_create_dir_in(
 ) -> io::Result<()> {
     let cluster_bytes = info.bytes_per_cluster as u64;
 
-    // Reserve the directory slots first. Allocating before this leaks the cluster when the slot
-    // search then fails with `StorageFull`: it is marked in the bitmap with no entry referring to
-    // it, and nothing frees it.
+    // Refuse a bad name, and reserve the directory slots, before taking a cluster: after it, a
+    // failure has a cluster to give back.
+    exfat_validate_rename_name(name)?;
     let slot_count = exfat_entry_set_len(name);
     let read_at = exfat_volume_reader(vol, part_start, part_bytes);
     let slot = exfat_find_free_entry_run(parent, slot_count, 0..0, read_at)?;
     let offsets = parent.offsets(slot, slot_count)?;
 
     let cluster = fs.allocate_cluster(2).map_err(exfat_err)?;
-    if !info.is_valid_cluster(cluster) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "exFAT allocated an out-of-range cluster",
-        ));
+    let result = (|| -> io::Result<()> {
+        if !info.is_valid_cluster(cluster) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "exFAT allocated an out-of-range cluster",
+            ));
+        }
+        // `allocate_cluster` marks the bitmap and writes end-of-chain into the FAT. The entry
+        // below sets NoFatChain, and exFAT requires the FAT entries of such an allocation to be
+        // free, so the end-of-chain it just wrote has to come back out. Windows chkdsk reports the
+        // mismatch.
+        exfat_clear_fat_contiguous_range(vol, part_start, part_bytes, info, cluster, 1)?;
+        // An empty exFAT directory is simply a zeroed cluster: there are no "." or ".." entries,
+        // and the first zero byte is the end-of-directory marker.
+        let base = info.cluster_to_offset(cluster);
+        exfat_write_bytes_at(
+            vol,
+            part_start,
+            part_bytes,
+            base,
+            &vec![0u8; cluster_bytes as usize],
+        )?;
+        let slabs = exfat_build_new_entry_set_bytes(
+            fs,
+            name,
+            EXFAT_ATTR_DIRECTORY,
+            cluster,
+            cluster_bytes,
+            true,
+        )?;
+        debug_assert_eq!(slabs.len(), slot_count);
+        exfat_write_entry_slabs_at(vol, part_start, part_bytes, &offsets, &slabs)
+    })();
+    if result.is_err() && info.is_valid_cluster(cluster) {
+        exfat_release_file_clusters(fs, info, vol, part_start, part_bytes, &[cluster]);
     }
-    // `allocate_cluster` marks the bitmap and writes end-of-chain into the FAT. The entry below
-    // sets NoFatChain, and exFAT requires the FAT entries of such an allocation to be free, so the
-    // end-of-chain it just wrote has to come back out. Windows chkdsk reports the mismatch.
-    exfat_clear_fat_contiguous_range(vol, part_start, part_bytes, info, cluster, 1)?;
-    // An empty exFAT directory is simply a zeroed cluster: there are no "." or ".." entries, and
-    // the first zero byte is the end-of-directory marker.
-    let base = info.cluster_to_offset(cluster);
-    exfat_write_bytes_at(
-        vol,
-        part_start,
-        part_bytes,
-        base,
-        &vec![0u8; cluster_bytes as usize],
-    )?;
-    let slabs = exfat_build_new_entry_set_bytes(
-        fs,
-        name,
-        EXFAT_ATTR_DIRECTORY,
-        cluster,
-        cluster_bytes,
-        true,
-    )?;
-    debug_assert_eq!(slabs.len(), slot_count);
-    exfat_write_entry_slabs_at(vol, part_start, part_bytes, &offsets, &slabs)
+    result
+}
+
+/// Walk `parts` below the root, creating each folder that does not exist yet, and return the
+/// path they make up.
+///
+/// A folder's entry set reaches the card as soon as it is made, but its cluster is only marked in
+/// hadris's in-memory bitmap. So when anything was created, the bitmap is written before this
+/// returns, **on failure too** (#213): a later folder that cannot be made (an invalid name, a full
+/// directory, a USB error) otherwise leaves the earlier ones on the card over clusters the on-disk
+/// bitmap still calls free, to be handed out again. When nothing was created there is nothing to
+/// persist, and the whole-bitmap write, the dominant cost of an operation (#196), is skipped.
+fn exfat_create_missing_dirs(
+    fs: &ExFatFs<PartitionDiskUnion>,
+    info: &hadris_fat::exfat::ExFatInfo,
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+    parts: &[&str],
+) -> io::Result<String> {
+    let mut made_a_directory = false;
+    let mut path_prefix = String::new();
+    let walked = (|| -> io::Result<()> {
+        for p in parts {
+            let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
+            let parent = exfat_resolve_dir_slots(&mut read_at, info, &path_prefix)?;
+            let existing = exfat_list_entries(&parent, &mut read_at)?
+                .into_iter()
+                .find(|e| fat_names_equal(&e.name, p));
+            match existing {
+                Some(e) if e.is_dir() => {}
+                Some(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "a file already exists with that name",
+                    ))
+                }
+                None => {
+                    exfat_create_dir_in(fs, info, vol, part_start, part_bytes, &parent, p)?;
+                    made_a_directory = true;
+                }
+            }
+            if !path_prefix.is_empty() {
+                path_prefix.push('/');
+            }
+            path_prefix.push_str(p);
+        }
+        Ok(())
+    })();
+    if made_a_directory {
+        let synced = fs.sync_bitmap().map_err(exfat_err);
+        walked?;
+        synced?;
+    } else {
+        walked?;
+    }
+    Ok(path_prefix)
 }
 
 /// Copy up to `len` bytes of `data` into `clusters`, in order, returning how many bytes arrived.
@@ -2501,15 +2504,19 @@ fn exfat_create_file_in(
 
     // From here the new file is the one on the card. The original's clusters are unreferenced; a
     // failure to release them costs space, not data, and must not roll the new file back.
-    if let Some(old) = replacing {
-        exfat_free_entry_clusters(fs, vol, part_start, part_bytes, old).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("replaced the file, but could not free the old copy's space: {e}"),
-            )
-        })?;
-    }
-    fs.sync_bitmap().map_err(exfat_err)
+    let freed = match replacing {
+        Some(old) => exfat_free_entry_clusters(fs, vol, part_start, part_bytes, old),
+        None => Ok(()),
+    };
+    // Whether or not that worked: the new file's clusters are marked only in memory until this
+    // runs, and a card that has the entry without them hands them out again (#214).
+    fs.sync_bitmap().map_err(exfat_err)?;
+    freed.map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("replaced the file, but could not free the old copy's space: {e}"),
+        )
+    })
 }
 
 /// Take `count` clusters for a new file from the **allocation bitmap**, pushing each onto
@@ -3940,6 +3947,9 @@ pub(crate) struct CachedRamTransport {
     pub(crate) cache: crate::sd_read_cache::SdReadCache,
     /// Read requests issued by the filesystem layer, cached or not.
     pub(crate) requests: u32,
+    /// Fails a sector write, as a USB timeout would, when it returns true for the write's first
+    /// LBA. Nothing reaches the image or the cache for a failed write.
+    pub(crate) fail_write: Option<Box<dyn FnMut(u64) -> bool + Send>>,
 }
 
 #[cfg(test)]
@@ -3959,6 +3969,12 @@ impl SdCardTransport for CachedRamTransport {
     }
 
     fn write_sd_sectors(&mut self, start_lba: u64, buf: &[u8]) -> io::Result<()> {
+        if self.fail_write.as_mut().is_some_and(|fail| fail(start_lba)) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "injected write failure",
+            ));
+        }
         let image = &self.image;
         self.cache.write_through(start_lba, buf, |lba, buf| {
             let mut g = image.lock().map_err(|e| io::Error::other(e.to_string()))?;
@@ -4813,7 +4829,7 @@ mod fs_tests {
     /// effect and so happens to persist the directory too, but a failure earlier than the
     /// allocation never reaches it.
     ///
-    /// Fail-first, demonstrated: drop the `made_a_directory` sync from `write_file_exfat_streaming`
+    /// Fail-first, demonstrated: drop the bitmap sync from `exfat_create_missing_dirs`
     /// and this fails with the directory present but the allocated count unchanged.
     #[test]
     fn exfat_a_directory_made_for_a_failed_import_keeps_its_cluster() {
@@ -4845,6 +4861,146 @@ mod fs_tests {
             before_allocated + 1,
             "the directory's own cluster must be marked allocated, or it will be handed out twice"
         );
+    }
+
+    /// Where a test image's FAT and root directory are, as sector numbers, so a
+    /// [`flaky_cached_volume`] can fail writes by what they touch.
+    struct ExfatRegions {
+        fat: std::ops::Range<u64>,
+        root: std::ops::Range<u64>,
+    }
+
+    impl ExfatRegions {
+        fn of(arc: &Image) -> Self {
+            let info = ExFatFs::open(RamPartitionDisk::new_readonly(Arc::clone(arc)))
+                .expect("open")
+                .info()
+                .clone();
+            let fat_start = info.fat_offset / 512;
+            let fat_end = fat_start + info.fat_length * u64::from(info.fat_count) / 512;
+            let root_start = info.cluster_to_offset(info.root_cluster) / 512;
+            let root_end = root_start + info.bytes_per_cluster as u64 / 512;
+            Self {
+                fat: fat_start..fat_end,
+                root: root_start..root_end,
+            }
+        }
+
+        fn is_fat(&self, lba: u64) -> bool {
+            self.fat.contains(&lba)
+        }
+
+        fn is_root(&self, lba: u64) -> bool {
+            self.root.contains(&lba)
+        }
+    }
+
+    /// `arc` reached sector by sector, as a card is, with each write first offered to `fail`.
+    fn flaky_cached_volume(
+        arc: &Image,
+        fail: impl FnMut(u64) -> bool + Send + 'static,
+    ) -> ExfatVolumeSource {
+        ExfatVolumeSource::CachedRam {
+            link: Arc::new(Mutex::new(CachedRamTransport {
+                image: Arc::clone(arc),
+                cache: Default::default(),
+                requests: 0,
+                fail_write: Some(Box::new(fail)),
+            })),
+        }
+    }
+
+    /// A nested mkdir whose second folder cannot be made keeps the first one's cluster marked
+    /// allocated on the card (#213).
+    ///
+    /// Fail-first, demonstrated: with the bitmap written only after the whole walk succeeds, as
+    /// before, the `Saves` folder is on the card and the allocated count is unchanged.
+    #[test]
+    fn exfat_a_nested_mkdir_that_fails_keeps_the_folders_it_made() {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        let before_allocated = allocated_cluster_count(&arc);
+
+        mkdir_cart_exfat(&vol, 0, part_bytes, "Saves/bad:name")
+            .expect_err("the second folder's name is refused");
+
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .expect("list the root");
+        assert!(
+            listed.iter().any(|e| e.name == "Saves" && e.is_dir),
+            "{listed:?}"
+        );
+        assert_eq!(allocated_cluster_count(&arc), before_allocated + 1);
+    }
+
+    /// The same for an import whose destination folders are made on the way (#213): a parent that
+    /// cannot be made, not the file, is what fails.
+    ///
+    /// Fail-first, demonstrated: as for the mkdir, the allocated count is unchanged.
+    #[test]
+    fn exfat_an_import_whose_second_parent_fails_keeps_the_first() {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        let before_allocated = allocated_cluster_count(&arc);
+
+        write_file_exfat_streaming(
+            &vol,
+            0,
+            part_bytes,
+            "Saves/bad:dir/game.sav",
+            4,
+            &mut Cursor::new(&b"data"[..]),
+            &mut |_| true,
+        )
+        .expect_err("the second parent's name is refused");
+
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .expect("list the root");
+        assert!(
+            listed.iter().any(|e| e.name == "Saves" && e.is_dir),
+            "{listed:?}"
+        );
+        assert_eq!(allocated_cluster_count(&arc), before_allocated + 1);
+    }
+
+    /// A folder that fails part-way through being made, after its cluster was taken, gives that
+    /// cluster back, while the folder made before it keeps its own (#213).
+    ///
+    /// The write that fails is the second folder's zeroed cluster: the first write into the heap,
+    /// outside the root, after `Saves`'s entry set reached the root. Only that one write fails.
+    ///
+    /// Fail-first, demonstrated: with no give-back in `exfat_create_dir_in`, the count is two up,
+    /// the failed folder's cluster leaked. (The give-back writes the bitmap itself, so this test
+    /// does not also catch a walk that skips the sync on failure; the two tests above do.) The FAT
+    /// check shows the failed folder's end-of-chain came back out.
+    #[test]
+    fn exfat_a_folder_that_fails_after_taking_its_cluster_gives_it_back() {
+        let (arc, _, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        let before_allocated = allocated_cluster_count(&arc);
+        let before_fat = fat_bytes(&arc);
+        let regions = ExfatRegions::of(&arc);
+        let heap_start = regions.root.start;
+        let (mut root_written, mut failed) = (false, false);
+        let vol = flaky_cached_volume(&arc, move |lba| {
+            root_written |= regions.is_root(lba);
+            let fail = root_written && !failed && lba >= heap_start && !regions.is_root(lba);
+            failed |= fail;
+            fail
+        });
+
+        let err = mkdir_cart_exfat(&vol, 0, part_bytes, "Saves/Deeper")
+            .expect_err("the second folder's cluster write fails");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .expect("list the root");
+        assert!(
+            listed.iter().any(|e| e.name == "Saves" && e.is_dir),
+            "{listed:?}"
+        );
+        assert_eq!(allocated_cluster_count(&arc), before_allocated + 1);
+        assert!(fat_bytes(&arc) == before_fat, "no end-of-chain left behind");
     }
 
     /// Cancelling an import leaves no entry behind, loses no space, and leaves the FAT exactly as
@@ -5131,6 +5287,7 @@ mod fs_tests {
             image: Arc::clone(&cached_image),
             cache: Default::default(),
             requests: 0,
+            fail_write: None,
         }));
         let vols = [
             ExfatVolumeSource::Ram {
@@ -5413,6 +5570,57 @@ mod fs_tests {
             "the same names, no duplicate"
         );
         assert_eq!(allocated_cluster_count(&arc), allocated - 6 + 2);
+    }
+
+    /// A replace whose new entry set is on the card, but whose freeing of the old copy fails,
+    /// still writes the new file's clusters into the bitmap (#214).
+    ///
+    /// Every FAT write after the entry set lands fails, as a USB timeout would; the old copy's
+    /// free clears its (NoFatChain) FAT range, so that is where it stops. The error is reported,
+    /// and the new file is there, but its clusters must be marked allocated on the card, or the
+    /// next import is handed them.
+    ///
+    /// Fail-first, demonstrated: with the bitmap sync back after the `?` on the free, the replace
+    /// reports the same error but the allocated count is the original's, unchanged: the new
+    /// file's two clusters are free on the card.
+    #[test]
+    fn exfat_replace_whose_old_copy_cannot_be_freed_still_marks_the_new_one() {
+        let WithOriginal {
+            arc,
+            part_bytes,
+            allocated,
+            ..
+        } = exfat_with_original(3000);
+        let regions = ExfatRegions::of(&arc);
+        let mut entry_set_written = false;
+        let vol = flaky_cached_volume(&arc, move |lba| {
+            entry_set_written |= regions.is_root(lba);
+            entry_set_written && regions.is_fat(lba)
+        });
+        let replacement: Vec<u8> = (0..1000).map(|i| (i % 229) as u8).collect();
+
+        let err = exfat_write(
+            &vol,
+            part_bytes,
+            "game.z64",
+            1000,
+            &replacement,
+            &mut |_| true,
+        )
+        .expect_err("the old copy's free fails");
+        assert!(
+            err.to_string().contains("could not free the old copy"),
+            "{err}"
+        );
+
+        let back =
+            read_file_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "game.z64").unwrap();
+        assert!(back == replacement, "the new copy is the file on the card");
+        assert_eq!(
+            allocated_cluster_count(&arc),
+            allocated - 6 + 2,
+            "the new file's clusters must be marked allocated on the card"
+        );
     }
 
     /// A replace that fits only if the original's space is freed first is refused, with the
