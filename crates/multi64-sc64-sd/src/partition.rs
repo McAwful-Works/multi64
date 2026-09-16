@@ -1455,6 +1455,39 @@ fn exfat_volume_reader(
     }
 }
 
+/// The same contract as [`exfat_volume_reader`], on a disk the caller already owns.
+///
+/// Listing owns its disk — `ExFatFs::open` would consume it — while everything reached through an
+/// [`ExfatVolumeSource`] does not. Giving both the same reader shape lets one chain walk, one
+/// lister and one resolver serve them, instead of a second set that drifts from the first.
+fn exfat_disk_reader<D: PartitionDisk>(
+    disk: &mut D,
+) -> impl FnMut(u64, &mut [u8]) -> io::Result<()> + '_ {
+    let part_bytes = disk.partition_byte_len();
+    move |at, buf| {
+        if at.saturating_add(buf.len() as u64) > part_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "exFAT directory read past partition",
+            ));
+        }
+        disk.seek(SeekFrom::Start(at))?;
+        disk.read_exact(buf)
+    }
+}
+
+/// One FAT entry, for a chain walk that does not own its disk. Mirrors
+/// [`exfat_read_fat_entry_inner`], which reads through a [`PartitionDisk`] instead.
+fn exfat_read_fat_entry_with<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
+    read_at: &mut R,
+    info: &hadris_fat::exfat::ExFatInfo,
+    cluster: u32,
+) -> io::Result<u32> {
+    let mut buf = [0u8; 4];
+    read_at(info.fat_offset + u64::from(cluster) * 4, &mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
 fn exfat_parent_path_and_name(path: &str) -> (&str, &str) {
     let path = path.trim().trim_start_matches('/');
     match path.rsplit_once('/') {
@@ -1468,6 +1501,11 @@ fn exfat_parent_path_and_name(path: &str) -> (&str, &str) {
 /// The root directory has no stream entry of its own and always follows the FAT. Treating it as
 /// contiguous with size 0, as hadris does, let a scan run on into whatever clusters follow it (#128).
 /// hadris's own creates have the same flaw; [`exfat_refuse_unsafe_create`] guards them (#175).
+///
+/// Every segment resolves through this crate's own reader. Going through `fs.open_path` for a
+/// nested parent used hadris's lookup, which cannot see an entry past the root's first cluster, so
+/// the chain-correct slot map above was reached only for top-level paths (#190). `fs` is now used
+/// for nothing but [`ExFatFs::info`].
 fn exfat_parent_dir_slots(
     fs: &ExFatFs<PartitionDiskUnion>,
     parent_path: &str,
@@ -1475,34 +1513,8 @@ fn exfat_parent_dir_slots(
     part_start: u64,
     part_bytes: u64,
 ) -> io::Result<ExfatDirSlots> {
-    let info = fs.info();
-    if parent_path.is_empty() {
-        return ExfatDirSlots::load(
-            vol,
-            part_start,
-            part_bytes,
-            info,
-            info.root_cluster,
-            false,
-            0,
-        );
-    }
-    let e = fs.open_path(parent_path).map_err(exfat_err)?;
-    if !e.is_directory() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "exFAT parent path is not a directory",
-        ));
-    }
-    ExfatDirSlots::load(
-        vol,
-        part_start,
-        part_bytes,
-        info,
-        e.first_cluster,
-        e.no_fat_chain,
-        e.data_length,
-    )
+    let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
+    exfat_resolve_dir_slots(&mut read_at, fs.info(), parent_path)
 }
 
 /// One exFAT directory's clusters in stream order, mapping a slot (32-byte entry) index to its
@@ -1517,28 +1529,17 @@ struct ExfatDirSlots {
 impl ExfatDirSlots {
     const SLOT_BYTES: u64 = 32;
 
+    /// A directory's clusters in stream order, over any reader.
+    ///
     /// A contiguous (NoFatChain) directory spans `size` bytes. A chained one follows the FAT to its
     /// end, capped at `size` when that is non-zero. The root is chained with `size` 0.
-    fn load(
-        vol: &ExfatVolumeSource,
-        part_start: u64,
-        part_bytes: u64,
-        info: &hadris_fat::exfat::ExFatInfo,
-        first_cluster: u32,
-        is_contiguous: bool,
-        size: u64,
-    ) -> io::Result<Self> {
-        let mut disk = vol.partition_disk_ro(part_start, part_bytes);
-        Self::load_on_disk(&mut disk, info, first_cluster, is_contiguous, size)
-    }
-
-    /// As [`load`](Self::load), but walking the FAT on a disk the caller already owns.
     ///
-    /// Listing needs this: `ExFatFs::open` consumes its disk, so a path that reads the volume
-    /// itself cannot also hold a filesystem, and [`ExfatVolumeSource`] has no variant for the
-    /// EverDrive disk anyway. The chain walk is identical either way.
-    fn load_on_disk(
-        disk: &mut impl PartitionDisk,
+    /// The caller supplies the reader: [`exfat_volume_reader`] from an [`ExfatVolumeSource`], or
+    /// [`exfat_disk_reader`] from a disk it already owns — listing owns its disk, because
+    /// `ExFatFs::open` would consume it, and `ExfatVolumeSource` has no EverDrive variant. One walk
+    /// serves both, so a directory's clusters are found the same way whichever the caller holds.
+    fn load_with<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
+        read_at: &mut R,
         info: &hadris_fat::exfat::ExFatInfo,
         first_cluster: u32,
         is_contiguous: bool,
@@ -1563,7 +1564,7 @@ impl ExfatDirSlots {
         } else {
             let mut c = first_cluster;
             while size == 0 || (clusters.len() as u64) < size_clusters {
-                let next = exfat_read_fat_entry_inner(disk, info, c)?;
+                let next = exfat_read_fat_entry_with(read_at, info, c)?;
                 // End of chain, or anything else that is not a data cluster: nothing after it is
                 // provably part of this directory.
                 if !info.is_valid_cluster(next) {
@@ -2586,15 +2587,89 @@ fn read_file_fat<D: Read + Write + Seek>(disk: D, path: &str) -> io::Result<Vec<
     Ok(v)
 }
 
-fn read_file_exfat<D: Read + Write + Seek>(disk: D, path: &str) -> io::Result<Vec<u8>> {
-    let fs = ExFatFs::open(disk).map_err(|e| io::Error::other(e.to_string()))?;
-    let trimmed = path.trim().replace('\\', "/");
-    let trimmed = trimmed.trim_start_matches('/');
-    let mut r = fs
-        .open_file(trimmed)
-        .map_err(|e| io::Error::other(e.to_string()))?;
+/// One file's bytes, both found and read through this crate's own chain walk.
+///
+/// hadris's `open_file` resolves through the lookup that cannot see past a chained root's first
+/// cluster, and its `ExFatFileReader` needs an `ExFatFileEntry`, which cannot be built outside
+/// hadris — `exfat::entry` is a private module and `parse_entry_set` is not re-exported. So a file
+/// whose entry set lives in a later root cluster was listed but could not be opened (#190).
+///
+/// The copy stops at the file's `valid_data_length`, so the slack at the end of its last cluster is
+/// never written out as content, and at `max_bytes` when the caller sets one.
+fn exfat_read_file_with<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
+    read_at: &mut R,
+    info: &hadris_fat::exfat::ExFatInfo,
+    path: &str,
+    mut out: impl Write,
+    progress: &mut impl FnMut(u64) -> bool,
+    max_bytes: Option<u64>,
+) -> io::Result<()> {
+    let normalized = path.trim().replace('\\', "/");
+    let (parent, name) = exfat_parent_path_and_name(&normalized);
+    if name.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "empty cart path",
+        ));
+    }
+    let dir = exfat_resolve_dir_slots(read_at, info, parent)?;
+    let entry = exfat_list_entries(&dir, read_at)?
+        .into_iter()
+        .find(|e| fat_names_equal(&e.name, name))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no such file: {name}")))?;
+    if entry.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "that cart path is a folder, not a file",
+        ));
+    }
+    let limit = match max_bytes {
+        Some(m) => m.min(entry.valid_data_length),
+        None => entry.valid_data_length,
+    };
+    // An empty file has no first cluster to walk.
+    if limit == 0 || entry.first_cluster < 2 {
+        return Ok(());
+    }
+    // A file's allocation is a cluster chain like a directory's, so the same walk maps it to
+    // volume byte offsets, contiguous or FAT-chained.
+    let chain = ExfatDirSlots::load_with(
+        read_at,
+        info,
+        entry.first_cluster,
+        entry.no_fat_chain,
+        entry.data_length.max(entry.valid_data_length),
+    )?;
+    let cluster_bytes = info.bytes_per_cluster as u64;
+    let mut buf = vec![0u8; cluster_bytes.min(STREAM_CHUNK as u64) as usize];
+    let mut copied = 0u64;
+    for &base in &chain.cluster_offsets {
+        if copied >= limit {
+            break;
+        }
+        let mut within = 0u64;
+        while within < cluster_bytes && copied < limit {
+            let n = buf
+                .len()
+                .min((limit - copied) as usize)
+                .min((cluster_bytes - within) as usize);
+            read_at(base + within, &mut buf[..n])?;
+            out.write_all(&buf[..n])?;
+            within += n as u64;
+            copied += n as u64;
+            if !progress(n as u64) {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_file_exfat<D: PartitionDisk>(mut disk: D, path: &str) -> io::Result<Vec<u8>> {
+    let info = exfat_info_from_disk(&mut disk)?;
+    let mut read_at = exfat_disk_reader(&mut disk);
     let mut v = Vec::new();
-    r.read_to_end(&mut v)?;
+    exfat_read_file_with(&mut read_at, &info, path, &mut v, &mut |_| true, None)?;
     Ok(v)
 }
 
@@ -2648,45 +2723,16 @@ fn read_file_fat_streaming<D: Read + Write + Seek>(
     Ok(())
 }
 
-fn read_file_exfat_streaming<D: Read + Write + Seek>(
-    disk: D,
+fn read_file_exfat_streaming<D: PartitionDisk>(
+    mut disk: D,
     path: &str,
-    mut out: impl Write,
+    out: impl Write,
     progress: &mut impl FnMut(u64) -> bool,
     max_bytes: Option<u64>,
 ) -> io::Result<()> {
-    let fs = ExFatFs::open(disk).map_err(|e| io::Error::other(e.to_string()))?;
-    let trimmed = path.trim().replace('\\', "/");
-    let trimmed = trimmed.trim_start_matches('/');
-    let mut r = fs
-        .open_file(trimmed)
-        .map_err(|e| io::Error::other(e.to_string()))?;
-    let mut buf = vec![0u8; STREAM_CHUNK];
-    let mut copied = 0u64;
-    loop {
-        if let Some(max) = max_bytes {
-            if copied >= max {
-                break;
-            }
-        }
-        let cap = match max_bytes {
-            None => buf.len(),
-            Some(max) => buf.len().min((max - copied) as usize),
-        };
-        if cap == 0 {
-            break;
-        }
-        let n = r.read(&mut buf[..cap])?;
-        if n == 0 {
-            break;
-        }
-        out.write_all(&buf[..n])?;
-        copied += n as u64;
-        if !progress(n as u64) {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
-        }
-    }
-    Ok(())
+    let info = exfat_info_from_disk(&mut disk)?;
+    let mut read_at = exfat_disk_reader(&mut disk);
+    exfat_read_file_with(&mut read_at, &info, path, out, progress, max_bytes)
 }
 
 fn list_dir_fat<D: Read + Write + Seek>(disk: D, path: &str) -> io::Result<Vec<SessionEntry>> {
@@ -2815,17 +2861,14 @@ fn exfat_decode_entry_set<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
 }
 
 /// Every in-use entry set in `dir`, following the directory's real cluster chain (#189).
-fn exfat_list_entries(
+fn exfat_list_entries<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
     dir: &ExfatDirSlots,
-    disk: &mut impl PartitionDisk,
+    read_at: &mut R,
 ) -> io::Result<Vec<ExfatDecodedEntry>> {
     const END_OF_DIRECTORY: u8 = 0x00;
     let count = dir.slot_count();
     let mut out = Vec::new();
-    let mut slots = ExfatSlotReader::new(dir, |at, buf: &mut [u8]| {
-        disk.seek(SeekFrom::Start(at))?;
-        disk.read_exact(buf)
-    });
+    let mut slots = ExfatSlotReader::new(dir, &mut *read_at);
     let mut i = 0;
     while i < count {
         let primary = slots.slot(i)?;
@@ -2887,15 +2930,15 @@ fn exfat_info_from_disk(disk: &mut impl PartitionDisk) -> io::Result<hadris_fat:
 /// contiguous (`root_contiguous = true`, `root_size = 0`), so its iterator steps to the
 /// *physically* next cluster when the first is exhausted and stops at the first zero byte it finds
 /// there — which on a real card listed 74 of 1273 entries and made the rest unopenable (#189).
-fn exfat_resolve_dir_on_disk(
-    disk: &mut impl PartitionDisk,
+fn exfat_resolve_dir_slots<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
+    read_at: &mut R,
     info: &hadris_fat::exfat::ExFatInfo,
     path: &str,
 ) -> io::Result<ExfatDirSlots> {
-    let mut dir = ExfatDirSlots::load_on_disk(disk, info, info.root_cluster, false, 0)?;
+    let mut dir = ExfatDirSlots::load_with(read_at, info, info.root_cluster, false, 0)?;
     let trimmed = path.trim().replace('\\', "/");
     for seg in trimmed.split('/').filter(|s| !s.is_empty()) {
-        let found = exfat_list_entries(&dir, disk)?
+        let found = exfat_list_entries(&dir, read_at)?
             .into_iter()
             .find(|e| fat_names_equal(&e.name, seg))
             .ok_or_else(|| {
@@ -2907,8 +2950,8 @@ fn exfat_resolve_dir_on_disk(
                 format!("not a folder: {seg}"),
             ));
         }
-        dir = ExfatDirSlots::load_on_disk(
-            disk,
+        dir = ExfatDirSlots::load_with(
+            read_at,
             info,
             found.first_cluster,
             found.no_fat_chain,
@@ -2920,7 +2963,8 @@ fn exfat_resolve_dir_on_disk(
 
 fn list_dir_exfat<D: PartitionDisk>(mut disk: D, path: &str) -> io::Result<Vec<SessionEntry>> {
     let info = exfat_info_from_disk(&mut disk)?;
-    let dir = exfat_resolve_dir_on_disk(&mut disk, &info, path)?;
+    let mut read_at = exfat_disk_reader(&mut disk);
+    let dir = exfat_resolve_dir_slots(&mut read_at, &info, path)?;
     let normalized = path.trim().replace('\\', "/");
     let segs: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
     let path_prefix = if segs.is_empty() {
@@ -2929,7 +2973,7 @@ fn list_dir_exfat<D: PartitionDisk>(mut disk: D, path: &str) -> io::Result<Vec<S
         format!("{}/", segs.join("/"))
     };
     let mut out = Vec::new();
-    for e in exfat_list_entries(&dir, &mut disk)? {
+    for e in exfat_list_entries(&dir, &mut read_at)? {
         if e.name == "." || e.name == ".." {
             continue;
         }
@@ -3853,6 +3897,36 @@ mod fs_tests {
         assert_eq!(after.len(), before.len(), "{names:?}");
         let old_types: Vec<u8> = slots[old_idx..old_idx + 3].iter().map(|s| s[0]).collect();
         assert_eq!(old_types, [0x05, 0x40, 0x41]);
+    }
+
+    /// #190: a file whose entry set lives past the root's first cluster must still be readable.
+    /// Reading resolved through hadris's `open_file`, which cannot see it, so on a real card such a
+    /// file was listed but could not be copied off.
+    ///
+    /// To watch this fail, put the old body back in [`read_file_exfat`] — `ExFatFs::open` then
+    /// `open_file` — and it reports `entry not found in directory` for a file that is plainly
+    /// listed. Do **not** try it by loading the root as contiguous in [`exfat_resolve_dir_slots`]:
+    /// the rename below takes its slot map from the same resolver, so the setup dies with
+    /// `StorageFull` and the read under test never runs.
+    #[test]
+    fn exfat_read_file_whose_entry_is_past_the_first_root_cluster() {
+        let fx = exfat_chained_root(3);
+        // Renaming to a longer name rewrites the entry set somewhere it fits. With only 3 slots
+        // free in the first cluster it lands in the chain's second one — which is not the cluster
+        // physically after the first, so a contiguous reader looks in the wrong place entirely.
+        let new_name = format!("moved-{}.z64", "y".repeat(40));
+        rename_cart_exfat(&fx.vol, 0, fx.part_bytes, "rom.z64", &new_name).expect("rename");
+
+        let back = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)),
+            &new_name,
+        )
+        .expect("the entry moved into the root's second cluster; the file must still read");
+
+        assert_eq!(
+            back, fx.rom,
+            "the bytes must be the file's own, not cluster slack or another file's data"
+        );
     }
 
     /// #189: a root spanning more than one cluster must list every entry, including those in its
