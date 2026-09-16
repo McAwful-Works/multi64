@@ -1114,7 +1114,9 @@ const clearedSavedFolder = (calls) =>
   await p.addInitScript(installTauriStub);
   await p.goto(`${origin}/index.html`);
   await p.waitForSelector(PC_FILE, { timeout: 15000 });
-  const backend = 'Cancelled — original kept: "007 - The World Is Not Enough (USA).z64"';
+  // The EverDrive-64 PRO outcome: one the user has to act on, so it is reported, and long enough
+  // to need the tooltip.
+  const backend = 'Cancelled — original now incomplete, copy it again: "007 - The World Is Not Enough (USA).z64"';
   await p.evaluate((m) => { window.__TAURI_IMPORT_FAILS__ = m; }, backend);
   await p.click(PC_FILE);
   await p.click("#btn-copy-to-cart");
@@ -1128,8 +1130,8 @@ const clearedSavedFolder = (calls) =>
     return { text: t?.textContent || "", title: t?.title || "", hidden: document.getElementById("explorer-operation-pc")?.hidden };
   });
   const shown = await read();
-  check("a cancelled overwrite's strip leads with what became of the original",
-    finished && shown.text.startsWith("Import cancelled — original kept: "), JSON.stringify(shown));
+  check("an overwrite that lost the original leads with that, before the file name",
+    finished && shown.text.startsWith("Import cancelled — original now incomplete, copy it again: "), JSON.stringify(shown));
   check("the strip's full message is its tooltip",
     finished && shown.title === shown.text && shown.title.length > 0, JSON.stringify(shown));
 
@@ -1141,6 +1143,19 @@ const clearedSavedFolder = (calls) =>
   const hidAfterLeaving = await waitOn((s) => document.querySelector(s)?.hidden === true, OP_HIDE_MS + 2000);
   check("a finished strip stays up while hovered and hides once the pointer leaves",
     whileHovered.hidden === false && hidAfterLeaving, JSON.stringify({ whileHovered, hidAfterLeaving }));
+
+  // A cancel that left the original intact is what a cancel is expected to do, so the backend adds
+  // nothing to "Cancelled" and the strip says only that.
+  await p.evaluate(() => { window.__TAURI_IMPORT_FAILS__ = "Cancelled"; });
+  await p.click(PC_FILE);
+  await p.click("#btn-copy-to-cart");
+  const cancelledAgain = await waitOn((s) => {
+    const r = document.querySelector(s);
+    return r && !r.hidden && r.classList.contains("explorer-operation--cancelled");
+  }, 8000);
+  const plain = await read();
+  check("a plain cancel reads only \"Import cancelled.\"",
+    cancelledAgain && plain.text === "Import cancelled.", JSON.stringify(plain));
   await p.close();
 }
 

@@ -543,19 +543,22 @@ enum PartialImport {
     IncompleteLeft(String),
 }
 
-/// The status line for an import that stopped part-way: **what the card now holds first**, then
-/// the file.
+/// The status line for an import that stopped part-way.
 ///
-/// The operation strip is a single line that truncates, and a file name is usually long enough to
-/// fill it. Put after the name, the part the user actually needs — whether the original survived —
-/// was always the part cut off. Leading with it means truncation only ever shortens the name.
+/// **Only an outcome the user has to act on is reported.** A new file that left nothing behind, and
+/// an overwrite that left the original intact, are what a cancel is expected to do, so both are the
+/// plain error — "Import cancelled." Saying "original kept" every time added length to a line that
+/// already truncates, for no decision on the user's part.
+///
+/// An outcome that does need action leads, before the file name. The strip is a single line that
+/// truncates, and a file name is usually long enough to fill it; put after the name, the part that
+/// matters was the part cut off.
 ///
 /// A cancel keeps the backend's `Cancelled` lead, which the frontend rewrites to
 /// "Import cancelled"; any other failure leads with the outcome, followed by the error.
 fn partial_import_message(err: &str, cart_dest_path: &str, outcome: PartialImport) -> String {
     let outcome = match outcome {
-        PartialImport::NothingLeft => return err.to_string(),
-        PartialImport::OriginalKept => "original kept".to_string(),
+        PartialImport::NothingLeft | PartialImport::OriginalKept => return err.to_string(),
         PartialImport::OriginalIncomplete => "original now incomplete, copy it again".to_string(),
         PartialImport::IncompleteLeft(e) => {
             format!("incomplete copy left, delete it before using it ({e})")
@@ -1369,21 +1372,22 @@ mod partial_import_message_tests {
     /// "Import cancelled — …" before it truncates, at the window size the report came from.
     const VISIBLE: usize = 34;
 
+    /// A kept original is what a cancel is expected to leave, so there is nothing to add.
     #[test]
-    fn a_cancelled_overwrite_says_the_original_was_kept_before_the_name() {
-        let m = partial_import_message("Cancelled", NAME, PartialImport::OriginalKept);
-        assert_eq!(m, format!("Cancelled — original kept: \"{NAME}\""));
-        let shown = format!("Import cancelled{}", &m["Cancelled".len()..]);
-        assert!(
-            shown
-                .chars()
-                .take(VISIBLE)
-                .collect::<String>()
-                .contains("original kept"),
-            "the outcome must survive truncation: {shown}"
+    fn a_cancelled_overwrite_that_kept_the_original_is_just_cancelled() {
+        assert_eq!(
+            partial_import_message("Cancelled", NAME, PartialImport::OriginalKept),
+            "Cancelled"
+        );
+        let err = "D:\\ROMs\\game.z64: timed out";
+        assert_eq!(
+            partial_import_message(err, NAME, PartialImport::OriginalKept),
+            err,
+            "nor to a failure's error"
         );
     }
 
+    /// An outcome the user must act on leads, and survives the strip's truncation.
     #[test]
     fn an_overwrite_that_lost_the_original_says_so_first() {
         let m = partial_import_message("Cancelled", NAME, PartialImport::OriginalIncomplete);
@@ -1391,13 +1395,25 @@ mod partial_import_message_tests {
             m.starts_with("Cancelled — original now incomplete, copy it again: "),
             "{m}"
         );
+        let shown = format!("Import cancelled{}", &m["Cancelled".len()..]);
+        assert!(
+            shown
+                .chars()
+                .take(VISIBLE)
+                .collect::<String>()
+                .contains("original now"),
+            "the outcome must survive truncation: {shown}"
+        );
     }
 
     #[test]
     fn a_failure_leads_with_the_outcome_then_the_error() {
         let err = "D:\\ROMs\\game.z64: timed out";
-        let m = partial_import_message(err, NAME, PartialImport::OriginalKept);
-        assert_eq!(m, format!("Original kept on the cart — {err}"));
+        let m = partial_import_message(err, NAME, PartialImport::OriginalIncomplete);
+        assert_eq!(
+            m,
+            format!("Original now incomplete, copy it again on the cart — {err}")
+        );
     }
 
     #[test]
