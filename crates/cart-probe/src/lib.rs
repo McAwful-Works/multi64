@@ -13,6 +13,13 @@
 //! edlink itself sends it to every port it scans. Only an SC64 has a descriptor worth matching: the
 //! X7's FT245R is a stock FTDI part, and the PRO's USB descriptors are not documented.
 //!
+//! **On an FT245R (FTDI `0403:6001`) the X-series test goes first** (#140). The other probes put 86
+//! bytes into the device's receive FIFO before the X7's 16-byte test, and clearing the port only
+//! clears the PC's side. If the X7 firmware reads commands in 16-byte blocks, 86 bytes leave the
+//! test straddling a block boundary and a real X7 is never found. On that chip the X7 test is
+//! sent into an empty FIFO; every other port keeps the order above. This is a precaution: the X7
+//! firmware's framing has never been observed, and the X7 probe has never run against a cart.
+//!
 //! The EverDrive probes follow `docs/spec/ed64-pro-usb-host.md` §4 and
 //! `docs/spec/l3-over-everdrive-x7.md` §8, and have **never been run against a cart**.
 
@@ -73,6 +80,50 @@ pub fn usb_is_sc64(usb: &UsbPortInfo) -> bool {
         && (tagged(&usb.serial_number) || tagged(&usb.product))
 }
 
+/// FTDI FT245R, the USB bridge on an EverDrive-64 X7.
+///
+/// A stock FTDI part used by countless ordinary USB serial adapters, so it identifies nothing on its
+/// own. It only decides which probe a port gets first; see [`probe_order`].
+pub const ED64_X7_USB_VID: u16 = 0x0403;
+pub const ED64_X7_USB_PID: u16 = 0x6001;
+
+/// Whether a USB serial device uses the X7's USB bridge chip. Not a cart match: see
+/// [`ED64_X7_USB_PID`].
+pub fn usb_is_x7_bridge(usb: &UsbPortInfo) -> bool {
+    usb.vid == ED64_X7_USB_VID && usb.pid == ED64_X7_USB_PID
+}
+
+/// Which carts to ask for, and in what order, on a port whose USB bridge is (or is not) the X7's
+/// FT245R. Every cart is still asked; only the order changes. See the [crate docs](crate).
+pub fn probe_order(x7_bridge: bool) -> [DetectedCart; 3] {
+    if x7_bridge {
+        [
+            DetectedCart::Ed64,
+            DetectedCart::Sc64,
+            DetectedCart::Ed64Pro,
+        ]
+    } else {
+        [
+            DetectedCart::Sc64,
+            DetectedCart::Ed64Pro,
+            DetectedCart::Ed64,
+        ]
+    }
+}
+
+/// Whether `port` is enumerated as a USB serial device on the X7's bridge chip. A port that is not
+/// enumerated, or whose enumeration fails, is treated as not — which keeps the usual order.
+fn port_is_x7_bridge(port: &str) -> bool {
+    serialport::available_ports()
+        .map(|ports| {
+            ports.iter().any(|p| {
+                p.port_name.eq_ignore_ascii_case(port)
+                    && matches!(&p.port_type, serialport::SerialPortType::UsbPort(u) if usb_is_x7_bridge(u))
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// How long a port gets to answer `IDENTIFIER_GET`. A SummerCart64 answers within milliseconds;
 /// this bounds what every other device costs a scan.
 const SC64_IDENTIFY_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -101,20 +152,27 @@ pub fn probe_port_cancellable(port: &str, cancelled: impl Fn() -> bool) -> Optio
     if cancelled() {
         return None;
     }
-    if probe_sc64(port, &cancelled) {
-        return Some(DetectedCart::Sc64);
-    }
-    if cancelled() {
-        return None;
-    }
-    if probe_ed64pro(port, &cancelled) {
-        return Some(DetectedCart::Ed64Pro);
-    }
-    if cancelled() {
-        return None;
-    }
-    if probe_ed64(port, &cancelled) {
-        return Some(DetectedCart::Ed64);
+    let order = probe_order(port_is_x7_bridge(port));
+    first_answering(order, &cancelled, |cart| match cart {
+        DetectedCart::Sc64 => probe_sc64(port, &cancelled),
+        DetectedCart::Ed64Pro => probe_ed64pro(port, &cancelled),
+        DetectedCart::Ed64 => probe_ed64(port, &cancelled),
+    })
+}
+
+/// Ask each cart in `order` until one answers, checking `cancelled` before each.
+fn first_answering(
+    order: [DetectedCart; 3],
+    cancelled: &impl Fn() -> bool,
+    mut asks: impl FnMut(DetectedCart) -> bool,
+) -> Option<DetectedCart> {
+    for cart in order {
+        if cancelled() {
+            return None;
+        }
+        if asks(cart) {
+            return Some(cart);
+        }
     }
     None
 }
@@ -459,6 +517,75 @@ mod tests {
             probe_port_cancellable("multi64-cart-probe-no-such-port", || true),
             None
         );
+    }
+
+    /// #140: on the X7's FT245R, the X-series test goes out before any other cart's bytes.
+    #[test]
+    fn the_x7_test_goes_first_only_on_the_x7_bridge_chip() {
+        assert_eq!(
+            probe_order(true),
+            [
+                DetectedCart::Ed64,
+                DetectedCart::Sc64,
+                DetectedCart::Ed64Pro
+            ]
+        );
+        assert_eq!(
+            probe_order(false),
+            [
+                DetectedCart::Sc64,
+                DetectedCart::Ed64Pro,
+                DetectedCart::Ed64
+            ],
+            "every other port keeps the order it had"
+        );
+    }
+
+    #[test]
+    fn the_x7_bridge_is_the_ft245r_and_not_the_sc64s_ft232h() {
+        assert!(usb_is_x7_bridge(&usb(0x0403, 0x6001, None, None)));
+        assert!(!usb_is_x7_bridge(&usb(
+            0x0403,
+            0x6014,
+            Some("SC64XXXXXXA"),
+            None
+        )));
+        assert!(!usb_is_x7_bridge(&usb(0x1a86, 0x6001, None, None)));
+    }
+
+    /// The order is what the probe actually follows: the first cart asked is the first in the
+    /// order, and an answer stops the rest from being asked.
+    #[test]
+    fn probing_asks_carts_in_order_and_stops_at_an_answer() {
+        for x7 in [true, false] {
+            let order = probe_order(x7);
+            let mut asked = Vec::new();
+            let found = first_answering(order, &|| false, |cart| {
+                asked.push(cart);
+                cart == order[1]
+            });
+            assert_eq!(found, Some(order[1]));
+            assert_eq!(asked, order[..2], "x7 bridge: {x7}");
+        }
+    }
+
+    #[test]
+    fn a_cancel_between_probes_asks_no_further_cart() {
+        let mut asked = Vec::new();
+        let calls = std::cell::Cell::new(0);
+        let found = first_answering(
+            probe_order(true),
+            &|| {
+                calls.set(calls.get() + 1);
+                calls.get() > 1
+            },
+            |cart| {
+                asked.push(cart);
+                false
+            },
+        );
+        assert_eq!(found, None);
+        assert_eq!(asked, [DetectedCart::Ed64], "only the first cart was asked");
     }
 
     #[test]
