@@ -19,7 +19,10 @@ use crate::mem_disk::{PartitionDisk, RamPartitionDisk};
 use fatfs::{FileAttributes as FatFileAttributes, FileSystem, FsOptions};
 use hadris_common::types::endian::{Endian, LittleEndian};
 use hadris_common::types::number::{U16, U32, U64};
-use hadris_fat::exfat::{ExFatFileEntry, ExFatFs, RawFileNameEntry, RawStreamExtensionEntry};
+use hadris_fat::exfat::{
+    ExFatFileEntry, ExFatFs, ExFatTimestamp, RawFileDirectoryEntry, RawFileNameEntry,
+    RawStreamExtensionEntry,
+};
 use std::io;
 use std::io::prelude::*;
 use std::io::BufReader;
@@ -36,6 +39,7 @@ const STREAM_CHUNK: usize = 256 * 1024;
 /// exFAT directory entry type bytes (see Microsoft exFAT / hadris `entry_type`).
 /// Type-byte bit 7. Clear means the slot is unused: `0x00` (end of directory), or a deleted
 /// entry such as `0x05`, `0x40`, `0x41`.
+const EXFAT_ATTR_DIRECTORY: u16 = 0x10;
 const EXFAT_ENTRY_IN_USE: u8 = 0x80;
 const EXFAT_ENTRY_FILE_DIRECTORY: u8 = 0x85;
 const EXFAT_ENTRY_STREAM_EXT: u8 = 0xC0;
@@ -2069,7 +2073,7 @@ fn mkdir_cart_exfat(
         .split('/')
         .filter(|s| !s.is_empty())
         .collect();
-    let mut dir = fs.root_dir();
+    let info = fs.info().clone();
     let mut path_prefix = String::new();
     for p in parts {
         let next_path = if path_prefix.is_empty() {
@@ -2077,19 +2081,22 @@ fn mkdir_cart_exfat(
         } else {
             format!("{path_prefix}/{p}")
         };
-        dir = match dir.open_dir(p) {
-            Ok(d) => {
-                path_prefix = next_path;
-                d
+        let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
+        let parent = exfat_resolve_dir_slots(&mut read_at, &info, &path_prefix)?;
+        let existing = exfat_list_entries(&parent, &mut read_at)?
+            .into_iter()
+            .find(|e| fat_names_equal(&e.name, p));
+        match existing {
+            Some(e) if e.is_dir() => {}
+            Some(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "a file already exists with that name",
+                ))
             }
-            Err(_) => {
-                exfat_refuse_unsafe_create(&fs, &path_prefix, p, vol, part_start, part_bytes)?;
-                let new_dir = fs.create_dir(&dir, p).map_err(exfat_err)?;
-                exfat_zero_fat_for_nofatchain_entry(&fs, vol, part_start, part_bytes, &next_path)?;
-                path_prefix = next_path;
-                new_dir
-            }
-        };
+            None => exfat_create_dir_in(&fs, &info, vol, part_start, part_bytes, &parent, p)?,
+        }
+        path_prefix = next_path;
     }
     fs.sync_bitmap().map_err(exfat_err)?;
     drop(fs);
@@ -2250,6 +2257,125 @@ fn rename_cart_exfat(
     Ok(())
 }
 
+/// The entry set for a **new** entry: File, Stream Extension, then one File Name entry per 15
+/// UTF-16 units, with the set checksum filled in.
+///
+/// The field values follow what Windows' own driver writes, read off a card: attributes as given,
+/// general secondary flags `0x03` (AllocationPossible | NoFatChain), and **ValidDataLength equal to
+/// DataLength**. hadris's builder instead leaves ValidDataLength `0` for a directory, which is why
+/// every directory created through it carries a value Windows would not have written.
+fn exfat_build_new_entry_set_bytes(
+    fs: &ExFatFs<PartitionDiskUnion>,
+    name: &str,
+    attributes: u16,
+    first_cluster: u32,
+    data_length: u64,
+) -> io::Result<Vec<[u8; 32]>> {
+    exfat_validate_rename_name(name)?;
+    let name_utf16: Vec<u16> = name.encode_utf16().collect();
+    let name_len = name_utf16.len();
+    let name_entry_count = (name_len + EXFAT_CHARS_PER_NAME_ENTRY - 1) / EXFAT_CHARS_PER_NAME_ENTRY;
+    let secondary_count = (1 + name_entry_count) as u8;
+    let (ts, ts_10ms, ts_utc) = ExFatTimestamp::now().to_raw();
+    let file_entry = RawFileDirectoryEntry {
+        entry_type: EXFAT_ENTRY_FILE_DIRECTORY,
+        secondary_count,
+        set_checksum: U16::<LittleEndian>::new(0),
+        file_attributes: U16::<LittleEndian>::new(attributes),
+        reserved1: U16::<LittleEndian>::new(0),
+        create_timestamp: U32::<LittleEndian>::new(ts),
+        last_modified_timestamp: U32::<LittleEndian>::new(ts),
+        last_accessed_timestamp: U32::<LittleEndian>::new(ts),
+        create_10ms_increment: ts_10ms,
+        last_modified_10ms_increment: ts_10ms,
+        create_utc_offset: ts_utc,
+        last_modified_utc_offset: ts_utc,
+        last_accessed_utc_offset: ts_utc,
+        reserved2: [0; 7],
+    };
+    let stream_entry = RawStreamExtensionEntry {
+        entry_type: EXFAT_ENTRY_STREAM_EXT,
+        general_secondary_flags: 0x03,
+        reserved1: 0,
+        name_length: name_len as u8,
+        name_hash: U16::<LittleEndian>::new(fs.name_hash(name)),
+        reserved2: U16::<LittleEndian>::new(0),
+        valid_data_length: U64::<LittleEndian>::new(data_length),
+        reserved3: U32::<LittleEndian>::new(0),
+        first_cluster: U32::<LittleEndian>::new(first_cluster),
+        data_length: U64::<LittleEndian>::new(data_length),
+    };
+    let mut out = Vec::with_capacity(1 + secondary_count as usize);
+    out.push(exfat_struct_to_entry_bytes(&file_entry));
+    out.push(exfat_struct_to_entry_bytes(&stream_entry));
+    for chunk in name_utf16.chunks(EXFAT_CHARS_PER_NAME_ENTRY) {
+        let mut file_name = [0u8; 30];
+        for (i, &u) in chunk.iter().enumerate() {
+            let b = u.to_le_bytes();
+            file_name[i * 2] = b[0];
+            file_name[i * 2 + 1] = b[1];
+        }
+        out.push(exfat_struct_to_entry_bytes(&RawFileNameEntry {
+            entry_type: EXFAT_ENTRY_FILE_NAME,
+            general_secondary_flags: 0,
+            file_name,
+        }));
+    }
+    let checksum = exfat_compute_entry_set_checksum(&out);
+    out[0][2] = (checksum & 0xff) as u8;
+    out[0][3] = (checksum >> 8) as u8;
+    Ok(out)
+}
+
+/// Create one directory named `name` inside the already-resolved directory `parent`.
+///
+/// Written here rather than through hadris's `create_dir`, which finds its free slots by a scan
+/// that runs past the directory's end and cannot see a chained root's later clusters (#175, #190).
+/// Because this places the entry set through [`ExfatDirSlots`], a directory can be created in a
+/// root that spans several clusters — which [`exfat_refuse_unsafe_create`] has to refuse when
+/// hadris is doing the writing.
+///
+/// Like hadris, this does **not** extend a full directory: with no free run long enough it fails
+/// with `StorageFull` rather than growing the directory.
+fn exfat_create_dir_in(
+    fs: &ExFatFs<PartitionDiskUnion>,
+    info: &hadris_fat::exfat::ExFatInfo,
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+    parent: &ExfatDirSlots,
+    name: &str,
+) -> io::Result<()> {
+    let cluster_bytes = info.bytes_per_cluster as u64;
+    let cluster = fs.allocate_cluster(2).map_err(exfat_err)?;
+    if !info.is_valid_cluster(cluster) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "exFAT allocated an out-of-range cluster",
+        ));
+    }
+    // `allocate_cluster` marks the bitmap and writes end-of-chain into the FAT. The entry below
+    // sets NoFatChain, and exFAT requires the FAT entries of such an allocation to be free, so the
+    // end-of-chain it just wrote has to come back out. Windows chkdsk reports the mismatch.
+    exfat_clear_fat_contiguous_range(vol, part_start, part_bytes, info, cluster, 1)?;
+    // An empty exFAT directory is simply a zeroed cluster: there are no "." or ".." entries, and
+    // the first zero byte is the end-of-directory marker.
+    let base = info.cluster_to_offset(cluster);
+    exfat_write_bytes_at(
+        vol,
+        part_start,
+        part_bytes,
+        base,
+        &vec![0u8; cluster_bytes as usize],
+    )?;
+    let slabs =
+        exfat_build_new_entry_set_bytes(fs, name, EXFAT_ATTR_DIRECTORY, cluster, cluster_bytes)?;
+    let read_at = exfat_volume_reader(vol, part_start, part_bytes);
+    let slot = exfat_find_free_entry_run(parent, slabs.len(), 0..0, read_at)?;
+    let offsets = parent.offsets(slot, slabs.len())?;
+    exfat_write_entry_slabs_at(vol, part_start, part_bytes, &offsets, &slabs)
+}
+
 fn exfat_validate_rename_name(name: &str) -> io::Result<()> {
     let len = name.encode_utf16().count();
     if len == 0 || len > EXFAT_MAX_FILENAME_LEN {
@@ -2342,6 +2468,27 @@ fn exfat_struct_to_entry_bytes<T: bytemuck::NoUninit>(entry: &T) -> [u8; 32] {
 }
 
 /// Write `slabs[i]` at volume byte offset `offsets[i]` (see [`ExfatDirSlots::offsets`]).
+/// Write `bytes` at a volume byte offset, refusing a write that would run past the partition.
+fn exfat_write_bytes_at(
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+    offset: u64,
+    bytes: &[u8],
+) -> io::Result<()> {
+    if offset.saturating_add(bytes.len() as u64) > part_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "exFAT write past partition",
+        ));
+    }
+    let mut disk = vol.partition_disk_rw(part_start, part_bytes);
+    disk.seek(SeekFrom::Start(offset))?;
+    disk.write_all(bytes)?;
+    disk.flush()?;
+    Ok(())
+}
+
 fn exfat_write_entry_slabs_at(
     vol: &ExfatVolumeSource,
     part_start: u64,
@@ -4230,17 +4377,55 @@ mod fs_tests {
     /// hadris lists only the first cluster of a longer root, so it can't see every name already
     /// there. Adding to that root is refused even with room in its first cluster.
     #[test]
-    fn exfat_create_in_a_root_past_one_cluster_is_refused() {
+    fn exfat_import_into_a_root_past_one_cluster_is_refused() {
         let fx = exfat_chained_root(5);
         let before = raw_dir_slots(&fx.arc, &fx.info, &fx.chain);
 
+        // The streaming write still creates through hadris, whose free-slot scan runs past the
+        // directory's end, so the guard must still refuse it (#175).
         let err = write_small(&fx, "a.z64").expect_err("an import into a longer root");
         assert!(err.to_string().contains("root folder"), "{err}");
-        mkdir_cart_exfat(&fx.vol, 0, fx.part_bytes, "Saves").expect_err("a folder in it");
-        // Nested paths are refused at the folder they would create in the root.
-        write_small(&fx, "Saves/game.sav").expect_err("an import creating a folder in it");
 
         assert_nothing_written(&fx, &before);
+    }
+
+    /// #190: a directory can now be created in a root that spans several clusters, because the
+    /// entry set is placed through [`ExfatDirSlots`] rather than by hadris's scan. That is what
+    /// [`exfat_refuse_unsafe_create`] has to refuse while hadris is doing the writing.
+    ///
+    /// The fixture leaves **one** free slot in the first cluster, so the three-slot entry set has
+    /// to go into the chain's second cluster — which is not the cluster physically after the first.
+    /// A ROM sits in that physically-next cluster, and it must come through untouched: writing
+    /// into it is exactly the corruption the guard exists to prevent.
+    #[test]
+    fn exfat_mkdir_works_in_a_root_past_one_cluster() {
+        let fx = exfat_chained_root(1);
+        let before = in_use_names(&raw_dir_slots(&fx.arc, &fx.info, &fx.chain));
+
+        mkdir_cart_exfat(&fx.vol, 0, fx.part_bytes, "Saves")
+            .expect("a directory in a root past one cluster");
+
+        let rom = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)),
+            "rom.z64",
+        )
+        .unwrap();
+        assert!(rom == fx.rom, "the create wrote into the ROM's data");
+
+        let after = in_use_names(&raw_dir_slots(&fx.arc, &fx.info, &fx.chain));
+        assert_eq!(
+            after.len(),
+            before.len() + 1,
+            "exactly one entry should have been added: {after:?}"
+        );
+
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)), "/")
+            .expect("list the root");
+        assert!(
+            listed.iter().any(|e| e.name == "Saves" && e.is_dir),
+            "the new directory must be listed: {:?}",
+            listed.iter().map(|e| &e.name).collect::<Vec<_>>()
+        );
     }
 
     /// The check runs before an existing file is deleted, so a refused replace keeps it.
