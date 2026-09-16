@@ -18,7 +18,7 @@ path = "src/main.rs"
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4.5", features = ["derive", "env"] }
-dirs = "6"
+dirs = "7"
 futures-util = "0.3"
 multi64-ed64-l2 = { path = "../ed64-l2" }
 multi64-ed64pro-l2 = { path = "../ed64pro-l2" }
