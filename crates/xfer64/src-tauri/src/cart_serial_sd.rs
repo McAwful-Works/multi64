@@ -497,26 +497,35 @@ fn export_cart_file_to_pc_in_session(
         .map_err(|e| map_usb_io_cart(cart_path, e))
 }
 
-/// Clean up after an import that stopped part-way (cancel, or a serial failure mid-write).
+/// Clean up after an import that stopped part-way (cancel, or a serial failure mid-write), and say
+/// what the card now holds.
 ///
-/// The write loop in `multi64-sc64-sd` returns without removing what it already wrote, so the card
-/// is left holding a truncated file that looks like an ordinary, slightly smaller one. If the
-/// destination did not exist beforehand, the partial is ours and is removed. If it did exist we
-/// overwrote it, so the original is already gone and there is nothing to restore -- say so plainly
-/// rather than reporting a clean "Cancelled".
+/// On an SC64 or X-series cart, `multi64-sc64-sd` writes a replacement before it removes the
+/// original and removes its own partial work on failure (#200). An overwrite that stops therefore
+/// leaves the original as it was, and a new file leaves nothing — so the removal below usually
+/// finds nothing, and `NotFound` is the clean outcome, not a failure to report.
+///
+/// The EverDrive-64 PRO is different: its link opens the destination with `CREATE_ALWAYS`, which
+/// truncates the original at once, so an overwrite that stops there really has lost it.
 fn cleanup_partial_import(
     session: &CartSession,
     cart_dest_path: &str,
     existed_before: bool,
     err: String,
 ) -> String {
+    let keeps_original = !matches!(session, CartSession::Ed64Pro(_));
     if existed_before {
-        return format!(
-            "{err} — \"{cart_dest_path}\" on the cart was being overwritten and is now incomplete; copy it again to restore it."
-        );
+        return if keeps_original {
+            format!("{err} — \"{cart_dest_path}\" on the cart was not changed.")
+        } else {
+            format!(
+                "{err} — \"{cart_dest_path}\" on the cart was being overwritten and is now incomplete; copy it again to restore it."
+            )
+        };
     }
     match session.remove_cart_path(cart_dest_path) {
         Ok(()) => err,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => err,
         Err(e) => format!(
             "{err} — could not remove the incomplete \"{cart_dest_path}\" from the cart ({e}); delete it manually before using it."
         ),
