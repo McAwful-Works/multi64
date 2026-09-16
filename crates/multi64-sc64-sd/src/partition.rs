@@ -531,13 +531,10 @@ impl Sc64SdSession {
         } else {
             self.write_file_fat_streaming(rel_path, data, progress)
         };
-        if let Err(e) = r {
-            if e.kind() == io::ErrorKind::Interrupted {
-                let _ = self.remove_cart_path(rel_path);
-            }
-            return Err(e);
-        }
-        Ok(())
+        // No cleanup here on cancel. Both writes remove their own partial work, and on a replace
+        // the file at `rel_path` is still the untouched original: removing it, as this once did,
+        // would delete exactly what #200's ordering keeps.
+        r
     }
 
     fn write_file_fat_streaming(
@@ -938,26 +935,73 @@ fn write_file_fat_streaming_impl<D: Read + Write + Seek>(
                 Err(_) => dir.create_dir(p)?,
             };
         }
-        if dir.open_file(name).is_ok() {
+        // A replacement is written under a temporary name in the same folder, so the original
+        // stays whole until the copy is complete (#200). Only then is the original removed and
+        // the copy renamed over it. fatfs has no atomic replace, so that last step still has a
+        // window, but it is two directory-entry updates rather than the whole transfer.
+        let replacing = dir.open_file(name).is_ok();
+        let target = if replacing {
+            let temp = fat_replace_temp_name(name);
+            // Left by a replace that was interrupted between its last two steps before.
+            let _ = dir.remove(&temp);
+            temp
+        } else {
+            name.to_string()
+        };
+        let written = (|| -> io::Result<()> {
+            let mut f = dir.create_file(&target)?;
+            // `create_file` opens an existing file without truncating it.
+            f.truncate()?;
+            let mut buf = vec![0u8; STREAM_CHUNK];
+            loop {
+                let n = data.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                f.write_all(&buf[..n])?;
+                if !progress(n as u64) {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                }
+            }
+            // fatfs writes the file's size into its directory entry on flush. `Drop` only logs a
+            // failure, which would pass a short file off as a finished copy (#129).
+            f.flush()
+        })();
+        if let Err(e) = written {
+            // Whatever part of the new file exists is ours; the original, if any, was not touched.
+            let _ = dir.remove(&target);
+            return Err(e);
+        }
+        if replacing {
             dir.remove(name)?;
+            dir.rename(&target, &dir, name).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!(
+                        "the new copy is complete on the card as \"{target}\" but could not be \
+                         renamed to \"{name}\": {e}"
+                    ),
+                )
+            })?;
         }
-        let mut f = dir.create_file(name)?;
-        let mut buf = vec![0u8; STREAM_CHUNK];
-        loop {
-            let n = data.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            f.write_all(&buf[..n])?;
-            if !progress(n as u64) {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
-            }
-        }
-        // fatfs writes the file's size into its directory entry on flush. `Drop` only logs a
-        // failure, which would pass a short file off as a finished copy (#129).
-        f.flush()?;
     }
     fs.unmount()
+}
+
+/// The temporary name a FAT32 replacement of `name` is written under before it is renamed into
+/// place: a prefix no ordinary file carries, and short enough for a 255-unit long file name.
+fn fat_replace_temp_name(name: &str) -> String {
+    const PREFIX: &str = "~multi64-replace-";
+    let room = 255 - PREFIX.len();
+    let mut units = 0;
+    let kept: String = name
+        .chars()
+        .take_while(|c| {
+            units += c.len_utf16();
+            units <= room
+        })
+        .collect();
+    format!("{PREFIX}{kept}")
 }
 
 /// Write `len` bytes of `data` to `rel_path`, creating any missing parent directories.
@@ -968,10 +1012,9 @@ fn write_file_fat_streaming_impl<D: Read + Write + Seek>(
 /// directory's end and cannot see a chained root's later clusters — which had to be refused
 /// outright rather than risk writing an entry set into another file's data (#175).
 ///
-/// **Replacing** an existing file still deletes it before the new one is written, so cancelling a
-/// replace loses the original. That is unchanged from when hadris did the writing. Fixing it means
-/// writing the data first and swapping the entry set last, which is a different change from being
-/// able to reach the entry at all, and is tracked separately.
+/// **Replacing** an existing file writes the replacement first and only then swaps it in, so a
+/// cancelled or failed replace leaves the original as it was (#200); see [`exfat_create_file_in`].
+/// A partial write of a *new* file is rolled back here too, so callers have nothing to clean up.
 fn write_file_exfat_streaming(
     vol: &ExfatVolumeSource,
     part_start: u64,
@@ -1040,25 +1083,21 @@ fn write_file_exfat_streaming(
             "a directory exists with this name",
         ));
     }
-    if existing.is_some() {
-        // Deleting frees the old entry set's slots for reuse, so a replace always has room for the
-        // new set: same name, same slot count. It does not change which clusters the directory
-        // occupies, so `parent` stays valid, and the free-slot search re-reads the slots from disk.
-        let mut trace_quiet = |_s: &str| {};
-        let doomed = exfat_resolve_entry_vol(vol, part_start, part_bytes, &info, rel_path)?;
-        exfat_delete_entry_resolved(
-            &fs,
-            rel_path,
-            &doomed,
-            vol,
-            part_start,
-            part_bytes,
-            &mut trace_quiet,
-        )?;
-    }
-
+    // An existing file is not deleted here: the create writes the replacement first and takes the
+    // original's slots only once it is complete, so a failure leaves the original intact (#200).
     exfat_create_file_in(
-        &fs, &info, vol, part_start, part_bytes, &parent, name, len, data, progress,
+        &fs,
+        &info,
+        vol,
+        part_start,
+        part_bytes,
+        &parent,
+        rel_path,
+        name,
+        existing.as_ref(),
+        len,
+        data,
+        progress,
     )?;
     drop(fs);
     vol.flush_serial()?;
@@ -1844,6 +1883,44 @@ fn exfat_finalize_deleted_entry_set(
     Ok(())
 }
 
+/// Release the clusters `entry` occupies — in the bitmap, and in the FAT for a contiguous run —
+/// without touching its entry set. The bitmap change is only in memory until `sync_bitmap`.
+///
+/// Shared by deleting an entry and by replacing a file, which frees the original's clusters only
+/// once the replacement's entry set has taken its slots (#200).
+fn exfat_free_entry_clusters(
+    fs: &ExFatFs<PartitionDiskUnion>,
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+    entry: &ExfatDecodedEntry,
+) -> io::Result<()> {
+    if entry.first_cluster < 2 {
+        return Ok(());
+    }
+    let info = fs.info();
+    let cs = info.bytes_per_cluster as u64;
+    let cluster_count = if entry.no_fat_chain {
+        let stream_len = entry.data_length.max(entry.valid_data_length);
+        ((stream_len + cs - 1) / cs).max(1) as u32
+    } else {
+        0
+    };
+    fs.free_clusters(entry.first_cluster, cluster_count, entry.no_fat_chain)
+        .map_err(exfat_err)?;
+    if entry.no_fat_chain && cluster_count > 0 {
+        exfat_clear_fat_contiguous_range(
+            vol,
+            part_start,
+            part_bytes,
+            info,
+            entry.first_cluster,
+            cluster_count,
+        )?;
+    }
+    Ok(())
+}
+
 /// hadris `ExFatFs::delete` passes [`hadris_fat::exfat::ExFatFileEntry::entry_offset`] to
 /// `write_at`, but entries from directory iteration store **directory-stream-relative** offsets
 /// (`exfat/dir.rs`), while `create_file` sets **volume-absolute** offsets (`fs.rs`). Deletes of
@@ -1886,36 +1963,9 @@ fn exfat_delete_entry_resolved(
         part_bytes,
     )?;
 
-    let info = fs.info();
-    let cs = info.bytes_per_cluster as u64;
-    if entry.first_cluster >= 2 {
-        trace("exFAT: free file/directory clusters…");
-        let cluster_count = if entry.no_fat_chain {
-            let stream_len = entry.data_length.max(entry.valid_data_length);
-            let mut n = ((stream_len + cs - 1) / cs) as u32;
-            if n == 0 {
-                n = 1;
-            }
-            n
-        } else {
-            0
-        };
-        fs.free_clusters(entry.first_cluster, cluster_count, entry.no_fat_chain)
-            .map_err(exfat_err)?;
-        trace("exFAT: free clusters OK");
-        if entry.no_fat_chain && cluster_count > 0 {
-            trace("exFAT: clear FAT for contiguous run…");
-            exfat_clear_fat_contiguous_range(
-                vol,
-                part_start,
-                part_bytes,
-                info,
-                entry.first_cluster,
-                cluster_count,
-            )?;
-            trace("exFAT: contiguous FAT cleared OK");
-        }
-    }
+    trace("exFAT: free file/directory clusters…");
+    exfat_free_entry_clusters(fs, vol, part_start, part_bytes, entry)?;
+    trace("exFAT: free clusters OK");
 
     trace("exFAT: finalize deleted entry set (0x05, zero stream, checksum)…");
     exfat_finalize_deleted_entry_set(vol, part_start, part_bytes, &dir, primary_slot, trace)?;
@@ -2335,6 +2385,15 @@ fn exfat_write_stream_to_clusters(
 ///
 /// Nothing is left behind on any failure. The clusters are released, and the entry set — the only
 /// thing that makes a file reachable — is written last, so a reader never sees a partial file.
+///
+/// **Replacing** (`replacing` is the existing file at `rel_path`) keeps the original intact until
+/// the very end (#200). The new data goes into clusters of its own while the original's entry set
+/// and clusters are untouched, so a cancel, a transfer error or a short source leaves the original
+/// exactly as it was. Only then is the new entry set written **over the original's slots** — the
+/// same name, so the same number of slots, and no need for room for a second set — and the
+/// original's clusters released. The card must hold both copies for that moment; a replace that
+/// does not fit is refused rather than falling back to deleting first, which is the data loss this
+/// ordering exists to prevent.
 #[allow(clippy::too_many_arguments)]
 fn exfat_create_file_in(
     fs: &ExFatFs<PartitionDiskUnion>,
@@ -2343,20 +2402,47 @@ fn exfat_create_file_in(
     part_start: u64,
     part_bytes: u64,
     parent: &ExfatDirSlots,
+    rel_path: &str,
     name: &str,
+    replacing: Option<&ExfatDecodedEntry>,
     len: u64,
     data: &mut impl Read,
     progress: &mut impl FnMut(u64) -> bool,
 ) -> io::Result<()> {
     exfat_validate_rename_name(name)?;
     let cluster_bytes = info.bytes_per_cluster as u64;
-
-    // Reserve the slots before allocating anything, so a directory with no room for the entry set
-    // fails having written nothing and marked nothing in the bitmap.
     let slot_count = exfat_entry_set_len(name);
-    let read_at = exfat_volume_reader(vol, part_start, part_bytes);
-    let first_slot = exfat_find_free_entry_run(parent, slot_count, 0..0, read_at)?;
-    let offsets = parent.offsets(first_slot, slot_count)?;
+
+    // Find where the entry set will go before allocating anything, so a directory with no room
+    // fails having written nothing and marked nothing in the bitmap. A replacement goes exactly
+    // where the original's set is.
+    let offsets = match replacing {
+        None => {
+            let read_at = exfat_volume_reader(vol, part_start, part_bytes);
+            let first_slot = exfat_find_free_entry_run(parent, slot_count, 0..0, read_at)?;
+            parent.offsets(first_slot, slot_count)?
+        }
+        Some(old) => {
+            let (dir, slot) = exfat_locate_entry_set(
+                fs,
+                rel_path,
+                &ExfatEntryIdentity::of_decoded(old),
+                vol,
+                part_start,
+                part_bytes,
+            )?;
+            // Names are matched case-insensitively with a one-to-one up-case table, so a matching
+            // name has the same UTF-16 length and the same slot count. Anything else means the set
+            // on disk is not what the listing described; stop before touching it.
+            if 1 + usize::from(old.primary[1]) != slot_count {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the existing file's entry set does not match its name; not replacing it",
+                ));
+            }
+            dir.offsets(slot, slot_count)?
+        }
+    };
 
     let cluster_count = u32::try_from(len.div_ceil(cluster_bytes))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "exFAT file too large"))?;
@@ -2374,7 +2460,16 @@ fn exfat_create_file_in(
             part_bytes,
             cluster_count,
             &mut clusters,
-        )?;
+        )
+        .map_err(|e| match (e.kind(), replacing) {
+            (io::ErrorKind::StorageFull, Some(_)) => io::Error::new(
+                io::ErrorKind::StorageFull,
+                "not enough free space to replace this file safely: the new copy is written \
+                 before the old one is removed, so the card needs room for both. The original \
+                 is unchanged; delete it first to make room, then copy again.",
+            ),
+            _ => e,
+        })?;
         let written = exfat_write_stream_to_clusters(
             vol, part_start, part_bytes, info, &clusters, len, data, progress,
         )?;
@@ -2399,13 +2494,22 @@ fn exfat_create_file_in(
         exfat_write_entry_slabs_at(vol, part_start, part_bytes, &offsets, &slabs)
     })();
 
-    match result {
-        Ok(()) => fs.sync_bitmap().map_err(exfat_err),
-        Err(e) => {
-            exfat_release_file_clusters(fs, info, vol, part_start, part_bytes, &clusters);
-            Err(e)
-        }
+    if let Err(e) = result {
+        exfat_release_file_clusters(fs, info, vol, part_start, part_bytes, &clusters);
+        return Err(e);
     }
+
+    // From here the new file is the one on the card. The original's clusters are unreferenced; a
+    // failure to release them costs space, not data, and must not roll the new file back.
+    if let Some(old) = replacing {
+        exfat_free_entry_clusters(fs, vol, part_start, part_bytes, old).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("replaced the file, but could not free the old copy's space: {e}"),
+            )
+        })?;
+    }
+    fs.sync_bitmap().map_err(exfat_err)
 }
 
 /// Take `count` clusters for a new file from the **allocation bitmap**, pushing each onto
@@ -4082,6 +4186,93 @@ mod fs_tests {
             .collect()
     }
 
+    fn fat_write(
+        arc: &Image,
+        path: &str,
+        body: &[u8],
+        progress: &mut dyn FnMut(u64) -> bool,
+    ) -> io::Result<()> {
+        write_file_fat_streaming_impl(
+            RamPartitionDisk::new_writable(Arc::clone(arc)),
+            path,
+            &mut Cursor::new(body),
+            &mut |n| progress(n),
+        )
+    }
+
+    fn fat_read(arc: &Image, path: &str) -> Vec<u8> {
+        read_file_fat(RamPartitionDisk::new_readonly(Arc::clone(arc)), path).unwrap()
+    }
+
+    /// #200: cancelling a FAT32 replace leaves the original byte for byte, and leaves no temporary
+    /// copy behind.
+    ///
+    /// Fail-first, demonstrated: restore the delete-before-create order and the original is gone
+    /// — `read_file_fat` panics finding it.
+    #[test]
+    fn fat_cancelled_replace_keeps_the_original() {
+        let arc = fat_image();
+        let original: Vec<u8> = (0..20_000).map(|i| (i % 241) as u8).collect();
+        fat_write(&arc, "game.z64", &original, &mut |_| true).unwrap();
+        let before = fat_root_names(&arc);
+
+        let replacement = vec![0xEEu8; 300_000];
+        let err = fat_write(&arc, "game.z64", &replacement, &mut |_| false)
+            .expect_err("a cancelled replace");
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted, "{err}");
+
+        assert!(
+            fat_read(&arc, "game.z64") == original,
+            "the original changed"
+        );
+        assert_eq!(
+            fat_root_names(&arc),
+            before,
+            "the folder should be exactly as it was"
+        );
+    }
+
+    /// A completed FAT32 replace holds the new contents under the original name, once, with no
+    /// temporary copy left beside it.
+    #[test]
+    fn fat_replace_leaves_only_the_new_file() {
+        let arc = fat_image();
+        fat_write(&arc, "game.z64", &[1u8; 5000], &mut |_| true).unwrap();
+        let before = fat_root_names(&arc);
+
+        let replacement: Vec<u8> = (0..70_000).map(|i| (i % 233) as u8).collect();
+        fat_write(&arc, "game.z64", &replacement, &mut |_| true).expect("replace");
+
+        assert!(fat_read(&arc, "game.z64") == replacement);
+        assert_eq!(
+            fat_root_names(&arc),
+            before,
+            "no temporary file, no duplicate"
+        );
+    }
+
+    /// A cancelled FAT32 write of a new file leaves nothing, since the session no longer removes
+    /// the destination on cancel (#200) — it would be the original on a replace.
+    #[test]
+    fn fat_cancelled_new_file_leaves_nothing() {
+        let arc = fat_image();
+        let before = fat_root_names(&arc);
+        fat_write(&arc, "new.z64", &[3u8; 100_000], &mut |_| false).expect_err("a cancelled write");
+        assert_eq!(fat_root_names(&arc), before);
+    }
+
+    /// The temporary name always fits a long file name, and never collides with the name it stands
+    /// in for.
+    #[test]
+    fn fat_replace_temp_name_fits_and_differs() {
+        use super::fat_replace_temp_name;
+        for name in ["a.z64", &"x".repeat(250), &"é".repeat(255)] {
+            let t = fat_replace_temp_name(name);
+            assert!(t.encode_utf16().count() <= 255, "{t}");
+            assert_ne!(t, name);
+        }
+    }
+
     /// Each flaky case needs a fresh image: a failed unmount leaves the volume marked dirty, and
     /// the next mount then has no dirty flag to clear.
     fn flaky_unmount(arc: &Image) -> FlakyDisk<impl FnMut(u64) -> bool> {
@@ -5035,6 +5226,243 @@ mod fs_tests {
             "{} of {} reads reached the image through the cache",
             t.cache.fetches, t.requests
         );
+    }
+
+    fn exfat_write(
+        vol: &ExfatVolumeSource,
+        part_bytes: u64,
+        path: &str,
+        declared: u64,
+        body: &[u8],
+        progress: &mut dyn FnMut(u64) -> bool,
+    ) -> io::Result<()> {
+        write_file_exfat_streaming(
+            vol,
+            0,
+            part_bytes,
+            path,
+            declared,
+            &mut Cursor::new(body),
+            &mut |n| progress(n),
+        )
+    }
+
+    /// Everything an interrupted replace must leave as it found: the original's bytes, the folder's
+    /// listing, the FAT, and how many clusters are in use.
+    fn assert_replace_left_the_original(
+        arc: &Image,
+        original: &[u8],
+        listing_before: &[(String, u64)],
+        fat_before: &[u8],
+        allocated_before: u32,
+    ) {
+        let back = read_file_exfat(RamPartitionDisk::new_readonly(Arc::clone(arc)), "game.z64")
+            .expect("the original must still be there");
+        assert!(back == original, "the original's contents changed");
+        let listing: Vec<(String, u64)> =
+            list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(arc)), "/")
+                .unwrap()
+                .into_iter()
+                .map(|e| (e.name, e.size))
+                .collect();
+        assert_eq!(listing, listing_before, "the folder changed");
+        assert!(fat_bytes(arc) == fat_before, "the FAT changed");
+        assert_eq!(
+            allocated_cluster_count(arc),
+            allocated_before,
+            "clusters leaked or were freed"
+        );
+    }
+
+    /// An exFAT volume holding `game.z64`, with the state a failed replace must preserve.
+    struct WithOriginal {
+        arc: Image,
+        vol: ExfatVolumeSource,
+        part_bytes: u64,
+        original: Vec<u8>,
+        listing: Vec<(String, u64)>,
+        fat: Vec<u8>,
+        allocated: u32,
+    }
+
+    fn exfat_with_original(len: usize) -> WithOriginal {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        let original: Vec<u8> = (0..len).map(|i| (i % 241) as u8 ^ 0x5A).collect();
+        exfat_write(
+            &vol,
+            part_bytes,
+            "game.z64",
+            len as u64,
+            &original,
+            &mut |_| true,
+        )
+        .unwrap();
+        let listing = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.name, e.size))
+            .collect();
+        let fat = fat_bytes(&arc);
+        let allocated = allocated_cluster_count(&arc);
+        WithOriginal {
+            arc,
+            vol,
+            part_bytes,
+            original,
+            listing,
+            fat,
+            allocated,
+        }
+    }
+
+    /// #200: cancelling a replace leaves the original exactly as it was.
+    ///
+    /// Fail-first, demonstrated: restore the delete-before-create order in
+    /// `write_file_exfat_streaming` and this fails at once — *"the original must still be there"*.
+    #[test]
+    fn exfat_cancelled_replace_keeps_the_original() {
+        let WithOriginal {
+            arc,
+            vol,
+            part_bytes,
+            original,
+            listing,
+            fat,
+            allocated,
+        } = exfat_with_original(3000);
+        let replacement = vec![0xEEu8; 9000];
+
+        let err = exfat_write(
+            &vol,
+            part_bytes,
+            "game.z64",
+            9000,
+            &replacement,
+            &mut |_| false,
+        )
+        .expect_err("a cancelled replace");
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted, "{err}");
+
+        assert_replace_left_the_original(&arc, &original, &listing, &fat, allocated);
+    }
+
+    /// A replacement whose source runs short is refused with the original intact, the same as a
+    /// cancel: the original is only released once the new copy is complete.
+    #[test]
+    fn exfat_replace_from_a_short_source_keeps_the_original() {
+        let WithOriginal {
+            arc,
+            vol,
+            part_bytes,
+            original,
+            listing,
+            fat,
+            allocated,
+        } = exfat_with_original(3000);
+
+        exfat_write(
+            &vol,
+            part_bytes,
+            "game.z64",
+            9000,
+            b"far too short",
+            &mut |_| true,
+        )
+        .expect_err("a short source");
+
+        assert_replace_left_the_original(&arc, &original, &listing, &fat, allocated);
+    }
+
+    /// A completed replace holds the new contents under the name, once, and gives back the
+    /// original's clusters: 3000 bytes was six 512-byte clusters, 1000 bytes is two.
+    #[test]
+    fn exfat_replace_releases_the_originals_clusters() {
+        let WithOriginal {
+            arc,
+            vol,
+            part_bytes,
+            listing,
+            allocated,
+            ..
+        } = exfat_with_original(3000);
+        let replacement: Vec<u8> = (0..1000).map(|i| (i % 229) as u8).collect();
+
+        exfat_write(
+            &vol,
+            part_bytes,
+            "game.z64",
+            1000,
+            &replacement,
+            &mut |_| true,
+        )
+        .expect("replace");
+
+        let back =
+            read_file_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "game.z64").unwrap();
+        assert!(back == replacement);
+        let names: Vec<String> =
+            list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+                .unwrap()
+                .into_iter()
+                .map(|e| e.name)
+                .collect();
+        assert_eq!(
+            names,
+            listing.into_iter().map(|(n, _)| n).collect::<Vec<_>>(),
+            "the same names, no duplicate"
+        );
+        assert_eq!(allocated_cluster_count(&arc), allocated - 6 + 2);
+    }
+
+    /// A replace that fits only if the original's space is freed first is refused, with the
+    /// original intact, rather than falling back to deleting first.
+    ///
+    /// This is the behaviour #200 trades for safety: the old order would have succeeded here.
+    #[test]
+    fn exfat_replace_without_room_for_both_copies_is_refused() {
+        let WithOriginal {
+            arc,
+            vol,
+            part_bytes,
+            original,
+            ..
+        } = exfat_with_original(4 * 512);
+        // Fill the rest of the volume, leaving two free clusters: too few for a four-cluster copy,
+        // though the original's four would make room if they were released first.
+        let free = ExFatFs::open(RamPartitionDisk::new_readonly(Arc::clone(&arc)))
+            .unwrap()
+            .free_cluster_count() as usize;
+        let filler = vec![0x11u8; (free - 2) * 512];
+        exfat_write(
+            &vol,
+            part_bytes,
+            "filler.bin",
+            filler.len() as u64,
+            &filler,
+            &mut |_| true,
+        )
+        .expect("fill the volume");
+        let listing = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.name, e.size))
+            .collect::<Vec<_>>();
+        let (fat, allocated) = (fat_bytes(&arc), allocated_cluster_count(&arc));
+
+        let err = exfat_write(
+            &vol,
+            part_bytes,
+            "game.z64",
+            4 * 512,
+            &[0xEE; 4 * 512],
+            &mut |_| true,
+        )
+        .expect_err("no room for both copies");
+        assert_eq!(err.kind(), io::ErrorKind::StorageFull, "{err}");
+        assert!(err.to_string().contains("room for both"), "{err}");
+
+        assert_replace_left_the_original(&arc, &original, &listing, &fat, allocated);
     }
 
     /// A source that supplies fewer bytes than it declared is refused outright, rather than
