@@ -243,7 +243,7 @@ function isCancelledBackendError(e) {
  * Message to show for a backend-reported cancellation.
  *
  * Cancellation is detected by substring, so the error often carries more than the bare word --
- * an interrupted overwrite reports that the file on the cart is now incomplete. Replacing every
+ * an interrupted overwrite reports what became of the file on the cart. Replacing every
  * such message with a flat "Cancelled." hid exactly the part the user needed to see.
  *
  * Every cancelled operation finishes as "<Operation> cancelled." (e.g. "Export cancelled."); a
@@ -355,6 +355,42 @@ function clearOperationHideTimer() {
   }
 }
 
+/**
+ * Set the operation strip's text, and the same text as its tooltip.
+ *
+ * The strip is one line that truncates with an ellipsis, and a file name alone can fill it. The
+ * tooltip is the only way to read the rest — for a finished operation, often the part that says
+ * what happened to the file.
+ * @param {HTMLElement} el
+ * @param {string} message
+ */
+function setOperationText(el, message) {
+  el.textContent = message;
+  el.title = message;
+}
+
+/**
+ * Keep a finished operation's strip on screen while the pointer is over it, so its tooltip can be
+ * read: the strip otherwise hides after `OP_HIDE_MS`, about as soon as a tooltip appears.
+ * Leaving restarts the full delay. Wired once per pane.
+ * @param {"cart" | "pc"} pane
+ */
+function holdOperationStripWhileHovered(pane) {
+  const root = document.getElementById(`explorer-operation-${pane}`);
+  if (!root || root.dataset.hoverHold === "1") return;
+  root.dataset.hoverHold = "1";
+  root.addEventListener("mouseenter", () => {
+    if (operationHideTimer == null) return;
+    clearOperationHideTimer();
+    root.dataset.hideHeld = "1";
+  });
+  root.addEventListener("mouseleave", () => {
+    if (root.dataset.hideHeld !== "1") return;
+    delete root.dataset.hideHeld;
+    scheduleOperationHide(pane);
+  });
+}
+
 /** @param {"cart" | "pc"} pane */
 function hideOtherOperationPane(pane) {
   const other = pane === "cart" ? "pc" : "cart";
@@ -384,7 +420,8 @@ function showOperationProgress(message, pane, determinate = false) {
   root.hidden = false;
   root.setAttribute("aria-hidden", "false");
   root.classList.remove("explorer-operation--done", "explorer-operation--error");
-  text.textContent = message;
+  delete root.dataset.hideHeld;
+  setOperationText(text, message);
   if (determinate) {
     fill.classList.remove("indeterminate");
     fill.style.width = "0%";
@@ -665,7 +702,7 @@ async function runWithProgress(pane, message, fn) {
         const msg = payload.message;
         if (typeof msg === "string" && msg.length) {
           const textEl = document.getElementById(`explorer-operation-text-${pane}`);
-          if (textEl) textEl.textContent = msg;
+          if (textEl) setOperationText(textEl, msg);
         }
         // Do NOT reload here. These events arrive while the backend still holds the cart's
         // SD session, so a reload would try to open the same exclusive COM port and fail,
@@ -701,9 +738,28 @@ function finishOperationProgress(message, isError = false, pane) {
   root.classList.toggle("explorer-operation--done", !isError);
   root.classList.toggle("explorer-operation--error", !!isError);
   root.classList.remove("explorer-operation--cancelled");
-  text.textContent = message;
+  setOperationText(text, message);
   fill.classList.remove("indeterminate");
   fill.style.width = "100%";
+  holdOperationStripWhileHovered(pane);
+  delete root.dataset.hideHeld;
+  if (root.matches(":hover")) {
+    // Already under the pointer: hold now, rather than hide under a cursor that has not moved.
+    root.dataset.hideHeld = "1";
+  } else {
+    scheduleOperationHide(pane);
+  }
+}
+
+/**
+ * Hide a finished operation's strip after `OP_HIDE_MS`.
+ * @param {"cart" | "pc"} pane
+ */
+function scheduleOperationHide(pane) {
+  clearOperationHideTimer();
+  const root = document.getElementById(`explorer-operation-${pane}`);
+  const fill = document.getElementById(`explorer-operation-fill-${pane}`);
+  if (!root || !fill) return;
   operationHideTimer = setTimeout(() => {
     root.hidden = true;
     root.setAttribute("aria-hidden", "true");
@@ -3934,7 +3990,7 @@ async function deleteSelectedPc() {
         finishOperationCancelled("Delete cancelled.", "pc");
         return;
       }
-      if (textOp) textOp.textContent = deletingMessage(i);
+      if (textOp) setOperationText(textOp, deletingMessage(i));
       await invoke("fs_remove", { path: paths[i] });
       const done = i + 1;
       if (fill) {

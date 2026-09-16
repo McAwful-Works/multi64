@@ -514,21 +514,61 @@ fn cleanup_partial_import(
     err: String,
 ) -> String {
     let keeps_original = !matches!(session, CartSession::Ed64Pro(_));
-    if existed_before {
-        return if keeps_original {
-            format!("{err} — \"{cart_dest_path}\" on the cart was not changed.")
+    let outcome = if existed_before {
+        if keeps_original {
+            PartialImport::OriginalKept
         } else {
-            format!(
-                "{err} — \"{cart_dest_path}\" on the cart was being overwritten and is now incomplete; copy it again to restore it."
-            )
-        };
-    }
-    match session.remove_cart_path(cart_dest_path) {
-        Ok(()) => err,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => err,
-        Err(e) => format!(
-            "{err} — could not remove the incomplete \"{cart_dest_path}\" from the cart ({e}); delete it manually before using it."
-        ),
+            PartialImport::OriginalIncomplete
+        }
+    } else {
+        match session.remove_cart_path(cart_dest_path) {
+            Ok(()) => PartialImport::NothingLeft,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => PartialImport::NothingLeft,
+            Err(e) => PartialImport::IncompleteLeft(e.to_string()),
+        }
+    };
+    partial_import_message(&err, cart_dest_path, outcome)
+}
+
+/// What an import that stopped part-way left on the cart.
+#[derive(Debug)]
+enum PartialImport {
+    /// A new file, and nothing of it remains.
+    NothingLeft,
+    /// An overwrite that stopped before the original was touched.
+    OriginalKept,
+    /// An overwrite that had already truncated the original (EverDrive-64 PRO).
+    OriginalIncomplete,
+    /// A new file whose partial copy could not be removed, with the reason.
+    IncompleteLeft(String),
+}
+
+/// The status line for an import that stopped part-way: **what the card now holds first**, then
+/// the file.
+///
+/// The operation strip is a single line that truncates, and a file name is usually long enough to
+/// fill it. Put after the name, the part the user actually needs — whether the original survived —
+/// was always the part cut off. Leading with it means truncation only ever shortens the name.
+///
+/// A cancel keeps the backend's `Cancelled` lead, which the frontend rewrites to
+/// "Import cancelled"; any other failure leads with the outcome, followed by the error.
+fn partial_import_message(err: &str, cart_dest_path: &str, outcome: PartialImport) -> String {
+    let outcome = match outcome {
+        PartialImport::NothingLeft => return err.to_string(),
+        PartialImport::OriginalKept => "original kept".to_string(),
+        PartialImport::OriginalIncomplete => "original now incomplete, copy it again".to_string(),
+        PartialImport::IncompleteLeft(e) => {
+            format!("incomplete copy left, delete it before using it ({e})")
+        }
+    };
+    if err == "Cancelled" {
+        format!("Cancelled — {outcome}: \"{cart_dest_path}\"")
+    } else {
+        let mut lead = outcome;
+        if let Some(first) = lead.get(..1) {
+            lead.replace_range(..1, &first.to_uppercase());
+        }
+        format!("{lead} on the cart — {err}")
     }
 }
 
@@ -1317,6 +1357,71 @@ pub async fn cart_serial_import_copy_batch(
     // close failed. Keeping the cache would leave the pane showing a stale listing.
     st.invalidate_cart_list_cache();
     res
+}
+
+#[cfg(test)]
+mod partial_import_message_tests {
+    use super::{partial_import_message, PartialImport};
+
+    const NAME: &str = "007 - The World Is Not Enough (USA).z64";
+
+    /// What a user sees in the one-line strip: the strip shows roughly this many characters of
+    /// "Import cancelled — …" before it truncates, at the window size the report came from.
+    const VISIBLE: usize = 34;
+
+    #[test]
+    fn a_cancelled_overwrite_says_the_original_was_kept_before_the_name() {
+        let m = partial_import_message("Cancelled", NAME, PartialImport::OriginalKept);
+        assert_eq!(m, format!("Cancelled — original kept: \"{NAME}\""));
+        let shown = format!("Import cancelled{}", &m["Cancelled".len()..]);
+        assert!(
+            shown
+                .chars()
+                .take(VISIBLE)
+                .collect::<String>()
+                .contains("original kept"),
+            "the outcome must survive truncation: {shown}"
+        );
+    }
+
+    #[test]
+    fn an_overwrite_that_lost_the_original_says_so_first() {
+        let m = partial_import_message("Cancelled", NAME, PartialImport::OriginalIncomplete);
+        assert!(
+            m.starts_with("Cancelled — original now incomplete, copy it again: "),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn a_failure_leads_with_the_outcome_then_the_error() {
+        let err = "D:\\ROMs\\game.z64: timed out";
+        let m = partial_import_message(err, NAME, PartialImport::OriginalKept);
+        assert_eq!(m, format!("Original kept on the cart — {err}"));
+    }
+
+    #[test]
+    fn a_leftover_partial_copy_is_reported_with_its_reason() {
+        let m = partial_import_message(
+            "Cancelled",
+            NAME,
+            PartialImport::IncompleteLeft("device busy".into()),
+        );
+        assert!(
+            m.starts_with(
+                "Cancelled — incomplete copy left, delete it before using it (device busy): "
+            ),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn a_new_file_that_left_nothing_is_reported_as_the_error_alone() {
+        assert_eq!(
+            partial_import_message("Cancelled", NAME, PartialImport::NothingLeft),
+            "Cancelled"
+        );
+    }
 }
 
 #[cfg(test)]

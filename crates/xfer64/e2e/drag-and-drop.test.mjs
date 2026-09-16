@@ -148,6 +148,11 @@ function installTauriStub(scenario = {}) {
     build_cart_export_plan: (a) => (a.cartPaths || []).map((p) =>
       step({ mode: "export", cartPath: p, destPc: `${a.toPcParent}\\${p.split("/").pop()}` })),
     drag_staging_begin: () => "C:\\Temp\\xfer64-drag\\42-1\\d0",
+    // `__TAURI_IMPORT_FAILS__` makes an import reject with that message, as the backend does.
+    cart_serial_import_copy_batch: () => {
+      if (window.__TAURI_IMPORT_FAILS__) throw new Error(window.__TAURI_IMPORT_FAILS__);
+      return null;
+    },
   };
 
   window.__TAURI__ = {
@@ -1099,6 +1104,44 @@ const clearedSavedFolder = (calls) =>
   const order = { main: probedFirst(mainCalls), picker: probedFirst(calls) };
   check("each window probes multi64d at its own address before resolving the cart's port",
     order.main.ok && order.picker.ok, JSON.stringify(order));
+}
+
+// --- the operation strip's text ------------------------------------------
+// The strip is one truncating line, so a finished operation's full message is only reachable as a
+// tooltip, and only if the strip stays up long enough to hover it (#200's follow-up).
+{
+  const p = await browser.newPage({ viewport: { width: 1100, height: 700 } });
+  await p.addInitScript(installTauriStub);
+  await p.goto(`${origin}/index.html`);
+  await p.waitForSelector(PC_FILE, { timeout: 15000 });
+  const backend = 'Cancelled — original kept: "007 - The World Is Not Enough (USA).z64"';
+  await p.evaluate((m) => { window.__TAURI_IMPORT_FAILS__ = m; }, backend);
+  await p.click(PC_FILE);
+  await p.click("#btn-copy-to-cart");
+  const strip = "#explorer-operation-pc";
+  // Mirrors `OP_HIDE_MS` in explorer.js: how long a finished strip normally stays up.
+  const OP_HIDE_MS = 4000;
+  const waitOn = (fn, timeout) => p.waitForFunction(fn, strip, { timeout }).then(() => true, () => false);
+  const finished = await waitOn((s) => document.querySelector(s)?.classList.contains("explorer-operation--cancelled"), 8000);
+  const read = () => p.evaluate(() => {
+    const t = document.getElementById("explorer-operation-text-pc");
+    return { text: t?.textContent || "", title: t?.title || "", hidden: document.getElementById("explorer-operation-pc")?.hidden };
+  });
+  const shown = await read();
+  check("a cancelled overwrite's strip leads with what became of the original",
+    finished && shown.text.startsWith("Import cancelled — original kept: "), JSON.stringify(shown));
+  check("the strip's full message is its tooltip",
+    finished && shown.title === shown.text && shown.title.length > 0, JSON.stringify(shown));
+
+  // Hovered, it outlasts the usual hide delay; left, it goes.
+  await p.hover(strip);
+  await p.waitForTimeout(OP_HIDE_MS + 1000);
+  const whileHovered = await read();
+  await p.mouse.move(5, 5);
+  const hidAfterLeaving = await waitOn((s) => document.querySelector(s)?.hidden === true, OP_HIDE_MS + 2000);
+  check("a finished strip stays up while hovered and hides once the pointer leaves",
+    whileHovered.hidden === false && hidAfterLeaving, JSON.stringify({ whileHovered, hidAfterLeaving }));
+  await p.close();
 }
 
 // --- report --------------------------------------------------------------
