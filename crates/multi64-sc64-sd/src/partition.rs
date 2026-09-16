@@ -20,8 +20,7 @@ use fatfs::{FileAttributes as FatFileAttributes, FileSystem, FsOptions};
 use hadris_common::types::endian::{Endian, LittleEndian};
 use hadris_common::types::number::{U16, U32, U64};
 use hadris_fat::exfat::{
-    ExFatFileEntry, ExFatFs, ExFatTimestamp, RawFileDirectoryEntry, RawFileNameEntry,
-    RawStreamExtensionEntry,
+    ExFatFs, ExFatTimestamp, RawFileDirectoryEntry, RawFileNameEntry, RawStreamExtensionEntry,
 };
 use std::io;
 use std::io::prelude::*;
@@ -40,6 +39,7 @@ const STREAM_CHUNK: usize = 256 * 1024;
 /// Type-byte bit 7. Clear means the slot is unused: `0x00` (end of directory), or a deleted
 /// entry such as `0x05`, `0x40`, `0x41`.
 const EXFAT_ATTR_DIRECTORY: u16 = 0x10;
+const EXFAT_ATTR_ARCHIVE: u16 = 0x20;
 const EXFAT_ENTRY_IN_USE: u8 = 0x80;
 const EXFAT_ENTRY_FILE_DIRECTORY: u8 = 0x85;
 const EXFAT_ENTRY_STREAM_EXT: u8 = 0xC0;
@@ -374,7 +374,7 @@ impl Sc64SdSession {
             }
             let r = std::fs::File::open(src)?;
             let mut reader = BufReader::with_capacity(STREAM_CHUNK * 2, r);
-            self.write_cart_file_streaming(&cart_root, &mut reader, &mut progress)?;
+            self.write_cart_file_streaming(&cart_root, meta.len(), &mut reader, &mut progress)?;
             return Ok(());
         }
         if meta.is_dir() {
@@ -506,9 +506,13 @@ impl Sc64SdSession {
         }
     }
 
+    /// `len` is the source's length, which the caller has from `std::fs::metadata`. exFAT needs it
+    /// up front to allocate the file's clusters in one go; FAT32 grows its chain as it writes and
+    /// ignores it.
     fn write_cart_file_streaming(
         &self,
         rel_path: &str,
+        len: u64,
         data: &mut impl Read,
         progress: &mut impl FnMut(u64) -> bool,
     ) -> io::Result<()> {
@@ -520,6 +524,7 @@ impl Sc64SdSession {
                 self.partition_start_sector,
                 self.partition_bytes,
                 rel_path,
+                len,
                 data,
                 progress,
             )
@@ -955,22 +960,37 @@ fn write_file_fat_streaming_impl<D: Read + Write + Seek>(
     fs.unmount()
 }
 
+/// Write `len` bytes of `data` to `rel_path`, creating any missing parent directories.
+///
+/// Every step resolves through this crate's own reader and places its entry sets through
+/// [`ExfatDirSlots`], so an import works in a root that spans several clusters (#190). This used to
+/// navigate with `fs.root_dir()` and create through hadris, whose free-slot scan runs past a
+/// directory's end and cannot see a chained root's later clusters — which had to be refused
+/// outright rather than risk writing an entry set into another file's data (#175).
+///
+/// **Replacing** an existing file still deletes it before the new one is written, so cancelling a
+/// replace loses the original. That is unchanged from when hadris did the writing. Fixing it means
+/// writing the data first and swapping the entry set last, which is a different change from being
+/// able to reach the entry at all, and is tracked separately.
 fn write_file_exfat_streaming(
     vol: &ExfatVolumeSource,
     part_start: u64,
     part_bytes: u64,
     rel_path: &str,
+    len: u64,
     data: &mut impl Read,
     progress: &mut impl FnMut(u64) -> bool,
 ) -> io::Result<()> {
     let disk = vol.partition_disk_rw(part_start, part_bytes);
     let fs = ExFatFs::open(disk).map_err(exfat_err)?;
+    let info = fs.info().clone();
     let parts: Vec<&str> = rel_path.split('/').filter(|s| !s.is_empty()).collect();
     if parts.is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty path"));
     }
     let (name, parents) = parts.split_last().unwrap();
-    let mut dir = fs.root_dir();
+
+    let mut made_a_directory = false;
     let mut path_prefix = String::new();
     for p in parents {
         let next_path = if path_prefix.is_empty() {
@@ -978,32 +998,54 @@ fn write_file_exfat_streaming(
         } else {
             format!("{path_prefix}/{p}")
         };
-        dir = match dir.open_dir(p) {
-            Ok(d) => {
-                path_prefix = next_path;
-                d
+        let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
+        let parent = exfat_resolve_dir_slots(&mut read_at, &info, &path_prefix)?;
+        let existing = exfat_list_entries(&parent, &mut read_at)?
+            .into_iter()
+            .find(|e| fat_names_equal(&e.name, p));
+        match existing {
+            Some(e) if e.is_dir() => {}
+            Some(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "a file already exists with that name",
+                ))
             }
-            Err(_) => {
-                exfat_refuse_unsafe_create(&fs, &path_prefix, p, vol, part_start, part_bytes)?;
-                let new_dir = fs.create_dir(&dir, p).map_err(exfat_err)?;
-                exfat_zero_fat_for_nofatchain_entry(&fs, vol, part_start, part_bytes, &next_path)?;
-                path_prefix = next_path;
-                new_dir
+            None => {
+                exfat_create_dir_in(&fs, &info, vol, part_start, part_bytes, &parent, p)?;
+                made_a_directory = true;
             }
-        };
+        }
+        path_prefix = next_path;
     }
-    let existing = dir.find(name).map_err(exfat_err)?;
-    if existing.as_ref().is_some_and(|old| old.is_directory()) {
+
+    // A directory's entry set is written straight to the volume, but the cluster behind it is only
+    // marked in hadris's in-memory bitmap. Persist that here rather than relying on the file create
+    // below to do it: that can fail — an invalid leaf name, a full directory — and then the
+    // directory exists on the card with its cluster still marked free, ready to be handed out
+    // twice. Only when something was actually created, since flushing the bitmap is a whole-bitmap
+    // write and the dominant cost of an operation (#196).
+    if made_a_directory {
+        fs.sync_bitmap().map_err(exfat_err)?;
+    }
+
+    let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
+    let parent = exfat_resolve_dir_slots(&mut read_at, &info, &path_prefix)?;
+    let existing = exfat_list_entries(&parent, &mut read_at)?
+        .into_iter()
+        .find(|e| fat_names_equal(&e.name, name));
+    if existing.as_ref().is_some_and(|e| e.is_dir()) {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "a directory exists with this name",
         ));
     }
-    // Before the delete: replacing a file must not lose it when the new entry set can't go in.
-    exfat_refuse_unsafe_create(&fs, &path_prefix, name, vol, part_start, part_bytes)?;
     if existing.is_some() {
+        // Deleting frees the old entry set's slots for reuse, so a replace always has room for the
+        // new set: same name, same slot count. It does not change which clusters the directory
+        // occupies, so `parent` stays valid, and the free-slot search re-reads the slots from disk.
         let mut trace_quiet = |_s: &str| {};
-        let doomed = exfat_resolve_entry_vol(vol, part_start, part_bytes, fs.info(), rel_path)?;
+        let doomed = exfat_resolve_entry_vol(vol, part_start, part_bytes, &info, rel_path)?;
         exfat_delete_entry_resolved(
             &fs,
             rel_path,
@@ -1014,53 +1056,11 @@ fn write_file_exfat_streaming(
             &mut trace_quiet,
         )?;
     }
-    let entry = fs.create_file(&dir, name).map_err(exfat_err)?;
-    let mut w = fs.write_file(&entry).map_err(exfat_err)?;
-    let mut buf = vec![0u8; STREAM_CHUNK];
-    loop {
-        let n = data.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        w.write_all(&buf[..n]).map_err(exfat_err)?;
-        if !progress(n as u64) {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
-        }
-    }
-    w.finish().map_err(exfat_err)?;
-    let entry_after = fs.open_path(rel_path).map_err(exfat_err)?;
-    exfat_sync_stream_data_length_to_valid(
-        &fs,
-        rel_path,
-        &entry_after,
-        vol,
-        part_start,
-        part_bytes,
+
+    exfat_create_file_in(
+        &fs, &info, vol, part_start, part_bytes, &parent, name, len, data, progress,
     )?;
-    let info = fs.info().clone();
-    let entry_final = fs.open_path(rel_path).map_err(exfat_err)?;
-    let (need_fat_zero, first_c, count_c) = if entry_final.no_fat_chain
-        && entry_final.first_cluster >= 2
-        && !entry_final.is_directory()
-    {
-        let cs = info.bytes_per_cluster as u64;
-        let stream_len = entry_final.data_length.max(entry_final.valid_data_length);
-        let mut n = ((stream_len + cs - 1) / cs) as u32;
-        if n == 0 {
-            n = 1;
-        }
-        (true, entry_final.first_cluster, n)
-    } else {
-        (false, 0, 0)
-    };
     drop(fs);
-    if need_fat_zero
-        && exfat_should_zero_fat_for_nofatchain_range(
-            vol, part_start, part_bytes, &info, first_c, count_c,
-        )?
-    {
-        exfat_clear_fat_contiguous_range(vol, part_start, part_bytes, &info, first_c, count_c)?;
-    }
     vol.flush_serial()?;
     Ok(())
 }
@@ -1249,7 +1249,7 @@ fn import_dir_from_pc_with_progress(
             }
             let r = std::fs::File::open(&path)?;
             let mut reader = BufReader::with_capacity(STREAM_CHUNK * 2, r);
-            session.write_cart_file_streaming(&cart_sub, &mut reader, progress)?;
+            session.write_cart_file_streaming(&cart_sub, meta.len(), &mut reader, progress)?;
         }
     }
     Ok(())
@@ -1309,16 +1309,6 @@ struct ExfatEntryIdentity<'a> {
 }
 
 impl<'a> ExfatEntryIdentity<'a> {
-    fn of(entry: &'a ExFatFileEntry) -> Self {
-        Self {
-            name: &entry.name,
-            is_directory: entry.is_directory(),
-            first_cluster: entry.first_cluster,
-            valid_data_length: entry.valid_data_length,
-            data_length: entry.data_length,
-        }
-    }
-
     /// The same identity from an entry this crate decoded itself, for paths that resolve without
     /// hadris — which is the only way to reach an entry past a chained root's first cluster (#190).
     fn of_decoded(entry: &'a ExfatDecodedEntry) -> Self {
@@ -1548,7 +1538,8 @@ fn exfat_parent_path_and_name(path: &str) -> (&str, &str) {
 ///
 /// The root directory has no stream entry of its own and always follows the FAT. Treating it as
 /// contiguous with size 0, as hadris does, let a scan run on into whatever clusters follow it (#128).
-/// hadris's own creates have the same flaw; [`exfat_refuse_unsafe_create`] guards them (#175).
+/// hadris's own creates had the same flaw and were guarded against rather than used; since #190
+/// nothing in this crate reaches them (#175).
 ///
 /// Every segment resolves through this crate's own reader. Going through `fs.open_path` for a
 /// nested parent used hadris's lookup, which cannot see an entry past the root's first cluster, so
@@ -1659,7 +1650,13 @@ impl ExfatDirSlots {
             .collect()
     }
 
-    /// The slot starting at volume byte offset `abs`, if it is one of this directory's slots.
+    /// The slot starting at volume byte offset `abs`, if it is one of this directory's slots — the
+    /// inverse of [`Self::offset`].
+    ///
+    /// Test-only since #190 removed the guard that was its one production caller. It is what lets a
+    /// test back a directory with a flat slot array while still exercising the real chain
+    /// arithmetic, rather than assuming slots are 32 bytes apart.
+    #[cfg(test)]
     fn slot_at(&self, abs: u64) -> Option<u64> {
         let cluster_bytes = self.slots_per_cluster * Self::SLOT_BYTES;
         let i = self.cluster_offsets.iter().position(|&base| {
@@ -1673,80 +1670,6 @@ impl ExfatDirSlots {
 /// 15 UTF-16 code units.
 fn exfat_entry_set_len(name: &str) -> usize {
     2 + (name.encode_utf16().count() + 14) / 15
-}
-
-/// Refuses an exFAT `create_file` or `create_dir` in `parent_path` that hadris would write to the
-/// wrong place, before anything is written (#175).
-///
-/// hadris (at the pinned rev) reads the root as if its clusters were contiguous on disk, takes the
-/// first run of slots of type `0x00` or `0x05`, and writes the entry set 32 bytes at a time from
-/// the start of that run. A run it completes past the end of the directory lands in whatever
-/// follows on disk, such as a ROM, and a run crossing into a cluster that is not physically next
-/// lands there too. A root already longer than one cluster is refused outright: hadris does not
-/// list its later clusters, so it could not see a name there and would add a second entry with it.
-fn exfat_refuse_unsafe_create(
-    fs: &ExFatFs<PartitionDiskUnion>,
-    parent_path: &str,
-    name: &str,
-    vol: &ExfatVolumeSource,
-    part_start: u64,
-    part_bytes: u64,
-) -> io::Result<()> {
-    let dir = exfat_parent_dir_slots(fs, parent_path, vol, part_start, part_bytes)?;
-    if parent_path.is_empty() && dir.cluster_offsets.len() > 1 {
-        return Err(io::Error::other(
-            "the card's root folder has grown past one exFAT cluster, and adding to it could \
-             overwrite other files; add this to a subfolder instead",
-        ));
-    }
-    let cluster_bytes = dir.slots_per_cluster * ExfatDirSlots::SLOT_BYTES;
-    let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
-    let read_cluster = |base: u64| -> io::Result<Vec<u8>> {
-        let mut buf = vec![0u8; cluster_bytes as usize];
-        read_at(base, &mut buf)?;
-        Ok(buf)
-    };
-    if hadris_create_slots_are_in_dir(&dir, exfat_entry_set_len(name), read_cluster)? {
-        Ok(())
-    } else {
-        Err(io::Error::other(
-            "this exFAT folder has no room for the name without overwriting other files on the \
-             card; try another folder",
-        ))
-    }
-}
-
-/// Whether the `count` slots hadris's `create_file`/`create_dir` would write in `dir` are all
-/// `dir`'s own, in order. `false` when hadris would find no run inside `dir`, since it then either
-/// fails or goes on reading past the directory's end.
-fn hadris_create_slots_are_in_dir(
-    dir: &ExfatDirSlots,
-    count: usize,
-    mut read_cluster: impl FnMut(u64) -> io::Result<Vec<u8>>,
-) -> io::Result<bool> {
-    let slot_bytes = ExfatDirSlots::SLOT_BYTES;
-    let mut run_start = 0u64;
-    let mut run_len = 0usize;
-    for (i, &base) in dir.cluster_offsets.iter().enumerate() {
-        let cluster = read_cluster(base)?;
-        for (j, slot) in cluster.chunks_exact(slot_bytes as usize).enumerate() {
-            // hadris's test for a free slot, not the exFAT one: a freed `0x40` or `0x41` stays taken.
-            if slot[0] != 0x00 && slot[0] != 0x05 {
-                run_len = 0;
-                continue;
-            }
-            if run_len == 0 {
-                run_start = i as u64 * dir.slots_per_cluster + j as u64;
-            }
-            run_len += 1;
-            if run_len == count {
-                let first = dir.offset(run_start)?;
-                return Ok((0..count as u64)
-                    .all(|k| dir.slot_at(first + k * slot_bytes) == Some(run_start + k)));
-            }
-        }
-    }
-    Ok(false)
 }
 
 fn exfat_read_fat_entry_inner(
@@ -1795,40 +1718,6 @@ fn exfat_should_zero_fat_for_nofatchain_range(
     Ok(true)
 }
 
-/// Zero FAT entries for a NoFatChain stream after hadris left EOC in the FAT (see
-/// [`exfat_should_zero_fat_for_nofatchain_range`]). Skips if the FAT already looks like a real
-/// fragment chain so we do not corrupt a file that fell back to FAT-linked clusters.
-fn exfat_zero_fat_for_nofatchain_entry(
-    fs: &ExFatFs<PartitionDiskUnion>,
-    vol: &ExfatVolumeSource,
-    part_start: u64,
-    part_bytes: u64,
-    path: &str,
-) -> io::Result<()> {
-    let info = fs.info().clone();
-    let e = exfat_resolve_entry_vol(vol, part_start, part_bytes, &info, path)?;
-    if !e.no_fat_chain || e.first_cluster < 2 {
-        return Ok(());
-    }
-    let cs = info.bytes_per_cluster as u64;
-    let stream_len = e.data_length.max(e.valid_data_length);
-    let mut n = ((stream_len + cs - 1) / cs) as u32;
-    if n == 0 {
-        n = 1;
-    }
-    if !exfat_should_zero_fat_for_nofatchain_range(
-        vol,
-        part_start,
-        part_bytes,
-        &info,
-        e.first_cluster,
-        n,
-    )? {
-        return Ok(());
-    }
-    exfat_clear_fat_contiguous_range(vol, part_start, part_bytes, &info, e.first_cluster, n)
-}
-
 /// hadris `ExFatFs::free_clusters` with contiguous allocation clears the allocation bitmap only;
 /// it does not write FAT (see `hadris-fat` `exfat/fs.rs`). Contiguous allocation in hadris also
 /// bitmap-only, so FAT entries can still show allocated/EOC while the bitmap says free — chkdsk
@@ -1843,12 +1732,33 @@ fn exfat_clear_fat_contiguous_range(
     cluster_count: u32,
 ) -> io::Result<()> {
     const FREE: u32 = 0;
+    let entries = (0..cluster_count)
+        .map(|i| {
+            first_cluster
+                .checked_add(i)
+                .map(|c| (c, FREE))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "exFAT FAT cluster overflow")
+                })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    exfat_write_fat_entries(vol, part_start, part_bytes, info, &entries)
+}
+
+/// Write each `(cluster, value)` into every copy of the FAT, through one disk handle.
+///
+/// The one place that knows where a FAT entry lives, shared by clearing a NoFatChain run and by
+/// linking a chain, so the two cannot disagree about it.
+fn exfat_write_fat_entries(
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+    info: &hadris_fat::exfat::ExFatInfo,
+    entries: &[(u32, u32)],
+) -> io::Result<()> {
     const ENTRY_BYTES: u64 = 4;
     let mut disk = vol.partition_disk_rw(part_start, part_bytes);
-    for i in 0..cluster_count {
-        let cluster = first_cluster.checked_add(i).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "exFAT FAT cluster overflow")
-        })?;
+    for &(cluster, value) in entries {
         if !info.is_valid_cluster(cluster) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1866,7 +1776,7 @@ fn exfat_clear_fat_contiguous_range(
                 ));
             }
             disk.seek(SeekFrom::Start(off))?;
-            disk.write_all(&FREE.to_le_bytes())?;
+            disk.write_all(&value.to_le_bytes())?;
         }
     }
     disk.flush()?;
@@ -1885,49 +1795,6 @@ fn exfat_compute_entry_set_checksum(entries: &[[u8; 32]]) -> u16 {
         }
     }
     checksum
-}
-
-/// hadris [`hadris_fat::exfat::ExFatFileWriter::finish`] calls [`hadris_fat::exfat::ExFatFs::update_entry_size`]
-/// with **`data_length` = cluster-allocated size** and **`valid_data_length` = EOF**. Many hosts (Windows
-/// Explorer) display stream **`DataLength`** as the file size, so the on-card file looks larger than
-/// the source. For normal files, both lengths must match the logical size.
-fn exfat_sync_stream_data_length_to_valid(
-    fs: &ExFatFs<PartitionDiskUnion>,
-    path: &str,
-    entry: &hadris_fat::exfat::ExFatFileEntry,
-    vol: &ExfatVolumeSource,
-    part_start: u64,
-    part_bytes: u64,
-) -> io::Result<()> {
-    const STREAM_EXT: u8 = 0xC0;
-
-    let (dir, primary_slot) = exfat_locate_entry_set(
-        fs,
-        path,
-        &ExfatEntryIdentity::of(entry),
-        vol,
-        part_start,
-        part_bytes,
-    )?;
-    let read_at = exfat_volume_reader(vol, part_start, part_bytes);
-    let Some(mut entries) = exfat_read_entry_set(&dir, primary_slot, read_at)? else {
-        return Ok(());
-    };
-    let offsets = dir.offsets(primary_slot, entries.len())?;
-    if entries[1][0] != STREAM_EXT {
-        return Ok(());
-    }
-    let valid = u64::from_le_bytes(entries[1][8..16].try_into().unwrap());
-    let data = u64::from_le_bytes(entries[1][24..32].try_into().unwrap());
-    if data == valid {
-        return Ok(());
-    }
-    let valid_bytes: [u8; 8] = entries[1][8..16].try_into().unwrap();
-    entries[1][24..32].copy_from_slice(&valid_bytes);
-    let checksum = exfat_compute_entry_set_checksum(&entries);
-    entries[0][2] = (checksum & 0xff) as u8;
-    entries[0][3] = (checksum >> 8) as u8;
-    exfat_write_entry_slabs_at(vol, part_start, part_bytes, &offsets, &entries)
 }
 
 const EXFAT_STREAM_EXT: u8 = 0xC0;
@@ -2261,15 +2128,20 @@ fn rename_cart_exfat(
 /// UTF-16 units, with the set checksum filled in.
 ///
 /// The field values follow what Windows' own driver writes, read off a card: attributes as given,
-/// general secondary flags `0x03` (AllocationPossible | NoFatChain), and **ValidDataLength equal to
-/// DataLength**. hadris's builder instead leaves ValidDataLength `0` for a directory, which is why
-/// every directory created through it carries a value Windows would not have written.
+/// and **ValidDataLength equal to DataLength**. hadris's builder instead leaves ValidDataLength `0`
+/// for a directory, which is why every directory created through it carries a value Windows would
+/// not have written (#194 — measured harmless, but there is no reason to keep writing it).
+///
+/// `contiguous` sets the NoFatChain flag. A directory is always one cluster here, so its caller
+/// passes `true`; a file passes whatever its allocation turned out to be, since a fragmented one is
+/// described by the FAT instead and must not claim otherwise.
 fn exfat_build_new_entry_set_bytes(
     fs: &ExFatFs<PartitionDiskUnion>,
     name: &str,
     attributes: u16,
     first_cluster: u32,
     data_length: u64,
+    contiguous: bool,
 ) -> io::Result<Vec<[u8; 32]>> {
     exfat_validate_rename_name(name)?;
     let name_utf16: Vec<u16> = name.encode_utf16().collect();
@@ -2295,7 +2167,11 @@ fn exfat_build_new_entry_set_bytes(
     };
     let stream_entry = RawStreamExtensionEntry {
         entry_type: EXFAT_ENTRY_STREAM_EXT,
-        general_secondary_flags: 0x03,
+        // Bit 0 AllocationPossible, always set on a Stream Extension entry; bit 1 NoFatChain, set
+        // when the stream's clusters are consecutive so no FAT chain describes them. Same rule as
+        // hadris's `build_stream_entry` (`exfat/entry_writer.rs`), rather than a second one that
+        // could drift from it.
+        general_secondary_flags: 0x01 | if contiguous { 0x02 } else { 0x00 },
         reserved1: 0,
         name_length: name_len as u8,
         name_hash: U16::<LittleEndian>::new(fs.name_hash(name)),
@@ -2332,8 +2208,8 @@ fn exfat_build_new_entry_set_bytes(
 /// Written here rather than through hadris's `create_dir`, which finds its free slots by a scan
 /// that runs past the directory's end and cannot see a chained root's later clusters (#175, #190).
 /// Because this places the entry set through [`ExfatDirSlots`], a directory can be created in a
-/// root that spans several clusters — which [`exfat_refuse_unsafe_create`] has to refuse when
-/// hadris is doing the writing.
+/// root that spans several clusters, which had to be refused outright while hadris was doing the
+/// writing.
 ///
 /// Like hadris, this does **not** extend a full directory: with no free run long enough it fails
 /// with `StorageFull` rather than growing the directory.
@@ -2347,6 +2223,15 @@ fn exfat_create_dir_in(
     name: &str,
 ) -> io::Result<()> {
     let cluster_bytes = info.bytes_per_cluster as u64;
+
+    // Reserve the directory slots first. Allocating before this leaks the cluster when the slot
+    // search then fails with `StorageFull`: it is marked in the bitmap with no entry referring to
+    // it, and nothing frees it.
+    let slot_count = exfat_entry_set_len(name);
+    let read_at = exfat_volume_reader(vol, part_start, part_bytes);
+    let slot = exfat_find_free_entry_run(parent, slot_count, 0..0, read_at)?;
+    let offsets = parent.offsets(slot, slot_count)?;
+
     let cluster = fs.allocate_cluster(2).map_err(exfat_err)?;
     if !info.is_valid_cluster(cluster) {
         return Err(io::Error::new(
@@ -2368,12 +2253,287 @@ fn exfat_create_dir_in(
         base,
         &vec![0u8; cluster_bytes as usize],
     )?;
-    let slabs =
-        exfat_build_new_entry_set_bytes(fs, name, EXFAT_ATTR_DIRECTORY, cluster, cluster_bytes)?;
-    let read_at = exfat_volume_reader(vol, part_start, part_bytes);
-    let slot = exfat_find_free_entry_run(parent, slabs.len(), 0..0, read_at)?;
-    let offsets = parent.offsets(slot, slabs.len())?;
+    let slabs = exfat_build_new_entry_set_bytes(
+        fs,
+        name,
+        EXFAT_ATTR_DIRECTORY,
+        cluster,
+        cluster_bytes,
+        true,
+    )?;
+    debug_assert_eq!(slabs.len(), slot_count);
     exfat_write_entry_slabs_at(vol, part_start, part_bytes, &offsets, &slabs)
+}
+
+/// Copy up to `len` bytes of `data` into `clusters`, in order, returning how many bytes arrived.
+///
+/// The final cluster is zero-padded to its end. A freshly allocated cluster holds whatever the last
+/// file to own it left behind, and `data_length` is what stops a reader seeing that tail, so the
+/// padding is belt and braces — but it costs one buffer clear and means a short file does not carry
+/// a stranger's data around on the card.
+fn exfat_write_stream_to_clusters(
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+    info: &hadris_fat::exfat::ExFatInfo,
+    clusters: &[u32],
+    len: u64,
+    data: &mut impl Read,
+    progress: &mut impl FnMut(u64) -> bool,
+) -> io::Result<u64> {
+    let cluster_bytes = info.bytes_per_cluster as u64;
+    let mut buf = vec![0u8; cluster_bytes as usize];
+    let mut written = 0u64;
+
+    for &cluster in clusters {
+        let want = (len - written).min(cluster_bytes) as usize;
+        buf[..want].fill(0);
+        let mut got = 0usize;
+        while got < want {
+            let n = data.read(&mut buf[got..want])?;
+            if n == 0 {
+                break;
+            }
+            got += n;
+        }
+        // Zero the rest of the cluster, both the tail of a partial final cluster and anything a
+        // short source did not supply.
+        buf[got..].fill(0);
+        exfat_write_bytes_at(
+            vol,
+            part_start,
+            part_bytes,
+            info.cluster_to_offset(cluster),
+            &buf,
+        )?;
+        written += got as u64;
+        if got > 0 && !progress(got as u64) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
+        if got < want {
+            break;
+        }
+    }
+    Ok(written)
+}
+
+/// Create the file `name` in the already-resolved directory `parent`, with `len` bytes from `data`.
+///
+/// Written here rather than through hadris's `create_file` + `write_file` for the same reason
+/// [`exfat_create_dir_in`] exists: hadris finds its free slots by a scan that runs past the
+/// directory's end and cannot see a chained root's later clusters (#175, #190). Placing the entry
+/// set through [`ExfatDirSlots`] is what lets a file be imported into a root spanning clusters,
+/// which until now had to be refused.
+///
+/// `len` is the length the caller expects, which every real caller knows —
+/// [`Sc64SdSession::import_from_pc_with_progress`] has it from `std::fs::metadata`. Knowing it up
+/// front is what lets [`exfat_allocate_file_clusters`] look for one contiguous run, and so write a
+/// NoFatChain stream where the free space permits, instead of growing a chain cluster by cluster. A
+/// source that then delivers a different number of bytes is an error and is rolled back: it changed
+/// underneath us, and writing an entry whose `data_length` disagrees with the data is worse than
+/// writing nothing.
+///
+/// Nothing is left behind on any failure. The clusters are released, and the entry set — the only
+/// thing that makes a file reachable — is written last, so a reader never sees a partial file.
+#[allow(clippy::too_many_arguments)]
+fn exfat_create_file_in(
+    fs: &ExFatFs<PartitionDiskUnion>,
+    info: &hadris_fat::exfat::ExFatInfo,
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+    parent: &ExfatDirSlots,
+    name: &str,
+    len: u64,
+    data: &mut impl Read,
+    progress: &mut impl FnMut(u64) -> bool,
+) -> io::Result<()> {
+    exfat_validate_rename_name(name)?;
+    let cluster_bytes = info.bytes_per_cluster as u64;
+
+    // Reserve the slots before allocating anything, so a directory with no room for the entry set
+    // fails having written nothing and marked nothing in the bitmap.
+    let slot_count = exfat_entry_set_len(name);
+    let read_at = exfat_volume_reader(vol, part_start, part_bytes);
+    let first_slot = exfat_find_free_entry_run(parent, slot_count, 0..0, read_at)?;
+    let offsets = parent.offsets(first_slot, slot_count)?;
+
+    let cluster_count = u32::try_from(len.div_ceil(cluster_bytes))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "exFAT file too large"))?;
+
+    // Filled as clusters are taken, so a failure part-way through the allocation itself is rolled
+    // back as completely as a failure after it.
+    let mut clusters: Vec<u32> = Vec::with_capacity(cluster_count as usize);
+
+    let result = (|| -> io::Result<()> {
+        let contiguous = exfat_allocate_file_clusters(
+            fs,
+            info,
+            vol,
+            part_start,
+            part_bytes,
+            cluster_count,
+            &mut clusters,
+        )?;
+        let written = exfat_write_stream_to_clusters(
+            vol, part_start, part_bytes, info, &clusters, len, data, progress,
+        )?;
+        if written != len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("source supplied {written} bytes where {len} were expected"),
+            ));
+        }
+        // An empty file has no allocation: first cluster 0, length 0, reported as contiguous, which
+        // is how hadris's own `create_file` left the empty files already on this project's cards.
+        let first_cluster = clusters.first().copied().unwrap_or(0);
+        let slabs = exfat_build_new_entry_set_bytes(
+            fs,
+            name,
+            EXFAT_ATTR_ARCHIVE,
+            first_cluster,
+            len,
+            contiguous,
+        )?;
+        debug_assert_eq!(slabs.len(), slot_count);
+        exfat_write_entry_slabs_at(vol, part_start, part_bytes, &offsets, &slabs)
+    })();
+
+    match result {
+        Ok(()) => fs.sync_bitmap().map_err(exfat_err),
+        Err(e) => {
+            exfat_release_file_clusters(fs, info, vol, part_start, part_bytes, &clusters);
+            Err(e)
+        }
+    }
+}
+
+/// Take `count` clusters for a new file from the **allocation bitmap**, pushing each onto
+/// `clusters` as it is taken; returns whether they are one contiguous run.
+///
+/// Not hadris's `allocate_clusters`, and the reason is data loss. Its fallback for fragmented free
+/// space, `ExFatTable::allocate_chain`, looks for free clusters by scanning the **FAT** for zero
+/// entries. In exFAT that is not what free means: a contiguous (NoFatChain) file's clusters have
+/// zero FAT entries by definition, and only the bitmap records them as in use. So on a card with
+/// no free run long enough, it hands out clusters belonging to live files and the new file's data
+/// is written over theirs. `exfat_fragmented_import_chains_through_free_clusters_without_touching_other_files`
+/// shows exactly that. `ExFatFs::allocate_cluster`, which this uses, searches the bitmap.
+///
+/// A contiguous run is preferred, and is written NoFatChain with its FAT entries freed. Otherwise
+/// the clusters are linked into a FAT chain, lowest first. Checking the free count first means a
+/// volume that cannot hold the file fails before anything is taken.
+#[allow(clippy::too_many_arguments)]
+fn exfat_allocate_file_clusters(
+    fs: &ExFatFs<PartitionDiskUnion>,
+    info: &hadris_fat::exfat::ExFatInfo,
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+    count: u32,
+    clusters: &mut Vec<u32>,
+) -> io::Result<bool> {
+    if count == 0 {
+        return Ok(true);
+    }
+    if fs.free_cluster_count() < count {
+        return Err(io::Error::new(
+            io::ErrorKind::StorageFull,
+            "not enough free space on the card for this file",
+        ));
+    }
+
+    // The bitmap is held in memory, so this scan costs no USB traffic.
+    let last_cluster = info.cluster_count + 1;
+    let mut run_start = None;
+    let mut run_len = 0u32;
+    for c in 2..=last_cluster {
+        if fs.is_cluster_allocated(c).map_err(exfat_err)? {
+            run_len = 0;
+        } else {
+            if run_len == 0 {
+                run_start = Some(c);
+            }
+            run_len += 1;
+            if run_len == count {
+                break;
+            }
+        }
+    }
+
+    if run_len == count {
+        let start = run_start.expect("a run has a start");
+        // Clusters the bitmap calls free but the FAT still chains mean the two already disagree.
+        // Claiming them NoFatChain would bury that; refuse instead of writing over corruption this
+        // did not cause.
+        if !exfat_should_zero_fat_for_nofatchain_range(
+            vol, part_start, part_bytes, info, start, count,
+        )? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "the card's FAT and allocation bitmap disagree about clusters {start}..{}; \
+                     run a disk check before writing to it",
+                    start + count - 1
+                ),
+            ));
+        }
+        for i in 0..count {
+            let want = start + i;
+            let got = fs.allocate_cluster(want).map_err(exfat_err)?;
+            clusters.push(got);
+            if got != want {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "exFAT allocation moved while taking a free run",
+                ));
+            }
+        }
+        // `allocate_cluster` writes end-of-chain into each FAT entry; a NoFatChain run's must be free.
+        exfat_clear_fat_contiguous_range(vol, part_start, part_bytes, info, start, count)?;
+        return Ok(true);
+    }
+
+    let mut hint = 2;
+    for _ in 0..count {
+        let c = fs.allocate_cluster(hint).map_err(exfat_err)?;
+        if !info.is_valid_cluster(c) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "exFAT allocated an out-of-range cluster",
+            ));
+        }
+        clusters.push(c);
+        hint = c.saturating_add(1);
+    }
+    // Each entry already holds end-of-chain from `allocate_cluster`; point every one but the last
+    // at its successor.
+    let links: Vec<(u32, u32)> = clusters.windows(2).map(|w| (w[0], w[1])).collect();
+    exfat_write_fat_entries(vol, part_start, part_bytes, info, &links)?;
+    Ok(false)
+}
+
+/// Undo [`exfat_allocate_file_clusters`]: free each cluster in the bitmap and in the FAT.
+///
+/// Best effort, because it runs on a path that is already returning an error. Both halves matter:
+/// `allocate_cluster` writes the FAT on the volume immediately, while the bitmap change is only in
+/// memory until `sync_bitmap`, so freeing one without the other leaves them disagreeing.
+fn exfat_release_file_clusters(
+    fs: &ExFatFs<PartitionDiskUnion>,
+    info: &hadris_fat::exfat::ExFatInfo,
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+    clusters: &[u32],
+) {
+    if clusters.is_empty() {
+        return;
+    }
+    for &c in clusters {
+        let _ = fs.free_clusters(c, 1, true);
+    }
+    let free: Vec<(u32, u32)> = clusters.iter().map(|&c| (c, 0)).collect();
+    let _ = exfat_write_fat_entries(vol, part_start, part_bytes, info, &free);
+    let _ = fs.sync_bitmap();
 }
 
 fn exfat_validate_rename_name(name: &str) -> io::Result<()> {
@@ -2589,7 +2749,7 @@ fn exfat_find_free_entry_run(
     }
     Err(io::Error::new(
         io::ErrorKind::StorageFull,
-        "exFAT directory has no room for a longer name (rename)",
+        "exFAT folder has no room for this entry: no run of free slots long enough",
     ))
 }
 
@@ -3720,11 +3880,11 @@ mod tests {
 mod fs_tests {
     use super::{
         detect_partition_start, exfat_find_entry_set, exfat_find_free_entry_run,
-        exfat_read_entry_set, hadris_create_slots_are_in_dir, list_dir_exfat, list_dir_fat,
-        mkdir_cart_exfat, mkdir_fat_impl, partition_volume_bytes, read_file_exfat, read_file_fat,
-        remove_cart_path_exfat_unified, rename_cart_exfat, rename_fat_impl,
-        write_file_exfat_streaming, write_file_fat_streaming_impl, ExfatDirSlots,
-        ExfatEntryIdentity, ExfatSlotReader, ExfatVolumeSource,
+        exfat_read_entry_set, list_dir_exfat, list_dir_fat, mkdir_cart_exfat, mkdir_fat_impl,
+        partition_volume_bytes, read_file_exfat, read_file_fat, remove_cart_path_exfat_unified,
+        rename_cart_exfat, rename_fat_impl, write_file_exfat_streaming,
+        write_file_fat_streaming_impl, ExfatDirSlots, ExfatEntryIdentity, ExfatSlotReader,
+        ExfatVolumeSource,
     };
     use crate::mem_disk::RamPartitionDisk;
     use fatfs::FormatVolumeOptions;
@@ -3942,6 +4102,7 @@ mod fs_tests {
                 0,
                 part_bytes,
                 name,
+                data.len() as u64,
                 &mut Cursor::new(data),
                 &mut |_| true,
             )
@@ -3976,6 +4137,7 @@ mod fs_tests {
                 0,
                 part_bytes,
                 name,
+                1,
                 &mut Cursor::new(&b"x"[..]),
                 &mut |_| true,
             )
@@ -4027,6 +4189,7 @@ mod fs_tests {
             0,
             part_bytes,
             "rom.z64",
+            rom.len() as u64,
             &mut Cursor::new(&rom[..]),
             &mut |_| true,
         )
@@ -4302,9 +4465,388 @@ mod fs_tests {
             0,
             fx.part_bytes,
             path,
+            4,
             &mut Cursor::new(&b"data"[..]),
             &mut |_| true,
         )
+    }
+
+    /// Clusters the volume's allocation bitmap reports as in use.
+    ///
+    /// The point of counting them is that a create which fails must leave the number where it
+    /// started. A leaked cluster is invisible to every listing — the space is simply gone until the
+    /// card is reformatted — so nothing but the bitmap can catch it.
+    fn allocated_cluster_count(arc: &Image) -> u32 {
+        let fs = ExFatFs::open(RamPartitionDisk::new_readonly(Arc::clone(arc))).expect("open");
+        let info = fs.info().clone();
+        info.cluster_count - fs.free_cluster_count()
+    }
+
+    /// Every copy of the FAT, as bytes.
+    ///
+    /// The allocation bitmap alone cannot show a rollback working: a claimed cluster is only marked
+    /// in memory until something flushes it, so a failed create that forgets to release it leaves
+    /// the on-disk bitmap looking untouched anyway. The FAT is different — `allocate_cluster` writes
+    /// end-of-chain into it on the volume at once, and a fragmented file's links go there too — so
+    /// a FAT that comes through byte-identical is the evidence that nothing was left behind.
+    fn fat_bytes(arc: &Image) -> Vec<u8> {
+        let info = ExFatFs::open(RamPartitionDisk::new_readonly(Arc::clone(arc)))
+            .expect("open")
+            .info()
+            .clone();
+        let start = info.fat_offset as usize;
+        let end = start + (info.fat_length * u64::from(info.fat_count)) as usize;
+        arc.lock().unwrap()[start..end].to_vec()
+    }
+
+    /// A file spanning several clusters comes back byte for byte, and its entry reports the length
+    /// that was asked for rather than the space it occupies (#194's other half).
+    #[test]
+    fn exfat_import_spanning_several_clusters_roundtrips() {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        // Deliberately not a whole number of clusters: the final one is partly used, and its tail
+        // must not come back as part of the file.
+        let data: Vec<u8> = (0..(512 * 5 + 37)).map(|i| (i % 251) as u8).collect();
+
+        write_file_exfat_streaming(
+            &vol,
+            0,
+            part_bytes,
+            "big.z64",
+            data.len() as u64,
+            &mut Cursor::new(&data[..]),
+            &mut |_| true,
+        )
+        .expect("import a multi-cluster file");
+
+        let back = read_file_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "big.z64")
+            .expect("read it back");
+        assert_eq!(back.len(), data.len(), "length");
+        assert!(back == data, "contents");
+
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .expect("list the root");
+        let e = listed.iter().find(|e| e.name == "big.z64").expect("listed");
+        assert_eq!(e.size, data.len() as u64, "the listed size");
+    }
+
+    /// A directory created on the way to a file that then fails must still own its cluster.
+    ///
+    /// The two halves of creating a directory persist at different times: the entry set is written
+    /// straight to the volume, while the cluster behind it is only marked in hadris's in-memory
+    /// allocation bitmap until something flushes it. If the file create then fails and nothing
+    /// flushes, the card carries a directory whose cluster is still marked free — and the next
+    /// allocation hands the same cluster to something else.
+    ///
+    /// The leaf name here is rejected **before** anything is allocated for the file, which is what
+    /// makes it the case that bites: the rollback for a failed file flushes the bitmap as a side
+    /// effect and so happens to persist the directory too, but a failure earlier than the
+    /// allocation never reaches it.
+    ///
+    /// Fail-first, demonstrated: drop the `made_a_directory` sync from `write_file_exfat_streaming`
+    /// and this fails with the directory present but the allocated count unchanged.
+    #[test]
+    fn exfat_a_directory_made_for_a_failed_import_keeps_its_cluster() {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        let before_allocated = allocated_cluster_count(&arc);
+
+        // `:` is not a legal exFAT filename character, so the leaf is refused by name validation,
+        // before any cluster is allocated for it.
+        write_file_exfat_streaming(
+            &vol,
+            0,
+            part_bytes,
+            "Saves/bad:name.z64",
+            4,
+            &mut Cursor::new(&b"data"[..]),
+            &mut |_| true,
+        )
+        .expect_err("the leaf must be refused");
+
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .expect("list the root");
+        assert!(
+            listed.iter().any(|e| e.name == "Saves" && e.is_dir),
+            "the directory was created, so it must still be there: {listed:?}"
+        );
+        assert_eq!(
+            allocated_cluster_count(&arc),
+            before_allocated + 1,
+            "the directory's own cluster must be marked allocated, or it will be handed out twice"
+        );
+    }
+
+    /// Cancelling an import leaves no entry behind, loses no space, and leaves the FAT exactly as
+    /// it was.
+    ///
+    /// This is the **contiguous** case, and it passes even without [`exfat_release_file_clusters`]
+    /// — correctly, not weakly. A contiguous run's FAT entries are cleared the moment it is taken,
+    /// and the bitmap reaches the card only when a create succeeds, so a cancel part-way through
+    /// leaves the volume byte-identical either way. The rollback is shown to matter on the
+    /// fragmented path instead, by `exfat_cancelled_fragmented_import_unwinds_its_chain`.
+    #[test]
+    fn exfat_cancelled_import_frees_what_it_allocated() {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        let before_allocated = allocated_cluster_count(&arc);
+        let before_fat = fat_bytes(&arc);
+        let before_names = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .expect("list")
+            .len();
+        let data = vec![7u8; 512 * 4];
+
+        let err = write_file_exfat_streaming(
+            &vol,
+            0,
+            part_bytes,
+            "cancelled.z64",
+            data.len() as u64,
+            &mut Cursor::new(&data[..]),
+            // Refuse after the first cluster's worth of progress.
+            &mut |_| false,
+        )
+        .expect_err("a cancelled import");
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted, "{err}");
+
+        assert_eq!(
+            allocated_cluster_count(&arc),
+            before_allocated,
+            "a cancelled import must not leak clusters"
+        );
+        assert!(
+            fat_bytes(&arc) == before_fat,
+            "a cancelled import left entries in the FAT"
+        );
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .expect("list the root");
+        assert_eq!(listed.len(), before_names, "no entry: {listed:?}");
+    }
+
+    /// A volume whose free space is fragmented into single clusters, built only through this
+    /// crate's own create and delete paths.
+    ///
+    /// 32 KiB clusters keep the volume to about a hundred of them. It is filled with one-cluster
+    /// files until the **allocation bitmap** reports nothing free — not until a write fails, since
+    /// a write into a full volume is exactly the path under suspicion — and then every other file
+    /// is deleted. What is left is a checkerboard: no two free clusters are adjacent, so any file
+    /// longer than one cluster cannot be allocated contiguously.
+    struct FragmentedVolume {
+        arc: Image,
+        vol: ExfatVolumeSource,
+        part_bytes: u64,
+        info: ExFatInfo,
+        /// The files still on the volume, with the exact bytes each should hold.
+        survivors: Vec<(String, Vec<u8>)>,
+    }
+
+    fn exfat_fragmented_volume() -> FragmentedVolume {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(64));
+        let info = ExFatFs::open(RamPartitionDisk::new_readonly(Arc::clone(&arc)))
+            .expect("open")
+            .info()
+            .clone();
+        let cluster_bytes = info.bytes_per_cluster;
+        let free = |arc: &Image| {
+            ExFatFs::open(RamPartitionDisk::new_readonly(Arc::clone(arc)))
+                .expect("open")
+                .free_cluster_count()
+        };
+
+        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        while free(&arc) > 0 {
+            let i = files.len();
+            assert!(i < 10_000, "fixture: the volume never filled");
+            let name = format!("fill{i:04}.bin");
+            // Distinct bytes per file, so a cluster handed to the wrong file shows up as a mismatch
+            // rather than as identical zeros.
+            let body: Vec<u8> = (0..cluster_bytes)
+                .map(|k| (i as u8).wrapping_mul(31) ^ (k % 253) as u8)
+                .collect();
+            write_file_exfat_streaming(
+                &vol,
+                0,
+                part_bytes,
+                &name,
+                body.len() as u64,
+                &mut Cursor::new(&body[..]),
+                &mut |_| true,
+            )
+            .expect("fixture: fill the volume");
+            files.push((name, body));
+        }
+        assert!(files.len() >= 8, "fixture: too few clusters to fragment");
+
+        let mut survivors = Vec::new();
+        for (i, (name, body)) in files.into_iter().enumerate() {
+            if i % 2 == 0 {
+                remove_cart_path_exfat_unified(vol.clone(), 0, part_bytes, &name, &mut |_| {})
+                    .expect("fixture: delete every other file");
+            } else {
+                survivors.push((name, body));
+            }
+        }
+        FragmentedVolume {
+            arc,
+            vol,
+            part_bytes,
+            info,
+            survivors,
+        }
+    }
+
+    /// An import too long for any free run takes a FAT chain through the scattered free clusters,
+    /// and **every other file on the volume comes through byte for byte**.
+    ///
+    /// The survivors are the assertion that matters. A contiguous (NoFatChain) file's FAT entries
+    /// are free by the exFAT spec — only the allocation bitmap records that its clusters are in use
+    /// — so an allocator that looks for free clusters in the FAT rather than the bitmap will hand
+    /// out clusters belonging to live files, and the damage lands in *those* files, not the new one.
+    ///
+    /// Fail-first, demonstrated: against the first version of this change, which allocated through
+    /// hadris's `allocate_clusters`, this failed with *"fill0001.bin was overwritten by the
+    /// fragmented import"*.
+    #[test]
+    fn exfat_fragmented_import_chains_through_free_clusters_without_touching_other_files() {
+        let fx = exfat_fragmented_volume();
+        let cluster_bytes = fx.info.bytes_per_cluster;
+        let before_allocated = allocated_cluster_count(&fx.arc);
+
+        // Three and a bit clusters: four, none of which can be adjacent.
+        let data: Vec<u8> = (0..cluster_bytes * 3 + 1000)
+            .map(|k| 0xA5 ^ (k % 241) as u8)
+            .collect();
+        write_file_exfat_streaming(
+            &fx.vol,
+            0,
+            fx.part_bytes,
+            "frag.bin",
+            data.len() as u64,
+            &mut Cursor::new(&data[..]),
+            &mut |_| true,
+        )
+        .expect("import into fragmented free space");
+
+        for (name, body) in &fx.survivors {
+            let back = read_file_exfat(RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)), name)
+                .unwrap_or_else(|e| panic!("read {name} back: {e}"));
+            assert!(
+                back == *body,
+                "{name} was overwritten by the fragmented import"
+            );
+        }
+
+        let back = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)),
+            "frag.bin",
+        )
+        .expect("read the import back");
+        assert!(back == data, "the fragmented import's own contents");
+
+        // Prove the fragmented path was taken, or the survivors above prove nothing.
+        let root = raw_dir_slots(&fx.arc, &fx.info, &[fx.info.root_cluster]);
+        let (at, _) = in_use_names(&root)
+            .into_iter()
+            .find(|(_, n)| n == "frag.bin")
+            .expect("frag.bin's entry set");
+        assert_eq!(
+            root[at + 1][1] & 0x02,
+            0,
+            "the import must not claim NoFatChain: its clusters cannot be contiguous"
+        );
+
+        assert_eq!(
+            allocated_cluster_count(&fx.arc),
+            before_allocated + 4,
+            "exactly the import's four clusters should have been allocated"
+        );
+    }
+
+    /// Cancelling a fragmented import unwinds the chain: the links written between its clusters
+    /// come back out of the FAT, the clusters are free again, and every other file is untouched.
+    ///
+    /// Fail-first, demonstrated: skip [`exfat_release_file_clusters`] and this fails with *"a
+    /// cancelled fragmented import left its chain in the FAT"*.
+    #[test]
+    fn exfat_cancelled_fragmented_import_unwinds_its_chain() {
+        let fx = exfat_fragmented_volume();
+        let cluster_bytes = fx.info.bytes_per_cluster;
+        let before_allocated = allocated_cluster_count(&fx.arc);
+        let before_fat = fat_bytes(&fx.arc);
+        let data = vec![0x3Cu8; cluster_bytes * 3 + 1000];
+
+        let err = write_file_exfat_streaming(
+            &fx.vol,
+            0,
+            fx.part_bytes,
+            "frag.bin",
+            data.len() as u64,
+            &mut Cursor::new(&data[..]),
+            &mut |_| false,
+        )
+        .expect_err("a cancelled import");
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted, "{err}");
+
+        assert!(
+            fat_bytes(&fx.arc) == before_fat,
+            "a cancelled fragmented import left its chain in the FAT"
+        );
+        assert_eq!(
+            allocated_cluster_count(&fx.arc),
+            before_allocated,
+            "a cancelled fragmented import must not leak clusters"
+        );
+        for (name, body) in &fx.survivors {
+            let back = read_file_exfat(RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)), name)
+                .unwrap_or_else(|e| panic!("read {name} back: {e}"));
+            assert!(
+                back == *body,
+                "{name} was overwritten by the cancelled import"
+            );
+        }
+    }
+
+    /// A source that supplies fewer bytes than it declared is refused outright, rather than
+    /// recorded as a file whose entry disagrees with its data.
+    #[test]
+    fn exfat_import_shorter_than_declared_is_refused_and_frees_its_clusters() {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        let before_allocated = allocated_cluster_count(&arc);
+        let before_fat = fat_bytes(&arc);
+
+        let err = write_file_exfat_streaming(
+            &vol,
+            0,
+            part_bytes,
+            "short.z64",
+            4096,
+            &mut Cursor::new(&b"only a few bytes"[..]),
+            &mut |_| true,
+        )
+        .expect_err("a source shorter than it declared");
+        assert!(
+            err.to_string().contains("where 4096 were expected"),
+            "{err}"
+        );
+
+        assert_eq!(
+            allocated_cluster_count(&arc),
+            before_allocated,
+            "a refused import must not leak clusters"
+        );
+        assert!(
+            fat_bytes(&arc) == before_fat,
+            "a refused import left entries in the FAT"
+        );
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .expect("list the root");
+        assert!(
+            !listed.iter().any(|e| e.name == "short.z64"),
+            "no entry: {listed:?}"
+        );
     }
 
     /// Neither the root's slots nor the ROM after its first cluster changed.
@@ -4324,9 +4866,14 @@ mod fs_tests {
         );
     }
 
-    /// #175: hadris would finish the entry set past the root's only cluster, in the ROM that
-    /// follows it on disk. The import and the new folder are refused before anything is written.
-    fn create_past_the_root_cluster_is_refused(free_slots_left: usize) {
+    /// A single-cluster root with no run of free slots long enough has nowhere to put the entry
+    /// set, so the create fails having written nothing.
+    ///
+    /// #175 is what makes the *nothing* part worth a test. hadris would take the first run of free
+    /// slots and finish the entry set past the directory's end, in whatever follows it on disk —
+    /// here a ROM. Both paths now reserve their slots through [`ExfatDirSlots`] before they write
+    /// or allocate anything, so a full directory is an error rather than a corruption.
+    fn create_past_the_root_cluster_has_nowhere_to_go(free_slots_left: usize) {
         let fx = exfat_full_root(free_slots_left, false);
         let before = raw_dir_slots(&fx.arc, &fx.info, &fx.chain);
 
@@ -4339,16 +4886,17 @@ mod fs_tests {
     }
 
     #[test]
-    fn exfat_create_in_a_full_root_is_refused() {
-        create_past_the_root_cluster_is_refused(0);
+    fn exfat_create_in_a_full_root_has_nowhere_to_go() {
+        create_past_the_root_cluster_has_nowhere_to_go(0);
     }
 
     #[test]
-    fn exfat_create_that_would_run_past_the_root_cluster_is_refused() {
-        create_past_the_root_cluster_is_refused(2);
+    fn exfat_create_that_would_run_past_the_root_cluster_has_nowhere_to_go() {
+        create_past_the_root_cluster_has_nowhere_to_go(2);
     }
 
-    /// The guard must not refuse what hadris writes correctly.
+    /// A create that does fit must still happen: the bound is the directory's real end, not a
+    /// blanket refusal.
     #[test]
     fn exfat_create_that_fits_the_root_cluster_is_allowed() {
         let fx = exfat_full_root(3, false);
@@ -4374,24 +4922,57 @@ mod fs_tests {
         assert_eq!(back, b"data");
     }
 
-    /// hadris lists only the first cluster of a longer root, so it can't see every name already
-    /// there. Adding to that root is refused even with room in its first cluster.
+    /// #190: a file can be imported into a root that spans several clusters. This was refused
+    /// outright while hadris did the writing — it lists only the root's first cluster, so it could
+    /// not see a name already further along and would have added a second entry carrying it.
+    ///
+    /// The fixture leaves **one** free slot in the first cluster, so the three-slot entry set has
+    /// to start in the chain's second cluster, which is not the cluster physically after the first.
+    /// A ROM sits in that physically-next cluster. Its bytes coming through unchanged is the whole
+    /// point: writing into them is the corruption #175 describes, and a create that walks off the
+    /// chain lands there.
+    ///
+    /// Fail-first, demonstrated: replace `parent.offsets(..)` in [`exfat_create_file_in`] with
+    /// offsets computed as `base + i * 32` — treating the directory as contiguous, which is exactly
+    /// what hadris does — and this fails with *"the import wrote into the ROM's data"*. It
+    /// reproduces the corruption in #175 rather than merely erroring.
     #[test]
-    fn exfat_import_into_a_root_past_one_cluster_is_refused() {
-        let fx = exfat_chained_root(5);
-        let before = raw_dir_slots(&fx.arc, &fx.info, &fx.chain);
+    fn exfat_import_into_a_root_past_one_cluster_works() {
+        let fx = exfat_chained_root(1);
+        let before = in_use_names(&raw_dir_slots(&fx.arc, &fx.info, &fx.chain));
 
-        // The streaming write still creates through hadris, whose free-slot scan runs past the
-        // directory's end, so the guard must still refuse it (#175).
-        let err = write_small(&fx, "a.z64").expect_err("an import into a longer root");
-        assert!(err.to_string().contains("root folder"), "{err}");
+        write_small(&fx, "a.z64").expect("an import into a root past one cluster");
 
-        assert_nothing_written(&fx, &before);
+        let rom = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)),
+            "rom.z64",
+        )
+        .expect("read the ROM back");
+        assert!(rom == fx.rom, "the import wrote into the ROM's data");
+
+        let back = read_file_exfat(RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)), "a.z64")
+            .expect("read the import back");
+        assert_eq!(back, b"data", "the imported file's contents");
+
+        let after = in_use_names(&raw_dir_slots(&fx.arc, &fx.info, &fx.chain));
+        assert_eq!(
+            after.len(),
+            before.len() + 1,
+            "exactly one entry should have been added: {after:?}"
+        );
+
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)), "/")
+            .expect("list the root");
+        assert_eq!(
+            listed.iter().filter(|e| e.name == "a.z64").count(),
+            1,
+            "the import must be listed exactly once"
+        );
     }
 
     /// #190: a directory can now be created in a root that spans several clusters, because the
     /// entry set is placed through [`ExfatDirSlots`] rather than by hadris's scan. That is what
-    /// [`exfat_refuse_unsafe_create`] has to refuse while hadris is doing the writing.
+    /// hadris could not do this at all: it does not list a chained root's later clusters.
     ///
     /// The fixture leaves **one** free slot in the first cluster, so the three-slot entry set has
     /// to go into the chain's second cluster — which is not the cluster physically after the first.
@@ -4428,71 +5009,42 @@ mod fs_tests {
         );
     }
 
-    /// The check runs before an existing file is deleted, so a refused replace keeps it.
+    /// Replacing a file in a root with **no free slots at all** works, because the delete frees
+    /// exactly the slots the replacement needs: same name, so the same number of entries.
+    ///
+    /// This used to be refused. The guard ran before the delete, so a replace with no room kept the
+    /// original — the best that could be done when hadris picked the slots and might have written
+    /// them past the directory's end. Placing the entry set ourselves makes the refusal unnecessary
+    /// rather than merely safe.
     #[test]
-    fn exfat_refused_replace_keeps_the_existing_file() {
+    fn exfat_replace_works_in_a_root_with_no_free_slots() {
         let fx = exfat_full_root(0, false);
-        let before = raw_dir_slots(&fx.arc, &fx.info, &fx.chain);
-        let (_, existing) = in_use_names(&before)
-            .into_iter()
+        let before = in_use_names(&raw_dir_slots(&fx.arc, &fx.info, &fx.chain));
+        let (_, existing) = before
+            .iter()
             .find(|(_, n)| n.starts_with("f00"))
+            .cloned()
             .unwrap();
 
-        write_small(&fx, &existing).expect_err("a replace with no room for the new entry set");
+        write_small(&fx, &existing).expect("a replace in a root with no free slots");
 
-        assert_nothing_written(&fx, &before);
-    }
+        let back = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)),
+            &existing,
+        )
+        .expect("read the replacement back");
+        assert_eq!(back, b"data", "the replacement's contents");
 
-    /// Mirrors hadris's pick of slots: the first run of `0x00`/`0x05` slots, written as if
-    /// contiguous from its first slot.
-    #[test]
-    fn hadris_create_slots_must_be_the_directorys_own_and_in_order() {
-        const U: u8 = 0x85;
-        // Two 4-slot (128-byte) clusters: next to each other on disk, or far apart.
-        let near = ExfatDirSlots {
-            cluster_offsets: vec![0x1000, 0x1080],
-            slots_per_cluster: 4,
-        };
-        let far = ExfatDirSlots {
-            cluster_offsets: vec![0x1000, 0x4000],
-            slots_per_cluster: 4,
-        };
-        let check = |dir: &ExfatDirSlots, types: [[u8; 4]; 2], count: usize| {
-            hadris_create_slots_are_in_dir(dir, count, |base| {
-                let i = dir.cluster_offsets.iter().position(|&b| b == base).unwrap();
-                Ok(types[i]
-                    .iter()
-                    .flat_map(|&t| {
-                        let mut slot = [0u8; 32];
-                        slot[0] = t;
-                        slot
-                    })
-                    .collect())
-            })
-            .unwrap()
-        };
-
-        let straddling = [[U, U, 0x05, 0x00], [0x00, U, U, U]];
-        assert!(
-            check(&near, straddling, 3),
-            "adjacent clusters: written in order"
+        let after = in_use_names(&raw_dir_slots(&fx.arc, &fx.info, &fx.chain));
+        assert_eq!(
+            after.len(),
+            before.len(),
+            "a replace must not change how many entries the root holds"
         );
-        assert!(
-            !check(&far, straddling, 3),
-            "chained clusters: the last entry lands off the chain"
-        );
-        assert!(
-            check(&far, [[U, 0x00, 0x00, 0x00], [U; 4]], 3),
-            "fits one cluster"
-        );
-        assert!(
-            !check(&far, [[U, U, 0x00, 0x00], [U; 4]], 3),
-            "no run inside the directory"
-        );
-        // hadris reuses only 0x05 of a freed entry set.
-        assert!(
-            !check(&far, [[0x05, 0x40, 0x41, 0x00], [U; 4]], 3),
-            "0x40 and 0x41 stay taken"
+        assert_eq!(
+            after.iter().filter(|(_, n)| *n == existing).count(),
+            1,
+            "exactly one entry should carry the name, not a duplicate: {after:?}"
         );
     }
 
@@ -4697,6 +5249,7 @@ mod fs_tests {
                 0,
                 part_bytes,
                 path,
+                4,
                 &mut Cursor::new(&b"data"[..]),
                 &mut |_| true,
             )
@@ -4920,6 +5473,7 @@ mod fs_tests {
             0,
             part_bytes,
             "stream.txt",
+            b"streaming roundtrip".len() as u64,
             &mut Cursor::new(&b"streaming roundtrip"[..]),
             &mut |_| true,
         )
