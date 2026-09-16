@@ -4,7 +4,8 @@
 //! creates where it used to be ~7.5x — but left every create costing about the same 5.4s, and
 //! creates into an 18-cluster root came out *slightly faster* than creates into a one-cluster
 //! directory. A cost that does not grow with the directory, and does not grow with the number of
-//! clusters to walk, is not the slot scan #188 was about. It is a fixed cost paid once per call.
+//! clusters to walk, is not the slot scan #188 was about. It is a fixed cost paid once per call —
+//! or so it looked; the findings below say why that framing was wrong.
 //!
 //! This separates the candidates by timing operations that share some of that fixed cost but not
 //! all of it:
@@ -15,9 +16,11 @@
 //! - **`mkdir` then the matching `remove`** adds the write side: a 32 KiB zero-filled cluster, the
 //!   FAT entry, the entry set, and `sync_bitmap`.
 //!
-//! It creates only `t188_cost*` names and removes them again.
+//! It creates only `t188_cost*` and `t188_cmd*` names and removes them again.
 //!
 //! ## What it found, on an SC64 with a 29.72 GB exFAT card
+//!
+//! Before the session read cache:
 //!
 //! ```text
 //! list_dir / (1273 entries, 18 clusters)   mean 2.09s
@@ -26,14 +29,25 @@
 //! remove each of those again               mean 8.30s
 //! ```
 //!
-//! Reading 1273 entries across 18 clusters costs **-0.02s more than reading none**: at this card's
-//! scale the directory read is free, and the whole read cost is fixed overhead paid before any
-//! directory data is touched. One operation is roughly 2.1s fixed, plus 3.1s of writes for a mkdir
-//! and 6.2s for a remove — which makes `remove` the most expensive operation here and the one
-//! nothing has looked at.
+//! **The conclusion first drawn from this was wrong.** The two lists matched not because reading
+//! entries is free, but because the "empty directory" is a folder *in* the root, so reaching it read
+//! the whole 576 KiB root first: both lines measure the same root read. See the correction on #196
+//! and `exfat_root_read_cost`, which times that read on its own. mkdir and remove were slow because
+//! each resolves the root several times per command.
 //!
-//! `sd_read_throughput` takes the next step and shows the bitmap load explains only 0.37s of that
-//! 2.1s.
+//! With the session read cache (#196), on the same card, against the same build with cache lookups
+//! disabled so both columns are measured the same way:
+//!
+//! | | no cache | cache |
+//! |---|---|---|
+//! | list the root, again in the same session | 2.07s | 0.00s |
+//! | mkdir, same session | 5.20s | 0.46s |
+//! | remove, same session | 8.27s | 0.48s |
+//! | **mkdir, one session per command** (Xfer64) | **4.43s** | **3.30s** |
+//! | **remove, one session per command** (Xfer64) | **7.55s** | **3.32s** |
+//!
+//! Per click the cache removes the *repeat* reads of the root; the first read in each session still
+//! goes to the card, and at ~320 KiB/s a 576 KiB root is most of what is left.
 //!
 //! ```sh
 //! cargo run -p sc64-sd-e2e --release --example exfat_op_cost -- --port COM4
@@ -90,7 +104,34 @@ fn main() -> io::Result<()> {
         Ok(()) => println!("\n  cleaned up /{scratch}"),
         Err(e) => println!("\n  WARNING  could not remove /{scratch}: {e}"),
     }
-    out
+    drop(session);
+    out?;
+    per_command_sessions(&args)
+}
+
+/// The same mkdir and remove, each in a session of its own — which is how Xfer64 runs every command
+/// (`with_session`). The session read cache (#196) does not outlive a session, so this is the cost a
+/// user sees per click: one read of each directory on the path, plus the command's own writes.
+fn per_command_sessions(args: &Args) -> io::Result<()> {
+    println!("\n=== one session per command, as Xfer64 runs them");
+    let open = || -> io::Result<CartSession> {
+        Ok(CartSession::Sc64(Sc64SdSession::open(
+            &args.port, args.baud,
+        )?))
+    };
+    let name = |i: usize| format!("t188_cmd{i}");
+    let mkdir = timed(
+        "mkdir in the root, own session",
+        args.reps,
+        |i| -> io::Result<()> { open()?.mkdir_cart(&name(i)) },
+    )?;
+    let remove = timed("remove it, own session", args.reps, |i| -> io::Result<()> {
+        open()?.remove_cart_path(&name(i))
+    })?;
+    println!(
+        "  per click: mkdir {mkdir:.2}s, remove {remove:.2}s (session open and close included)"
+    );
+    Ok(())
 }
 
 fn run(session: &CartSession, args: &Args, scratch: &str) -> io::Result<()> {
@@ -116,20 +157,10 @@ fn run(session: &CartSession, args: &Args, scratch: &str) -> io::Result<()> {
         session.remove_cart_path(&format!("{scratch}/d{i}"))
     })?;
 
-    println!("\n=== what the numbers separate");
+    println!("\n  all in one session: list {root_list:.2}s, empty-folder list {empty_list:.2}s, mkdir {mkdir:.2}s, remove {rmdir:.2}s");
     println!(
-        "  reading 1273 entries costs {:.2}s more than reading none",
-        root_list - empty_list
-    );
-    println!(
-        "  the write side of a mkdir adds {:.2}s over just reading the directory",
-        mkdir - empty_list
-    );
-    println!("  a remove costs {rmdir:.2}s, against a mkdir's {mkdir:.2}s");
-    println!(
-        "\n  If `list_dir` on an EMPTY directory already costs most of a mkdir, the fixed cost is\n  \
-         in opening the volume, not in the create. If it is near zero, the cost is the create's\n  \
-         own writes: the 32 KiB zero-filled cluster, the FAT entry, and `sync_bitmap`."
+        "  (the 'empty' folder is reached through the root, so both lists read the same root; within\n  \
+         one session the read cache serves every read of it after the first)"
     );
     Ok(())
 }

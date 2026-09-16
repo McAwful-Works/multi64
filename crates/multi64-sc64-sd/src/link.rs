@@ -1,5 +1,6 @@
 //! Low-level SC64 USB `CMD`/`CMP` exchange for SD + memory.
 
+use crate::sd_read_cache::SdReadCache;
 use multi64_sc64_link::{cmd, cmd_packet, CmpResponse, ResponseBuffer};
 use serialport::{ClearBuffer, SerialPort};
 use std::io;
@@ -70,6 +71,9 @@ fn cmp_err(_name: &str, cmd_id: u8, r: &CmpResponse) -> io::Error {
 pub struct Sc64Link {
     port: Box<dyn SerialPort>,
     rb: ResponseBuffer,
+    /// Sectors read during the current SD session (#196). Cleared whenever the session starts or
+    /// ends, since the console may write to the card in between; see [`SdReadCache`].
+    read_cache: SdReadCache,
 }
 
 impl Sc64Link {
@@ -80,6 +84,7 @@ impl Sc64Link {
         Ok(Self {
             port,
             rb: ResponseBuffer::default(),
+            read_cache: SdReadCache::default(),
         })
     }
 
@@ -141,6 +146,8 @@ impl Sc64Link {
     /// The table in `docs/03_usb_interface.md` (listing `0` = Init, `1` = Deinit) does **not** match that
     /// wire encoding; follow the deployer, not that markdown row order.
     pub fn sd_init(&mut self) -> io::Result<()> {
+        // Whatever was read before this session may have been changed by the console since.
+        self.read_cache.clear();
         let pkt = cmd_packet(cmd::SD_CARD_OP, 0, 1, &[]);
         let r = self.send_cmp_raw(&pkt, cmd::SD_CARD_OP, Duration::from_secs(5))?;
         if !r.ok {
@@ -151,6 +158,9 @@ impl Sc64Link {
 
     /// `SD_CARD_OP` **deinit** — `arg1 = 0`, `arg0 = 0` (see [`sd_init`](Self::sd_init)).
     pub fn sd_deinit(&mut self) -> io::Result<()> {
+        // Cleared before sending, so a deinit that fails or times out still forgets: the card may
+        // already be back with the console.
+        self.read_cache.clear();
         let pkt = cmd_packet(cmd::SD_CARD_OP, 0, 0, &[]);
         let r = self.send_cmp_raw(&pkt, cmd::SD_CARD_OP, Duration::from_secs(3))?;
         if !r.ok {
@@ -162,6 +172,7 @@ impl Sc64Link {
     /// Best-effort deinit (same packet as [`sd_deinit`](Self::sd_deinit)); ignores timeout/ERR.
     /// Clears a stale PC-side SD session before [`sd_init`](Self::sd_init), matching deployer patterns.
     pub fn sd_deinit_try(&mut self) {
+        self.read_cache.clear();
         let pkt = cmd_packet(cmd::SD_CARD_OP, 0, 0, &[]);
         let _ = self.send_cmp_raw(&pkt, cmd::SD_CARD_OP, Duration::from_secs(2));
     }
@@ -184,6 +195,15 @@ impl Sc64Link {
         if start_lba > u32::MAX as u64 {
             return Err(io::Error::other("sector LBA out of range"));
         }
+        // Taken out and put back so the fetch closure can borrow `self` for the USB exchange.
+        let mut cache = std::mem::take(&mut self.read_cache);
+        let r = cache.read_through(start_lba, buf, |lba, buf| self.sd_read_uncached(lba, buf));
+        self.read_cache = cache;
+        r
+    }
+
+    /// `SD_READ` + `MEMORY_READ`, bypassing the session cache. Arguments already validated.
+    fn sd_read_uncached(&mut self, start_lba: u64, buf: &mut [u8]) -> io::Result<()> {
         let count = (buf.len() / SECTOR_BYTES) as u32;
         let sec = start_lba as u32;
         let pkt = cmd_packet(cmd::SD_READ, SD_CARD_BUFFER_ADDR, count, &sec.to_be_bytes());
@@ -238,6 +258,16 @@ impl Sc64Link {
         if start_lba > u32::MAX as u64 {
             return Err(io::Error::other("sector LBA out of range"));
         }
+        // Every SD write passes through here, which is what makes the session cache safe: the
+        // overlapped ranges are evicted before the write is attempted.
+        let mut cache = std::mem::take(&mut self.read_cache);
+        let r = cache.write_through(start_lba, buf, |lba, buf| self.sd_write_uncached(lba, buf));
+        self.read_cache = cache;
+        r
+    }
+
+    /// `MEMORY_WRITE` + `SD_WRITE`, bypassing the session cache. Arguments already validated.
+    fn sd_write_uncached(&mut self, start_lba: u64, buf: &[u8]) -> io::Result<()> {
         let count = (buf.len() / SECTOR_BYTES) as u32;
         self.memory_write(SD_CARD_BUFFER_ADDR, buf)?;
         let sec = start_lba as u32;

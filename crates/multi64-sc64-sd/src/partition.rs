@@ -3738,6 +3738,10 @@ pub(crate) enum PartitionDiskUnion {
     #[cfg(feature = "ed64")]
     Ed64(SectorPartitionDisk<Ed64RomLinear>),
     Ram(RamPartitionDisk),
+    /// A RAM image behind [`SdReadCache`](crate::sd_read_cache::SdReadCache), so tests can run
+    /// real exFAT operations through the session cache (#196).
+    #[cfg(test)]
+    CachedRam(SectorPartitionDisk<CachedRamTransport>),
 }
 
 impl Read for PartitionDiskUnion {
@@ -3747,6 +3751,8 @@ impl Read for PartitionDiskUnion {
             #[cfg(feature = "ed64")]
             Self::Ed64(d) => d.read(buf),
             Self::Ram(d) => d.read(buf),
+            #[cfg(test)]
+            Self::CachedRam(d) => d.read(buf),
         }
     }
 }
@@ -3758,6 +3764,8 @@ impl Write for PartitionDiskUnion {
             #[cfg(feature = "ed64")]
             Self::Ed64(d) => d.write(buf),
             Self::Ram(d) => d.write(buf),
+            #[cfg(test)]
+            Self::CachedRam(d) => d.write(buf),
         }
     }
 
@@ -3767,6 +3775,8 @@ impl Write for PartitionDiskUnion {
             #[cfg(feature = "ed64")]
             Self::Ed64(d) => d.flush(),
             Self::Ram(d) => d.flush(),
+            #[cfg(test)]
+            Self::CachedRam(d) => d.flush(),
         }
     }
 }
@@ -3778,6 +3788,8 @@ impl Seek for PartitionDiskUnion {
             #[cfg(feature = "ed64")]
             Self::Ed64(d) => d.seek(pos),
             Self::Ram(d) => d.seek(pos),
+            #[cfg(test)]
+            Self::CachedRam(d) => d.seek(pos),
         }
     }
 }
@@ -3789,6 +3801,8 @@ impl PartitionDisk for PartitionDiskUnion {
             #[cfg(feature = "ed64")]
             Self::Ed64(d) => d.partition_byte_len(),
             Self::Ram(d) => d.partition_byte_len(),
+            #[cfg(test)]
+            Self::CachedRam(d) => d.partition_byte_len(),
         }
     }
 }
@@ -3804,6 +3818,58 @@ pub(crate) enum ExfatVolumeSource {
     Ram {
         buf: Arc<Mutex<Vec<u8>>>,
     },
+    /// The same RAM image reached through [`SdReadCache`](crate::sd_read_cache::SdReadCache),
+    /// sector by sector, as `Sc64Link` reaches a card (#196).
+    #[cfg(test)]
+    CachedRam {
+        link: Arc<Mutex<CachedRamTransport>>,
+    },
+}
+
+/// A RAM image served as SD sectors through the session read cache, exactly as `Sc64Link` serves
+/// the card: every read through [`SdReadCache::read_through`](crate::sd_read_cache::SdReadCache),
+/// every write through `write_through`. It lets the exFAT paths run end to end against the cache,
+/// where a missed invalidation shows up as a wrong image rather than as a unit-test assertion.
+#[cfg(test)]
+pub(crate) struct CachedRamTransport {
+    pub(crate) image: Arc<Mutex<Vec<u8>>>,
+    pub(crate) cache: crate::sd_read_cache::SdReadCache,
+    /// Read requests issued by the filesystem layer, cached or not.
+    pub(crate) requests: u32,
+}
+
+#[cfg(test)]
+impl SdCardTransport for CachedRamTransport {
+    fn read_sd_sectors(&mut self, start_lba: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.requests += 1;
+        let image = &self.image;
+        self.cache.read_through(start_lba, buf, |lba, buf| {
+            let g = image.lock().map_err(|e| io::Error::other(e.to_string()))?;
+            let at = lba as usize * 512;
+            let src = g
+                .get(at..at + buf.len())
+                .ok_or_else(|| io::Error::other("read past the image"))?;
+            buf.copy_from_slice(src);
+            Ok(())
+        })
+    }
+
+    fn write_sd_sectors(&mut self, start_lba: u64, buf: &[u8]) -> io::Result<()> {
+        let image = &self.image;
+        self.cache.write_through(start_lba, buf, |lba, buf| {
+            let mut g = image.lock().map_err(|e| io::Error::other(e.to_string()))?;
+            let at = lba as usize * 512;
+            let dst = g
+                .get_mut(at..at + buf.len())
+                .ok_or_else(|| io::Error::other("write past the image"))?;
+            dst.copy_from_slice(buf);
+            Ok(())
+        })
+    }
+
+    fn flush_serial(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl ExfatVolumeSource {
@@ -3818,6 +3884,12 @@ impl ExfatVolumeSource {
                 debug_assert_eq!(buf.lock().map(|g| g.len() as u64).unwrap_or(0), part_bytes);
                 PartitionDiskUnion::Ram(RamPartitionDisk::new_readonly(buf.clone()))
             }
+            #[cfg(test)]
+            Self::CachedRam { link } => PartitionDiskUnion::CachedRam(SectorPartitionDisk::new(
+                link.clone(),
+                part_start,
+                part_bytes,
+            )),
         }
     }
 
@@ -3832,6 +3904,10 @@ impl ExfatVolumeSource {
                 debug_assert_eq!(buf.lock().map(|g| g.len() as u64).unwrap_or(0), part_bytes);
                 PartitionDiskUnion::Ram(RamPartitionDisk::new_writable(buf.clone()))
             }
+            #[cfg(test)]
+            Self::CachedRam { link } => PartitionDiskUnion::CachedRam(
+                SectorPartitionDisk::new_writable(link.clone(), part_start, part_bytes),
+            ),
         }
     }
 
@@ -3839,6 +3915,8 @@ impl ExfatVolumeSource {
         match self {
             Self::Sc64 { link } => flush_link_serial(link),
             Self::Ram { .. } => Ok(()),
+            #[cfg(test)]
+            Self::CachedRam { .. } => Ok(()),
         }
     }
 }
@@ -3883,8 +3961,8 @@ mod fs_tests {
         exfat_read_entry_set, list_dir_exfat, list_dir_fat, mkdir_cart_exfat, mkdir_fat_impl,
         partition_volume_bytes, read_file_exfat, read_file_fat, remove_cart_path_exfat_unified,
         rename_cart_exfat, rename_fat_impl, write_file_exfat_streaming,
-        write_file_fat_streaming_impl, ExfatDirSlots, ExfatEntryIdentity, ExfatSlotReader,
-        ExfatVolumeSource,
+        write_file_fat_streaming_impl, CachedRamTransport, ExfatDirSlots, ExfatEntryIdentity,
+        ExfatSlotReader, ExfatVolumeSource,
     };
     use crate::mem_disk::RamPartitionDisk;
     use fatfs::FormatVolumeOptions;
@@ -4806,6 +4884,157 @@ mod fs_tests {
                 "{name} was overwritten by the cancelled import"
             );
         }
+    }
+
+    /// Two images that must be identical except where a clock was read.
+    ///
+    /// Compared in 32-byte slots, which is how directory entries sit on the volume. A slot may
+    /// differ only if it is a File entry in both images, in use (`0x85`) or deleted (`0x05`), and
+    /// only in its timestamp bytes (8..24) and the entry-set checksum that covers them (2..4). Those
+    /// are the only bytes a create stamps with the time; every other byte of the volume — FAT,
+    /// bitmap, file data, names, lengths, which slots are used — must match exactly.
+    fn assert_same_but_for_timestamps(a: &[u8], b: &[u8]) {
+        assert_eq!(a.len(), b.len());
+        for (i, (x, y)) in a.chunks(32).zip(b.chunks(32)).enumerate() {
+            if x == y {
+                continue;
+            }
+            let at = i * 32;
+            assert!(
+                x[0] == y[0] && (x[0] == 0x85 || x[0] == 0x05),
+                "images differ at volume offset {at:#x}, outside any File entry: {x:02x?} vs {y:02x?}"
+            );
+            for k in (0..32).filter(|&k| x[k] != y[k]) {
+                assert!(
+                    matches!(k, 2 | 3 | 8..=23),
+                    "File entry at {at:#x} differs at byte {k}, not a timestamp: {x:02x?} vs {y:02x?}"
+                );
+            }
+        }
+    }
+
+    /// The session read cache never changes what an operation writes (#196).
+    ///
+    /// The same sequence runs on two copies of the chained-root fixture: one read and written
+    /// directly, one reached sector by sector through [`SdReadCache`], as `Sc64Link` reaches a card.
+    /// The sequence is chosen to write over sectors the cache has just served: an import into the
+    /// chained root, a multi-cluster file in a new folder, a rename, a replace, a nested mkdir, a
+    /// recursive delete of that folder, and a final mkdir. Every step re-reads the root it has just
+    /// written to. A stale read anywhere — the root slots, the FAT, the bitmap — makes some later
+    /// step place or free something differently, and the images diverge.
+    ///
+    /// It also checks the cache is doing something: fewer reads reached the image than were asked
+    /// for.
+    ///
+    /// Fail-first, demonstrated: stop `write_through` evicting what a write overlaps and this fails
+    /// at the second step, before the images are ever compared — *"write Saves/big.bin: no such
+    /// folder: Saves"*. The folder has just been created; the root read that should find it is
+    /// served from before the create.
+    #[test]
+    fn exfat_operations_through_the_session_read_cache_write_the_same_image() {
+        let fx = exfat_chained_root(1);
+        let (part_bytes, rom) = (fx.part_bytes, fx.rom.clone());
+        let plain = Arc::new(Mutex::new(fx.arc.lock().unwrap().clone()));
+        let cached_image = Arc::new(Mutex::new(fx.arc.lock().unwrap().clone()));
+        let transport = Arc::new(Mutex::new(CachedRamTransport {
+            image: Arc::clone(&cached_image),
+            cache: Default::default(),
+            requests: 0,
+        }));
+        let vols = [
+            ExfatVolumeSource::Ram {
+                buf: Arc::clone(&plain),
+            },
+            ExfatVolumeSource::CachedRam {
+                link: Arc::clone(&transport),
+            },
+        ];
+
+        let big: Vec<u8> = (0..3000).map(|i| (i % 239) as u8).collect();
+        let bigger: Vec<u8> = (0..2000).map(|i| 0x5A ^ (i % 233) as u8).collect();
+        let write = |vol: &ExfatVolumeSource, path: &str, body: &[u8]| {
+            write_file_exfat_streaming(
+                vol,
+                0,
+                part_bytes,
+                path,
+                body.len() as u64,
+                &mut Cursor::new(body),
+                &mut |_| true,
+            )
+            .unwrap_or_else(|e| panic!("write {path}: {e}"))
+        };
+
+        // Step by step on both, so the two runs read the clock as close together as they can.
+        for (label, step) in [
+            ("import into the chained root", 0),
+            ("multi-cluster file in a new folder", 1),
+            ("rename", 2),
+            ("replace", 3),
+            ("nested mkdir", 4),
+            ("recursive delete", 5),
+            ("final mkdir", 6),
+        ] {
+            for vol in &vols {
+                match step {
+                    0 => write(vol, "a.z64", b"data"),
+                    1 => write(vol, "Saves/big.bin", &big),
+                    2 => rename_cart_exfat(vol, 0, part_bytes, "a.z64", "renamed.z64")
+                        .unwrap_or_else(|e| panic!("{label}: {e}")),
+                    3 => write(vol, "Saves/big.bin", &bigger),
+                    4 => mkdir_cart_exfat(vol, 0, part_bytes, "Saves/Inner")
+                        .unwrap_or_else(|e| panic!("{label}: {e}")),
+                    5 => remove_cart_path_exfat_unified(
+                        vol.clone(),
+                        0,
+                        part_bytes,
+                        "Saves",
+                        &mut |_| {},
+                    )
+                    .unwrap_or_else(|e| panic!("{label}: {e}")),
+                    _ => mkdir_cart_exfat(vol, 0, part_bytes, "Last")
+                        .unwrap_or_else(|e| panic!("{label}: {e}")),
+                }
+            }
+        }
+
+        let plain = plain.lock().unwrap().clone();
+        let cached = cached_image.lock().unwrap().clone();
+        assert_same_but_for_timestamps(&plain, &cached);
+
+        // The plain run's own results, so identical images are also correct ones.
+        let names: Vec<String> = list_dir_exfat(
+            RamPartitionDisk::new_readonly(Arc::new(Mutex::new(cached.clone()))),
+            "/",
+        )
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+        assert!(names.contains(&"renamed.z64".to_string()), "{names:?}");
+        assert!(names.contains(&"Last".to_string()), "{names:?}");
+        assert!(
+            !names.iter().any(|n| n == "Saves" || n == "a.z64"),
+            "{names:?}"
+        );
+        let back_rom = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::new(Mutex::new(cached))),
+            "rom.z64",
+        )
+        .unwrap();
+        assert!(back_rom == rom, "the ROM came through changed");
+
+        let t = transport.lock().unwrap();
+        assert!(
+            t.cache.fetches < t.requests,
+            "the cache served nothing: {} of {} reads reached the image",
+            t.cache.fetches,
+            t.requests
+        );
+        println!(
+            "{} of {} reads reached the image through the cache",
+            t.cache.fetches, t.requests
+        );
     }
 
     /// A source that supplies fewer bytes than it declared is refused outright, rather than
