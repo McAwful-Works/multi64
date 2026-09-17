@@ -69,6 +69,9 @@ pub struct FakeEd64Pro {
     memory: HashMap<u32, u8>,
     /// Bytes queued for the ROM at [`FIFO_ADDR`], in arrival order.
     fifo: Vec<u8>,
+    /// Directory loads so far, and the 1-based number of the one to refuse (0 for none).
+    dir_loads: u32,
+    fail_dir_load: u32,
 }
 
 impl Default for FakeEd64Pro {
@@ -107,7 +110,16 @@ impl FakeEd64Pro {
             pending: Pending::Command,
             memory: HashMap::new(),
             fifo: Vec::new(),
+            dir_loads: 0,
+            fail_dir_load: 0,
         }
+    }
+
+    /// Refuse the `n`th directory load (1-based, counting from now), as a cart that could not list a
+    /// folder would.
+    pub fn failing_dir_load(mut self, n: u32) -> Self {
+        self.fail_dir_load = self.dir_loads + n;
+        self
     }
 
     /// Add a directory, creating parents.
@@ -373,7 +385,10 @@ impl FakeEd64Pro {
             }
             fs::DIR_LOAD => {
                 let k = key(&string_arg(&a[1..]));
-                if self.is_dir_key(&k) {
+                self.dir_loads += 1;
+                if self.dir_loads == self.fail_dir_load {
+                    status::BAD_COMMAND
+                } else if self.is_dir_key(&k) {
                     self.listing = self.children(&k);
                     status::OK
                 } else {

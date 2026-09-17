@@ -463,11 +463,20 @@ impl<T: Transport> Ed64ProSdSession<T> {
             let listed = |path: &str| -> io::Result<bool> {
                 Ok(self.find_exact(path)?.is_some_and(|f| f.is_dir))
             };
-            if !(listed(&e.path)? && listed(dest)?) {
-                return Err(io::Error::other(format!(
-                    "could not confirm that {dest} is a folder separate from {}; nothing was moved",
+            let separate = listed(&e.path).and_then(|ok| Ok(ok && listed(dest)?));
+            if !matches!(separate, Ok(true)) {
+                let mut msg = format!(
+                    "could not confirm that {dest} is a folder separate from {}",
                     e.path
-                )));
+                );
+                if let Err(err) = &separate {
+                    msg.push_str(&format!(" ({err})"));
+                }
+                msg.push_str("; nothing was moved");
+                if !self.remove_folder_made_for_move(e, dest) {
+                    msg.push_str(&format!(", but an empty {dest} may be left on the cart"));
+                }
+                return Err(io::Error::other(msg));
             }
             for child in self.list_dir(&e.path)? {
                 self.move_entry(&child, &join(dest, &child.name))?;
@@ -476,6 +485,26 @@ impl<T: Transport> Ed64ProSdSession<T> {
             self.copy_file_within_cart(e, dest)?;
         }
         self.dev()?.delete(&e.path).map_err(link_err)
+    }
+
+    /// Take back the folder [`Self::move_entry`] just made at `made`, after its safety check could
+    /// not go on; returns whether it is gone (#219). Left there, it made retrying the rename fail
+    /// with "already exists".
+    ///
+    /// The check failed because the two folders could not be told apart, so `made` may be the
+    /// source under another spelling. It is removed only when a fresh listing shows both names
+    /// under their own spelling, which makes them two folders, and `made` is still empty.
+    fn remove_folder_made_for_move(&self, source: &SessionEntry, made: &str) -> bool {
+        let listed = |path: &str| matches!(self.find_exact(path), Ok(Some(f)) if f.is_dir);
+        listed(&source.path)
+            && listed(made)
+            && self
+                .list_dir(made)
+                .is_ok_and(|children| children.is_empty())
+            && self
+                .dev()
+                .and_then(|mut dev| dev.delete(made).map_err(link_err))
+                .is_ok()
     }
 
     /// Copy a cart file to a new cart path through a temporary file on the PC, and confirm the copy
@@ -916,6 +945,32 @@ mod tests {
         assert_eq!(fake.file("backup/deep/b.srm").unwrap(), pattern(CHUNK + 1));
         assert!(fake.is_dir("backup/empty"));
         assert!(!fake.exists("saves"));
+    }
+
+    /// A folder move whose safety check cannot list the folders stops without moving anything, and
+    /// takes back the empty folder it made, so the rename can simply be tried again (#219).
+    ///
+    /// The third directory load is the check's listing: `rename_cart` makes two (source and
+    /// destination), then `move_entry` makes the folder and lists the parent.
+    ///
+    /// Fail-first, demonstrated: without the clean-up the empty `games` is left, and the retry
+    /// fails with "games already exists on the cart".
+    #[test]
+    fn a_folder_move_whose_check_fails_leaves_no_empty_folder() {
+        let s = session(
+            FakeEd64Pro::new()
+                .with_file("roms/a.z64", b"rom")
+                .failing_dir_load(3),
+        );
+        let err = s.rename_cart("roms", "games").unwrap_err();
+        assert!(err.to_string().contains("nothing was moved"), "{err}");
+        assert_eq!(s.cart_path_entry_kind("games").unwrap(), None);
+        assert_eq!(s.cart_path_entry_kind("roms/a.z64").unwrap(), Some(false));
+
+        s.rename_cart("roms", "games").expect("the retry works");
+        let fake = fake_of(s);
+        assert_eq!(fake.file("games/a.z64").unwrap(), b"rom");
+        assert!(!fake.exists("roms"));
     }
 
     /// #131: FatFs folds non-ASCII letters too, so `Ä.sav` is `ä.sav` on the card.
