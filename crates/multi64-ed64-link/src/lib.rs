@@ -9,8 +9,7 @@ pub mod linear_probe;
 
 pub use linear_probe::{
     ed64_linear_base_probe_list, ed64_linear_base_probe_list_with_preferred,
-    looks_like_disk_sector0, probe_ed64_sd_linear_bases, probe_ed64_sd_linear_bases_with_cancel,
-    ED64_LINEAR_BASE_HINTS,
+    looks_like_disk_sector0, probe_ed64_sd_linear_bases_with_cancel, ED64_LINEAR_BASE_HINTS,
 };
 
 use serialport::{ClearBuffer, SerialPort};
@@ -19,8 +18,6 @@ use std::io::{Read, Write};
 use std::time::Duration;
 /// X-series ROM space base used by reference `usb64` for uploads (`CommandProcessor.ROM_BASE_ADDRESS`).
 pub const ROM_BASE_ADDRESS: u32 = 0x1000_0000;
-/// X-series RDRAM base for `RamRead` (`CommandProcessor.RAM_BASE_ADDRESS`).
-pub const RAM_BASE_ADDRESS: u32 = 0x8000_0000;
 
 pub const SECTOR_BYTES: usize = 512;
 
@@ -132,46 +129,6 @@ impl Ed64Link {
         let pkt = Self::command_packet(b'R', address, length_bytes as u32, 0);
         self.write_packet(&pkt)?;
         self.read_exact_payload(length_bytes)
-    }
-
-    /// **RamRead** — read `length_bytes` from RDRAM at `address` (see [`RAM_BASE_ADDRESS`]).
-    pub fn ram_read(&mut self, address: u32, length_bytes: usize) -> io::Result<Vec<u8>> {
-        if length_bytes % SECTOR_BYTES != 0 {
-            return Err(io_other("RamRead length must be a multiple of 512"));
-        }
-        if length_bytes > ED64_READ_MAX_BYTES {
-            return Err(io_other("RamRead length too large"));
-        }
-        let pkt = Self::command_packet(b'r', address, length_bytes as u32, 0);
-        self.write_packet(&pkt)?;
-        self.read_exact_payload(length_bytes)
-    }
-
-    /// Read 512 bytes with **`RomRead`** at `address = rom_linear_base + lba * 512`, for the experimental SD path.
-    ///
-    /// **This does not read the SD card.** `usb64` has no SD command, and `RomRead` reads cart ROM memory. The card is
-    /// reachable only from the N64 side, through the cart's SD registers
-    /// ([EverDrive-64 X7](https://n64brew.dev/wiki/EverDrive-64_X7)); sector data appears in ROM space only if
-    /// console-side code copies it there. See workspace `docs/spec/ed64-sd-usb-host.md`.
-    pub fn read_sd_sector_linear_rom(
-        &mut self,
-        rom_linear_base: u32,
-        lba: u64,
-        buf: &mut [u8; SECTOR_BYTES],
-    ) -> io::Result<()> {
-        let offset = lba
-            .checked_mul(SECTOR_BYTES as u64)
-            .ok_or_else(|| io_other("LBA offset overflow"))?;
-        let addr = (rom_linear_base as u64)
-            .checked_add(offset)
-            .ok_or_else(|| io_other("ROM address overflow"))?;
-        let addr_u32 = u32::try_from(addr).map_err(|_| io_other("ROM address does not fit u32"))?;
-        let data = self.rom_read(addr_u32, SECTOR_BYTES)?;
-        if data.len() != SECTOR_BYTES {
-            return Err(io_other("RomRead returned wrong length"));
-        }
-        buf.copy_from_slice(&data);
-        Ok(())
     }
 }
 

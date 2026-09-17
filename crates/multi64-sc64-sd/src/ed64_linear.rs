@@ -39,10 +39,6 @@ Use Settings → Scan for SD base or enter a new address (see docs/spec/ed64-sd-
             rom_linear_base,
         })
     }
-
-    pub fn rom_linear_base(&self) -> u32 {
-        self.rom_linear_base
-    }
 }
 
 impl SdCardTransport for Ed64RomLinear {

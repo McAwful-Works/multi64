@@ -121,21 +121,14 @@ fn finalize_linear_probe_results(mut found: Vec<u32>, preferred_first: Option<u3
     found
 }
 
-/// Open serial, then probe each candidate base with **`usb64` `RomRead`**.
-/// Returns **all** bases whose first sector passes [`looks_like_disk_sector0`]. May be empty; may have false positives.
+/// Probe each candidate base with **`usb64` `RomRead`**, stopping between addresses when
+/// `should_continue` returns `false` ([`io::ErrorKind::Interrupted`], message `"Cancelled"`).
+///
+/// Returns **all** bases whose first sector passes [`looks_like_disk_sector0`]. May be empty; may
+/// have false positives.
 ///
 /// `preferred_first`: saved address from settings — checked **first** so rediscovery prefers the
 /// last known-good base when the cart is plugged in again.
-pub fn probe_ed64_sd_linear_bases(
-    port: &str,
-    baud: u32,
-    preferred_first: Option<u32>,
-) -> io::Result<(Vec<u32>, usize)> {
-    probe_ed64_sd_linear_bases_with_cancel(port, baud, preferred_first, || true)
-}
-
-/// Same as [`probe_ed64_sd_linear_bases`], but stops between addresses when `should_continue` returns
-/// `false`. Returns [`io::ErrorKind::Interrupted`] with message `"Cancelled"`.
 pub fn probe_ed64_sd_linear_bases_with_cancel(
     port: &str,
     baud: u32,

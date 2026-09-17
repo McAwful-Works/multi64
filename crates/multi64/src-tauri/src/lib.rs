@@ -297,23 +297,10 @@ fn push_log(inner: &Arc<Mutex<DaemonInner>>, line: String) {
     g.logs.push(line);
 }
 
-fn spawn_log_reader(
+/// Copy one of the child's output streams into the log, a line at a time, until it ends.
+fn spawn_log_reader<R: std::io::Read + Send + 'static>(
     inner: Arc<Mutex<DaemonInner>>,
-    stream: Option<std::process::ChildStdout>,
-    prefix: &'static str,
-) {
-    let Some(stream) = stream else { return };
-    thread::spawn(move || {
-        let reader = BufReader::new(stream);
-        for line in reader.lines().map_while(Result::ok) {
-            push_log(&inner, format!("{prefix}{line}"));
-        }
-    });
-}
-
-fn spawn_log_reader_err(
-    inner: Arc<Mutex<DaemonInner>>,
-    stream: Option<std::process::ChildStderr>,
+    stream: Option<R>,
     prefix: &'static str,
 ) {
     let Some(stream) = stream else { return };
@@ -1132,7 +1119,7 @@ fn start_daemon_locked(
     let stderr = child.stderr.take();
     let d = Arc::clone(daemon);
     spawn_log_reader(Arc::clone(&d), stdout, "");
-    spawn_log_reader_err(d, stderr, "[stderr] ");
+    spawn_log_reader(d, stderr, "[stderr] ");
 
     let mut inner = daemon.lock();
     inner.child = Some(child);
@@ -1388,26 +1375,6 @@ async fn daemon_stop(app: tauri::AppHandle) -> Result<(), String> {
         let _ = app.emit("daemon-changed", ());
     })
     .await
-}
-
-/// Blocking: writes the autostart registry entry.
-#[tauri::command]
-async fn set_autostart_windows(enabled: bool) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || set_autostart_windows_impl(enabled))
-        .await
-        .map_err(|e| format!("set autostart task: {e}"))?
-}
-
-/// Blocking: reads the autostart registry entry.
-#[tauri::command]
-async fn get_autostart_windows() -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        multi64_auto_launch()
-            .map(|auto| auto.is_enabled().unwrap_or(false))
-            .unwrap_or(false)
-    })
-    .await
-    .map_err(|e| format!("get autostart task: {e}"))
 }
 
 /// Basenames we search for (NSIS / MSI / legacy installs).
@@ -1914,8 +1881,6 @@ pub fn run() {
             clear_daemon_logs,
             daemon_start,
             daemon_stop,
-            set_autostart_windows,
-            get_autostart_windows,
             get_xfer64_state,
             launch_or_install_xfer64,
         ])

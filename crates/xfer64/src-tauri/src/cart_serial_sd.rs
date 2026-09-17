@@ -1260,8 +1260,6 @@ pub async fn cart_serial_export_copy_batch(
                         base,
                         progress_total,
                         Some(item.progress_message.clone()),
-                        None,
-                        None,
                     );
                     if item.is_dir {
                         std::fs::create_dir_all(&dest)
@@ -1283,8 +1281,6 @@ pub async fn cart_serial_export_copy_batch(
                         base + item.bytes,
                         progress_total,
                         Some(item.progress_message),
-                        None,
-                        None,
                     );
                 }
                 Ok(())
@@ -1347,8 +1343,6 @@ pub async fn cart_serial_import_copy_batch(
                         base,
                         progress_total,
                         Some(item.progress_message.clone()),
-                        None,
-                        None,
                     );
                     if item.is_dir {
                         session
@@ -1371,8 +1365,6 @@ pub async fn cart_serial_import_copy_batch(
                         base + item.bytes,
                         progress_total,
                         Some(item.progress_message),
-                        None,
-                        None,
                     );
                 }
                 Ok(())
@@ -1621,7 +1613,7 @@ pub async fn cart_serial_remove_cart(
             }
         };
         let start_msg = deleting_msg(0, paths.first().map(|s| s.as_str()).unwrap_or(""));
-        emit_explorer_progress_full(&app, 0, total as u64, Some(start_msg), None, None);
+        emit_explorer_progress_full(&app, 0, total as u64, Some(start_msg));
         let st = detached;
         with_session(&dev, "cart_serial_remove_cart", &st, &snap, |session| {
             require_ed64pro_write_consent(session)?;
@@ -1630,14 +1622,7 @@ pub async fn cart_serial_remove_cart(
                     return Err("Cancelled".into());
                 }
                 let msg = deleting_msg(i, p);
-                emit_explorer_progress_full(
-                    &app,
-                    i as u64,
-                    total as u64,
-                    Some(msg.clone()),
-                    None,
-                    None,
-                );
+                emit_explorer_progress_full(&app, i as u64, total as u64, Some(msg.clone()));
                 dev.log(format!("cart_serial_remove_cart: deleting {p:?}"));
                 let r = if dev.is_enabled() {
                     let d = dev.clone();
@@ -1652,7 +1637,7 @@ pub async fn cart_serial_remove_cart(
                 // No refresh_cart here: this runs inside with_session, so the SD session still
                 // holds the COM port. A reload would try to open it a second time and fail,
                 // blanking the pane mid-delete. The caller reloads once the session is closed.
-                emit_explorer_progress_full(&app, done as u64, total as u64, Some(msg), None, None);
+                emit_explorer_progress_full(&app, done as u64, total as u64, Some(msg));
             }
             Ok(())
         })

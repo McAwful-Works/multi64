@@ -643,26 +643,8 @@ function endUsbLoading() {
  * @param {"cart" | "pc"} pane
  * @param {() => Promise<unknown>} fn
  */
-/** Pane reloads requested by progress events, deferred until the operation releases the port. */
-const pendingPaneRefresh = { cart: false, pc: false };
-
-async function flushPendingPaneRefresh() {
-  const wantCart = pendingPaneRefresh.cart;
-  const wantPc = pendingPaneRefresh.pc;
-  pendingPaneRefresh.cart = false;
-  pendingPaneRefresh.pc = false;
-  try {
-    if (wantCart) await loadCartPane({ preserveSelection: true, forceRefresh: true });
-    if (wantPc) await loadPcPane({ preserveSelection: true, forceRefresh: true });
-  } catch {
-    /* the caller reports the operation's own error; a refresh failure must not mask it */
-  }
-}
-
 async function runWithProgress(pane, message, fn) {
   resetProgressCancel();
-  pendingPaneRefresh.cart = false;
-  pendingPaneRefresh.pc = false;
   showOperationProgress(message, pane, true);
   const fill = document.getElementById(`explorer-operation-fill-${pane}`);
   let unlisten = null;
@@ -684,11 +666,9 @@ async function runWithProgress(pane, message, fn) {
           const textEl = document.getElementById(`explorer-operation-text-${pane}`);
           if (textEl) setOperationText(textEl, msg);
         }
-        // Do NOT reload here. These events arrive while the backend still holds the cart's
-        // SD session, so a reload would try to open the same exclusive COM port and fail,
-        // blanking the pane. Record the request and run it once, after the session closes.
-        if (payload.refreshCart) pendingPaneRefresh.cart = true;
-        if (payload.refreshPc) pendingPaneRefresh.pc = true;
+        // Do NOT reload a pane here. These events arrive while the backend still holds the
+        // cart's SD session, so a reload would try to open the same exclusive COM port and
+        // fail, blanking the pane. Reload after the operation, where its caller does.
       });
     }
     await fn();
@@ -701,8 +681,6 @@ async function runWithProgress(pane, message, fn) {
       fill.classList.remove("indeterminate");
       fill.style.width = cancelled ? "0%" : "100%";
     }
-    // The backend session is closed by now, so the port is free for a reload.
-    await flushPendingPaneRefresh();
   }
 }
 

@@ -345,7 +345,7 @@ pub async fn fs_copy_one_file(
 /// Emit progress for skipped files during interactive copy (JS-driven loop).
 #[tauri::command]
 pub fn explorer_emit_progress(app: AppHandle, done: u64, total: u64, message: Option<String>) {
-    emit_explorer_progress_full(&app, done, total, message, None, None);
+    emit_explorer_progress_full(&app, done, total, message);
 }
 
 #[tauri::command]
