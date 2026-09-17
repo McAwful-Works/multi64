@@ -2108,7 +2108,9 @@ fn rename_cart_exfat(
         exfat_write_entry_slabs_at(vol, part_start, part_bytes, &dest_offsets, &new_slabs)?;
         exfat_mark_slots_deleted(vol, part_start, part_bytes, &old_offsets, &old_entries)?;
     }
-    fs.sync_bitmap().map_err(exfat_err)?;
+    // No bitmap write: a rename moves directory entries within the folder's own clusters, and takes
+    // or frees none, so there is nothing to persist, and the whole-bitmap write was the dominant
+    // cost of the operation (#196, #224).
     drop(fs);
     vol.flush_serial()?;
     Ok(())
@@ -5057,6 +5059,66 @@ mod fs_tests {
                 fail_write: Some(Box::new(fail)),
             })),
         }
+    }
+
+    /// `arc` reached through [`flaky_cached_volume`], failing nothing, with every sector it writes
+    /// recorded in the returned list.
+    fn recording_volume(arc: &Image) -> (ExfatVolumeSource, Arc<Mutex<Vec<u64>>>) {
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&written);
+        let vol = flaky_cached_volume(arc, move |lba| {
+            log.lock().unwrap().push(lba);
+            false
+        });
+        (vol, written)
+    }
+
+    /// A rename writes only the folder's own entries: it takes and frees no clusters, so it has no
+    /// bitmap to write (#224). Both a rename in place and one that moves the set to new slots.
+    ///
+    /// Fail-first, demonstrated: with the bitmap sync back in `rename_cart_exfat`, both renames also
+    /// write the allocation bitmap's sector, outside the root.
+    #[test]
+    fn exfat_rename_writes_only_the_folders_entries() {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        exfat_write(&vol, part_bytes, "a.z64", 4, b"data", &mut |_| true).unwrap();
+        let regions = ExfatRegions::of(&arc);
+
+        for (from, to) in [
+            ("a.z64", "b.z64"),
+            ("b.z64", "a much longer name that needs more slots.z64"),
+        ] {
+            let (recording, written) = recording_volume(&arc);
+            rename_cart_exfat(&recording, 0, part_bytes, from, to).unwrap();
+            let written = written.lock().unwrap().clone();
+            assert!(!written.is_empty(), "{from} -> {to} wrote nothing");
+            assert!(
+                written.iter().all(|&lba| regions.is_root(lba)),
+                "{from} -> {to} wrote outside the root's entries: {written:?}"
+            );
+        }
+        let back = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::clone(&arc)),
+            "a much longer name that needs more slots.z64",
+        )
+        .unwrap();
+        assert_eq!(back, b"data");
+    }
+
+    /// A mkdir of a path that already exists writes nothing at all (#224).
+    ///
+    /// Fail-first, demonstrated: with the unconditional sync `mkdir_cart_exfat` had before #213,
+    /// the bitmap is written.
+    #[test]
+    fn exfat_mkdir_of_an_existing_path_writes_nothing() {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        mkdir_cart_exfat(&vol, 0, part_bytes, "Saves/Deeper").unwrap();
+
+        let (recording, written) = recording_volume(&arc);
+        mkdir_cart_exfat(&recording, 0, part_bytes, "Saves/Deeper").unwrap();
+        assert_eq!(*written.lock().unwrap(), Vec::<u64>::new());
     }
 
     /// A nested mkdir whose second folder cannot be made keeps the first one's cluster marked
