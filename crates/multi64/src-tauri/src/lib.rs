@@ -1033,7 +1033,26 @@ fn start_daemon(
     daemon: &Arc<Mutex<DaemonInner>>,
     settings: &Settings,
 ) -> Result<(), String> {
-    let _ops = DAEMON_OPS.lock();
+    let started = {
+        let _ops = DAEMON_OPS.lock();
+        start_daemon_locked(app, daemon, settings)
+    };
+    // Only once DAEMON_OPS is released (#221). A Rust listener runs on the emitting thread, and the
+    // tray's listener rebuilds the menu through the main thread and waits for it; the main thread,
+    // running Exit, may itself be waiting in `kill_daemon` for DAEMON_OPS. Emitting under the lock
+    // could leave each waiting on the other, and Multi64 hung on exit.
+    if started.is_ok() {
+        let _ = app.emit("daemon-changed", ());
+    }
+    started
+}
+
+/// [`start_daemon`] for a caller holding [`DAEMON_OPS`]. Emits nothing: see there.
+fn start_daemon_locked(
+    app: &tauri::AppHandle,
+    daemon: &Arc<Mutex<DaemonInner>>,
+    settings: &Settings,
+) -> Result<(), String> {
     kill_daemon_locked(daemon);
     if shutting_down() {
         return Err(EXITING.to_string());
@@ -1119,8 +1138,6 @@ fn start_daemon(
     inner.child = Some(child);
     inner.serial = Some(serial);
     inner.cart = cart;
-    drop(inner);
-    let _ = app.emit("daemon-changed", ());
     Ok(())
 }
 

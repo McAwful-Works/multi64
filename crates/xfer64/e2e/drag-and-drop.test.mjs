@@ -1031,6 +1031,27 @@ const clearedSavedFolder = (calls) =>
   const cancelling = (await status()).text;
   check("and a progress update doesn't overwrite Cancelling…", restarted && cancelling === "Cancelling…", cancelling);
   await p.evaluate(() => window.__FINISH_UPLOAD__.reject("Cancelled"));
+  await until(p, () => !document.body.classList.contains("upload-picker-uploading"));
+  const plainCancel = await status();
+  check("a plain cancel reads Upload cancelled.",
+    plainCancel.warning && plainCancel.text === "Upload cancelled.", JSON.stringify(plainCancel));
+
+  // #216: what the cancel left on the cart used to be flattened to "Upload cancelled." too.
+  const left = 'Cancelled — incomplete copy left, delete it before using it (access denied): "/roms/game.z64"';
+  const resume = "The Multi64 bridge was paused for this upload and could not be resumed: connection refused.";
+  await startUpload();
+  await p.click("#upload-picker-btn-close");
+  await p.evaluate((msg) => window.__FINISH_UPLOAD__.reject(msg), `${left}\n\n${resume}`);
+  await until(p, () => !document.body.classList.contains("upload-picker-uploading"));
+  const leftBehind = {
+    ...(await status()),
+    error: await p.evaluate(() => document.getElementById("upload-picker-error").textContent),
+  };
+  check("a cancel that left an incomplete copy says so, and a failed resume after it still shows",
+    leftBehind.warning &&
+      leftBehind.text === left.replace(/^Cancelled/, "Upload cancelled") &&
+      leftBehind.error === resume,
+    JSON.stringify(leftBehind));
   await p.close();
 }
 

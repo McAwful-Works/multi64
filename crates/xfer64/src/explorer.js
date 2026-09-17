@@ -1,4 +1,4 @@
-import { countNoun, userFacingErrorMessage } from "./user-error.js";
+import { cancelMessageFor, countNoun, userFacingErrorMessage } from "./user-error.js";
 import {
   bridgeListenUrl,
   normalizeUsbPath,
@@ -237,26 +237,6 @@ function requestProgressCancel() {
 
 function isCancelledBackendError(e) {
   return String(e).includes("Cancelled");
-}
-
-/**
- * Message to show for a backend-reported cancellation.
- *
- * Cancellation is detected by substring, so the error often carries more than the bare word --
- * an interrupted overwrite reports what became of the file on the cart. Replacing every
- * such message with a flat "Cancelled." hid exactly the part the user needed to see.
- *
- * Every cancelled operation finishes as "<Operation> cancelled." (e.g. "Export cancelled."); a
- * backend detail that starts with "Cancelled" keeps its detail under that same lead.
- * @param {unknown} e
- * @param {string} operation noun for the operation, e.g. "Export", "Import", "Copy", "Delete"
- */
-function cancelMessageFor(e, operation) {
-  const raw = String(e && e.message ? e.message : e).trim();
-  const stripped = raw.replace(/^Error:\s*/i, "").trim();
-  if (!stripped || /^cancelled[.]?$/i.test(stripped)) return `${operation} cancelled.`;
-  if (/^cancelled\b/i.test(stripped)) return stripped.replace(/^cancelled\b/i, `${operation} cancelled`);
-  return stripped;
 }
 
 /** @type {ReturnType<typeof setTimeout> | null} */
