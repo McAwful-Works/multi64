@@ -2223,7 +2223,7 @@ fn exfat_create_dir_in(
     let offsets = parent.offsets(slot, slot_count)?;
 
     let cluster = fs.allocate_cluster(2).map_err(exfat_err)?;
-    let result = (|| -> io::Result<()> {
+    let result = (|| -> io::Result<Vec<[u8; 32]>> {
         if !info.is_valid_cluster(cluster) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -2254,12 +2254,63 @@ fn exfat_create_dir_in(
             true,
         )?;
         debug_assert_eq!(slabs.len(), slot_count);
-        exfat_write_entry_slabs_at(vol, part_start, part_bytes, &offsets, &slabs)
+        Ok(slabs)
     })();
-    if result.is_err() && info.is_valid_cluster(cluster) {
-        exfat_release_file_clusters(fs, info, vol, part_start, part_bytes, &[cluster]);
+    let written = match result {
+        Ok(slabs) => {
+            exfat_write_entry_slabs_restoring(vol, part_start, part_bytes, &offsets, &slabs)
+        }
+        Err(error) => Err(ExfatEntryWriteFailed {
+            error,
+            restored: true,
+        }),
+    };
+    match written {
+        Ok(()) => Ok(()),
+        // An out-of-range cluster is not one to hand back.
+        Err(failed) if !info.is_valid_cluster(cluster) => Err(failed.error),
+        Err(failed) => Err(exfat_undo_failed_create(
+            fs,
+            info,
+            vol,
+            part_start,
+            part_bytes,
+            &[cluster],
+            failed,
+        )),
     }
-    result
+}
+
+/// Undo a file or folder create that failed, given the `clusters` it took, and return the error to
+/// report.
+///
+/// When the directory is known to be as it was, the clusters go back. When the entry set may be
+/// part-written and could not be put back (#215), they stay allocated, bitmap written, and so does
+/// a replaced original's: the card may now hold an entry that refers to them, and freeing clusters
+/// something still points at is how data gets overwritten. Space lost that way is what a disk
+/// check recovers, which is what the error says to run.
+fn exfat_undo_failed_create(
+    fs: &ExFatFs<PartitionDiskUnion>,
+    info: &hadris_fat::exfat::ExFatInfo,
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+    clusters: &[u32],
+    failed: ExfatEntryWriteFailed,
+) -> io::Error {
+    if failed.restored {
+        exfat_release_file_clusters(fs, info, vol, part_start, part_bytes, clusters);
+        return failed.error;
+    }
+    let _ = fs.sync_bitmap();
+    io::Error::new(
+        failed.error.kind(),
+        format!(
+            "the directory entry was only partly written and could not be put back, so the \
+             folder may be damaged; run a disk check on the card (chkdsk on Windows): {}",
+            failed.error
+        ),
+    )
 }
 
 /// Walk `parts` below the root, creating each folder that does not exist yet, and return the
@@ -2370,6 +2421,18 @@ fn exfat_write_stream_to_clusters(
     Ok(written)
 }
 
+/// Whether `data` still has bytes to give, reading at most one of them.
+fn exfat_source_has_more(data: &mut impl Read) -> io::Result<bool> {
+    let mut probe = [0u8; 1];
+    loop {
+        match data.read(&mut probe) {
+            Ok(n) => return Ok(n > 0),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Create the file `name` in the already-resolved directory `parent`, with `len` bytes from `data`.
 ///
 /// Written here rather than through hadris's `create_file` + `write_file` for the same reason
@@ -2382,12 +2445,14 @@ fn exfat_write_stream_to_clusters(
 /// [`Sc64SdSession::import_from_pc_with_progress`] has it from `std::fs::metadata`. Knowing it up
 /// front is what lets [`exfat_allocate_file_clusters`] look for one contiguous run, and so write a
 /// NoFatChain stream where the free space permits, instead of growing a chain cluster by cluster. A
-/// source that then delivers a different number of bytes is an error and is rolled back: it changed
-/// underneath us, and writing an entry whose `data_length` disagrees with the data is worse than
-/// writing nothing.
+/// source that then delivers a different number of bytes, fewer or more (#220), is an error and is
+/// rolled back: it changed underneath us, and writing an entry whose `data_length` disagrees with
+/// the data is worse than writing nothing.
 ///
-/// Nothing is left behind on any failure. The clusters are released, and the entry set — the only
-/// thing that makes a file reachable — is written last, so a reader never sees a partial file.
+/// Nothing is left behind on a failure. The clusters are released, and the entry set — the only
+/// thing that makes a file reachable — is written last, so a reader never sees a partial file. The
+/// one exception is an entry-set write that fails part-way and cannot be put back (#215): see
+/// [`exfat_undo_failed_create`].
 ///
 /// **Replacing** (`replacing` is the existing file at `rel_path`) keeps the original intact until
 /// the very end (#200). The new data goes into clusters of its own while the original's entry set
@@ -2454,7 +2519,7 @@ fn exfat_create_file_in(
     // back as completely as a failure after it.
     let mut clusters: Vec<u32> = Vec::with_capacity(cluster_count as usize);
 
-    let result = (|| -> io::Result<()> {
+    let result = (|| -> io::Result<Vec<[u8; 32]>> {
         let contiguous = exfat_allocate_file_clusters(
             fs,
             info,
@@ -2482,6 +2547,15 @@ fn exfat_create_file_in(
                 format!("source supplied {written} bytes where {len} were expected"),
             ));
         }
+        // The stream stops at `len`, so a source that grew since it was measured would otherwise
+        // be cut short without a word (#220).
+        if exfat_source_has_more(data)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the file grew while it was being copied; copy it again once it has stopped \
+                 changing",
+            ));
+        }
         // An empty file has no allocation: first cluster 0, length 0, reported as contiguous, which
         // is how hadris's own `create_file` left the empty files already on this project's cards.
         let first_cluster = clusters.first().copied().unwrap_or(0);
@@ -2494,12 +2568,22 @@ fn exfat_create_file_in(
             contiguous,
         )?;
         debug_assert_eq!(slabs.len(), slot_count);
-        exfat_write_entry_slabs_at(vol, part_start, part_bytes, &offsets, &slabs)
+        Ok(slabs)
     })();
 
-    if let Err(e) = result {
-        exfat_release_file_clusters(fs, info, vol, part_start, part_bytes, &clusters);
-        return Err(e);
+    let written = match result {
+        Ok(slabs) => {
+            exfat_write_entry_slabs_restoring(vol, part_start, part_bytes, &offsets, &slabs)
+        }
+        Err(error) => Err(ExfatEntryWriteFailed {
+            error,
+            restored: true,
+        }),
+    };
+    if let Err(failed) = written {
+        return Err(exfat_undo_failed_create(
+            fs, info, vol, part_start, part_bytes, &clusters, failed,
+        ));
     }
 
     // From here the new file is the one on the card. The original's clusters are unreferenced; a
@@ -2760,6 +2844,7 @@ fn exfat_write_bytes_at(
     Ok(())
 }
 
+/// [`exfat_write_entry_slabs_restoring`], for callers that only need to know it failed.
 fn exfat_write_entry_slabs_at(
     vol: &ExfatVolumeSource,
     part_start: u64,
@@ -2767,19 +2852,83 @@ fn exfat_write_entry_slabs_at(
     offsets: &[u64],
     slabs: &[[u8; 32]],
 ) -> io::Result<()> {
+    exfat_write_entry_slabs_restoring(vol, part_start, part_bytes, offsets, slabs)
+        .map_err(|failed| failed.error)
+}
+
+/// An entry-set write that failed, and whether the directory is known to be as it was before.
+struct ExfatEntryWriteFailed {
+    error: io::Error,
+    /// Every sector the write may have changed was written back with its earlier contents.
+    restored: bool,
+}
+
+/// Write each 32-byte slab at its offset, **one whole sector at a time**, and on a failure put back
+/// the sectors already written (#215).
+///
+/// A set spans several slots, and each written on its own was a separate sector write, so a USB
+/// failure part-way through left a mix: a File entry whose checksum no longer matched its
+/// secondaries, or a complete-looking entry pointing at clusters the caller was about to free.
+/// Grouping the slabs by sector makes a set that fits in one sector (most of them) a single
+/// write. One that crosses a sector boundary still takes more than one, so each sector's earlier
+/// contents are kept and written back, the failed sector included (a write that timed out may
+/// still have landed), in reverse order.
+fn exfat_write_entry_slabs_restoring(
+    vol: &ExfatVolumeSource,
+    part_start: u64,
+    part_bytes: u64,
+    offsets: &[u64],
+    slabs: &[[u8; 32]],
+) -> Result<(), ExfatEntryWriteFailed> {
     debug_assert_eq!(offsets.len(), slabs.len());
-    if offsets.iter().any(|&o| o.saturating_add(32) > part_bytes) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "exFAT entry write past partition",
-        ));
+    let untouched = |error| ExfatEntryWriteFailed {
+        error,
+        restored: true,
+    };
+    // Consecutive slabs in the same sector, in order: (sector start, indices into `slabs`).
+    let mut sectors: Vec<(u64, Vec<usize>)> = Vec::new();
+    for (i, &offset) in offsets.iter().enumerate() {
+        let start = offset - offset % 512;
+        if start.saturating_add(512) > part_bytes {
+            return Err(untouched(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "exFAT entry write past partition",
+            )));
+        }
+        match sectors.last_mut() {
+            Some((s, group)) if *s == start => group.push(i),
+            _ => sectors.push((start, vec![i])),
+        }
     }
+
     let mut disk = vol.partition_disk_rw(part_start, part_bytes);
-    for (&offset, slab) in offsets.iter().zip(slabs) {
-        disk.seek(SeekFrom::Start(offset))?;
-        disk.write_all(slab)?;
+    let mut before: Vec<(u64, [u8; 512])> = Vec::with_capacity(sectors.len());
+    for (start, group) in &sectors {
+        let written = (|| -> io::Result<()> {
+            let mut sector = [0u8; 512];
+            disk.seek(SeekFrom::Start(*start))?;
+            disk.read_exact(&mut sector)?;
+            before.push((*start, sector));
+            for &i in group {
+                let within = (offsets[i] - start) as usize;
+                sector[within..within + 32].copy_from_slice(&slabs[i]);
+            }
+            disk.seek(SeekFrom::Start(*start))?;
+            disk.write_all(&sector)?;
+            disk.flush()
+        })();
+        if let Err(error) = written {
+            let mut restored = true;
+            for (start, sector) in before.iter().rev() {
+                restored &= disk
+                    .seek(SeekFrom::Start(*start))
+                    .and_then(|_| disk.write_all(sector))
+                    .and_then(|_| disk.flush())
+                    .is_ok();
+            }
+            return Err(ExfatEntryWriteFailed { error, restored });
+        }
     }
-    disk.flush()?;
     Ok(())
 }
 
@@ -5413,7 +5562,26 @@ mod fs_tests {
         fat_before: &[u8],
         allocated_before: u32,
     ) {
-        let back = read_file_exfat(RamPartitionDisk::new_readonly(Arc::clone(arc)), "game.z64")
+        assert_replace_left_the_original_at(
+            arc,
+            "game.z64",
+            original,
+            listing_before,
+            fat_before,
+            allocated_before,
+        );
+    }
+
+    /// [`assert_replace_left_the_original`] for an original at `path`.
+    fn assert_replace_left_the_original_at(
+        arc: &Image,
+        path: &str,
+        original: &[u8],
+        listing_before: &[(String, u64)],
+        fat_before: &[u8],
+        allocated_before: u32,
+    ) {
+        let back = read_file_exfat(RamPartitionDisk::new_readonly(Arc::clone(arc)), path)
             .expect("the original must still be there");
         assert!(back == original, "the original's contents changed");
         let listing: Vec<(String, u64)> =
@@ -5621,6 +5789,170 @@ mod fs_tests {
             allocated - 6 + 2,
             "the new file's clusters must be marked allocated on the card"
         );
+    }
+
+    /// A 240-character name: an 18-slot entry set, 576 bytes, so it always crosses a sector.
+    fn long_exfat_name() -> String {
+        format!("{}.z64", "a".repeat(236))
+    }
+
+    /// An image with a 4-sector (2048-byte) root cluster and a 3000-byte original under
+    /// [`long_exfat_name`], plus what a test compares against afterwards.
+    fn exfat_with_long_named_original() -> WithOriginal {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(4));
+        let original: Vec<u8> = (0..3000).map(|i| (i % 241) as u8 ^ 0x5A).collect();
+        exfat_write(
+            &vol,
+            part_bytes,
+            &long_exfat_name(),
+            3000,
+            &original,
+            &mut |_| true,
+        )
+        .unwrap();
+        let listing = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.name, e.size))
+            .collect();
+        let fat = fat_bytes(&arc);
+        let allocated = allocated_cluster_count(&arc);
+        WithOriginal {
+            arc,
+            vol,
+            part_bytes,
+            original,
+            listing,
+            fat,
+            allocated,
+        }
+    }
+
+    /// A replace whose entry set crosses a sector, and whose second sector's write fails, puts the
+    /// first sector back and leaves the original exactly as it was (#215).
+    ///
+    /// Only that one write fails, so the restore succeeds.
+    ///
+    /// Fail-first, demonstrated: with the restore in `exfat_write_entry_slabs_restoring` skipped
+    /// (still reporting the directory restored), the first sector keeps the new File and Stream
+    /// entries over the old names, pointing at the replacement's freed cluster, and the original
+    /// reads back with the wrong contents.
+    #[test]
+    fn exfat_replace_whose_entry_set_write_fails_part_way_keeps_the_original() {
+        let WithOriginal {
+            arc,
+            part_bytes,
+            original,
+            listing,
+            fat,
+            allocated,
+            ..
+        } = exfat_with_long_named_original();
+        let regions = ExfatRegions::of(&arc);
+        let (mut root_writes, mut failed) = (0, false);
+        let vol = flaky_cached_volume(&arc, move |lba| {
+            if !regions.is_root(lba) || failed {
+                return false;
+            }
+            root_writes += 1;
+            failed = root_writes == 2;
+            failed
+        });
+        let replacement: Vec<u8> = (0..1000).map(|i| (i % 229) as u8).collect();
+
+        let err = exfat_write(
+            &vol,
+            part_bytes,
+            &long_exfat_name(),
+            1000,
+            &replacement,
+            &mut |_| true,
+        )
+        .expect_err("the entry set's second sector fails");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+
+        assert_replace_left_the_original_at(
+            &arc,
+            &long_exfat_name(),
+            &original,
+            &listing,
+            &fat,
+            allocated,
+        );
+    }
+
+    /// The same failure, but the sector cannot be put back either: the clusters of both copies stay
+    /// allocated, and the error says to check the card (#215). Space may be lost; nothing an entry
+    /// on the card might point at is handed out again.
+    ///
+    /// Fail-first, demonstrated: releasing the new clusters regardless, as before, gives an
+    /// allocated count of the original's alone.
+    #[test]
+    fn exfat_an_entry_set_that_cannot_be_put_back_keeps_its_clusters() {
+        let WithOriginal {
+            arc,
+            part_bytes,
+            allocated,
+            ..
+        } = exfat_with_long_named_original();
+        let regions = ExfatRegions::of(&arc);
+        let mut root_writes = 0;
+        let vol = flaky_cached_volume(&arc, move |lba| {
+            if !regions.is_root(lba) {
+                return false;
+            }
+            root_writes += 1;
+            root_writes >= 2
+        });
+        let replacement: Vec<u8> = (0..1000).map(|i| (i % 229) as u8).collect();
+
+        let err = exfat_write(
+            &vol,
+            part_bytes,
+            &long_exfat_name(),
+            1000,
+            &replacement,
+            &mut |_| true,
+        )
+        .expect_err("the entry set's second sector fails, and so does the restore");
+        assert_eq!(
+            allocated_cluster_count(&arc),
+            allocated + 1,
+            "the replacement's cluster stays allocated beside the original's two"
+        );
+        assert!(err.to_string().contains("disk check"), "{err}");
+    }
+
+    /// A source with more bytes than the length it was measured at is refused and rolled back,
+    /// not cut short (#220).
+    ///
+    /// Fail-first, demonstrated: without the check after the stream, the import succeeds with the
+    /// first 1000 of 1500 bytes.
+    #[test]
+    fn exfat_import_of_a_source_that_grew_is_refused() {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        let before_names = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .unwrap()
+            .len();
+        let before_allocated = allocated_cluster_count(&arc);
+        let before_fat = fat_bytes(&arc);
+        let grown = vec![0x33u8; 1500];
+
+        let err = exfat_write(&vol, part_bytes, "log.txt", 1000, &grown, &mut |_| true)
+            .expect_err("the source has more than its declared length");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+        assert!(err.to_string().contains("grew"), "{err}");
+
+        assert_eq!(
+            list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+                .unwrap()
+                .len(),
+            before_names
+        );
+        assert_eq!(allocated_cluster_count(&arc), before_allocated);
+        assert!(fat_bytes(&arc) == before_fat);
     }
 
     /// A replace that fits only if the original's space is freed first is refused, with the
