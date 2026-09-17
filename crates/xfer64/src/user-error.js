@@ -26,6 +26,27 @@ export function countNoun(n, singular, plural = `${singular}s`) {
   return `${n} ${n === 1 ? singular : plural}`;
 }
 
+/**
+ * Message to show for a backend-reported cancellation.
+ *
+ * Cancellation is detected by substring, so the error often carries more than the bare word --
+ * an interrupted overwrite reports what became of the file on the cart. Replacing every
+ * such message with a flat "Cancelled." hid exactly the part the user needed to see.
+ *
+ * Every cancelled operation finishes as "<Operation> cancelled." (e.g. "Export cancelled."); a
+ * backend detail that starts with "Cancelled" keeps its detail under that same lead. Shared by the
+ * main window and Quick upload, which used to flatten every cancel to "Upload cancelled." (#216).
+ * @param {unknown} e
+ * @param {string} operation noun for the operation, e.g. "Export", "Import", "Upload", "Delete"
+ */
+export function cancelMessageFor(e, operation) {
+  const raw = String(e && e.message ? e.message : e).trim();
+  const stripped = raw.replace(/^Error:\s*/i, "").trim();
+  if (!stripped || /^cancelled[.]?$/i.test(stripped)) return `${operation} cancelled.`;
+  if (/^cancelled\b/i.test(stripped)) return stripped.replace(/^cancelled\b/i, `${operation} cancelled`);
+  return stripped;
+}
+
 /** @param {unknown} err */
 function errorToString(err) {
   if (err == null) return "";

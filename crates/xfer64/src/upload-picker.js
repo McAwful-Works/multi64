@@ -1,4 +1,4 @@
-import { countNoun, userFacingErrorMessage } from "./user-error.js";
+import { cancelMessageFor, countNoun, userFacingErrorMessage } from "./user-error.js";
 import {
   bridgeListenUrl,
   normalizeUsbPath,
@@ -681,9 +681,11 @@ async function runUpload() {
     setUploadStatus(doneMode, doneMsg);
   } catch (e) {
     if (String(e).includes("Cancelled")) {
-      setUploadStatus("warning", "Upload cancelled.");
       // The backend appends a failed bridge resume after a blank line; don't let it vanish with the cancel.
-      const resumeNote = String(e).split("\n\n").slice(1).join(" ");
+      const [cancel, ...resume] = String(e).split("\n\n");
+      // What the cancel left on the cart stays in the status, as it does in the main window (#216).
+      setUploadStatus("warning", cancelMessageFor(cancel, "Upload"));
+      const resumeNote = resume.join(" ");
       if (resumeNote) setError(resumeNote);
     } else {
       setError(userFacingErrorMessage(e, { context: "general" }));
