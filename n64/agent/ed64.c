@@ -79,19 +79,28 @@ int ed64_init(void)
     return pi_io_read(ED_REG_USBCFG, &v) && (v & ED_USBSTAT_POWER);
 }
 
-/** Pull `n` (1..512) bytes from USB into the window; returns where they start, or 0. */
-static const uint8_t *usb_pull(uint32_t n)
+/**
+ * Pull `n` (1..512) bytes from USB into the window; returns where they start, or 0. `*started`
+ * says whether the read transfer was asked for: until it is, nothing has left the cart.
+ */
+static const uint8_t *usb_pull_started(uint32_t n, int *started)
 {
     uint32_t addr = ED_WINDOW - n;
     uint32_t first = addr & ~3u;
 
-    if (!pi_io_write(ED_REG_USBCFG, ED_USBMODE_RD | addr) || !usb_idle()) {
+    if (!pi_io_write_stored(ED_REG_USBCFG, ED_USBMODE_RD | addr, started) || !usb_idle()) {
         return 0;
     }
     if (!pi_io_load_words(s_window, ED_REG_USBDAT + first, (ED_WINDOW - first) / 4u)) {
         return 0;
     }
     return (const uint8_t *)s_window + (addr - first);
+}
+
+static const uint8_t *usb_pull(uint32_t n)
+{
+    int started;
+    return usb_pull_started(n, &started);
 }
 
 uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
@@ -105,6 +114,7 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
     uint32_t got = 0u;
     uint32_t spilled = 0u;
     int is_l3;
+    int started;
 
     if (s_pending_len > 0u) {
         /* The rest of the last message comes before anything still waiting on USB. */
@@ -127,9 +137,15 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
         return 0u;
     }
 
+    /* A PI that stayed busy before the header's read was even asked for took nothing: the message
+       is still whole in the cart for the next call. Reporting that as a loss made the agent throw
+       away a partial request it could still have completed (#223). */
+    b = usb_pull_started(8u, &started);
+    if (b == 0 && !started) {
+        return 0u;
+    }
     /* From here on a message is being consumed: any failure has lost part of the stream, and says
        so, so the agent throws away the partial frame it belonged to (#151). */
-    b = usb_pull(8u);
     if (b == 0 || b[0] != 'D' || b[1] != 'M' || b[2] != 'A' || b[3] != '@') {
         /* Out of step with the host. The agent's L3 layer resynchronises on the next frame. */
         return ED64_RECEIVE_LOST;

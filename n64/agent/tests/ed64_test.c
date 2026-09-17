@@ -62,6 +62,8 @@ static struct {
     uint32_t loads;
     /* The load with this 1-based number fails; 0 for none. */
     uint32_t fail_load;
+    /* The next read-transfer write fails before its store, the PI busy from the start. */
+    int fail_rd_before_store;
 } f;
 
 int pi_io_read(uint32_t addr, uint32_t *value)
@@ -76,11 +78,18 @@ int pi_io_read(uint32_t addr, uint32_t *value)
     return 1;
 }
 
-int pi_io_write(uint32_t addr, uint32_t value)
+int pi_io_write_stored(uint32_t addr, uint32_t value, int *stored)
 {
+    *stored = 0;
     if (addr == F_KEY || addr == F_SYSCFG) {
+        *stored = 1;
         return 1;
     }
+    if (f.fail_rd_before_store && addr == F_USBCFG && (value & F_MODE_MASK) == F_MODE_RD) {
+        f.fail_rd_before_store = 0;
+        return 0;
+    }
+    *stored = 1;
     assert(addr == F_USBCFG && "a write to a register the fake does not model");
     if ((value & F_MODE_MASK) == F_MODE_RD) {
         uint32_t start = value & 0x1FFu;
@@ -99,6 +108,12 @@ int pi_io_write(uint32_t addr, uint32_t value)
         assert((value & F_MODE_MASK) == F_MODE_RDNOP && "only the receive path is modelled");
     }
     return 1;
+}
+
+int pi_io_write(uint32_t addr, uint32_t value)
+{
+    int stored;
+    return pi_io_write_stored(addr, value, &stored);
 }
 
 int pi_io_load_words(uint32_t *dst, uint32_t addr, uint32_t words)
@@ -293,6 +308,26 @@ static void a_failed_load_is_reported_lost(void)
     assert(ed64_receive(got, sizeof got) == ED64_RECEIVE_LOST);
 }
 
+/*
+ * #223: a PI that stays busy before the header's read transfer is even asked for has taken nothing
+ * from the cart, so it is not a loss. Reporting one made the agent throw away the part of a request
+ * it already held, and the rest then arrived with nothing to join.
+ */
+static void a_read_that_never_started_is_not_a_loss(void)
+{
+    fresh_cart();
+    pattern(payload, 64u, 0x91u);
+    host_message(F_L3, payload, 64u);
+
+    f.fail_rd_before_store = 1;
+    assert(ed64_receive(got, sizeof got) == 0u && "nothing was read, so nothing was lost");
+    assert(f.reads == 0u && f.host_pos == 0u);
+
+    /* The message is still whole in the cart, for the next call. */
+    assert(ed64_receive(got, sizeof got) == 64u && memcmp(got, payload, 64u) == 0);
+    assert(f.host_pos == f.host_len);
+}
+
 /* The host's header promises more than it sends: the read never finishes, and the wait gives up. */
 static void a_read_that_never_finishes_is_reported_lost(void)
 {
@@ -367,6 +402,7 @@ int main(void)
     RUN(odd_length_payloads_still_drain_their_padding);
     RUN(a_bad_header_or_trailer_is_reported_lost);
     RUN(a_failed_load_is_reported_lost);
+    RUN(a_read_that_never_started_is_not_a_loss);
     RUN(a_read_that_never_finishes_is_reported_lost);
     RUN(a_message_too_big_even_with_the_leftover_buffer_is_lost);
     RUN(a_non_l3_message_is_drained_and_ignored);
