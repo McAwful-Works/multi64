@@ -11,7 +11,6 @@ pub enum DecodeError {
     InvalidChannel(u8),
     /// `PAYLOAD_LEN` exceeds [`MAX_PAYLOAD_CEILING`], so no handshake can have allowed it.
     PayloadTooLarge(u32),
-    PayloadLengthMismatch,
     InvalidPayloadLength,
 }
 
@@ -26,7 +25,6 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "payload length {len} exceeds the protocol ceiling {MAX_PAYLOAD_CEILING}"
             ),
-            DecodeError::PayloadLengthMismatch => write!(f, "payload length mismatch"),
             DecodeError::InvalidPayloadLength => {
                 write!(f, "invalid payload length for message type")
             }

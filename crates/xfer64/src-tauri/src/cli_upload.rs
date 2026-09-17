@@ -227,7 +227,7 @@ pub fn run_headless_import_upload(
         }
     }
 
-    let probe = daemon::explorer_daemon_probe_snapshot(&st, &snap, &listen)?;
+    let probe = daemon::explorer_daemon_probe_snapshot(&st, &listen)?;
 
     let dev = ExplorerDevLog::new_without_app();
     let notify_env = std::env::var("MULTI64_XFER64_UPLOAD_NOTIFY").unwrap_or_default();

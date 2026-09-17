@@ -2,7 +2,6 @@
 
 use crate::cart_probe::DetectedCartKind;
 use crate::cart_serial_sd::{self, ExplorerCartSerialState};
-use crate::dev_log::{ExplorerSettingsSnapshot, ExplorerSettingsState};
 use serde::Serialize;
 use std::time::Duration;
 use tauri::State;
@@ -114,7 +113,6 @@ pub struct DaemonProbe {
 /// error used to skip the release this probe exists to decide on.
 pub fn explorer_daemon_probe_snapshot(
     st: &ExplorerCartSerialState,
-    _snap: &ExplorerSettingsSnapshot,
     listen: &str,
 ) -> Result<DaemonProbe, String> {
     st.remember_daemon_listen(listen);
@@ -128,17 +126,15 @@ pub fn explorer_daemon_probe_snapshot(
 
 /// Whether multi64d is up, so the window has to pause it around cart work.
 ///
-/// `async` because resolving the COM port can run a full serial auto-detect scan and the health
-/// and root probes each block on HTTP; a sync command would do all of that on the main thread.
+/// `async` because the `/health` request below blocks on HTTP; a sync command would do that on the
+/// main thread, which is also the window's event loop.
 #[tauri::command]
 pub async fn explorer_daemon_probe(
     st: State<'_, ExplorerCartSerialState>,
-    settings: State<'_, ExplorerSettingsState>,
     listen: String,
 ) -> Result<DaemonProbe, String> {
-    let snap = settings.snapshot();
     cart_serial_sd::spawn_with_cart_state(&st, "explorer_daemon_probe", move |st| {
-        explorer_daemon_probe_snapshot(st, &snap, &listen)
+        explorer_daemon_probe_snapshot(st, &listen)
     })
     .await
 }
@@ -248,13 +244,7 @@ mod tests {
         let probe = tauri::async_runtime::block_on(cart_serial_sd::spawn_with_cart_state(
             &st,
             "test",
-            move |st| {
-                explorer_daemon_probe_snapshot(
-                    st,
-                    &ExplorerSettingsSnapshot::default(),
-                    &probe_listen,
-                )
-            },
+            move |st| explorer_daemon_probe_snapshot(st, &probe_listen),
         ))
         .unwrap();
         assert!(probe.up);
