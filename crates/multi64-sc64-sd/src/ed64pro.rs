@@ -131,6 +131,10 @@ impl<T: Transport> Ed64ProSdSession<T> {
 
     /// Copy a PC file or folder into `cart_parent/dest_name`, reporting bytes written (delta).
     /// With `skip_existing`, files already on the cart are left alone.
+    ///
+    /// Each file also reports `0` as soon as it is opened on the cart, before its first chunk:
+    /// opening replaces an existing file's contents, so from that report on the cart has changed.
+    /// A cancel then deletes the file, the original included.
     pub fn import_from_pc_with_progress<F>(
         &self,
         src: &Path,
@@ -417,6 +421,13 @@ impl<T: Transport> Ed64ProSdSession<T> {
         )
         .map_err(link_err)?;
         let result = (|| -> io::Result<()> {
+            // `CREATE_ALWAYS` has already emptied a file that was there, so the cart has changed
+            // before any chunk is written. Say so, with a zero-byte report, so a caller that only
+            // cleans up after a failure once something was written also does so for a failure on
+            // the first chunk (#217).
+            if !progress(0) {
+                return Err(cancelled());
+            }
             let mut buf = vec![0u8; CHUNK];
             loop {
                 let n = read_full(&mut reader, &mut buf)?;
@@ -788,6 +799,40 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Interrupted);
         assert!(!fake_of(s).exists("big.z64"));
+    }
+
+    /// Opening the file already replaced the original's contents, so that is reported, as zero
+    /// bytes, before the first chunk (#217).
+    ///
+    /// Fail-first, demonstrated: without the zero-byte report the first report is a full chunk.
+    #[test]
+    fn an_import_reports_the_open_before_its_first_chunk() {
+        let src = Scratch::new("import-open");
+        let body = pattern(CHUNK * 2 + 5);
+        std::fs::write(src.0.join("game.z64"), &body).unwrap();
+        let s = session(FakeEd64Pro::new().with_file("game.z64", b"original"));
+        let mut reports = Vec::new();
+        s.import_from_pc_with_progress(&src.0.join("game.z64"), "", "game.z64", false, |n| {
+            reports.push(n);
+            true
+        })
+        .unwrap();
+        assert_eq!(reports.first(), Some(&0), "{reports:?}");
+        assert_eq!(reports.iter().sum::<u64>(), body.len() as u64);
+        assert_eq!(fake_of(s).file("game.z64").unwrap(), &body[..]);
+    }
+
+    /// A cancel at that report deletes the file: the original is already gone by then.
+    #[test]
+    fn a_cancel_at_the_open_deletes_the_emptied_original() {
+        let src = Scratch::new("import-open-cancel");
+        std::fs::write(src.0.join("game.z64"), pattern(CHUNK)).unwrap();
+        let s = session(FakeEd64Pro::new().with_file("game.z64", b"original"));
+        let err = s
+            .import_from_pc_with_progress(&src.0.join("game.z64"), "", "game.z64", false, |_| false)
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert!(!fake_of(s).exists("game.z64"));
     }
 
     #[test]

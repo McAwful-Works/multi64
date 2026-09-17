@@ -506,39 +506,61 @@ fn export_cart_file_to_pc_in_session(
 /// finds nothing, and `NotFound` is the clean outcome, not a failure to report.
 ///
 /// The EverDrive-64 PRO is different: its link opens the destination with `CREATE_ALWAYS`, which
-/// truncates the original at once, so an overwrite that stops there really has lost it.
+/// truncates the original at once, so an overwrite that stops there really has lost it. Whether
+/// what is left is a partial file or nothing depends on how it stopped (a cancel deletes it), so
+/// the cart is asked rather than assumed (#218).
 fn cleanup_partial_import(
     session: &CartSession,
     cart_dest_path: &str,
     existed_before: bool,
     err: String,
 ) -> String {
-    let keeps_original = !matches!(session, CartSession::Ed64Pro(_));
-    let outcome = if existed_before {
-        if keeps_original {
-            PartialImport::OriginalKept
-        } else {
-            PartialImport::OriginalIncomplete
-        }
-    } else {
-        match session.remove_cart_path(cart_dest_path) {
-            Ok(()) => PartialImport::NothingLeft,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => PartialImport::NothingLeft,
-            Err(e) => PartialImport::IncompleteLeft(e.to_string()),
-        }
-    };
+    let outcome = partial_import_outcome(
+        existed_before,
+        !matches!(session, CartSession::Ed64Pro(_)),
+        || session.cart_path_entry_kind(cart_dest_path),
+        || session.remove_cart_path(cart_dest_path),
+    );
     partial_import_message(&err, cart_dest_path, outcome)
 }
 
+/// [`cleanup_partial_import`]'s decision, with the two cart calls it may make passed in:
+/// `still_there` asks whether the destination exists, and `remove` deletes it.
+fn partial_import_outcome(
+    existed_before: bool,
+    keeps_original: bool,
+    still_there: impl FnOnce() -> io::Result<Option<bool>>,
+    remove: impl FnOnce() -> io::Result<()>,
+) -> PartialImport {
+    match (existed_before, keeps_original) {
+        (true, true) => PartialImport::OriginalKept,
+        // A listing that fails says nothing either way; "incomplete" still tells the user to copy
+        // it again, which is right whether it is partial or gone.
+        (true, false) => match still_there() {
+            Ok(None) => PartialImport::OriginalRemoved,
+            Ok(Some(_)) | Err(_) => PartialImport::OriginalIncomplete,
+        },
+        (false, _) => match remove() {
+            Ok(()) => PartialImport::NothingLeft,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => PartialImport::NothingLeft,
+            Err(e) => PartialImport::IncompleteLeft(e.to_string()),
+        },
+    }
+}
+
 /// What an import that stopped part-way left on the cart.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum PartialImport {
     /// A new file, and nothing of it remains.
     NothingLeft,
     /// An overwrite that stopped before the original was touched.
     OriginalKept,
-    /// An overwrite that had already truncated the original (EverDrive-64 PRO).
+    /// An overwrite that had already truncated the original, and left a partial file under its
+    /// name (EverDrive-64 PRO).
     OriginalIncomplete,
+    /// An overwrite that had already truncated the original, and then deleted what was left of it
+    /// (EverDrive-64 PRO, on a cancel).
+    OriginalRemoved,
     /// A new file whose partial copy could not be removed, with the reason.
     IncompleteLeft(String),
 }
@@ -560,6 +582,7 @@ fn partial_import_message(err: &str, cart_dest_path: &str, outcome: PartialImpor
     let outcome = match outcome {
         PartialImport::NothingLeft | PartialImport::OriginalKept => return err.to_string(),
         PartialImport::OriginalIncomplete => "original now incomplete, copy it again".to_string(),
+        PartialImport::OriginalRemoved => "original deleted, copy it again".to_string(),
         PartialImport::IncompleteLeft(e) => {
             format!("incomplete copy left, delete it before using it ({e})")
         }
@@ -577,8 +600,9 @@ fn partial_import_message(err: &str, cart_dest_path: &str, outcome: PartialImpor
 
 /// One PC file → cart path (used by the import batch and CLI upload).
 ///
-/// `on_progress` is called after each chunk with the bytes of this file written so far; callers
-/// that show progress emit their event from it, and the headless CLI path passes a no-op.
+/// `on_progress` is called after each chunk with the bytes of this file written so far (and on an
+/// EverDrive-64 PRO once with 0, when the file is opened); callers that show progress emit their
+/// event from it, and the headless CLI path passes a no-op.
 pub(crate) fn import_pc_file_to_cart_in_session(
     session: &CartSession,
     src: &Path,
@@ -605,17 +629,19 @@ pub(crate) fn import_pc_file_to_cart_in_session(
     }
     let existed_before = kind == Some(false);
     let mut acc = 0u64;
-    let mut wrote_any = false;
+    // Set by the first report, including a PRO's zero-byte one when the destination is opened: from
+    // then on the cart may have changed, so a failure has something to clean up (#217).
+    let mut touched = false;
     session
         .import_from_pc_with_progress(src, &parent, &name, !overwrite, |d| {
             acc += d;
-            wrote_any = true;
+            touched = true;
             on_progress(acc);
             !cancel.is_cancelled()
         })
         .map_err(|e| {
             let msg = map_usb_io_path(src, e);
-            if wrote_any {
+            if touched {
                 cleanup_partial_import(session, cart_dest_path, existed_before, msg)
             } else {
                 msg
@@ -1364,7 +1390,68 @@ pub async fn cart_serial_import_copy_batch(
 
 #[cfg(test)]
 mod partial_import_message_tests {
-    use super::{partial_import_message, PartialImport};
+    use super::{partial_import_message, partial_import_outcome, PartialImport};
+    use std::io;
+
+    fn not_asked<T>() -> io::Result<T> {
+        panic!("this outcome must not touch the cart")
+    }
+
+    /// A PRO overwrite that stopped with the file deleted (a cancel) says so, rather than calling
+    /// the original incomplete (#218).
+    ///
+    /// Fail-first, demonstrated: with every PRO overwrite reported as incomplete, as before, this
+    /// gets `OriginalIncomplete`.
+    #[test]
+    fn a_pro_overwrite_whose_file_is_gone_reports_the_original_deleted() {
+        assert_eq!(
+            partial_import_outcome(true, false, || Ok(None), not_asked),
+            PartialImport::OriginalRemoved
+        );
+        let m = partial_import_message("Cancelled", NAME, PartialImport::OriginalRemoved);
+        assert!(
+            m.starts_with("Cancelled — original deleted, copy it again: "),
+            "{m}"
+        );
+    }
+
+    /// A partial file still there, or a cart that cannot be asked, is incomplete.
+    #[test]
+    fn a_pro_overwrite_that_left_a_file_or_cannot_tell_is_incomplete() {
+        assert_eq!(
+            partial_import_outcome(true, false, || Ok(Some(false)), not_asked),
+            PartialImport::OriginalIncomplete
+        );
+        assert_eq!(
+            partial_import_outcome(
+                true,
+                false,
+                || Err(io::Error::new(io::ErrorKind::TimedOut, "no answer")),
+                not_asked
+            ),
+            PartialImport::OriginalIncomplete
+        );
+    }
+
+    /// Carts that keep the original ask nothing; a new file is removed, and a removal that finds
+    /// nothing is clean.
+    #[test]
+    fn other_outcomes_are_unchanged() {
+        assert_eq!(
+            partial_import_outcome(true, true, not_asked, not_asked),
+            PartialImport::OriginalKept
+        );
+        assert_eq!(
+            partial_import_outcome(false, false, not_asked, || Err(
+                io::ErrorKind::NotFound.into()
+            )),
+            PartialImport::NothingLeft
+        );
+        assert_eq!(
+            partial_import_outcome(false, true, not_asked, || Err(io::Error::other("busy"))),
+            PartialImport::IncompleteLeft("busy".into())
+        );
+    }
 
     const NAME: &str = "007 - The World Is Not Enough (USA).z64";
 
