@@ -5,7 +5,7 @@ description: Guide for finishing EverDrive 64 X7 support - the DMA@ framing is i
 
 # Finishing `multi64-ed64-l2`
 
-`Ed64L2Pipe` (`crates/ed64-l2/src/lib.rs`) implements the framing in `docs/spec/l3-over-everdrive-x7.md` §4: a symmetric `DMA@` header carrying `(datatype << 24) | size`, payload padded to 2 bytes, `CMPH` trailer. Its unit tests cover encode/decode, resync, the datatype filter, and trailer errors.
+`Ed64L2Pipe` (`crates/ed64-l2/src/lib.rs`) implements the framing in `docs/spec/l3-over-everdrive-x7.md` §4: a `DMA@` header carrying `(datatype << 24) | size`, the payload, and a `CMPH` trailer, 2-byte aligned. The directions are not symmetric about where that padding goes (#134): the host pads the payload before the trailer, a cart pads the whole message after it. Its unit tests cover encode/decode, resync, the datatype filter, and trailer errors.
 
 **None of it has touched a cart.** The framing is transcribed from UNFLoader and libdragon's `usb.c` — a working reference, not observation. Everything below assumes that distinction matters, because the previous EverDrive attempt in this repo failed precisely by trusting a plausible vendor source that did not apply to the hardware (spec §1.1).
 
@@ -20,7 +20,7 @@ Until someone runs this against an X7:
 ## What to check first, in order
 
 1. **`ed64-smoke` against the cart.** Confirms the port, driver and baud before any L2 work. If this fails, nothing downstream is meaningful — try another `--baud`, `--flush`, and confirm the EverDrive OS has USB active.
-2. **Alignment.** §4.5 records this as resolved from libdragon source (`USBPROTOCOL_VERSION 2`, 2-byte alignment) and `SEND_ALIGN` matches. Confirm the cart's firmware agrees; a mismatch mis-frames *every* message, so it will look like total failure rather than corruption.
+2. **Alignment.** §4.5 records both halves as resolved from libdragon and UNFLoader source: the value (`USBPROTOCOL_VERSION 2`, 2-byte alignment, `WIRE_ALIGN`) and which direction pads where (#134). Confirm the cart's firmware agrees. A wrong value mis-frames *every* message, so it looks like total failure; the wrong padding direction mis-frames only odd-length messages, which looks like intermittent corruption instead.
 3. **VCP vs D2XX.** UNFLoader uses FTDI D2XX and purges its queues directly; this crate uses `serialport` (VCP). Whether `clear_serial_buffers` gives equivalent behaviour under load is unverified, and is the most likely source of *intermittent* rather than total failure.
 4. **Chunk size.** `DEFAULT_ED64_CHUNK` is 512 — one `REG_USB_DATA` window, deliberately conservative. The ROM's own cap is `TEST_USB_WRITE_MAX` (8192). Raise via `write_l3_stream_with_max` only after the link is proven.
 
