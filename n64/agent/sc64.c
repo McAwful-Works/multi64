@@ -279,12 +279,17 @@ static int pi_copy(void *ram, uint32_t cart_addr, uint32_t len, int to_cart)
  */
 #define SC64_CMD_SPINS 100000u
 
-/** Run one command. Returns 0 if the cart reported an error or any register access failed. */
-static int sc64_cmd(uint8_t cmd, const uint32_t *args, uint32_t *result)
+/**
+ * Run one command. Returns 0 if the cart reported an error or any register access failed; `*sent`
+ * says whether the command store was made, which is when the cart may have run it. io_write only
+ * fails before its store, so a failure with `*sent` 0 left the cart as it was.
+ */
+static int sc64_cmd_sent(uint8_t cmd, const uint32_t *args, uint32_t *result, int *sent)
 {
     uint32_t sr;
     uint32_t spins;
 
+    *sent = 0;
     if (args != 0) {
         if (!io_write(REG_DATA_0, args[0]) || !io_write(REG_DATA_1, args[1])) {
             return 0;
@@ -293,6 +298,7 @@ static int sc64_cmd(uint8_t cmd, const uint32_t *args, uint32_t *result)
     if (!io_write(REG_SR_CMD, cmd)) {
         return 0;
     }
+    *sent = 1;
 
     for (spins = 0u;; spins++) {
         if (spins >= SC64_CMD_SPINS || !io_read(REG_SR_CMD, &sr)) {
@@ -311,29 +317,48 @@ static int sc64_cmd(uint8_t cmd, const uint32_t *args, uint32_t *result)
     return (sr & SR_CMD_ERROR) ? 0 : 1;
 }
 
+/** Run one command. Returns 0 if the cart reported an error or any register access failed. */
+static int sc64_cmd(uint8_t cmd, const uint32_t *args, uint32_t *result)
+{
+    int sent;
+    return sc64_cmd_sent(cmd, args, result, &sent);
+}
+
+/** How a write-enable change went. */
+enum rom_write_set {
+    /** Never reached the cart: the setting is as it was. */
+    ROM_WRITE_NOT_SENT,
+    /** Reached the cart, but did not complete as far as the agent can tell: it may have changed. */
+    ROM_WRITE_UNKNOWN,
+    /** Done, and the previous setting is known. */
+    ROM_WRITE_SET
+};
+
 /**
  * Set cart write-enable, writing the previous setting through `previous` so it can be
- * restored exactly. CONFIG_SET reports the old value in result[1]. Returns 0 on failure.
+ * restored exactly. CONFIG_SET reports the old value in result[1].
  */
-static int set_rom_writable(uint32_t enable, uint32_t *previous)
+static enum rom_write_set set_rom_writable(uint32_t enable, uint32_t *previous)
 {
     uint32_t args[2];
     uint32_t result[2];
+    int sent;
 
     args[0] = CFG_ROM_WRITE_ENABLE;
     args[1] = enable;
-    if (!sc64_cmd(CMD_CONFIG_SET, args, result)) {
-        return 0;
+    if (!sc64_cmd_sent(CMD_CONFIG_SET, args, result, &sent)) {
+        return sent ? ROM_WRITE_UNKNOWN : ROM_WRITE_NOT_SENT;
     }
     *previous = result[1];
-    return 1;
+    return ROM_WRITE_SET;
 }
 
 /*
  * What write-enable goes back to after sc64_write stages a packet, and whether putting it back
  * failed. A restore that does not land leaves the cart writable under the running game (#153), so
- * it is retried by every sc64_poll and sc64_write until it does. While one is pending, the old value
- * CONFIG_SET reports is the agent's own leftover and is not taken as the value to restore.
+ * it is retried at the start of every sc64_poll and sc64_write until it does. While one is pending,
+ * the old value CONFIG_SET reports is the agent's own leftover and is not taken as the value to
+ * restore.
  */
 static uint32_t s_rom_write_restore;
 static int s_rom_write_restore_pending;
@@ -341,7 +366,7 @@ static int s_rom_write_restore_pending;
 static void rom_write_restore(void)
 {
     uint32_t ignored;
-    s_rom_write_restore_pending = !set_rom_writable(s_rom_write_restore, &ignored);
+    s_rom_write_restore_pending = set_rom_writable(s_rom_write_restore, &ignored) != ROM_WRITE_SET;
 }
 
 int sc64_init(void)
@@ -408,11 +433,18 @@ int sc64_write(uint8_t datatype, const void *data, uint32_t len)
     uint32_t args[2];
     uint32_t result[2];
     uint32_t previous;
+    enum rom_write_set enabled;
     int staged = 0;
     uint32_t spins;
 
     if (len == 0u || len > SC64_BUFFER_SIZE) {
         return 0;
+    }
+
+    /* First, as sc64_poll does: a game that writes without polling must not keep the cart writable
+       (#226), and the enable below must report the cart's own setting, not the agent's leftover. */
+    if (s_rom_write_restore_pending) {
+        rom_write_restore();
     }
 
     /* A still-running previous transfer means the host is not draining. Drop
@@ -429,14 +461,23 @@ int sc64_write(uint8_t datatype, const void *data, uint32_t len)
      * masked in 64-word chunks inside pi_copy -- so the cartridge is never left
      * writable underneath the running game. If the enable fails nothing is staged; if the
      * restore fails it stays pending for the next call (see s_rom_write_restore).
+     *
+     * An enable that never reached the cart changed nothing, so nothing is put back (#222): the
+     * restore writes s_rom_write_restore, which is only what the cart had when an enable last
+     * succeeded -- 0 before the first -- and would switch off a write-enable the agent never set.
+     * One that reached the cart but did not complete may have made it writable, so that is still
+     * put back.
      */
-    if (set_rom_writable(1u, &previous)) {
+    enabled = set_rom_writable(1u, &previous);
+    if (enabled == ROM_WRITE_SET) {
         if (!s_rom_write_restore_pending) {
             s_rom_write_restore = previous;
         }
         staged = pi_copy((void *)data, SC64_BUFFER, len, 1);
     }
-    rom_write_restore();
+    if (enabled != ROM_WRITE_NOT_SENT) {
+        rom_write_restore();
+    }
     if (!staged) {
         return 0;
     }

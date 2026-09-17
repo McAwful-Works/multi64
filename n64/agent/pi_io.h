@@ -24,6 +24,13 @@ int pi_io_read(uint32_t addr, uint32_t *value);
 /** Write one 32-bit register. */
 int pi_io_write(uint32_t addr, uint32_t value);
 
+/**
+ * pi_io_write, also saying through `stored` whether the store was made. It can fail either way:
+ * before the store, when the PI stays busy, and the register is untouched (`*stored` 0); or after
+ * it, waiting for it to land, when it may have taken effect (`*stored` 1).
+ */
+int pi_io_write_stored(uint32_t addr, uint32_t value, int *stored);
+
 /** Load `words` consecutive words starting at `addr`. */
 int pi_io_load_words(uint32_t *dst, uint32_t addr, uint32_t words);
 

@@ -66,6 +66,8 @@ static struct {
     uint32_t sent_len;
     uint32_t sent_words[F_BUFFER_WORDS];
     int usb_writes;
+    /* USB_WRITE_STATUS reports the previous transfer still in progress. */
+    int usb_write_busy;
 
     /* PI_STATUS reports busy_bits for the next busy_reads reads, or until cleared if FOREVER. */
     uint32_t busy_bits;
@@ -124,7 +126,7 @@ static void command(uint32_t cmd)
         f.data[0] = 0u;
         break;
     case 'U':
-        f.data[0] = 0u;
+        f.data[0] = f.usb_write_busy ? F_CMD_BUSY : 0u;
         f.data[1] = 0u;
         break;
     case 'M':
@@ -330,6 +332,63 @@ static void a_failed_restore_of_write_enable_is_retried(void)
     assert(f.rom_write == 0u && f.masked == 0);
 }
 
+/*
+ * #222: an enable that never reached the cart still ran the restore, which put back
+ * s_rom_write_restore -- 0 before any write had succeeded -- and switched off a write-enable the
+ * agent had never touched.
+ */
+static void a_write_enable_that_never_reached_the_cart_changes_nothing(void)
+{
+    uint8_t dt = 0u;
+
+    fresh_cart();
+    f.rom_write = 1u; /* on before the agent ran */
+    fill(msg, 6u, 0x44440000u);
+    /* The PI goes busy as soon as the enable's arguments land, for longer than one wait: the
+       command store itself gives up, so CONFIG_SET never runs. */
+    arm(ON_STORE, F_DATA_1, 1u, F_DMA_BUSY, BUSY_ONE_WAIT);
+    assert(sc64_write(1u, msg, 24u) == 0 && f.usb_writes == 0);
+    assert(f.rom_write == 1u && "write-enable was switched off by a restore of a change never made");
+    bus_recovers();
+    assert(sc64_poll(&dt) == 0u && f.rom_write == 1u && "nor put back later as a pending restore");
+    assert(f.masked == 0);
+}
+
+/*
+ * The other side of #222: an enable whose command did reach the cart, but whose completion could
+ * not be read, may have made the cart writable, so it is still put back.
+ */
+static void a_write_enable_that_may_have_run_is_still_put_back(void)
+{
+    fresh_cart();
+    fill(msg, 6u, 0x55550000u);
+    /* CONFIG_SET runs as its command store lands; then the PI goes busy for longer than the wait
+       to read that it finished. */
+    arm(ON_STORE, F_SR_CMD, 'C', F_DMA_BUSY, BUSY_ONE_WAIT);
+    assert(sc64_write(1u, msg, 24u) == 0 && f.usb_writes == 0);
+    assert(f.rom_write == 0u && "the cart was left writable");
+    assert(f.masked == 0);
+}
+
+/*
+ * #226: a restore still pending when sc64_write runs is retried there first, as it is by
+ * sc64_poll, so a game that only writes does not keep the cart writable.
+ */
+static void a_pending_restore_is_retried_by_a_write_that_stops_early(void)
+{
+    fresh_cart();
+    fill(msg, 6u, 0x66660000u);
+    arm(ON_STORE, F_DATA_1, 0u, F_DMA_BUSY, BUSY_ONE_WAIT);
+    (void)sc64_write(1u, msg, 24u);
+    assert(f.rom_write == 1u && "the restore was meant to fail");
+    bus_recovers();
+    /* The next write finds a transfer still in progress and returns before staging anything. */
+    f.usb_write_busy = 1;
+    assert(sc64_write(1u, msg, 24u) == 0);
+    assert(f.rom_write == 0u && "the pending restore waited for a poll");
+    assert(f.masked == 0);
+}
+
 /* #152: pi_copy's IO_BUSY loops had no bound, and ran with interrupts masked. */
 static void a_bus_that_stays_busy_during_a_copy_does_not_hang(void)
 {
@@ -419,6 +478,9 @@ int main(void)
     RUN(a_request_and_its_reply_round_trip);
     RUN(a_dropped_usb_read_is_not_reported_as_a_packet);
     RUN(a_failed_restore_of_write_enable_is_retried);
+    RUN(a_write_enable_that_never_reached_the_cart_changes_nothing);
+    RUN(a_write_enable_that_may_have_run_is_still_put_back);
+    RUN(a_pending_restore_is_retried_by_a_write_that_stops_early);
     RUN(a_bus_that_stays_busy_during_a_copy_does_not_hang);
     RUN(a_copy_does_not_touch_the_cart_while_a_dma_holds_the_bus);
     RUN(a_read_while_the_bus_stays_busy_fails);

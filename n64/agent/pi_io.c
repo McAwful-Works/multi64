@@ -72,12 +72,20 @@ int pi_io_read(uint32_t addr, uint32_t *value)
 
 int pi_io_write(uint32_t addr, uint32_t value)
 {
+    int stored;
+    return pi_io_write_stored(addr, value, &stored);
+}
+
+int pi_io_write_stored(uint32_t addr, uint32_t value, int *stored)
+{
     uint32_t sr;
     int ok;
+    *stored = 0;
     if (!begin(&sr)) {
         return 0;
     }
     *io(addr) = value;
+    *stored = 1;
     /* Stores are posted: the next access must not start until this one has landed. */
     ok = wait_bits(PI_STATUS_IO_BUSY);
     int_restore(sr);
