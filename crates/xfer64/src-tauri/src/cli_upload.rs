@@ -249,14 +249,7 @@ pub fn run_headless_import_upload(
             let t_total = total_bytes.max(1);
 
             if let Some(ref app) = app {
-                emit_explorer_progress_full(
-                    app,
-                    0,
-                    t_total,
-                    Some("Uploading to cart…".into()),
-                    None,
-                    None,
-                );
+                emit_explorer_progress_full(app, 0, t_total, Some("Uploading to cart…".into()));
             }
 
             let mut uploaded = 0u32;
@@ -316,8 +309,6 @@ pub fn run_headless_import_upload(
                                 done_base,
                                 t_total,
                                 Some(format!("Uploading to cart — skipping \"{label}\"…")),
-                                None,
-                                None,
                             );
                         }
                         continue;
@@ -328,14 +319,7 @@ pub fn run_headless_import_upload(
                 let msg = format!("Uploading to cart — \"{label}\"…");
 
                 if let Some(ref app) = app {
-                    emit_explorer_progress_full(
-                        app,
-                        done_base,
-                        t_total,
-                        Some(msg.clone()),
-                        None,
-                        None,
-                    );
+                    emit_explorer_progress_full(app, done_base, t_total, Some(msg.clone()));
                     cart_serial_sd::import_pc_file_to_cart_in_session(
                         session,
                         &src,
@@ -346,7 +330,7 @@ pub fn run_headless_import_upload(
                     )?;
                     uploaded += 1;
                     done_base += step.bytes;
-                    emit_explorer_progress_full(app, done_base, t_total, Some(msg), None, None);
+                    emit_explorer_progress_full(app, done_base, t_total, Some(msg));
                 } else {
                     cart_serial_sd::import_pc_file_to_cart_in_session(
                         session,

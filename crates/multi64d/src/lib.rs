@@ -316,27 +316,6 @@ fn cors_layer(allowed: &[String]) -> CorsLayer {
         .allow_headers(Any)
 }
 
-async fn root_metadata_only() -> impl IntoResponse {
-    let body = serde_json::to_vec(&RootResponse {
-        service: "multi64d",
-        version: env!("CARGO_PKG_VERSION"),
-        websocket_path: "/ws",
-        serial: String::new(),
-        serial_active: false,
-        serial_busy: false,
-        cart: "",
-    })
-    .unwrap_or_else(|_| b"{}".to_vec());
-    ([(header::CONTENT_TYPE, "application/json")], body)
-}
-
-/// Minimal router: **`GET /`** and **`GET /health`** only (no [`AppState`], no serial — used in integration tests).
-pub fn http_metadata_router() -> Router {
-    Router::new()
-        .route("/", get(root_metadata_only))
-        .route("/health", get(health))
-}
-
 async fn root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Configured serial device (same when link is temporarily released for Xfer64).
     let serial = state.serial_cfg.path.clone();

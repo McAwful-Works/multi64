@@ -4,8 +4,8 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use multi64d::{
-    build_app, http_metadata_router, AppState, CartKind, LinkState, SerialConfig,
-    RELEASE_LOCK_TIMEOUT, RESUME_LOCK_TIMEOUT, ROOT_LOCK_TIMEOUT,
+    build_app, AppState, CartKind, LinkState, SerialConfig, RELEASE_LOCK_TIMEOUT,
+    RESUME_LOCK_TIMEOUT, ROOT_LOCK_TIMEOUT,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -13,27 +13,8 @@ use tokio::sync::broadcast;
 use tower::ServiceExt;
 
 #[tokio::test]
-async fn get_root_returns_service_json() {
-    let app = http_metadata_router();
-    let res = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(v["service"], "multi64d");
-    assert_eq!(v["websocket_path"], "/ws");
-    assert!(v["version"].as_str().is_some());
-    assert_eq!(v["serial"], "");
-    assert_eq!(v["cart"], "");
-    assert_eq!(v["serialActive"], false);
-    assert_eq!(v["serialBusy"], false);
-}
-
-#[tokio::test]
 async fn get_health_returns_ok_json() {
-    let app = http_metadata_router();
+    let app = app_with_allowed_origins(&[]);
     let res = app
         .oneshot(
             Request::builder()
@@ -144,7 +125,7 @@ async fn allow_listed_origin_passes() {
 }
 
 #[tokio::test]
-async fn root_reports_serial_inactive_while_link_is_faulted() {
+async fn root_reports_the_service_and_a_faulted_link_as_inactive() {
     // A faulted link must not be advertised as held, or Xfer64 keeps yielding to a dead daemon.
     let res = app_with_allowed_origins(&[])
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -153,7 +134,11 @@ async fn root_reports_serial_inactive_while_link_is_faulted() {
     assert_eq!(res.status(), StatusCode::OK);
     let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["service"], "multi64d");
+    assert_eq!(v["websocket_path"], "/ws");
+    assert!(v["version"].as_str().is_some());
     assert_eq!(v["serial"], "COM_TEST");
+    assert_eq!(v["serialBusy"], false);
     assert!(
         matches!(v["cart"].as_str(), Some("sc64" | "ed64" | "ed64pro")),
         "GET / names the cart: {v}"

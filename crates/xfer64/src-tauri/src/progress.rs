@@ -13,15 +13,10 @@ pub struct ExplorerProgressPayload {
     pub total: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// Ask the UI to reload the cart pane (preserves selection when in progress).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_cart: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_pc: Option<bool>,
 }
 
 pub fn emit_explorer_progress(app: &AppHandle, done: u64, total: u64) {
-    emit_explorer_progress_full(app, done, total, None, None, None);
+    emit_explorer_progress_full(app, done, total, None);
 }
 
 pub fn emit_explorer_progress_full(
@@ -29,8 +24,6 @@ pub fn emit_explorer_progress_full(
     done: u64,
     total: u64,
     message: Option<String>,
-    refresh_cart: Option<bool>,
-    refresh_pc: Option<bool>,
 ) {
     let _ = app.emit(
         EXPLORER_PROGRESS_EVENT,
@@ -38,8 +31,6 @@ pub fn emit_explorer_progress_full(
             done,
             total,
             message,
-            refresh_cart,
-            refresh_pc,
         },
     );
 }

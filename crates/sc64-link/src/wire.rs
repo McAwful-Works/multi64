@@ -15,31 +15,6 @@ pub enum WireEvent {
     Pkt(PktPacket),
 }
 
-/// Try to parse one `PKT` at the start of `buf`.
-/// Returns `None` if more bytes are needed, or if the length exceeds
-/// [`MAX_PKT_DATA_LEN`](crate::MAX_PKT_DATA_LEN) (not a real packet).
-pub fn try_parse_pkt(buf: &[u8]) -> Option<(usize, PktPacket)> {
-    if buf.len() < 8 {
-        return None;
-    }
-    if &buf[0..3] != b"PKT" {
-        return None;
-    }
-    let id = buf[3];
-    let len = header_data_len(buf)?;
-    let total = 8 + len;
-    if buf.len() < total {
-        return None;
-    }
-    Some((
-        total,
-        PktPacket {
-            id,
-            data: buf[8..total].to_vec(),
-        },
-    ))
-}
-
 /// Buffer that yields `CMP`/`ERR`/`PKT` in order from a raw serial byte stream.
 #[derive(Default)]
 pub struct WireBuffer {
@@ -98,8 +73,11 @@ mod tests {
         v.push(b'U');
         v.extend_from_slice(&(4u32).to_be_bytes());
         v.extend_from_slice(&[1, 2, 3, 4]);
-        let (n, p) = try_parse_pkt(&v).unwrap();
-        assert_eq!(n, v.len());
+        let mut b = WireBuffer::default();
+        b.push_bytes(&v);
+        let Some(WireEvent::Pkt(p)) = b.next_event() else {
+            panic!("a PKT must parse as one");
+        };
         assert_eq!(p.id, b'U');
         assert_eq!(p.data, vec![1, 2, 3, 4]);
     }

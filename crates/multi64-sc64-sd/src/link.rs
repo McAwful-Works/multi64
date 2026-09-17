@@ -219,15 +219,6 @@ impl Sc64Link {
         Ok(())
     }
 
-    /// Read one 512-byte SD sector (LBA) into `buf`.
-    pub fn read_sd_sector(
-        &mut self,
-        sector_lba: u64,
-        buf: &mut [u8; SECTOR_BYTES],
-    ) -> io::Result<()> {
-        self.read_sd_sectors(sector_lba, buf.as_mut_slice())
-    }
-
     /// Write `data` to cart SDRAM/flash at `addr` (`MEMORY_WRITE`).
     pub fn memory_write(&mut self, addr: u32, data: &[u8]) -> io::Result<()> {
         if data.len() > u32::MAX as usize {
@@ -282,11 +273,6 @@ impl Sc64Link {
             return Err(cmp_err("SD_WRITE", cmd::SD_WRITE, &r));
         }
         Ok(())
-    }
-
-    /// Write one 512-byte sector to the SD card (`MEMORY_WRITE` staging + `SD_WRITE`).
-    pub fn write_sd_sector(&mut self, sector_lba: u64, buf: &[u8; SECTOR_BYTES]) -> io::Result<()> {
-        self.write_sd_sectors(sector_lba, buf.as_slice())
     }
 
     fn memory_read(&mut self, addr: u32, len: usize) -> io::Result<Vec<u8>> {

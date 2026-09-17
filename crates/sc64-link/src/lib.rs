@@ -12,7 +12,7 @@
 
 mod wire;
 
-pub use wire::{try_parse_pkt, PktPacket, WireBuffer, WireEvent};
+pub use wire::{PktPacket, WireBuffer, WireEvent};
 
 /// Command IDs used by smoke tests and tooling.
 pub mod cmd {
@@ -107,44 +107,16 @@ pub struct CmpResponse {
     pub data: Vec<u8>,
 }
 
-/// Try to parse one `CMP`/`ERR` response at the start of `buf`.
-/// Returns `None` if fewer than `8 + data_len` bytes are available, or if `data_len` exceeds
-/// [`MAX_CMP_DATA_LEN`] (not a real response).
-/// Returns `Some` only when the buffer starts with `CMP` or `ERR`.
-pub fn try_parse_cmp(buf: &[u8]) -> Option<(usize, CmpResponse)> {
-    if buf.len() < 8 {
-        return None;
-    }
-    let ok = match &buf[0..3] {
-        b"CMP" => true,
-        b"ERR" => false,
-        _ => return None,
-    };
-    let cmd_id = buf[3];
-    let len = header_data_len(buf)?;
-    let total = 8 + len;
-    if buf.len() < total {
-        return None;
-    }
-    Some((
-        total,
-        CmpResponse {
-            ok,
-            cmd_id,
-            data: buf[8..total].to_vec(),
-        },
-    ))
-}
-
-/// Buffer for interleaved `CMP`/`ERR`/`PKT` responses from the serial stream.
+/// Buffer for interleaved `CMP`/`ERR`/`PKT` responses from the serial stream: [`WireBuffer`] for
+/// callers that only wait on command responses.
 #[derive(Default)]
 pub struct ResponseBuffer {
-    buf: Vec<u8>,
+    wire: WireBuffer,
 }
 
 impl ResponseBuffer {
     pub fn push_bytes(&mut self, chunk: &[u8]) {
-        self.buf.extend_from_slice(chunk);
+        self.wire.push_bytes(chunk);
     }
 
     /// Pull the next `CMP` or `ERR` packet, skipping `PKT` and resynchronizing if needed.
@@ -152,27 +124,10 @@ impl ResponseBuffer {
     /// A tag whose length exceeds [`MAX_CMP_DATA_LEN`] / [`MAX_PKT_DATA_LEN`] is treated as noise.
     pub fn next_cmp(&mut self) -> Option<CmpResponse> {
         loop {
-            if self.buf.len() < 8 {
-                return None;
+            match self.wire.next_event()? {
+                WireEvent::Cmp(cmp) => return Some(cmp),
+                WireEvent::Pkt(_) => continue,
             }
-            let Some(len) = header_data_len(&self.buf) else {
-                // Resync: drop one byte and search again.
-                self.buf.drain(..1);
-                continue;
-            };
-            let total = 8 + len;
-            if self.buf.len() < total {
-                return None;
-            }
-            if &self.buf[0..3] == b"PKT" {
-                self.buf.drain(..total);
-                continue;
-            }
-            let ok = &self.buf[0..3] == b"CMP";
-            let cmd_id = self.buf[3];
-            let data = self.buf[8..total].to_vec();
-            self.buf.drain(..total);
-            return Some(CmpResponse { ok, cmd_id, data });
         }
     }
 }
@@ -198,8 +153,9 @@ mod tests {
         buf.push(b'v');
         buf.extend_from_slice(&(4u32).to_be_bytes());
         buf.extend_from_slice(b"SCv2");
-        let (n, r) = try_parse_cmp(&buf).unwrap();
-        assert_eq!(n, buf.len());
+        let mut rb = ResponseBuffer::default();
+        rb.push_bytes(&buf);
+        let r = rb.next_cmp().unwrap();
         assert!(r.ok);
         assert_eq!(r.cmd_id, b'v');
         assert_eq!(r.data, b"SCv2");

@@ -222,20 +222,6 @@ impl Sc64SdSession {
         self.exfat
     }
 
-    /// Read an entire file from the SD (FAT or exFAT).
-    pub fn read_file_bytes(&self, path: &str) -> io::Result<Vec<u8>> {
-        let disk = Sc64PartitionDisk::new(
-            self.link.clone(),
-            self.partition_start_sector,
-            self.partition_bytes,
-        );
-        if self.exfat {
-            read_file_exfat(PartitionDiskUnion::Sc64(disk), path)
-        } else {
-            read_file_fat(disk, path)
-        }
-    }
-
     /// Total byte size of a cart file or directory tree (for progress).
     pub fn total_bytes_for_cart_entry(&self, cart_path: &str) -> io::Result<u64> {
         let (parent, name) = cart_path_parts(cart_path);
@@ -249,11 +235,6 @@ impl Sc64SdSession {
         } else {
             Ok(entry.size)
         }
-    }
-
-    /// Copy a file or directory from the SD to a host path (export).
-    pub fn copy_cart_entry_to_host(&self, cart_path: &str, dest: &Path) -> io::Result<()> {
-        self.copy_cart_entry_to_host_with_progress(cart_path, dest, false, |_| true)
     }
 
     /// Same as [`Self::copy_cart_entry_to_host`], reporting **bytes copied** (delta) to `progress`.
@@ -331,11 +312,6 @@ impl Sc64SdSession {
             }
             Ok(())
         }
-    }
-
-    /// Copy a file or directory from the PC into a folder on the SD (FAT or exFAT).
-    pub fn import_from_pc(&self, src: &Path, cart_parent: &str, dest_name: &str) -> io::Result<()> {
-        self.import_from_pc_with_progress(src, cart_parent, dest_name, false, |_| true)
     }
 
     /// Same as [`Self::import_from_pc`], reporting **bytes written** (delta) to `progress`.
@@ -661,19 +637,6 @@ impl Ed64SdSession {
         self.exfat
     }
 
-    pub fn read_file_bytes(&self, path: &str) -> io::Result<Vec<u8>> {
-        let disk = SectorPartitionDisk::new(
-            self.link.clone(),
-            self.partition_start_sector,
-            self.partition_bytes,
-        );
-        if self.exfat {
-            read_file_exfat(PartitionDiskUnion::Ed64(disk), path)
-        } else {
-            read_file_fat(disk, path)
-        }
-    }
-
     pub fn total_bytes_for_cart_entry(&self, cart_path: &str) -> io::Result<u64> {
         let (parent, name) = cart_path_parts(cart_path);
         let list = self.list_dir(&parent)?;
@@ -686,10 +649,6 @@ impl Ed64SdSession {
         } else {
             Ok(entry.size)
         }
-    }
-
-    pub fn copy_cart_entry_to_host(&self, cart_path: &str, dest: &Path) -> io::Result<()> {
-        self.copy_cart_entry_to_host_with_progress(cart_path, dest, false, |_| true)
     }
 
     pub fn copy_cart_entry_to_host_with_progress<F>(
@@ -764,18 +723,6 @@ impl Ed64SdSession {
             }
             Ok(())
         }
-    }
-
-    pub fn import_from_pc(
-        &self,
-        _src: &Path,
-        _cart_parent: &str,
-        _dest_name: &str,
-    ) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "The experimental EverDrive SD mode is read-only.",
-        ))
     }
 
     pub fn import_from_pc_with_progress<F>(
@@ -3216,6 +3163,8 @@ fn delete_fat_tree_recursive(
     Ok(())
 }
 
+/// Read a whole FAT file. Tests only: the app streams instead ([`read_file_fat_streaming`]).
+#[cfg(test)]
 fn read_file_fat<D: Read + Write + Seek>(disk: D, path: &str) -> io::Result<Vec<u8>> {
     let fs = FileSystem::new(disk, FsOptions::new())?;
     let trimmed = path.trim().replace('\\', "/");
@@ -3301,6 +3250,8 @@ fn exfat_read_file_with<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
     Ok(())
 }
 
+/// Read a whole exFAT file. Tests only: the app streams instead ([`read_file_exfat_streaming`]).
+#[cfg(test)]
 fn read_file_exfat<D: PartitionDisk>(mut disk: D, path: &str) -> io::Result<Vec<u8>> {
     let info = exfat_info_from_disk(&mut disk)?;
     let mut read_at = exfat_disk_reader(&mut disk);
