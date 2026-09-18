@@ -86,7 +86,7 @@ Runs of the committed `multi64_test.z64` on real carts, newest first. Add one wh
 
 | Date | Cart | ROM | Host | Result |
 |------|------|-----|------|--------|
-| 2026-09-18 | EverDrive-64 X7 (OS version not recorded) | `multi64-test-rom 1.10`; SHA-256 `75cce6950c3667be8ef89392f90b9a359783543fd1ef5e86e40a67df9181fe4a` | Windows (version not recorded); `multi64d --cart ed64`; test app from `611c89d`, `06d55d2`, then `e71631e` | **Partial**: one failure on the last run, the burst framing check |
+| 2026-09-18 | EverDrive-64 X7 (OS version not recorded) | `multi64-test-rom 1.10`, SHA-256 `75cce6950c3667be8ef89392f90b9a359783543fd1ef5e86e40a67df9181fe4a`; then `1.11`, SHA-256 `c6e04dd596c89ad2ff1363c81abe4480b1b62ab928d00c8870a917cf2ae005bb` | Windows (version not recorded); `multi64d --cart ed64`; test app from `611c89d`, `06d55d2`, `e71631e`, then `243ea4b` | **Partial**: the burst framing check fails, and the cart counts 6 writes that gave up |
 | 2026-09-17 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | `multi64-test-rom 1.10`; SHA-256 `75cce6950c3667be8ef89392f90b9a359783543fd1ef5e86e40a67df9181fe4a` | Windows 11 Pro 10.0.26200; host tools and `multi64d` from `a593195` | **Pass** (31/31) |
 | 2026-09-13 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | built from `52098ce`; SHA-256 `68b0544013c1622abe03dedf5a13cb95a8288d1d59421e0b2dbd565c6a884ba3` | Windows 11 Pro 10.0.26200; host tools and `multi64d` from `c7b13bb` | **Pass** |
 
@@ -101,6 +101,9 @@ with the three-file handover (Multi64 installer, ROM, test app).
   sent **in one burst** failed with `expected CMPH trailer, got [f0, f1, f2, f3]`; the same frame
   sent **one USB message at a time** passed. The cart cannot reliably send while the host is still
   sending; see [`l3-over-everdrive-x7.md`](../docs/spec/l3-over-everdrive-x7.md) §4.5 item 6.
+- **ROM 1.11** added the cart's count of writes that gave up. It was 0 before the direct-serial
+  checks and 6 after, with everything else as above: the cart's own writes are what fail, and
+  only during the burst. 31 passed, 2 failed (the burst check and that count), 2 skipped.
 - **Not recorded:** the EverDrive OS version and the host's Windows version.
 
 The first run failed both direct-serial checks with timeouts, and that was the test app: it opened

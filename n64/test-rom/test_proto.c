@@ -690,33 +690,51 @@ static void handle_m64t(const uint8_t *p, size_t plen)
     }
 }
 
-int test_proto_raw_echo_intercept(const uint8_t *pkt, int n)
+/* The M64T payload of `pkt` when it is a whole REQ_SET_MODE frame, else NULL. */
+static const uint8_t *raw_echo_set_mode(const uint8_t *pkt, int n, uint32_t *payload_len)
 {
-    uint32_t payload_len;
     const uint8_t *payload;
 
     /* 16-byte L3 header + the 5-byte M64T header + one mode byte. */
     if (n < 22) {
-        return 0;
+        return NULL;
     }
     if (pkt[0] != L3_MAGIC0 || pkt[1] != L3_MAGIC1 || pkt[2] != L3_MAGIC2 || pkt[3] != L3_MAGIC3) {
-        return 0;
+        return NULL;
     }
     if (pkt[4] != L3_TYPE_DATA || pkt[5] != L3_CH_APPLICATION) {
-        return 0;
+        return NULL;
     }
-    payload_len = read_be32(&pkt[12]);
+    *payload_len = read_be32(&pkt[12]);
     /* The whole frame must be in this one packet. RAW_ECHO does no reassembly, and a SET_MODE
        split across two USB reads is not worth reassembling for: the host sends it on its own. */
-    if (payload_len < 6U || (size_t)16U + (size_t)payload_len > (size_t)n) {
-        return 0;
+    if (*payload_len < 6U || (size_t)16U + (size_t)*payload_len > (size_t)n) {
+        return NULL;
     }
     payload = pkt + 16;
     if (payload[0] != M64T_MAGIC0 || payload[1] != M64T_MAGIC1 || payload[2] != M64T_MAGIC2 ||
         payload[3] != M64T_MAGIC3) {
-        return 0;
+        return NULL;
     }
     if (payload[4] != M64T_MSG_REQ_SET_MODE) {
+        return NULL;
+    }
+    return payload;
+}
+
+int test_proto_raw_echo_is_set_mode(const uint8_t *pkt, int n)
+{
+    uint32_t len;
+
+    return raw_echo_set_mode(pkt, n, &len) != NULL;
+}
+
+int test_proto_raw_echo_intercept(const uint8_t *pkt, int n)
+{
+    uint32_t payload_len;
+    const uint8_t *payload = raw_echo_set_mode(pkt, n, &payload_len);
+
+    if (payload == NULL) {
         return 0;
     }
     handle_m64t(payload, (size_t)payload_len);

@@ -95,7 +95,7 @@
  */
 #define TEST_M64P_SCRATCH_BYTES 256
 
-#define TEST_ROM_VERSION_STR "multi64-test-rom 1.11"
+#define TEST_ROM_VERSION_STR "multi64-test-rom 1.12"
 
 /**
  * Counters the ROM shell owns rather than test_proto.c, gathered for `M64T_MSG_REQ_DIAG`.
@@ -129,6 +129,9 @@ int test_rom_apply_mode(uint8_t mode);
  * echoed verbatim as before.
  */
 int test_proto_raw_echo_intercept(const uint8_t *pkt, int n);
+
+/** Whether test_proto_raw_echo_intercept() would act on `pkt`, without acting. */
+int test_proto_raw_echo_is_set_mode(const uint8_t *pkt, int n);
 
 /** Clears RX buffer, M64T total, and diag counters (R / mode change). */
 void test_proto_reset_all(void);
