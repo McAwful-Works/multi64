@@ -76,6 +76,39 @@ enum Command {
         #[arg(long, default_value = "")]
         text: String,
     },
+    /// Put the ROM into a mode. Works from any mode, RAW_ECHO included.
+    SetMode {
+        /// 0 RAW_ECHO, 1 M64T_PROTO, 2 BENCH, 3 CTRL_POLL, 4 MEM_AGENT.
+        #[arg(long)]
+        mode: u8,
+    },
+    /// Read the ROM's counter snapshot.
+    Diag {
+        /// Fail unless the stream-health counters are all zero.
+        #[arg(long, default_value_t = false)]
+        expect_clean: bool,
+    },
+    /// M64P HELLO: protocol version, RDRAM size, whether writes are accepted.
+    MemHello,
+    /// M64P PEEKV: read RDRAM.
+    MemPeek {
+        #[arg(long, value_parser = parse_u32_maybe_hex)]
+        addr: u32,
+        #[arg(long)]
+        len: u16,
+    },
+    /// M64P POKEV: write RDRAM. Prefer `mem-round-trip`, which picks a safe address itself.
+    MemPoke {
+        #[arg(long, value_parser = parse_u32_maybe_hex)]
+        addr: u32,
+        #[arg(long)]
+        hex: String,
+    },
+    /// Write, read back and restore the ROM's scratch region (address read from DIAG).
+    MemRoundTrip {
+        #[arg(long, default_value_t = 64)]
+        len: u16,
+    },
     Listen {
         #[arg(long, default_value_t = 0.0)]
         duration_secs: f64,
@@ -84,6 +117,16 @@ enum Command {
         #[arg(long, default_value_t = 50)]
         interval_ms: u64,
     },
+}
+
+/// Accept `0x80000000` as well as a decimal address: RDRAM addresses are always written in hex.
+fn parse_u32_maybe_hex(s: &str) -> Result<u32, String> {
+    let t = s.trim();
+    let r = match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        Some(h) => u32::from_str_radix(h, 16),
+        None => t.parse::<u32>(),
+    };
+    r.map_err(|e| format!("invalid address {t:?}: {e}"))
 }
 
 fn map_command(cmd: Command) -> ConnectorCommand {
@@ -102,6 +145,12 @@ fn map_command(cmd: Command) -> ConnectorCommand {
         Command::SramWrite { offset, hex } => ConnectorCommand::SramWrite { offset, hex },
         Command::Rumble { port, frames } => ConnectorCommand::Rumble { port, frames },
         Command::DisplayText { text } => ConnectorCommand::DisplayText { text },
+        Command::SetMode { mode } => ConnectorCommand::SetMode { mode },
+        Command::Diag { expect_clean } => ConnectorCommand::Diag { expect_clean },
+        Command::MemHello => ConnectorCommand::MemHello,
+        Command::MemPeek { addr, len } => ConnectorCommand::MemPeek { addr, len },
+        Command::MemPoke { addr, hex } => ConnectorCommand::MemPoke { addr, hex },
+        Command::MemRoundTrip { len } => ConnectorCommand::MemRoundTrip { len },
         Command::Listen { .. } | Command::ControllerPoll { .. } => unreachable!(),
     }
 }

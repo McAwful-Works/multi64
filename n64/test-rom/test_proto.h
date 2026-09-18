@@ -26,6 +26,8 @@
 #define M64T_MSG_REQ_SRAM_WRITE 0x0CU
 #define M64T_MSG_REQ_RUMBLE 0x0DU
 #define M64T_MSG_REQ_DISPLAY_TEXT 0x0EU
+#define M64T_MSG_REQ_SET_MODE 0x0FU
+#define M64T_MSG_REQ_DIAG 0x10U
 
 #define M64T_MSG_PONG 0x81U
 #define M64T_MSG_ECHO_REPLY 0x82U
@@ -41,6 +43,8 @@
 #define M64T_MSG_SRAM_STATUS 0x8CU
 #define M64T_MSG_RUMBLE_ACK 0x8DU
 #define M64T_MSG_DISPLAY_TEXT_ACK 0x8EU
+#define M64T_MSG_SET_MODE_ACK 0x8FU
+#define M64T_MSG_DIAG 0x90U
 #define M64T_MSG_BENCH_TICK 0xF0U
 /** Cart → host: left CONTROLLER_POLL mode (L+R held ~5s); body empty. */
 #define M64T_MSG_CONTROLLER_POLL_EXIT 0xF1U
@@ -73,7 +77,58 @@
 /** Max bytes in `REQ_DISPLAY_TEXT` body (UTF-8); excludes M64T header. */
 #define TEST_HOST_DISPLAY_MAX 120
 
-#define TEST_ROM_VERSION_STR "multi64-test-rom 1.9"
+/** `M64T_MSG_SET_MODE_ACK` body[0]. */
+#define M64T_SET_MODE_OK 0U
+#define M64T_SET_MODE_ERR_MODE 1U
+
+/** `M64T_MSG_DIAG` body[0]: the layout of the rest of the body. */
+#define M64T_DIAG_BODY_VERSION 1U
+/** Bytes in a `M64T_MSG_DIAG` body at [`M64T_DIAG_BODY_VERSION`]. */
+#define M64T_DIAG_BODY_LEN 36
+
+/**
+ * Bytes of RDRAM the host may freely write over M64P (`REQ_DIAG` reports where).
+ *
+ * Nothing in the ROM reads it. An automated M64P round trip has to write *somewhere*, and every
+ * other address in RDRAM belongs to the ROM or to libdragon, so without a region set aside for it
+ * a poke check could only be run by choosing an address and hoping.
+ */
+#define TEST_M64P_SCRATCH_BYTES 256
+
+#define TEST_ROM_VERSION_STR "multi64-test-rom 1.10"
+
+/**
+ * Counters the ROM shell owns rather than test_proto.c, gathered for `M64T_MSG_REQ_DIAG`.
+ *
+ * Defined by the shell (`main.c`), the same way mem_proto.c reaches its host — this file states
+ * what it needs and does not reach into the shell's globals.
+ */
+struct test_rom_host_stats {
+    uint32_t rx_bytes;
+    uint32_t tx_bytes;
+    /** Current `enum run_mode`. */
+    uint8_t mode;
+    /** Detected `enum cart_link_kind`. Otherwise screen-only: nothing else puts it on the wire. */
+    uint8_t cart_kind;
+};
+void test_rom_get_host_stats(struct test_rom_host_stats *out);
+
+/**
+ * Apply a host-requested mode. Returns 0 when `mode` is a real mode and is now running, non-zero
+ * when it is out of range and nothing changed. Defined by the shell (`main.c`).
+ */
+int test_rom_apply_mode(uint8_t mode);
+
+/**
+ * RAW_ECHO's one exception: handle `REQ_SET_MODE` in a packet that would otherwise be echoed.
+ *
+ * RAW_ECHO does not parse L3 at all — it writes back whatever arrives — so without this a host
+ * could never get the ROM out of the mode it boots in, and an unattended run would be impossible.
+ * Returns 1 when `pkt` was a whole L3 APPLICATION frame carrying `REQ_SET_MODE` and it has been
+ * handled and acknowledged; the caller MUST NOT echo it. Returns 0 for everything else, which is
+ * echoed verbatim as before.
+ */
+int test_proto_raw_echo_intercept(const uint8_t *pkt, int n);
 
 /** Clears RX buffer, M64T total, and diag counters (R / mode change). */
 void test_proto_reset_all(void);

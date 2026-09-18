@@ -14,7 +14,7 @@ Rust CLI: **`multi64_test.z64`** ([`n64/test-rom`](../../n64/README.md)) ↔ **`
 
 1. Cart + **`multi64d`** build you use (reference: **SC64** + USB) and **`multi64_test.z64`** on-console.  
 2. PC: `cargo run -p multi64d --release -- --serial COM3`  
-3. ROM mode **M64T_PROTO** or **BENCH** for the commands below.
+3. ROM mode **M64T_PROTO** or **BENCH** for the commands below. `set-mode` puts it there without touching the controller — it is the one command that also works in **RAW_ECHO**, so a host can drive the ROM from the mode it boots in.
 
 ## Commands
 
@@ -34,9 +34,23 @@ Rust CLI: **`multi64_test.z64`** ([`n64/test-rom`](../../n64/README.md)) ↔ **`
 | `sram-write` | `REQ_SRAM_WRITE` (0x0C) + `--hex` | `SRAM_STATUS` (0x8C); **requires session** |
 | `rumble` | `REQ_RUMBLE` (0x0D) + `--port` / `--frames` | `RUMBLE_ACK` (0x8D) |
 | `display-text` | `REQ_DISPLAY_TEXT` (0x0E) + `--text` (UTF-8, max **120** bytes; empty clears) | `DISPLAY_TEXT_ACK` (0x8E) |
-| `listen` | nothing | prints inbound L3 **APPLICATION** / **M64T** (e.g. **A** → **CONTROLLER**, **B** → **STRESS_LARGE**, **BENCH_TICK**) |
+| `set-mode` | `REQ_SET_MODE` (0x0F) + `--mode` | `SET_MODE_ACK` (0x8F); fails unless the cart reports the mode actually running |
+| `diag` | `REQ_DIAG` (0x10) | `DIAG` (0x90); `--expect-clean` fails when a stream-health counter is non-zero |
+| `mem-hello` | M64P `HELLO` (0x01) | `HELLO_ACK` (0x81) — protocol version, RDRAM size, writable flag |
+| `mem-peek` | M64P `PEEKV` (0x02) + `--addr` / `--len` | `PEEKV_RESP` (0x82), or a named `ERR` |
+| `mem-poke` | M64P `POKEV` (0x03) + `--addr` / `--hex` | `POKE_ACK` (0x83), or a named `ERR` |
+| `mem-round-trip` | `REQ_DIAG`, then M64P `PEEKV`/`POKEV` | writes a pattern into the ROM's scratch region, reads it back and restores the original |
+| `listen` | nothing | prints inbound L3 **APPLICATION** / **M64T** (**B** → **STRESS_LARGE**, **BENCH_TICK** in BENCH mode, **CONTROLLER** in reply to `req-controller`) |
 
 Global options: `--url` (default `ws://127.0.0.1:38765/ws`), `--recv-timeout-secs` (default `5` for request/response commands).
+
+`--addr` accepts `0x`-prefixed hex or decimal.
+
+**`mem-*` talk to M64P**, a different profile on the same channel ([`memory-l3-application-v0.md`](../spec/memory-l3-application-v0.md)). The ROM dispatches on the payload magic, not on its mode, so they work in every mode except **RAW_ECHO** — **MEM_AGENT** is not required.
+
+**Prefer `mem-round-trip` to `mem-poke`.** It takes its address from `DIAG`, which reports a region the ROM sets aside and never reads; every other address in RDRAM belongs to the ROM or to libdragon, so an arbitrary `mem-poke` can corrupt the running ROM. It is also the only M64P check that proves a write landed, rather than that a reply came back.
+
+**A timeout does not mean the cart is silent.** `multi64d` accepts and discards writes while its link is released or faulted, with no error and no close on the WebSocket. When a command times out, check `GET /` — `serialActive: false` means the request never reached the cart.
 
 `listen --duration-secs 0` runs until Ctrl+C; otherwise stops after N seconds.
 
@@ -69,7 +83,7 @@ cargo run -p multi64-test-connector -- display-text --text "hello from host"
 cargo run -p multi64-test-connector -- listen
 ```
 
-Press **A** for **CONTROLLER** (9-byte body including port), **B** for **STRESS_LARGE**, and in **BENCH** mode wait for **BENCH_TICK** lines. Non-**APPLICATION** L3 (e.g. **C-up** / **Start** on the ROM) may appear as non-**M64T** payloads depending on host decoding.
+Press **B** on the ROM for **STRESS_LARGE**, and in **BENCH** mode wait for **BENCH_TICK** lines. A **CONTROLLER** snapshot is host-driven — send `req-controller`; there is no button for it. Non-**APPLICATION** L3 (e.g. **C-up** / **Start** on the ROM) may appear as non-**M64T** payloads depending on host decoding.
 
 Session, save, rumble, and display-text commands match **[`test-l3-application-v0.md`](../spec/test-l3-application-v0.md)** (**Spec-Revision** **1**). Default ROM build is **EEPROM**; rebuild the ROM with **`N64_ROM_SAVETYPE=sram256k`** (etc.) to get a non-zero SRAM window for **`sram-*`** commands.
 
