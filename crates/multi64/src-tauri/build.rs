@@ -30,6 +30,18 @@ fn main() {
         );
     }
 
+    // The standalone build carries no Xfer64 at all, so there is nothing to copy and no
+    // placeholder to leave: tauri.standalone.conf.json does not declare those resources.
+    if std::env::var("CARGO_FEATURE_XFER64").is_err() {
+        println!(
+            "cargo:warning=building without the xfer64 feature - package this with --config src-tauri/tauri.standalone.conf.json"
+        );
+        // tauri_build::build() must still run: it generates the app's context and declares the
+        // cfgs the crate is compiled against. Returning before it leaves the build subtly broken.
+        tauri_build::build();
+        return;
+    }
+
     // Xfer64 installer: pair NSIS Multi64 ↔ Xfer64 NSIS, or MSI Multi64 ↔ Xfer64 MSI.
     // Set MULTI64_XFER64_BUNDLE=msi when building the Multi64 MSI so resources/xfer64-setup.msi is populated.
     // Default (unset or "nsis") uses the Xfer64 *-setup.exe from bundle/nsis/.

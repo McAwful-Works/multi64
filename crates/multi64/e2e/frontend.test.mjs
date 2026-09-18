@@ -93,6 +93,8 @@ function installTauriStub(scenario = {}) {
     }),
     get_daemon_logs: () => [],
     get_xfer64_state: () => ({ installed: false, installerAvailable: true }),
+    // `sc.xfer64 === false` is the standalone build: no bundled installer, no card.
+    build_info: () => ({ xfer64: sc.xfer64 !== false }),
   };
 
   window.__TAURI__ = {
@@ -129,7 +131,10 @@ async function openScenario(scenario) {
   p.on("pageerror", (e) => consoleErrors.push(`uncaught: ${e.message}`));
   await p.addInitScript(installTauriStub, scenario);
   await p.goto(`${origin}/index.html`);
-  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "get_xfer64_state"));
+  // A standalone build never asks about Xfer64, so wait on the status refresh every build does.
+  const settled =
+    scenario && scenario.xfer64 === false ? "get_daemon_status" : "get_xfer64_state";
+  await until(p, (cmd) => window.__TAURI_CALLS__.some((c) => c.cmd === cmd), settled);
   return p;
 }
 
@@ -245,6 +250,25 @@ async function openSettings(p) {
     return !document.getElementById("discard-panel").hidden;
   });
   check("#168: none of that counts as an unsaved edit", !edits);
+  await p.close();
+}
+
+// --- the standalone build: no Xfer64 at all -----------------------------------
+// The whole point of that build is that it carries no Xfer64, so the card must not be rendered and
+// the window must not go looking for one. Nothing else would catch the card coming back.
+{
+  const p = await openScenario({ xfer64: false });
+  const hidden = await p.evaluate(() => document.getElementById("xfer64-card").hidden);
+  check("standalone: the Xfer64 card is not shown", hidden);
+  const asked = await callsOf(p, "get_xfer64_state");
+  check("standalone: the window does not look for Xfer64", asked.length === 0);
+  await p.close();
+}
+
+{
+  const p = await openScenario({});
+  const shown = await p.evaluate(() => document.getElementById("xfer64-card").hidden === false);
+  check("the full build still shows the Xfer64 card", shown);
   await p.close();
 }
 

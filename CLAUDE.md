@@ -73,6 +73,8 @@ Styling is tokenised: `:root` in each app's `styles.css` holds the palette and *
 
 Build `multi64d` **before** anything that compiles the Multi64 Tauri crate, and with the **same** profile. `crates/multi64/src-tauri/build.rs` copies the daemon into `resources/`, and `tauri.conf.json` declares `resources/multi64d.exe` under `bundle.resources`. A declared resource that is missing is a **hard error** in `tauri-build`: the `cargo:warning` from `build.rs` is not the whole story — the build then fails anyway. Everything `build.rs` writes into `resources/` is gitignored (`multi64d.exe` and both `xfer64-setup.*`; only `xfer64-installer-prompt.ps1` is tracked), so this bites a clean checkout running `cargo clippy --workspace` or `cargo build --workspace`, not just packaging.
 
+There is also a **standalone** Multi64 with no Xfer64 in it: `npm run build:standalone` in `crates/multi64`. The feature flag drops the code, the config drops the resources, and both are required — the default config declares Xfer64 files that the standalone build does not produce, and a missing declared resource is a hard error. Both builds write the same installer filename, so that script renames the standalone bundles afterwards; see [`crates/multi64/README.md`](crates/multi64/README.md).
+
 `build.rs` always leaves **both** `xfer64-setup.exe` and `xfer64-setup.msi` in place — the pairing it was not asked for is written as a 0-byte placeholder — so only the daemon has to be built by hand. A checkout that has not built Xfer64 therefore packages a placeholder and the app's *Install Xfer64* button stays disabled; that is intended, and is why these are not committed. Build Xfer64 first when packaging a release.
 
 ### Hardware paths (never in CI)
