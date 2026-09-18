@@ -32,6 +32,47 @@ Installer graphics come from `windows/*.bmp`, regenerated from the brand masters
 
 Artifacts under `target/release/bundle/`. **`src-tauri/build.rs`** copies one real Xfer64 installer (`xfer64-setup.exe` or `.msi`) and leaves the other as a placeholder. Use **`MULTI64_XFER64_BUNDLE=msi`** when building Multi64 if you built Xfer64 with **`tauri build --bundles msi`**. [Tauri `bundle.resources`](https://v2.tauri.app/reference/config/#bundle) lists `multi64d.exe`, Xfer64 payloads, and **`xfer64-installer-prompt.ps1`**. First-run installer can offer Xfer64 (skipped for silent NSIS **`/S`** or MSI **UILevel** 2).
 
+## Standalone build (no Xfer64)
+
+A second package that carries **no Xfer64 at all**: no bundled installer, no card in the window, no
+tray item, and none of the registry and path searching that finds an installed copy. About **2.6 MB
+smaller**, for embedding somewhere that wants Multi64 and nothing else.
+
+It is the same app — same name, same identifier — so installing one over the other replaces it
+rather than leaving two Multi64s on the machine.
+
+```sh
+cargo build -p multi64d --release
+cd crates/multi64 && npm install && npm run build:standalone
+```
+
+That script does three things, and all three are needed:
+
+- **`--no-default-features`** turns off the crate's `xfer64` feature, which drops the code and tells
+  `build.rs` not to copy any Xfer64 installer into `resources/`.
+- **`--config src-tauri/tauri.standalone.conf.json`** drops those files from `bundle.resources`. A
+  declared resource that is missing is a **hard error** in `tauri-build`, so the two go together:
+  building standalone with the default config fails outright.
+- **`rename-standalone.mjs`** renames the bundles afterwards. `productName` is `Multi64` in both
+  builds, so both write `Multi64_0.1.0_x64-setup.exe` and the second would otherwise overwrite the
+  first with no warning. Renaming the artifact rather than changing `productName` keeps the app
+  itself identical — same window title, same install directory, one Start-menu entry.
+
+Output, alongside the full installer rather than on top of it:
+
+| Build | Installer | Size |
+|-------|-----------|------|
+| `npm run build` | `Multi64_0.1.0_x64-setup.exe` | ~6.4 MB |
+| `npm run build:standalone` | `Multi64-standalone_0.1.0_x64-setup.exe` | ~3.8 MB |
+
+Size is the quick check that the right one came out. Searching the installer for `xfer64` is **not**
+a check: NSIS compresses its payload, so the string is absent from both.
+
+The window asks the backend what it is (`build_info`) and hides the Xfer64 card when the answer is
+no, so the card never flashes in a build that has no use for it. Two checks in
+[`e2e/`](e2e/README.md) cover it: the card is not shown, and the window does not go looking for
+Xfer64 at all.
+
 ## Appearance
 
 Settings → **Appearance**, in both apps. Changes apply immediately; there is no Save step for them.

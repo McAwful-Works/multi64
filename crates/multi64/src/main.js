@@ -498,7 +498,31 @@ async function refreshLog() {
   }
 }
 
+/**
+ * Show the Xfer64 card only in a build that has Xfer64, and keep it hidden otherwise.
+ *
+ * A build fact, not a runtime one: the standalone package carries no installer and cannot find or
+ * launch anything, so the card is removed rather than shown disabled. Hiding is done once, here,
+ * before the first refresh, so the card never flashes in a build that has no use for it.
+ */
+async function applyBuildInfo() {
+  const card = document.getElementById("xfer64-card");
+  if (!card) return false;
+  try {
+    const info = await invoke("build_info");
+    card.hidden = !info.xfer64;
+    return !!info.xfer64;
+  } catch {
+    // An older shell without the command still has Xfer64: showing the card is the safe default,
+    // since its button reports its own state anyway.
+    card.hidden = false;
+    return true;
+  }
+}
+
 async function updateXfer64Button() {
+  const card = document.getElementById("xfer64-card");
+  if (card && card.hidden) return;
   const btn = document.getElementById("btn-open-explorer");
   try {
     const st = await invoke("get_xfer64_state");
@@ -516,6 +540,7 @@ async function updateXfer64Button() {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  await applyBuildInfo();
   await loadSettings();
   await refreshStatus();
   await updateXfer64Button();

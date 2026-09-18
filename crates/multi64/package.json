@@ -7,7 +7,8 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "build:standalone": "tauri build --config src-tauri/tauri.standalone.conf.json -- --no-default-features && node rename-standalone.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

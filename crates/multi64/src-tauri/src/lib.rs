@@ -5,7 +5,9 @@ use multi64_cart_probe::{usb_is_sc64, DetectedCart};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+#[cfg(feature = "xfer64")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -1378,10 +1380,12 @@ async fn daemon_stop(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// Basenames we search for (NSIS / MSI / legacy installs).
+#[cfg(feature = "xfer64")]
 const XFER64_EXE_NAMES: &[&str] = &["Xfer64.exe", "xfer64.exe", "multi64-cart-explorer.exe"];
 
 /// Windows: resolve installed Xfer64 from registry (NSIS and WiX/MSI register App Paths and/or Uninstall).
 #[cfg(windows)]
+#[cfg(feature = "xfer64")]
 fn xfer64_registry_exe_candidates() -> Vec<PathBuf> {
     use winreg::enums::*;
     use winreg::RegKey;
@@ -1475,6 +1479,7 @@ fn xfer64_registry_exe_candidates() -> Vec<PathBuf> {
     out
 }
 
+#[cfg(feature = "xfer64")]
 fn xfer64_exe_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     #[cfg(windows)]
@@ -1528,15 +1533,18 @@ fn xfer64_exe_candidates() -> Vec<PathBuf> {
     v
 }
 
+#[cfg(feature = "xfer64")]
 fn first_xfer64_exe() -> Option<PathBuf> {
     xfer64_exe_candidates().into_iter().find(|p| p.is_file())
 }
 
+#[cfg(feature = "xfer64")]
 fn is_xfer64_installed() -> bool {
     first_xfer64_exe().is_some()
 }
 
 /// True when `p` is a non-placeholder bundled installer (build.rs writes 0 bytes for the unused kind).
+#[cfg(feature = "xfer64")]
 fn xfer64_installer_is_valid(p: &Path) -> bool {
     p.is_file()
         && std::fs::metadata(p)
@@ -1546,6 +1554,7 @@ fn xfer64_installer_is_valid(p: &Path) -> bool {
 
 /// Same layout rules as [`resolve_multi64d_path`]: bundled `resources/...` often lands under
 /// `$RESOURCE_DIR/resources/` (see `tauri.conf.json` `bundle.resources`).
+#[cfg(feature = "xfer64")]
 fn resolve_xfer64_installer_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     // Prefer MSI when bundled (Multi64 MSI build); else NSIS *.exe. Only one is non-placeholder.
     const REL: &[&str] = &[
@@ -1572,6 +1581,8 @@ fn resolve_xfer64_installer_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
+/// What the window needs to decide whether to offer Xfer64. In a standalone build both are
+/// always false and the card is not rendered at all — see [`build_info`].
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Xfer64State {
@@ -1579,6 +1590,7 @@ pub struct Xfer64State {
     pub installer_available: bool,
 }
 
+#[cfg(feature = "xfer64")]
 fn xfer64_state(app: &AppHandle) -> Xfer64State {
     Xfer64State {
         installed: is_xfer64_installed(),
@@ -1586,22 +1598,64 @@ fn xfer64_state(app: &AppHandle) -> Xfer64State {
     }
 }
 
+/// What this build of Multi64 contains, so the window can leave out what is not there rather than
+/// showing a control that cannot work.
+///
+/// A build-time fact, not a runtime one: the standalone package carries no Xfer64 installer and
+/// none of the code that looks for an installed copy, so the card is never rendered at all.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildInfo {
+    pub xfer64: bool,
+}
+
+#[tauri::command]
+fn build_info() -> BuildInfo {
+    BuildInfo {
+        xfer64: cfg!(feature = "xfer64"),
+    }
+}
+
 /// Blocking: reads the uninstall registry keys and stats every candidate install path.
+///
+/// The command stays registered in a standalone build so the invoke surface does not change shape
+/// between builds; it reports both flags false, and the window hides the card before ever calling
+/// it (see [`build_info`]).
 #[tauri::command]
 async fn get_xfer64_state(app: tauri::AppHandle) -> Result<Xfer64State, String> {
-    on_blocking_pool(&app, "get_xfer64_state", |app, _| xfer64_state(app)).await
+    #[cfg(not(feature = "xfer64"))]
+    {
+        let _ = &app;
+        Ok(Xfer64State {
+            installed: false,
+            installer_available: false,
+        })
+    }
+    #[cfg(feature = "xfer64")]
+    {
+        on_blocking_pool(&app, "get_xfer64_state", |app, _| xfer64_state(app)).await
+    }
 }
 
 /// If Xfer64 is installed, launch it. Otherwise run the bundled installer (`xfer64-setup.exe` or `xfer64-setup.msi`).
 /// Blocking: the same registry and path search as [`get_xfer64_state`], then a process spawn.
 #[tauri::command]
 async fn launch_or_install_xfer64(app: tauri::AppHandle) -> Result<(), String> {
-    on_blocking_pool(&app, "launch_or_install_xfer64", |app, _| {
-        launch_or_install_xfer64_blocking(app)
-    })
-    .await?
+    #[cfg(not(feature = "xfer64"))]
+    {
+        let _ = &app;
+        Err("this build of Multi64 does not include Xfer64".into())
+    }
+    #[cfg(feature = "xfer64")]
+    {
+        on_blocking_pool(&app, "launch_or_install_xfer64", |app, _| {
+            launch_or_install_xfer64_blocking(app)
+        })
+        .await?
+    }
 }
 
+#[cfg(feature = "xfer64")]
 fn launch_or_install_xfer64_blocking(app: &AppHandle) -> Result<(), String> {
     if let Some(exe) = first_xfer64_exe() {
         return Command::new(&exe)
@@ -1618,6 +1672,7 @@ fn launch_or_install_xfer64_blocking(app: &AppHandle) -> Result<(), String> {
     launch_xfer64_bundled_installer(&installer_path)
 }
 
+#[cfg(feature = "xfer64")]
 fn launch_xfer64_bundled_installer(installer_path: &Path) -> Result<(), String> {
     let is_msi = installer_path
         .extension()
@@ -1743,6 +1798,7 @@ fn tray_serial(
 }
 
 /// Text and enabled state for the Xfer64 item. `None` means the state could not be read.
+#[cfg(feature = "xfer64")]
 fn xfer64_label(state: Option<&Xfer64State>) -> (&'static str, bool) {
     match state {
         Some(s) if s.installed => ("Open Xfer64", true),
@@ -1817,22 +1873,34 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         None::<&str>,
     )?;
 
-    let xfer_state = xfer64_state(app);
-    let (xfer_text, xfer_enabled) = xfer64_label(Some(&xfer_state));
-    let xfer = MenuItem::with_id(app, "xfer64", xfer_text, xfer_enabled, None::<&str>)?;
+    #[cfg(feature = "xfer64")]
+    let xfer = {
+        let xfer_state = xfer64_state(app);
+        let (xfer_text, xfer_enabled) = xfer64_label(Some(&xfer_state));
+        MenuItem::with_id(app, "xfer64", xfer_text, xfer_enabled, None::<&str>)?
+    };
 
     let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Exit Multi64", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
+    #[cfg(feature = "xfer64")]
     let sep3 = PredefinedMenuItem::separator(app)?;
 
-    Menu::with_items(
-        app,
-        &[
-            &status, &sep1, &toggle, &restart, &sep2, &xfer, &sep3, &show, &quit,
-        ],
-    )
+    // Built as a list rather than a fixed array so the standalone build simply leaves the Xfer64
+    // entry and its separator out, instead of showing a permanently greyed item for something the
+    // package does not contain.
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
+        vec![&status, &sep1, &toggle, &restart, &sep2];
+    #[cfg(feature = "xfer64")]
+    {
+        items.push(&xfer);
+        items.push(&sep3);
+    }
+    items.push(&show);
+    items.push(&quit);
+
+    Menu::with_items(app, &items)
 }
 
 /// Rebuild the tray menu so its labels match current state. No-op when the tray is disabled.
@@ -1873,6 +1941,7 @@ pub fn run() {
         }))
         .manage(state)
         .invoke_handler(tauri::generate_handler![
+            build_info,
             get_serial_port_options,
             get_settings,
             set_settings,
@@ -1963,6 +2032,7 @@ pub fn run() {
                                 let _ = app.emit("daemon-changed", ());
                             });
                         }
+                        #[cfg(feature = "xfer64")]
                         "xfer64" => {
                             let app = app.clone();
                             tauri::async_runtime::spawn_blocking(move || {
@@ -2871,6 +2941,7 @@ mod tray_tests {
         assert_eq!(l.status, "Bridge: running (127.0.0.1:38765)");
     }
 
+    #[cfg(feature = "xfer64")]
     #[test]
     fn xfer64_label_tracks_availability() {
         let installed = Xfer64State {
