@@ -2,9 +2,17 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use multi64_test_connector::suite::{run_suite, CheckResult, Outcome, SuiteOptions};
 use multi64_test_connector::{
     run_connector_command, run_controller_poll, run_listen, ConnectorCommand,
 };
+
+fn note_suffix(note: &Option<String>) -> String {
+    match note {
+        Some(n) => format!("  ({n})"),
+        None => String::new(),
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -117,6 +125,25 @@ enum Command {
         #[arg(long, default_value_t = 50)]
         interval_ms: u64,
     },
+    /// Run every end-to-end check and report PASS/FAIL for each.
+    ///
+    /// Needs multi64d running against a cart and multi64_test.z64 booted. The controller is not
+    /// needed: the ROM boots into RAW_ECHO and the suite drives it out itself.
+    Suite {
+        /// Serial port for the direct-serial checks.
+        #[arg(long, default_value = multi64_test_connector::suite::DEFAULT_PORT)]
+        port: String,
+        /// The daemon's HTTP base, for health, link state and release/resume.
+        #[arg(long, default_value = multi64_test_connector::suite::DEFAULT_BASE_URL)]
+        base: String,
+        /// Fail unless the cart reports this ROM version. Without it that check is skipped, not
+        /// passed: a version nothing can verify has to stay visible.
+        #[arg(long)]
+        expect_rom: Option<String>,
+        /// Leave the daemon's serial port alone and skip the direct-serial checks.
+        #[arg(long, default_value_t = false)]
+        skip_serial: bool,
+    },
 }
 
 /// Accept `0x80000000` as well as a decimal address: RDRAM addresses are always written in hex.
@@ -151,7 +178,9 @@ fn map_command(cmd: Command) -> ConnectorCommand {
         Command::MemPeek { addr, len } => ConnectorCommand::MemPeek { addr, len },
         Command::MemPoke { addr, hex } => ConnectorCommand::MemPoke { addr, hex },
         Command::MemRoundTrip { len } => ConnectorCommand::MemRoundTrip { len },
-        Command::Listen { .. } | Command::ControllerPoll { .. } => unreachable!(),
+        Command::Listen { .. } | Command::ControllerPoll { .. } | Command::Suite { .. } => {
+            unreachable!()
+        }
     }
 }
 
@@ -163,6 +192,52 @@ async fn main() -> Result<()> {
     match args.command {
         Command::Listen { duration_secs } => {
             run_listen(&args.url, duration_secs, None, &mut log).await?;
+        }
+        Command::Suite {
+            port,
+            base,
+            expect_rom,
+            skip_serial,
+        } => {
+            let opts = SuiteOptions {
+                ws_url: args.url.clone(),
+                base_url: base,
+                port,
+                expect_rom,
+                skip_serial,
+                recv_timeout_secs: args.recv_timeout_secs,
+            };
+            let mut phase = String::new();
+            let mut on = |r: CheckResult| {
+                if r.phase != phase {
+                    phase = r.phase.clone();
+                    println!("\n== {phase} ==");
+                }
+                match &r.outcome {
+                    Outcome::Pass => {
+                        println!("PASS  {}{}", r.name, note_suffix(&r.note));
+                    }
+                    Outcome::Fail { detail } => println!("FAIL  {}  {detail}", r.name),
+                    Outcome::Skip { reason } => println!("SKIP  {}  ({reason})", r.name),
+                }
+            };
+            match run_suite(&opts, &mut on).await {
+                Err(e) => {
+                    // Could not start, as opposed to something failing: exit 2 so a caller can tell
+                    // a broken cart from a run that never happened.
+                    eprintln!("\nFATAL: {e}");
+                    std::process::exit(2);
+                }
+                Ok(summary) => {
+                    println!(
+                        "\n== summary ==\n{} passed, {} failed, {} skipped",
+                        summary.passed, summary.failed, summary.skipped
+                    );
+                    if summary.exit_code() != 0 {
+                        std::process::exit(summary.exit_code());
+                    }
+                }
+            }
         }
         Command::ControllerPoll { interval_ms } => {
             run_controller_poll(

@@ -1,0 +1,206 @@
+/* ===========================================================================
+   Multi64 Test-only rules. The palette, size tokens, buttons, fields, hints and the app header
+   brand come from styles.css (the shared base, byte-identical across the apps); this file only
+   lays out what this window has and the others do not. No colour literals here -- use the tokens,
+   or they survive unchanged into Light and High contrast.
+   =========================================================================== */
+
+/* The controls stay put and only the results scroll: with the whole page scrolling, a long run
+   pushed the Run button off the top and re-running meant scrolling back up. */
+body {
+  margin: 0;
+  padding: 1rem 1.25rem 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header,
+#setup,
+#summary {
+  flex: none;
+}
+
+.tagline {
+  margin: 0.5rem 0 0;
+  max-width: 52rem;
+  font-size: var(--font-sm);
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Run card.
+   --------------------------------------------------------------------------- */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.1rem;
+  margin-top: 1rem;
+  max-width: 52rem;
+}
+
+.card h2 {
+  margin: 0 0 0.75rem;
+  font-size: var(--font-lg);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.setup-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.75rem;
+}
+
+.actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+#status.hint {
+  margin: 0.75rem 0 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Tally and per-check results.
+   --------------------------------------------------------------------------- */
+
+.tally {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.badge {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: var(--font-xs);
+  border: 1px solid transparent;
+}
+
+.badge-pass {
+  background: rgba(var(--success-rgb), 0.16);
+  border-color: rgba(var(--success-rgb), 0.4);
+  color: var(--success-text);
+}
+
+.badge-fail {
+  background: rgba(var(--danger-rgb), 0.16);
+  border-color: rgba(var(--danger-rgb), 0.4);
+  color: var(--danger-text);
+}
+
+.badge-skip {
+  background: rgba(var(--warning-rgb), 0.16);
+  border-color: rgba(var(--warning-rgb), 0.4);
+  color: var(--warning-text);
+}
+
+#results {
+  /* min-height lets a flex child actually shrink; without it the pane grows past the viewport
+     and the scrollbar never appears. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 1rem;
+  padding-bottom: 1.25rem;
+  max-width: 52rem;
+}
+
+/* A phase with no rows yet says so in place, so the section keeps its height and nothing below it
+   moves when the first result lands. */
+.checks:empty::after {
+  content: "not run yet";
+  display: block;
+  padding: 0.5rem 0.75rem;
+  font-size: var(--font-sm);
+  font-style: italic;
+  color: var(--muted);
+}
+
+/* Sticky, so a long phase still says which one you are looking at while it scrolls. */
+.phase {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 1rem 0 0.5rem;
+  padding: 0.35rem 0;
+  background: var(--bg);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.phase:first-child {
+  margin-top: 0;
+}
+
+.checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--card);
+}
+
+.checks li {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr auto;
+  gap: 0.75rem;
+  align-items: baseline;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--divider);
+  font-size: var(--font-md);
+}
+
+.checks li:first-child {
+  border-top: none;
+}
+
+.mark {
+  font-size: var(--font-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.mark-pass {
+  color: var(--success-text);
+}
+
+.mark-fail {
+  color: var(--danger-text);
+}
+
+.mark-skip {
+  color: var(--warning-text);
+}
+
+.detail {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: var(--font-sm);
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ms {
+  font-size: var(--font-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.92em;
+}

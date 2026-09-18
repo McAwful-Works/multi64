@@ -89,7 +89,7 @@ Runs of the committed `multi64_test.z64` on real carts, newest first. Add one wh
 | 2026-09-17 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | `multi64-test-rom 1.10`; SHA-256 `75cce6950c3667be8ef89392f90b9a359783543fd1ef5e86e40a67df9181fe4a` | Windows 11 Pro 10.0.26200; host tools and `multi64d` from `a593195` | **Pass** (31/31) |
 | 2026-09-13 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | built from `52098ce`; SHA-256 `68b0544013c1622abe03dedf5a13cb95a8288d1d59421e0b2dbd565c6a884ba3` | Windows 11 Pro 10.0.26200; host tools and `multi64d` from `c7b13bb` | **Pass** |
 
-**2026-09-17, SummerCart64.** First run of `scripts/l3_e2e.sh`, and the first unattended one: the
+**2026-09-17, SummerCart64.** First unattended run: the
 ROM was booted and the controller was not touched again. **31 checks, 0 failures.**
 
 - **Host-set mode:** `REQ_SET_MODE` took the ROM out of **RAW_ECHO**, the mode it boots into and the
@@ -116,7 +116,7 @@ while the cart was still in RAW_ECHO, which echoes a ping rather than answering 
 
 - **Boot:** normal, with no UNVALIDATED line, so the PRO probe does not misfire on an SC64.
 - **RAW_ECHO:** `sc64-echo-test` (12 bytes) and `sc64-l3-framing-e2e --large` (a small `DATA` frame, a `HEARTBEAT`, and an 8,308-byte frame across USB chunks) both pass.
-- **M64T_PROTO:** `scripts/test_rom_connector_e2e.sh` (since replaced by `scripts/l3_e2e.sh`) passed all 13 steps. `rumble` answered status `0x01`, not supported on the port, with no Rumble Pak inserted; `sram-info` reports size 0, as built.
+- **M64T_PROTO:** `scripts/test_rom_connector_e2e.sh` (since replaced by the suite in `multi64-test-connector`) passed all 13 steps. `rumble` answered status `0x01`, not supported on the port, with no Rumble Pak inserted; `sram-info` reports size 0, as built.
 - **Cart-originated large sends:** **B** delivered repeated 8,192-byte `STRESS_LARGE` payloads to `multi64-test-connector listen`, with no errors.
 - **Not run:** BENCH, CTRL_POLL, MEM_AGENT, and an SRAM build.
 

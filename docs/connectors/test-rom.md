@@ -56,98 +56,81 @@ Global options: `--url` (default `ws://127.0.0.1:38765/ws`), `--recv-timeout-sec
 
 ## Unattended end-to-end run (hardware)
 
-`scripts/l3_e2e.sh` runs the whole L3 bridge surface and reports **PASS**/**FAIL** per check. All it
-needs is **`multi64d`** running against the cart and **`multi64_test.z64`** booted — **do not touch
-the controller**. The ROM boots into **RAW_ECHO** and the script drives it out with `set-mode`,
-which is what makes the run unattended.
+One run covers the whole L3 bridge and reports **PASS**/**FAIL** per check. All it needs is
+**`multi64d`** running against the cart and **`multi64_test.z64`** booted — **do not touch the
+controller**. The ROM boots into **RAW_ECHO**, which parses nothing; the suite drives it out with
+`REQ_SET_MODE`, and that is what makes the run unattended.
 
-| Host | Command |
-|------|---------|
-| Git Bash / Linux / macOS | `./scripts/l3_e2e.sh` |
-| Windows PowerShell | `.\scripts\l3_e2e.ps1` |
+There are two ways in, and they are the *same* checks: both call
+`multi64_test_connector::suite::run_suite`. There is deliberately no second implementation to
+drift, and no shell script — an earlier one existed and was replaced by this.
 
-The `.ps1` is a wrapper around the `.sh`, not a second copy: nothing in CI runs either, so a
-drifting port would drift silently.
+**The app** — `crates/multi64-test-app`, a window with a Run button and live results:
 
-Options: `--port` (default `COM4`), `--url`, `--base`, `--skip-serial`. Environment:
-`MULTI64_PORT`, `MULTI64_WS_URL`, `MULTI64_BASE_URL`, `MULTI64_EXPECT_ROM`, `MULTI64_SKIP_SERIAL`.
+```sh
+cargo build --release -p multi64-test-app     # target/release/multi64-test-app.exe
+```
+
+It is a single portable executable and needs nothing else installed but Multi64 itself. The ROM
+version it expects is baked in at build time from `n64/test-rom/test_proto.h` (see its `build.rs`),
+so a tester never has to know one. **Copy report** puts the whole run on the clipboard.
+
+**The command line** — same checks, for a terminal or a script:
+
+```sh
+cargo run -p multi64-test-connector --release -- suite --expect-rom "multi64-test-rom 1.10"
+```
+
+Options: `--port` (default `COM4`), `--base`, `--url`, `--expect-rom`, `--skip-serial`.
 
 Exit codes: **0** all checks passed, **1** at least one failed, **2** the run could not start (no
-daemon, or the connector does not build) — so a caller can tell a broken cart from a run that never
-happened.
+daemon) — so a caller can tell a broken cart from a run that never happened.
 
-What it covers, in order:
+### Handing it to someone else
 
-1. **Preflight** — the connector builds once, the daemon answers `/health`, and it is holding its
-   serial port.
-2. **Liveness and identity** — `set-mode` out of RAW_ECHO, `ping`, and **the ROM version must match
-   the tree**. That last one matters more than it looks: a stale ROM on the card makes every check
-   below it a test of something else.
-3. **M64T** — echo (including a 4 KiB body that crosses USB chunks), controller snapshot, and the
-   session / EEPROM / SRAM sequence.
-4. **M64P** — `mem-hello`, a full `mem-round-trip`, and a read outside RDRAM that **must** be
-   refused.
+Three things, and nothing else:
+
+1. the **Multi64 installer** — it carries `multi64d`, and the Xfer64 it installs can put the ROM on
+   the card;
+2. **`multi64_test.z64`**;
+3. **`multi64-test-app.exe`**.
+
+No Rust, no Node, no Python, no `bash`, no loose helper binaries. The direct-serial checks are
+linked into the app rather than shelling out to `sc64-echo-test` and `sc64-l3-framing-e2e`, which is
+what collapses the handover to one file.
+
+### What it covers, in order
+
+1. **Preflight** — the daemon answers `/health` and is holding its serial port.
+2. **Liveness and identity** — out of RAW_ECHO, `ping`, and **the ROM version must match**. That one
+   matters more than it looks: a stale ROM on the card makes every check below it a test of
+   something else. With no expected version it **skips** rather than passes.
+3. **M64T** — echo (including a 4 KiB body across USB chunks), controller snapshot, and the session
+   / EEPROM / SRAM sequence.
+4. **M64P** — `HELLO`, a full round trip through the ROM's scratch region, and a read outside RDRAM
+   that **must** be refused.
 5. **BENCH** — three seconds of unsolicited `BENCH_TICK`.
-6. **Direct serial** — `set-mode` to RAW_ECHO, release the daemon's port, run `sc64-echo-test` and
-   `sc64-l3-framing-e2e --large`, resume, and confirm the link came back. These need the cart in a
-   state the WebSocket checks cannot use, which is why nothing chained them before `REQ_SET_MODE`
-   existed.
-7. **Stream health** — `diag --expect-clean`. Every check above proves its own round trip; only
-   this proves the stream underneath them never desynchronised.
+6. **Direct serial** — RAW_ECHO, release the daemon's port, echo and framing (including an
+   8,308-byte frame), resume, and confirm the link came back. These need a cart state the WebSocket
+   checks cannot use, which is why nothing chained them before `REQ_SET_MODE` existed.
+7. **Stream health** — the `DIAG` counters. Every check above proves its own round trip; only this
+   proves the stream underneath them never desynchronised.
 
 Two things it deliberately does **not** do. It does not stop at the first failure — every check
 runs, because one broken check hiding the twenty after it is not a useful report. And it does not
-count `rumble` or `display-text` as passes: their effects are on the console and the desk, and a
-host that cannot observe them would only be asserting that the ROM sent an ack.
+count `rumble` or `display-text` as passes: their effects are on the console and the desk, so a host
+that cannot observe them would only be asserting that the ROM sent an ack. They run, and are
+reported as **SKIP** with that reason.
 
-**If a check times out**, the line says whether the link was up. `multi64d` accepts and discards
+**If a check times out**, the result says whether the link was up. `multi64d` accepts and discards
 writes while its link is released or faulted, so a silent cart and a dead link look identical from
-the WebSocket; the script reads `GET /` at the moment of failure to tell them apart.
+the WebSocket; the suite reads `GET /` at the moment of failure to tell them apart.
 
-**If the script is killed** during the serial phase, an `EXIT` trap puts the daemon's port back. If
-even that fails it says so loudly — `multi64d` would then be holding no port, and Multi64 needs a
-restart.
+**If a run is interrupted** during the serial phase, a `Drop` guard puts the daemon's port back.
+Without it `multi64d` would be left holding no port, and Multi64 dead until restarted.
 
-### What it needs
-
-On the PC: **`bash`** and **`curl`** — on Windows, Git for Windows (**not** WSL's bash, which cannot
-reach the COM port) — and **`multi64d`** running against the cart, which the Multi64 installer
-provides and starts.
-
-On the desk: a **SummerCart64** in a powered console, and **`multi64_test.z64`** on its SD card,
-booted, with the controller then left alone.
-
-It does **not** need Node, Python, `jq`, or the N64 toolchain. It does not need a repo checkout or
-a Rust toolchain either — see below.
-
-### Running it without a checkout
-
-The script drives three binaries. In a repo checkout with `cargo` on `PATH` it builds the connector
-itself, as before. Outside one, put the binaries next to the script or point `--tools` at them:
-
-| Binary | Covers |
-|--------|--------|
-| `multi64-test-connector` | every WebSocket check |
-| `sc64-echo-test` | the direct-serial phase — **SKIP**ped, not failed, when absent |
-| `sc64-l3-framing-e2e` | as above |
-
-Build them with:
-
-```sh
-cargo build --release -p multi64-test-connector -p sc64-echo-test -p sc64-l3-framing-e2e
-```
-
-and copy them, plus `scripts/l3_e2e.sh` (and `l3_e2e.ps1` for Windows) and `multi64_test.z64`, into
-one folder. With the Multi64 installer, that folder is everything a recipient needs — Multi64
-carries the daemon, and the Xfer64 it installs can put the ROM on the card.
-
-**Set `MULTI64_EXPECT_ROM`** when you hand it over, e.g. `MULTI64_EXPECT_ROM="multi64-test-rom
-1.10"`. Outside a checkout there is no header to read the expected version from, so the version
-guard **skips** rather than passes: a check that cannot fail is worse than no check, and this is the
-one that stops the whole run being a test of some other ROM.
-
-GitHub **CI** does not run this (no cart); it only builds and tests the Rust workspace. The latest
-hardware run is recorded in [`n64/README.md`](../../n64/README.md#hardware-record).
+GitHub **CI** does not run any of this (no cart); it only builds and tests the Rust workspace. The
+latest hardware run is recorded in [`n64/README.md`](../../n64/README.md#hardware-record).
 
 ## Examples
 
