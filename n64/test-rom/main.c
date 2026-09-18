@@ -50,6 +50,8 @@ static uint32_t s_rx_bytes;
 static uint32_t s_tx_bytes;
 static uint32_t s_frame;
 static enum run_mode s_mode = MODE_RAW_ECHO;
+/** The cart cart_link_init() found, reported to the host by REQ_DIAG. */
+static enum cart_link_kind s_cart = CART_LINK_NONE;
 static uint32_t s_bench_interval_frames = 60u;
 
 static uint32_t s_tick_min = 0xFFFFFFFFu;
@@ -101,6 +103,34 @@ static void reset_stats(void)
     s_rx_bytes = 0;
     s_tx_bytes = 0;
     test_proto_reset_all();
+}
+
+/* Hooks test_proto.h declares, so the M64T layer can answer REQ_DIAG and REQ_SET_MODE without
+   reaching into this file's globals — the arrangement mem_proto.c already uses. */
+
+void test_rom_get_host_stats(struct test_rom_host_stats *out)
+{
+    if (out == 0) {
+        return;
+    }
+    out->rx_bytes = s_rx_bytes;
+    out->tx_bytes = s_tx_bytes;
+    out->mode = (uint8_t)s_mode;
+    out->cart_kind = (uint8_t)s_cart;
+}
+
+int test_rom_apply_mode(uint8_t mode)
+{
+    if (mode >= (uint8_t)MODE_COUNT) {
+        return 1;
+    }
+    /* The same transition A makes in the menu: the mode changes, the counters start again, and
+       the overlay closes so the HUD shows the mode that is actually running. */
+    s_mode = (enum run_mode)mode;
+    reset_stats();
+    s_menu_visible = 0;
+    s_lr_exit_hold_frames = 0;
+    return 0;
 }
 
 static void hud_redraw(uint32_t frame_ticks)
@@ -183,6 +213,12 @@ static void run_raw_echo(void)
     s_rx_bytes += (uint32_t)n;
 
     if (type == MULTI64_L3 && n <= (int)USB_READ_CHUNK) {
+        /* RAW_ECHO's one exception: a host has no other way out of the mode the ROM boots in,
+           so REQ_SET_MODE is acted on instead of echoed. Everything else still goes back
+           verbatim. See test_proto_raw_echo_intercept(). */
+        if (test_proto_raw_echo_intercept(s_pkt, n)) {
+            return;
+        }
         cart_link_write(s_pkt, n);
         s_tx_bytes += (uint32_t)n;
     }
@@ -326,6 +362,7 @@ int main(void)
        than let a silent boot imply it works. See docs/spec/l3-over-everdrive-x7.md 4.0 / 4.5 and
        docs/spec/l3-over-everdrive-pro.md 8. */
     const enum cart_link_kind cart = cart_link_init();
+    s_cart = cart;
     if (cart == CART_LINK_NONE) {
         printf("usb init failed\n");
         while (1) {

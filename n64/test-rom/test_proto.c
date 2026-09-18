@@ -192,6 +192,10 @@ static int send_l3_application_payload(const uint8_t *app, int app_len, uint8_t 
    request it answers. */
 static uint8_t s_app_out[TEST_L3_OUT_CAP];
 
+/* RDRAM the host may write over M64P without disturbing the ROM. Reported by REQ_DIAG; read by
+   nothing here. Aligned so a host can poke words at its base. */
+static uint8_t s_m64p_scratch[TEST_M64P_SCRATCH_BYTES] __attribute__((aligned(8)));
+
 static void send_l3_app(const uint8_t *app, int app_len)
 {
     int nw = send_l3_application_payload(app, app_len, s_app_out, (int)sizeof(s_app_out));
@@ -638,6 +642,83 @@ static void handle_m64t(const uint8_t *p, size_t plen)
         m64t_send(M64T_MSG_DISPLAY_TEXT_ACK, &st, 1U);
         return;
     }
+
+    if (msg == M64T_MSG_REQ_SET_MODE) {
+        struct test_rom_host_stats stats;
+        uint8_t ack[2];
+
+        /* Applying a mode resets the shell's stats, which clears the RX buffer this call is being
+           drained from. That is the same discard a mode change from the menu causes, and the
+           caller's rx_drop() copes with an already-empty buffer; anything the host pipelined
+           behind this request is dropped, so it must wait for the ack before sending more. */
+        if (body_len < 1U) {
+            ack[0] = (uint8_t)M64T_SET_MODE_ERR_MODE;
+        } else {
+            ack[0] = (test_rom_apply_mode(body[0]) == 0) ? (uint8_t)M64T_SET_MODE_OK
+                                                         : (uint8_t)M64T_SET_MODE_ERR_MODE;
+        }
+        test_rom_get_host_stats(&stats);
+        ack[1] = stats.mode;
+        m64t_send(M64T_MSG_SET_MODE_ACK, ack, sizeof ack);
+        return;
+    }
+
+    if (msg == M64T_MSG_REQ_DIAG) {
+        struct test_rom_host_stats stats;
+        uint8_t b[M64T_DIAG_BODY_LEN];
+
+        test_rom_get_host_stats(&stats);
+        b[0] = (uint8_t)M64T_DIAG_BODY_VERSION;
+        b[1] = stats.mode;
+        b[2] = stats.cart_kind;
+        b[3] = 0U;
+        put_be32(b + 4, s_total_m64t_handled);
+        put_be32(b + 8, s_rx_overflow_count);
+        put_be32(b + 12, s_rx_resync_bytes);
+        put_be32(b + 16, s_bad_header_drops);
+        put_be32(b + 20, stats.rx_bytes);
+        put_be32(b + 24, stats.tx_bytes);
+        /* As an RDRAM *physical offset*, which is what M64P addresses are
+           (memory-l3-application-v0.md 4) - not the KSEG0 pointer. Masking off the segment bits
+           gives the physical address from either a cached or an uncached pointer. */
+        put_be32(b + 28, (uint32_t)(uintptr_t)s_m64p_scratch & 0x1FFFFFFFU);
+        put_be32(b + 32, (uint32_t)sizeof s_m64p_scratch);
+        m64t_send(M64T_MSG_DIAG, b, sizeof b);
+        return;
+    }
+}
+
+int test_proto_raw_echo_intercept(const uint8_t *pkt, int n)
+{
+    uint32_t payload_len;
+    const uint8_t *payload;
+
+    /* 16-byte L3 header + the 5-byte M64T header + one mode byte. */
+    if (n < 22) {
+        return 0;
+    }
+    if (pkt[0] != L3_MAGIC0 || pkt[1] != L3_MAGIC1 || pkt[2] != L3_MAGIC2 || pkt[3] != L3_MAGIC3) {
+        return 0;
+    }
+    if (pkt[4] != L3_TYPE_DATA || pkt[5] != L3_CH_APPLICATION) {
+        return 0;
+    }
+    payload_len = read_be32(&pkt[12]);
+    /* The whole frame must be in this one packet. RAW_ECHO does no reassembly, and a SET_MODE
+       split across two USB reads is not worth reassembling for: the host sends it on its own. */
+    if (payload_len < 6U || (size_t)16U + (size_t)payload_len > (size_t)n) {
+        return 0;
+    }
+    payload = pkt + 16;
+    if (payload[0] != M64T_MAGIC0 || payload[1] != M64T_MAGIC1 || payload[2] != M64T_MAGIC2 ||
+        payload[3] != M64T_MAGIC3) {
+        return 0;
+    }
+    if (payload[4] != M64T_MSG_REQ_SET_MODE) {
+        return 0;
+    }
+    handle_m64t(payload, (size_t)payload_len);
+    return 1;
 }
 
 void test_proto_send_bench_tick(uint32_t tick)

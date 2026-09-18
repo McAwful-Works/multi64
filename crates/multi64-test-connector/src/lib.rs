@@ -27,6 +27,29 @@ type WsWrite = futures_util::stream::SplitSink<
 
 /// ASCII `M64T` — see `docs/spec/test-l3-application-v0.md`.
 const M64T_MAGIC: [u8; 4] = [0x4D, 0x36, 0x34, 0x54];
+/// `M64P` — the RDRAM peek/poke profile (`docs/spec/memory-l3-application-v0.md`). Shares the
+/// APPLICATION channel with M64T; the ROM dispatches on this magic, not on its mode.
+const M64P_MAGIC: [u8; 4] = [0x4D, 0x36, 0x34, 0x50];
+
+const M64P_MSG_HELLO: u8 = 0x01;
+const M64P_MSG_PEEKV: u8 = 0x02;
+const M64P_MSG_POKEV: u8 = 0x03;
+const M64P_MSG_HELLO_ACK: u8 = 0x81;
+const M64P_MSG_PEEKV_RESP: u8 = 0x82;
+const M64P_MSG_POKE_ACK: u8 = 0x83;
+const M64P_MSG_ERR: u8 = 0xE0;
+
+/// Name for an `ERR` code, so a failure says what was wrong rather than printing a number.
+fn m64p_err_name(code: u8) -> &'static str {
+    match code {
+        0x01 => "malformed",
+        0x02 => "too many regions",
+        0x03 => "region or total too large",
+        0x04 => "address outside RDRAM",
+        0x05 => "agent does not accept writes",
+        _ => "unknown",
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]
@@ -46,6 +69,8 @@ enum M64tMsg {
     ReqSramWrite = 0x0C,
     ReqRumble = 0x0D,
     ReqDisplayText = 0x0E,
+    ReqSetMode = 0x0F,
+    ReqDiag = 0x10,
     Pong = 0x81,
     EchoReply = 0x82,
     Version = 0x83,
@@ -60,6 +85,8 @@ enum M64tMsg {
     SramStatus = 0x8C,
     RumbleAck = 0x8D,
     DisplayTextAck = 0x8E,
+    SetModeAck = 0x8F,
+    Diag = 0x90,
     StressLarge = 0xE1,
     BenchTick = 0xF0,
     ControllerPollExit = 0xF1,
@@ -109,6 +136,40 @@ pub enum ConnectorCommand {
         #[serde(default)]
         text: String,
     },
+    /// Put the ROM into a mode (`0` RAW_ECHO … `4` MEM_AGENT). Honoured in every mode, RAW_ECHO
+    /// included, which is what makes an unattended run possible at all.
+    SetMode {
+        mode: u8,
+    },
+    /// Read the ROM's counter snapshot. `expect_clean` fails the command when the stream-health
+    /// counters are non-zero, which is how a run asserts the link stayed in step.
+    Diag {
+        #[serde(default)]
+        expect_clean: bool,
+    },
+    /// M64P `HELLO` — protocol version, RDRAM size, and whether the agent accepts writes.
+    MemHello,
+    MemPeek {
+        addr: u32,
+        len: u16,
+    },
+    MemPoke {
+        addr: u32,
+        hex: String,
+    },
+    /// Write a pattern into the ROM's scratch region, read it back, and restore what was there.
+    ///
+    /// The address comes from `DIAG`, never from the caller: every other address in RDRAM belongs
+    /// to the ROM or libdragon, and this is the only M64P check that proves a write actually
+    /// landed rather than merely that a reply came back.
+    MemRoundTrip {
+        #[serde(default = "default_round_trip_len")]
+        len: u16,
+    },
+}
+
+fn default_round_trip_len() -> u16 {
+    64
 }
 
 fn default_hex_challenge() -> String {
@@ -125,6 +186,61 @@ fn build_m64t_payload(msg: u8, body: &[u8]) -> Vec<u8> {
     p.push(msg);
     p.extend_from_slice(body);
     p
+}
+
+fn build_m64p_payload(msg: u8, body: &[u8]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(5 + body.len());
+    p.extend_from_slice(&M64P_MAGIC);
+    p.push(msg);
+    p.extend_from_slice(body);
+    p
+}
+
+/// `PEEKV` body: `rid`, region count, then each `addr`/`len` (spec §2).
+fn m64p_peek_body(rid: u16, regions: &[(u32, u16)]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(3 + regions.len() * 6);
+    b.extend_from_slice(&rid.to_be_bytes());
+    b.push(regions.len() as u8);
+    for (addr, len) in regions {
+        b.extend_from_slice(&addr.to_be_bytes());
+        b.extend_from_slice(&len.to_be_bytes());
+    }
+    b
+}
+
+/// `POKEV` body: `rid`, region count, then each `addr`/`len` followed by that region's bytes.
+fn m64p_poke_body(rid: u16, regions: &[(u32, &[u8])]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(3 + regions.iter().map(|(_, d)| 6 + d.len()).sum::<usize>());
+    b.extend_from_slice(&rid.to_be_bytes());
+    b.push(regions.len() as u8);
+    for (addr, data) in regions {
+        b.extend_from_slice(&addr.to_be_bytes());
+        b.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        b.extend_from_slice(data);
+    }
+    b
+}
+
+/// First region's bytes out of a `PEEKV_RESP` body (`rid`, count, then `len`+bytes per region).
+fn m64p_first_region(body: &[u8]) -> Result<Vec<u8>> {
+    if body.len() < 3 {
+        anyhow::bail!("PEEKV_RESP body too short ({} bytes)", body.len());
+    }
+    if body[2] == 0 {
+        anyhow::bail!("PEEKV_RESP carried no regions");
+    }
+    if body.len() < 5 {
+        anyhow::bail!("PEEKV_RESP region header truncated");
+    }
+    let len = u16::from_be_bytes([body[3], body[4]]) as usize;
+    let start = 5;
+    if body.len() < start + len {
+        anyhow::bail!(
+            "PEEKV_RESP declared {len} bytes but carried {}",
+            body.len() - start
+        );
+    }
+    Ok(body[start..start + len].to_vec())
 }
 
 fn l3_data_application(payload: Vec<u8>) -> Result<Vec<u8>> {
@@ -438,6 +554,61 @@ async fn ws_hello<F: FnMut(String) + Send>(
 }
 
 /// Decode binary WS chunks until we emit an M64T `APPLICATION` frame whose `msg` is in `want_msgs`.
+/// Decode binary WS chunks until an APPLICATION frame carries `magic` and one of `want_msgs`,
+/// and hand back that message's code and body (the payload past the 5-byte application header).
+///
+/// `Ok(None)` is a timeout or a closed socket, never an error: a cart that says nothing is the
+/// normal failure here, and the caller decides what that means. Note that silence does **not**
+/// distinguish "the cart did not answer" from "the daemon dropped the request because the link
+/// was released or faulted" — writes to a released link are accepted and discarded, so a caller
+/// that cares must check `GET /` on the daemon.
+async fn recv_app_body<F: FnMut(String) + Send>(
+    read: &mut WsRead,
+    decoder: &mut StreamDecoder,
+    deadline: Instant,
+    magic: [u8; 4],
+    want_msgs: &[u8],
+    log: &mut F,
+) -> Result<Option<(u8, Vec<u8>)>> {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let next = tokio::time::timeout(remaining, read.next()).await;
+        let msg = match next {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(e.into()),
+            Ok(None) => return Ok(None),
+            Err(_) => return Ok(None),
+        };
+        match msg {
+            Message::Binary(bin) => {
+                let mut got: Option<(u8, Vec<u8>)> = None;
+                decoder.push_bytes(&bin, |frame| {
+                    emit_l3_frame(&frame, log);
+                    if frame.ty == FrameType::Data && frame.channel == Channel::Application {
+                        let p = &frame.payload;
+                        if got.is_none()
+                            && p.len() >= 5
+                            && p[0..4] == magic
+                            && want_msgs.contains(&p[4])
+                        {
+                            got = Some((p[4], p[5..].to_vec()));
+                        }
+                    }
+                });
+                if got.is_some() {
+                    return Ok(got);
+                }
+            }
+            Message::Text(t) => log_line!(log, "ws text: {}", t),
+            Message::Close(_) => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
 async fn recv_until_m64t_any<F: FnMut(String) + Send>(
     read: &mut WsRead,
     decoder: &mut StreamDecoder,
@@ -445,39 +616,11 @@ async fn recv_until_m64t_any<F: FnMut(String) + Send>(
     want_msgs: &[u8],
     log: &mut F,
 ) -> Result<bool> {
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok(false);
-        }
-        let next = tokio::time::timeout(remaining, read.next()).await;
-        let msg = match next {
-            Ok(Some(Ok(m))) => m,
-            Ok(Some(Err(e))) => return Err(e.into()),
-            Ok(None) => return Ok(false),
-            Err(_) => return Ok(false),
-        };
-        match msg {
-            Message::Binary(bin) => {
-                let mut got = false;
-                decoder.push_bytes(&bin, |frame| {
-                    emit_l3_frame(&frame, log);
-                    if frame.ty == FrameType::Data && frame.channel == Channel::Application {
-                        let p = &frame.payload;
-                        if p.len() >= 5 && p[0..4] == M64T_MAGIC && want_msgs.contains(&p[4]) {
-                            got = true;
-                        }
-                    }
-                });
-                if got {
-                    return Ok(true);
-                }
-            }
-            Message::Text(t) => log_line!(log, "ws text: {}", t),
-            Message::Close(_) => return Ok(false),
-            _ => {}
-        }
-    }
+    Ok(
+        recv_app_body(read, decoder, deadline, M64T_MAGIC, want_msgs, log)
+            .await?
+            .is_some(),
+    )
 }
 
 /// Decode binary WS chunks until we emit an M64T `APPLICATION` frame with `msg == want_msg`.
@@ -496,6 +639,222 @@ async fn recv_until_m64t<F: FnMut(String) + Send>(
         log,
     )
     .await
+}
+
+/// Name of a `run_mode`, so a message says which mode rather than a bare number.
+pub fn mode_name(mode: u8) -> &'static str {
+    match mode {
+        0 => "RAW_ECHO",
+        1 => "M64T_PROTO",
+        2 => "BENCH",
+        3 => "CTRL_POLL",
+        4 => "MEM_AGENT",
+        _ => "unknown",
+    }
+}
+
+/// Name of a `cart_link_kind` as `DIAG` reports it.
+pub fn cart_kind_name(kind: u8) -> &'static str {
+    match kind {
+        0 => "none",
+        1 => "SummerCart64",
+        2 => "EverDrive X-series",
+        3 => "EverDrive-64 PRO",
+        4 => "other/unsupported",
+        _ => "unknown",
+    }
+}
+
+/// The `DIAG` (`0x90`) body — see `docs/spec/test-l3-application-v0.md` §11.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiagSnapshot {
+    pub mode: u8,
+    pub cart_kind: u8,
+    pub frames_handled: u32,
+    pub rx_overflow: u32,
+    pub rx_resync_bytes: u32,
+    pub bad_header_drops: u32,
+    pub rx_bytes: u32,
+    pub tx_bytes: u32,
+    pub scratch_addr: u32,
+    pub scratch_len: u32,
+}
+
+impl DiagSnapshot {
+    pub const BODY_LEN: usize = 36;
+    pub const BODY_VERSION: u8 = 1;
+
+    pub fn parse(body: &[u8]) -> Result<Self> {
+        if body.is_empty() {
+            anyhow::bail!("DIAG body is empty");
+        }
+        // Refusing an unknown version is the point of the byte: a later ROM may add fields, and
+        // reading them at these offsets would report confident nonsense.
+        if body[0] != Self::BODY_VERSION {
+            anyhow::bail!(
+                "DIAG body version {} is not the version {} this build understands - update the                  connector to match the ROM",
+                body[0],
+                Self::BODY_VERSION
+            );
+        }
+        if body.len() < Self::BODY_LEN {
+            anyhow::bail!(
+                "DIAG body is {} bytes, expected at least {}",
+                body.len(),
+                Self::BODY_LEN
+            );
+        }
+        let be =
+            |at: usize| u32::from_be_bytes([body[at], body[at + 1], body[at + 2], body[at + 3]]);
+        Ok(Self {
+            mode: body[1],
+            cart_kind: body[2],
+            frames_handled: be(4),
+            rx_overflow: be(8),
+            rx_resync_bytes: be(12),
+            bad_header_drops: be(16),
+            rx_bytes: be(20),
+            tx_bytes: be(24),
+            scratch_addr: be(28),
+            scratch_len: be(32),
+        })
+    }
+
+    /// True when nothing desynchronised: a reply arriving proves the round trip, these prove the
+    /// stream underneath it stayed in step.
+    pub fn is_clean(&self) -> bool {
+        self.rx_overflow == 0 && self.rx_resync_bytes == 0 && self.bad_header_drops == 0
+    }
+
+    pub fn summary(&self) -> String {
+        format!(
+            "mode={} cart={} frames={} rx={}B tx={}B overflow={} resync={}B bad_header={} scratch=0x{:08X}+{}",
+            mode_name(self.mode),
+            cart_kind_name(self.cart_kind),
+            self.frames_handled,
+            self.rx_bytes,
+            self.tx_bytes,
+            self.rx_overflow,
+            self.rx_resync_bytes,
+            self.bad_header_drops,
+            self.scratch_addr,
+            self.scratch_len
+        )
+    }
+}
+
+/// Which reply satisfies a round trip: the application magic, and the message codes to accept.
+///
+/// A list rather than one code because an error reply is still an answer — accepting `ERR`
+/// alongside the success code is what turns a cart-side rejection into its own message instead of
+/// a timeout that says nothing about why.
+#[derive(Clone, Copy)]
+struct Expect<'a> {
+    magic: [u8; 4],
+    msgs: &'a [u8],
+}
+
+/// Send one APPLICATION payload and wait for a reply matching `expect`.
+async fn app_round_trip<F: FnMut(String) + Send>(
+    write: &mut WsWrite,
+    read: &mut WsRead,
+    payload: Vec<u8>,
+    what: &str,
+    recv_to: Duration,
+    expect: Expect<'_>,
+    log: &mut F,
+) -> Result<(u8, Vec<u8>)> {
+    let wire = l3_data_application(payload)?;
+    write
+        .send(Message::binary(wire))
+        .await
+        .with_context(|| format!("send {}", what))?;
+    log_line!(log, "sent {}", what);
+    let mut decoder = StreamDecoder::new();
+    let deadline = Instant::now() + recv_to;
+    match recv_app_body(read, &mut decoder, deadline, expect.magic, expect.msgs, log).await? {
+        Some(r) => Ok(r),
+        None => anyhow::bail!(
+            concat!(
+                "timeout waiting for a reply to {} - the cart said nothing. ",
+                "A write to a released or faulted link is accepted and discarded by the daemon, ",
+                "so check GET / : serialActive:false means the request never reached the cart, ",
+                "and serialActive:true means the cart itself did not answer (is the ROM booted?).",
+            ),
+            what
+        ),
+    }
+}
+
+fn hex_of(b: &[u8]) -> String {
+    b.iter()
+        .map(|x| format!("{:02x}", x))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// One `PEEKV` region, returning its bytes. Errors carry the `ERR` code's meaning.
+async fn peek_region(
+    write: &mut WsWrite,
+    read: &mut WsRead,
+    recv_to: Duration,
+    addr: u32,
+    len: u16,
+    what: &str,
+) -> Result<Vec<u8>> {
+    let mut quiet = |_: String| {};
+    let (msg, body) = app_round_trip(
+        write,
+        read,
+        build_m64p_payload(M64P_MSG_PEEKV, &m64p_peek_body(1, &[(addr, len)])),
+        what,
+        recv_to,
+        Expect {
+            magic: M64P_MAGIC,
+            msgs: &[M64P_MSG_PEEKV_RESP, M64P_MSG_ERR],
+        },
+        &mut quiet,
+    )
+    .await?;
+    if msg == M64P_MSG_ERR {
+        let code = body.get(2).copied().unwrap_or(0);
+        anyhow::bail!("PEEKV rejected: {} ({:#04x})", m64p_err_name(code), code);
+    }
+    m64p_first_region(&body)
+}
+
+/// One `POKEV` region, checking the cart reports exactly that region applied.
+async fn poke_region(
+    write: &mut WsWrite,
+    read: &mut WsRead,
+    recv_to: Duration,
+    addr: u32,
+    data: &[u8],
+    what: &str,
+) -> Result<()> {
+    let mut quiet = |_: String| {};
+    let (msg, body) = app_round_trip(
+        write,
+        read,
+        build_m64p_payload(M64P_MSG_POKEV, &m64p_poke_body(1, &[(addr, data)])),
+        what,
+        recv_to,
+        Expect {
+            magic: M64P_MAGIC,
+            msgs: &[M64P_MSG_POKE_ACK, M64P_MSG_ERR],
+        },
+        &mut quiet,
+    )
+    .await?;
+    if msg == M64P_MSG_ERR {
+        let code = body.get(2).copied().unwrap_or(0);
+        anyhow::bail!("POKEV rejected: {} ({:#04x})", m64p_err_name(code), code);
+    }
+    let applied = body.get(2).copied().unwrap_or(0);
+    if applied != 1 {
+        anyhow::bail!("POKEV applied {} regions, expected 1", applied);
+    }
+    Ok(())
 }
 
 /// Run a single request/response M64T command (not [`run_listen`]).
@@ -865,6 +1224,230 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
                 anyhow::bail!("timeout waiting for DISPLAY_TEXT_ACK");
             }
         }
+        ConnectorCommand::SetMode { mode } => {
+            let (_, body) = app_round_trip(
+                &mut write,
+                &mut read,
+                build_m64t_payload(M64tMsg::ReqSetMode as u8, &[mode]),
+                "M64T REQ_SET_MODE",
+                recv_to,
+                Expect {
+                    magic: M64T_MAGIC,
+                    msgs: &[M64tMsg::SetModeAck as u8],
+                },
+                log,
+            )
+            .await?;
+            if body.len() < 2 {
+                anyhow::bail!("SET_MODE_ACK body is {} bytes, expected 2", body.len());
+            }
+            let (status, running) = (body[0], body[1]);
+            if status != 0 {
+                anyhow::bail!(
+                    "cart refused mode {} ({}): status {}, still running {}",
+                    mode,
+                    mode_name(mode),
+                    status,
+                    mode_name(running)
+                );
+            }
+            // The ack's second byte is authoritative, not the request: status 0 with a different
+            // mode would mean the ROM and this tool disagree about the numbering.
+            if running != mode {
+                anyhow::bail!(
+                    "cart acked mode {} but reports running {}",
+                    mode_name(mode),
+                    mode_name(running)
+                );
+            }
+            log_line!(log, "OK: cart is in {}", mode_name(running));
+        }
+        ConnectorCommand::Diag { expect_clean } => {
+            let (_, body) = app_round_trip(
+                &mut write,
+                &mut read,
+                build_m64t_payload(M64tMsg::ReqDiag as u8, &[]),
+                "M64T REQ_DIAG",
+                recv_to,
+                Expect {
+                    magic: M64T_MAGIC,
+                    msgs: &[M64tMsg::Diag as u8],
+                },
+                log,
+            )
+            .await?;
+            let d = DiagSnapshot::parse(&body)?;
+            log_line!(log, "DIAG {}", d.summary());
+            if expect_clean && !d.is_clean() {
+                anyhow::bail!(
+                    "stream health counters are not clean: overflow={} resync={}B bad_header={}",
+                    d.rx_overflow,
+                    d.rx_resync_bytes,
+                    d.bad_header_drops
+                );
+            }
+            log_line!(log, "OK: DIAG read");
+        }
+        ConnectorCommand::MemHello => {
+            let (msg, body) = app_round_trip(
+                &mut write,
+                &mut read,
+                build_m64p_payload(M64P_MSG_HELLO, &[]),
+                "M64P HELLO",
+                recv_to,
+                Expect {
+                    magic: M64P_MAGIC,
+                    msgs: &[M64P_MSG_HELLO_ACK, M64P_MSG_ERR],
+                },
+                log,
+            )
+            .await?;
+            if msg == M64P_MSG_ERR {
+                anyhow::bail!("M64P HELLO returned ERR");
+            }
+            if body.len() < 8 {
+                anyhow::bail!("HELLO_ACK body is {} bytes, expected 8", body.len());
+            }
+            log_line!(
+                log,
+                "OK: M64P proto={} agent_ver={} rdram={} bytes writable={}",
+                body[0],
+                u16::from_be_bytes([body[1], body[2]]),
+                u32::from_be_bytes([body[3], body[4], body[5], body[6]]),
+                (body[7] & 0x01) != 0
+            );
+        }
+        ConnectorCommand::MemPeek { addr, len } => {
+            let data = peek_region(&mut write, &mut read, recv_to, addr, len, "M64P PEEKV").await?;
+            log_line!(
+                log,
+                "OK: read {} bytes at 0x{:08X}: {}",
+                data.len(),
+                addr,
+                hex_of(&data)
+            );
+        }
+        ConnectorCommand::MemPoke { addr, hex } => {
+            let data = parse_hex_body(&hex)?;
+            if data.is_empty() {
+                anyhow::bail!("--hex must supply at least one byte to write");
+            }
+            poke_region(&mut write, &mut read, recv_to, addr, &data, "M64P POKEV").await?;
+            log_line!(log, "OK: wrote {} bytes at 0x{:08X}", data.len(), addr);
+        }
+        ConnectorCommand::MemRoundTrip { len } => {
+            // Where to write comes from the ROM, never from the caller: DIAG reports a region the
+            // ROM sets aside and never reads, and every other address in RDRAM belongs to the ROM
+            // or to libdragon.
+            let (_, diag_body) = app_round_trip(
+                &mut write,
+                &mut read,
+                build_m64t_payload(M64tMsg::ReqDiag as u8, &[]),
+                "M64T REQ_DIAG (for the scratch address)",
+                recv_to,
+                Expect {
+                    magic: M64T_MAGIC,
+                    msgs: &[M64tMsg::Diag as u8],
+                },
+                log,
+            )
+            .await?;
+            let diag = DiagSnapshot::parse(&diag_body)?;
+            if diag.scratch_len == 0 {
+                anyhow::bail!("this ROM reports no M64P scratch region");
+            }
+            let cap = u16::try_from(diag.scratch_len).unwrap_or(u16::MAX);
+            let n = len.min(cap);
+            if n == 0 {
+                anyhow::bail!("length must be at least 1");
+            }
+            let addr = diag.scratch_addr;
+            log_line!(
+                log,
+                "scratch 0x{:08X} ({} bytes), using {}",
+                addr,
+                diag.scratch_len,
+                n
+            );
+
+            let original = peek_region(
+                &mut write,
+                &mut read,
+                recv_to,
+                addr,
+                n,
+                "M64P PEEKV (original)",
+            )
+            .await?;
+            if original.len() != usize::from(n) {
+                anyhow::bail!("PEEKV returned {} bytes, asked for {}", original.len(), n);
+            }
+
+            // Neither a constant nor derived from the address, so a read that returns stale or
+            // zeroed memory cannot match by coincidence.
+            let pattern: Vec<u8> = (0..n).map(|i| (i.wrapping_mul(7) ^ 0x5A) as u8).collect();
+            poke_region(
+                &mut write,
+                &mut read,
+                recv_to,
+                addr,
+                &pattern,
+                "M64P POKEV (pattern)",
+            )
+            .await?;
+
+            let back = peek_region(
+                &mut write,
+                &mut read,
+                recv_to,
+                addr,
+                n,
+                "M64P PEEKV (verify)",
+            )
+            .await?;
+            if back != pattern {
+                let at = back
+                    .iter()
+                    .zip(pattern.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(0);
+                anyhow::bail!(
+                    "read-back differs at byte {}: wrote {:#04x}, read {:#04x}",
+                    at,
+                    pattern.get(at).copied().unwrap_or(0),
+                    back.get(at).copied().unwrap_or(0)
+                );
+            }
+
+            // Put back what was there, so a repeated run starts from the same state.
+            poke_region(
+                &mut write,
+                &mut read,
+                recv_to,
+                addr,
+                &original,
+                "M64P POKEV (restore)",
+            )
+            .await?;
+            let restored = peek_region(
+                &mut write,
+                &mut read,
+                recv_to,
+                addr,
+                n,
+                "M64P PEEKV (confirm)",
+            )
+            .await?;
+            if restored != original {
+                anyhow::bail!("scratch was not restored to its original contents");
+            }
+            log_line!(
+                log,
+                "OK: wrote, read back and restored {} bytes at 0x{:08X}",
+                n,
+                addr
+            );
+        }
     }
 
     Ok(())
@@ -1168,5 +1751,118 @@ mod hex_tests {
             parse_hex_body("+1").is_err(),
             "from_str_radix accepts a sign"
         );
+    }
+    /// A DIAG body as the ROM builds it (spec §11), so the offsets are asserted end to end.
+    fn diag_body(version: u8, extra: &[(usize, u32)]) -> Vec<u8> {
+        let mut b = vec![0u8; DiagSnapshot::BODY_LEN];
+        b[0] = version;
+        b[1] = 2; // BENCH
+        b[2] = 1; // SummerCart64
+        for (at, v) in extra {
+            b[*at..*at + 4].copy_from_slice(&v.to_be_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn a_diag_body_is_parsed_at_the_offsets_the_spec_gives() {
+        let body = diag_body(
+            1,
+            &[
+                (4, 11),
+                (8, 0),
+                (12, 0),
+                (16, 0),
+                (20, 4096),
+                (24, 0),
+                (28, 0x8034_5678),
+                (32, 256),
+            ],
+        );
+        let d = DiagSnapshot::parse(&body).unwrap();
+        assert_eq!(d.mode, 2);
+        assert_eq!(d.cart_kind, 1);
+        assert_eq!(d.frames_handled, 11);
+        assert_eq!(d.rx_bytes, 4096);
+        assert_eq!(d.scratch_addr, 0x8034_5678);
+        assert_eq!(d.scratch_len, 256);
+        assert!(d.is_clean());
+    }
+
+    /// The counters are the whole point of DIAG: a reply proves the round trip, these prove the
+    /// stream underneath it never desynchronised. Any one of them is enough to fail a run.
+    #[test]
+    fn any_stream_health_counter_makes_a_snapshot_unclean() {
+        for at in [8usize, 12, 16] {
+            let d = DiagSnapshot::parse(&diag_body(1, &[(at, 1)])).unwrap();
+            assert!(
+                !d.is_clean(),
+                "offset {at} should make the snapshot unclean"
+            );
+        }
+    }
+
+    /// A newer ROM may add fields; reading them at these offsets would report confident nonsense,
+    /// so an unknown version is refused rather than parsed.
+    #[test]
+    fn an_unknown_diag_body_version_is_refused() {
+        let e = DiagSnapshot::parse(&diag_body(2, &[]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("version 2"), "{e}");
+    }
+
+    #[test]
+    fn a_truncated_diag_body_is_refused() {
+        let short = diag_body(1, &[])[..DiagSnapshot::BODY_LEN - 1].to_vec();
+        assert!(DiagSnapshot::parse(&short).is_err());
+        assert!(DiagSnapshot::parse(&[]).is_err());
+    }
+
+    #[test]
+    fn a_peekv_body_lays_out_rid_count_then_each_region() {
+        let b = m64p_peek_body(1, &[(0x8000_0040, 16)]);
+        assert_eq!(
+            b,
+            vec![0x00, 0x01, 0x01, 0x80, 0x00, 0x00, 0x40, 0x00, 0x10]
+        );
+    }
+
+    #[test]
+    fn a_pokev_body_carries_each_regions_bytes_after_its_header() {
+        let b = m64p_poke_body(2, &[(0x8000_0010, &[0xAA, 0xBB])]);
+        assert_eq!(
+            b,
+            vec![0x00, 0x02, 0x01, 0x80, 0x00, 0x00, 0x10, 0x00, 0x02, 0xAA, 0xBB]
+        );
+    }
+
+    #[test]
+    fn the_first_region_of_a_peekv_response_is_its_declared_bytes() {
+        // rid, n=1, len=3, then the bytes.
+        let body = vec![0x00, 0x01, 0x01, 0x00, 0x03, 1, 2, 3];
+        assert_eq!(m64p_first_region(&body).unwrap(), vec![1, 2, 3]);
+    }
+
+    /// A response claiming more than it carries must be an error, not a short read that a caller
+    /// would compare against a shorter pattern and pass.
+    #[test]
+    fn a_peekv_response_shorter_than_it_declares_is_refused() {
+        let body = vec![0x00, 0x01, 0x01, 0x00, 0x08, 1, 2, 3];
+        assert!(m64p_first_region(&body).is_err());
+        assert!(
+            m64p_first_region(&[0x00, 0x01, 0x00]).is_err(),
+            "no regions"
+        );
+        assert!(m64p_first_region(&[0x00]).is_err(), "truncated");
+    }
+
+    #[test]
+    fn mode_and_cart_names_cover_every_value_the_rom_can_report() {
+        assert_eq!(mode_name(0), "RAW_ECHO");
+        assert_eq!(mode_name(4), "MEM_AGENT");
+        assert_eq!(mode_name(5), "unknown");
+        assert_eq!(cart_kind_name(1), "SummerCart64");
+        assert_eq!(cart_kind_name(9), "unknown");
     }
 }

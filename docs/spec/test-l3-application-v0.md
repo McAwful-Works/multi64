@@ -38,6 +38,8 @@ Experimental payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATIO
 | `0x0C` | `REQ_SRAM_WRITE` | `uint32` BE offset, `uint16` BE length, then **length** bytes — **requires active session**; same alignment rules as read |
 | `0x0D` | `REQ_RUMBLE` | `uint8` port `0`–`3`, `uint8` duration in VI frames (**`0`** = default **60**; cart clamps to **600** frames) |
 | `0x0E` | `REQ_DISPLAY_TEXT` | UTF-8 text for the cart HUD, at most **120** bytes (`TEST_HOST_DISPLAY_MAX`); a longer body is rejected in `DISPLAY_TEXT_ACK`. An empty body clears the text |
+| `0x0F` | `REQ_SET_MODE` | `uint8` mode (`0` RAW_ECHO, `1` M64T_PROTO, `2` BENCH, `3` CTRL_POLL, `4` MEM_AGENT). Out of range, or an empty body, changes nothing and is reported in `SET_MODE_ACK`. **Also honoured in RAW_ECHO** — see §10 |
+| `0x10` | `REQ_DIAG` | empty body |
 
 ---
 
@@ -59,6 +61,8 @@ Experimental payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATIO
 | `0x8C` | `SRAM_STATUS` | `uint8` **status** (see §5) |
 | `0x8D` | `RUMBLE_ACK` | `uint8` port, `uint8` duration echoed (capped at **255** in this byte; actual duration ≤ **600**), `uint8` **status** (rumble table in §5) |
 | `0x8E` | `DISPLAY_TEXT_ACK` | `uint8` **status** (see §5) |
+| `0x8F` | `SET_MODE_ACK` | `uint8` **status** (`0` applied, `1` mode out of range), `uint8` mode now running. The second byte is authoritative: on status `1` it is the unchanged mode |
+| `0x90` | `DIAG` | 36-byte counter snapshot (§11) |
 | `0xE1` | `STRESS_LARGE` | Pattern-filled body up to the maximum APPLICATION payload size (stress / fragmentation testing; cart-originated) |
 | `0xF0` | `BENCH_TICK` | Optional: `uint32_t` BE frame counter (stress mode) |
 | `0xF1` | `CONTROLLER_POLL_EXIT` | Empty. Cart-originated: the user held **L+R** to leave `CTRL_POLL` mode, so a host polling `REQ_CONTROLLER` should stop |
@@ -135,10 +139,42 @@ The test ROM may also emit **non-APPLICATION** L3 frames (e.g. `HEARTBEAT` on Co
 ## 10. Relationship to **RAW_ECHO** mode
 
 - The same **`multi64_test.z64`** binary implements **M64T** (this document) and a separate **RAW_ECHO** mode (default at boot): verbatim `MULTI64_L3` loopback with **no** `M64B` application framing. Use **RAW_ECHO** with serial L2 e2e tools such as **`sc64-l3-framing-e2e`** / **`sc64-echo-test`** (**SC64** reference backend in the crate names).
+- **`REQ_SET_MODE` is the one exception to that loopback.** A packet that is a whole L3 APPLICATION frame carrying `REQ_SET_MODE` is acted on and acknowledged instead of being echoed; every other packet is still returned verbatim. Without it a host could not leave the mode the ROM boots in, because RAW_ECHO parses nothing — mode selection would stay a physical controller action and no unattended run would be possible.
+- The exception is deliberately narrow. It requires the L3 magic, APPLICATION channel, `M64T` magic and opcode `0x0F`, with the whole frame in **one** packet — RAW_ECHO does no reassembly, so a `REQ_SET_MODE` split across two USB reads is echoed like anything else. A host MUST send it on its own and wait for `SET_MODE_ACK` before sending anything more, because applying a mode discards whatever is still buffered.
+- A host that wants byte-exact loopback for a pattern that might collide with this frame should send it in RAW_ECHO only after checking `SET_MODE_ACK`, or avoid opcode `0x0F` in an APPLICATION frame.
 
 ---
 
-## 11. Revision
+## 11. `DIAG` body (36 bytes)
+
+`REQ_DIAG` (`0x10`) is answered with `DIAG` (`0x90`). All multi-byte fields are **big-endian `uint32`**.
+
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 1 | **Body version** — `1` for this layout. A host MUST check it and MUST NOT parse a version it does not know |
+| 1 | 1 | Mode now running (`enum run_mode`, values as in `REQ_SET_MODE`) |
+| 2 | 1 | Detected cart (`0` none, `1` SummerCart64, `2` EverDrive X-series, `3` EverDrive-64 PRO, `4` other/unsupported) |
+| 3 | 1 | Reserved, `0` |
+| 4 | 4 | `frames_handled` — APPLICATION frames dispatched (M64T **and** M64P) |
+| 8 | 4 | `rx_overflow` — times the reassembly buffer overflowed and was dropped |
+| 12 | 4 | `rx_resync_bytes` — bytes discarded scanning for the next `M64B` magic |
+| 16 | 4 | `bad_header_drops` — frames dropped for a bad type/channel or an impossible length |
+| 20 | 4 | `rx_bytes` — bytes read from the cart link |
+| 24 | 4 | `tx_bytes` — bytes written back in RAW_ECHO (`0` in every other mode) |
+| 28 | 4 | `m64p_scratch_addr` — base of the RDRAM scratch region, as an **RDRAM physical offset**: the address space `M64P` uses ([`memory-l3-application-v0.md`](./memory-l3-application-v0.md) §4), not a KSEG0 pointer |
+| 32 | 4 | `m64p_scratch_len` — its length in bytes |
+
+The three counters at offsets 8–19 are the point of this message: they are the only way a host can tell a clean run from one that silently desynchronised and recovered. They were previously **screen-only**, so an automated run could assert that a reply arrived but never that the stream underneath it was intact.
+
+Counters are reset by a mode change (`REQ_SET_MODE`, or the menu), so a host should read `DIAG` once after settling into a mode and again at the end, and compare.
+
+The cart byte is likewise otherwise invisible to a host: nothing else in this protocol reports which cart the ROM detected.
+
+**The scratch region** at offsets 28–35 is RDRAM the ROM sets aside and never reads. It exists so that an `M64P` (`memory-l3-application-v0.md`) `POKEV` can be exercised automatically: every other address in RDRAM belongs to the ROM or to libdragon, so a write check would otherwise have to pick an address and hope. A host MUST confine automated writes to this region. Its address is not stable across builds and MUST be read from `DIAG` rather than hard-coded.
+
+---
+
+## 12. Revision
 
 **Spec-Revision** counts edits to **this** document only. It is **independent** of L3 **Protocol-Major/Minor** ([`l3-bridge-protocol-v1.md`](./l3-bridge-protocol-v1.md) §12).
 
