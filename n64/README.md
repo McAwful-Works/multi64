@@ -92,7 +92,7 @@ Runs of the committed `multi64_test.z64` on real carts, newest first. Add one wh
 
 - **Boot:** normal, with no UNVALIDATED line, so the PRO probe does not misfire on an SC64.
 - **RAW_ECHO:** `sc64-echo-test` (12 bytes) and `sc64-l3-framing-e2e --large` (a small `DATA` frame, a `HEARTBEAT`, and an 8,308-byte frame across USB chunks) both pass.
-- **M64T_PROTO:** `scripts/test_rom_connector_e2e.sh` passes all 13 steps. `rumble` answered status `0x01`, not supported on the port, with no Rumble Pak inserted; `sram-info` reports size 0, as built.
+- **M64T_PROTO:** `scripts/test_rom_connector_e2e.sh` (since replaced by `scripts/l3_e2e.sh`) passed all 13 steps. `rumble` answered status `0x01`, not supported on the port, with no Rumble Pak inserted; `sram-info` reports size 0, as built.
 - **Cart-originated large sends:** **B** delivered repeated 8,192-byte `STRESS_LARGE` payloads to `multi64-test-connector listen`, with no errors.
 - **Not run:** BENCH, CTRL_POLL, MEM_AGENT, and an SRAM build.
 
