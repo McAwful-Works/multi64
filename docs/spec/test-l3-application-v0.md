@@ -145,13 +145,13 @@ The test ROM may also emit **non-APPLICATION** L3 frames (e.g. `HEARTBEAT` on Co
 
 ---
 
-## 11. `DIAG` body (36 bytes)
+## 11. `DIAG` body (40 bytes)
 
 `REQ_DIAG` (`0x10`) is answered with `DIAG` (`0x90`). All multi-byte fields are **big-endian `uint32`**.
 
 | Offset | Size | Field |
 |--------|------|-------|
-| 0 | 1 | **Body version** — `1` for this layout. A host MUST check it and MUST NOT parse a version it does not know |
+| 0 | 1 | **Body version** — `2` for this layout. A host MUST check it and MUST NOT parse a version it does not know |
 | 1 | 1 | Mode now running (`enum run_mode`, values as in `REQ_SET_MODE`) |
 | 2 | 1 | Detected cart (`0` none, `1` SummerCart64, `2` EverDrive X-series, `3` EverDrive-64 PRO, `4` other/unsupported) |
 | 3 | 1 | Reserved, `0` |
@@ -163,10 +163,15 @@ The test ROM may also emit **non-APPLICATION** L3 frames (e.g. `HEARTBEAT` on Co
 | 24 | 4 | `tx_bytes` — bytes written back in RAW_ECHO (`0` in every other mode) |
 | 28 | 4 | `m64p_scratch_addr` — base of the RDRAM scratch region, as an **RDRAM physical offset**: the address space `M64P` uses ([`memory-l3-application-v0.md`](./memory-l3-application-v0.md) §4), not a KSEG0 pointer |
 | 32 | 4 | `m64p_scratch_len` — its length in bytes |
+| 36 | 4 | `tx_failures` — writes to the cart link that gave up before the whole message was sent. **Since boot**: not reset by a mode change |
+
+**Version 1** is the same layout without `tx_failures`: 36 bytes, ending at offset 35. Its offsets are unchanged in version 2, but the version byte, not the length, says which fields a body has.
 
 The three counters at offsets 8–19 are the point of this message: they are the only way a host can tell a clean run from one that silently desynchronised and recovered. They were previously **screen-only**, so an automated run could assert that a reply arrived but never that the stream underneath it was intact.
 
 Counters are reset by a mode change (`REQ_SET_MODE`, or the menu), so a host should read `DIAG` once after settling into a mode and again at the end, and compare.
+
+**`tx_failures` is the exception**, and runs since boot. The checks that provoke a failed write run in **RAW_ECHO**, which cannot answer `REQ_DIAG`, between two mode changes that would each clear it. A host reads it before entering RAW_ECHO and again after leaving, and compares. A failed write is otherwise invisible to both ends: the cart's libdragon write returns nothing, and the host sees only a malformed message, or nothing, with no reason attached.
 
 The cart byte is likewise otherwise invisible to a host: nothing else in this protocol reports which cart the ROM detected.
 

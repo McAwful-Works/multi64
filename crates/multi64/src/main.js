@@ -53,7 +53,7 @@ function knownCart(v) {
 /** The Settings → Cart warning for each experimental cart. */
 const CART_HINTS = {
   ed64:
-    "Experimental: the EverDrive-64 X7 link has never been run against a cart, so a running bridge does not show that it works. Saving restarts the bridge if it is running.",
+    "Experimental: the EverDrive-64 X7 link has run on one cart only, where it could lose a message when the cart and PC sent at the same time, so a running bridge does not show that it works. Saving restarts the bridge if it is running.",
   ed64pro:
     "Experimental: the EverDrive-64 PRO link has never been run against a cart, so a running bridge does not show that it works. The EverDrive-64 PRO always runs at 921600 baud, so Baud does not apply. Saving restarts the bridge if it is running.",
 };

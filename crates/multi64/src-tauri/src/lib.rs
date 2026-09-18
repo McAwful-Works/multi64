@@ -59,7 +59,7 @@ pub enum DaemonCart {
     /// SummerCart64: the only backend proven on hardware.
     #[default]
     Sc64,
-    /// EverDrive-64 X7: experimental, never run against a cart (`l3-over-everdrive-x7.md` §4.5).
+    /// EverDrive-64 X7: experimental, run on one cart so far (`l3-over-everdrive-x7.md` §4.5).
     Ed64,
     /// EverDrive-64 PRO: experimental, never run against a cart (`l3-over-everdrive-pro.md` §8).
     Ed64Pro,
@@ -1081,16 +1081,15 @@ fn start_daemon_locked(
     );
     let unproven = match cart {
         DaemonCart::Sc64 => None,
-        DaemonCart::Ed64 => Some("EverDrive-64 X7"),
-        DaemonCart::Ed64Pro => Some("EverDrive-64 PRO"),
+        DaemonCart::Ed64 => Some("EverDrive-64 X7 support is experimental and has run on one cart"),
+        DaemonCart::Ed64Pro => {
+            Some("EverDrive-64 PRO support is experimental and has never been run against a cart")
+        }
     };
-    if let Some(cart) = unproven {
+    if let Some(status) = unproven {
         push_log(
             daemon,
-            format!(
-                "{cart} support is experimental and has never been run against a cart: \
-                 a running bridge does not show that the cart link works."
-            ),
+            format!("{status}: a running bridge does not show that the cart link works."),
         );
     }
 

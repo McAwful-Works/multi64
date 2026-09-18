@@ -78,7 +78,7 @@ so a tester never has to know one. **Copy report** puts the whole run on the cli
 **The command line** — same checks, for a terminal or a script:
 
 ```sh
-cargo run -p multi64-test-connector --release -- suite --expect-rom "multi64-test-rom 1.10"
+cargo run -p multi64-test-connector --release -- suite --expect-rom "multi64-test-rom 1.11"
 ```
 
 Options: `--port` (default `COM4`), `--base`, `--url`, `--expect-rom`, `--skip-serial`.
@@ -118,9 +118,14 @@ what collapses the handover to one file.
    The 8,308-byte frame is sent twice. First it goes **in one burst**, so the cart is echoing early
    messages while later ones are still arriving. Then it goes **one USB message at a time**, each
    echo read before the next message is sent. A cart that passes the second and fails the first
-   cannot send while the host is sending: large frames work, full-duplex traffic does not. The one
-   EverDrive X7 run so far points that way, but has not confirmed it: libdragon's EverDrive write
-   gives up after 100 ms and leaves the message half sent.
+   cannot send while the host is sending: large frames work, full-duplex traffic does not. An
+   EverDrive X7 does exactly that ([hardware record](../../n64/README.md#hardware-record)). The
+   suspected cause is libdragon's EverDrive write, which gives up after 100 ms and leaves the
+   message half sent.
+
+   Last, the cart's own count of writes that gave up (`DIAG` `tx_failures`), read before RAW_ECHO
+   and after, must not have moved. It is the only direct evidence of a failed write — the host
+   otherwise sees just a malformed message — and it is **skipped** on a ROM older than 1.11.
 7. **Stream health** — the `DIAG` counters. Every check above proves its own round trip; only this
    proves the stream underneath them never desynchronised.
 

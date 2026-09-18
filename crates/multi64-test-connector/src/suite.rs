@@ -49,10 +49,11 @@ pub const PHASES: [&str; 7] = [
 const SERIAL_ECHO_PAYLOAD: &[u8] = b"multi64_test";
 /// The direct-serial checks, named once so a run that skips them lists the same rows as one that
 /// does not.
-const SERIAL_CHECKS: [&str; 3] = [
+const SERIAL_CHECKS: [&str; 4] = [
     "serial echo round trip",
     "L3 framing over serial, including an 8 KiB frame",
     "the 8 KiB frame again, one USB message at a time",
+    "the cart finished every write it started",
 ];
 /// The multi-chunk frame `sc64-l3-framing-e2e --large` sends.
 const LARGE_PAYLOAD_LEN: usize = 8292;
@@ -230,6 +231,36 @@ fn diag_note(out: &str) -> Option<String> {
     out.lines()
         .find(|l| l.starts_with("DIAG "))
         .map(|l| l.trim_start_matches("DIAG ").to_string())
+}
+
+/// `tx_failures` out of a `diag` command's output. `None` when the ROM's `DIAG` does not carry it.
+fn tx_failures_in(out: &str) -> Option<u32> {
+    diag_note(out)?
+        .split_whitespace()
+        .find_map(|f| f.strip_prefix("tx_failures="))?
+        .parse()
+        .ok()
+}
+
+/// Judge the cart's count of writes that gave up, read before and after the direct-serial checks.
+///
+/// The count runs since boot, because those checks change mode on the way in and out and every
+/// other counter resets on a mode change. Nothing else sees these failures: the host only notices
+/// a malformed message, and the cart's own replies carry no error.
+fn write_failures_outcome(before: Option<u32>, after: Option<u32>) -> Outcome {
+    let (Some(before), Some(after)) = (before, after) else {
+        return Outcome::Skip {
+            reason: "the cart's DIAG does not count failed writes (a ROM older than 1.11), or \
+                     could not be read"
+                .into(),
+        };
+    };
+    match after.wrapping_sub(before) {
+        0 => Outcome::Pass,
+        n => Outcome::Fail {
+            detail: format!("{n} cart write(s) gave up before the whole message was sent"),
+        },
+    }
 }
 
 /// Why a check failed, in the one case the WebSocket cannot distinguish. See the module docs.
@@ -595,6 +626,26 @@ impl<'a, F: FnMut(CheckResult)> Runner<'a, F> {
         }
     }
 
+    /// The cart's since-boot count of failed writes, read without reporting a check of its own.
+    async fn read_tx_failures(&mut self) -> Option<u32> {
+        let mut out = String::new();
+        let mut log = |line: String| {
+            out.push_str(&line);
+            out.push('\n');
+        };
+        run_connector_command(
+            &self.opts.ws_url,
+            self.opts.recv_timeout_secs,
+            &ConnectorCommand::Diag {
+                expect_clean: false,
+            },
+            &mut log,
+        )
+        .await
+        .ok()?;
+        tx_failures_in(&out)
+    }
+
     /// Run one connector command that MUST fail, and whose failure must mention `want`.
     async fn check_refused(&mut self, name: &str, want: &str, cmd: ConnectorCommand) {
         let started = Instant::now();
@@ -863,6 +914,7 @@ pub async fn run_suite<F: FnMut(CheckResult)>(
         );
     } else {
         let serial_cart = SerialCart::from_daemon(&cart).expect("checked above");
+        let failures_before = r.read_tx_failures().await;
         r.set_mode(0, "RAW_ECHO").await;
         match post_text(
             &opts.base_url,
@@ -933,6 +985,9 @@ pub async fn run_suite<F: FnMut(CheckResult)>(
                     ConnectorCommand::Ping,
                 )
                 .await;
+                let failures_after = r.read_tx_failures().await;
+                let outcome = write_failures_outcome(failures_before, failures_after);
+                r.emit(SERIAL_CHECKS[3], outcome, 0, None);
             }
         }
     }
@@ -1052,5 +1107,36 @@ mod tests {
     fn the_lockstep_check_passes_on_a_cart_that_cannot_send_while_receiving() {
         let note = framing_lockstep(&mut HalfDuplexEcho::default(), Duration::ZERO).unwrap();
         assert!(note.contains("17 messages"), "{note}");
+    }
+    #[test]
+    fn the_write_failure_count_is_read_from_the_diag_line() {
+        let out = "sent M64T REQ_DIAG
+DIAG mode=M64T_PROTO cart=EverDrive X-series frames=1 rx=42B tx=0B overflow=0 resync=0B bad_header=0 scratch=0x0002F3D0+256 tx_failures=7
+OK: DIAG read
+";
+        assert_eq!(tx_failures_in(out), Some(7));
+        let v1 = "DIAG mode=M64T_PROTO cart=SummerCart64 frames=1 rx=42B tx=0B overflow=0 resync=0B bad_header=0 scratch=0x0002F3D0+256
+";
+        assert_eq!(tx_failures_in(v1), None);
+    }
+
+    #[test]
+    fn writes_that_gave_up_during_the_serial_checks_fail_the_run() {
+        assert_eq!(write_failures_outcome(Some(2), Some(2)), Outcome::Pass);
+        match write_failures_outcome(Some(2), Some(5)) {
+            Outcome::Fail { detail } => assert!(detail.starts_with("3 "), "{detail}"),
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    /// An old ROM, or a DIAG that could not be read, is not a pass: nothing was measured.
+    #[test]
+    fn a_count_that_could_not_be_read_is_skipped_not_passed() {
+        for (before, after) in [(None, Some(1)), (Some(1), None), (None, None)] {
+            assert!(
+                matches!(write_failures_outcome(before, after), Outcome::Skip { .. }),
+                "{before:?} -> {after:?}"
+            );
+        }
     }
 }

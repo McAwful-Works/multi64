@@ -39,8 +39,8 @@ struct Args {
     baud: Option<u32>,
 
     /// Flash cart L2 mapping; default `sc64`. `ed64` (EverDrive-64 X7) and `ed64pro`
-    /// (EverDrive-64 PRO) are experimental and have never been run against a cart. The PRO ignores
-    /// `--baud`. Env: `MULTI64D_CART`.
+    /// (EverDrive-64 PRO) are experimental: the X7 has run on one cart, the PRO on none. The PRO
+    /// ignores `--baud`. Env: `MULTI64D_CART`.
     #[arg(long, env = "MULTI64D_CART", value_enum, value_name = "CART")]
     cart: Option<CartKind>,
 
@@ -177,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
     match resolved.cart {
         CartKind::Sc64 => {}
         CartKind::Ed64 => tracing::warn!(
-            "--cart ed64 is experimental: the EverDrive X7 mapping comes from UNFLoader and libdragon and has never been run against a cart (docs/spec/l3-over-everdrive-x7.md 4.5)"
+            "--cart ed64 is experimental: the EverDrive X7 mapping comes from UNFLoader and libdragon and has run on one cart, which could lose a message when both ends sent at once (docs/spec/l3-over-everdrive-x7.md 4.5)"
         ),
         CartKind::Ed64Pro => tracing::warn!(
             "--cart ed64pro is experimental: the EverDrive PRO mapping is this repository's own design on Krikzz's edlink sources and has never been run against a cart; --baud is ignored (docs/spec/l3-over-everdrive-pro.md)"

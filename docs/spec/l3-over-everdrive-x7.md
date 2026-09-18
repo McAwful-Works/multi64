@@ -1,7 +1,7 @@
 # L3 over EverDrive 64 X7 (draft mapping)
 
 **Spec-Revision:** 1  
-**Status:** **Draft** — §4 is now **derived from a working reference implementation** but has **not been validated against hardware in this repository**. **`multi64-ed64-l2`** (`Ed64L2Pipe`) now implements §4, but has never been run against a cart. In-tree EverDrive tooling: **`ed64-smoke`** (§8), **`ed64-echo-test`**, **`ed64-l3-framing-e2e`** — all runnable; the two e2e tools exercise §4 framing against a cart and are how §4.5 gets answered.
+**Status:** **Draft** — §4 is now **derived from a working reference implementation** but has **not been validated against hardware in this repository**. **`multi64-ed64-l2`** (`Ed64L2Pipe`) implements §4 and has run on **one X7** (2026-09-18): L3 through `multi64d` worked, and the cart could not send while the host was sending (§4.5 item 6). One cart does not validate a mapping. In-tree EverDrive tooling: **`ed64-smoke`** (§8), **`ed64-echo-test`**, **`ed64-l3-framing-e2e`** — all runnable; the two e2e tools exercise §4 framing against a cart and are how §4.5 gets answered.
 
 This document will define how **L3** octets ([l3-bridge-protocol-v1.md](./l3-bridge-protocol-v1.md)) are carried over the **EverDrive-64 X7** USB path. It does **not** redefine L3.
 
@@ -72,7 +72,7 @@ The host packet layout that satisfies these constraints is given in **§4**.
 
 Everything in §4 is transcribed from **[UNFLoader](https://github.com/buu342/N64-UNFLoader)** — `UNFLoader/device_everdrive.cpp`, the host half — cross-checked against the N64-side library this repository's test ROM already links: `<usb.h>`, libdragon's port of UNFLoader's `usb.c`. UNFLoader has shipped this protocol for EverDrive 64 for years, so it is a **working reference**, not a guess.
 
-It has nonetheless **never been executed against an X7 in this repository.** Until it has:
+It has been executed against **one X7** in this repository (2026-09-18, [`n64/README.md`](../../n64/README.md#hardware-record)), which answered some of §4.5 and raised a new question there. Until §4.5 is closed:
 
 - this document stays **Draft** and §4 is **not normative**;
 - `ed64-l2` built to it MUST be described as unproven, not as EverDrive support;
@@ -163,6 +163,9 @@ from the references; it has still never been exercised against a cart.
 3. **VCP vs D2XX.** UNFLoader uses D2XX and purges the FTDI queues directly. Whether a `serialport` VCP handle gives equivalent behaviour under load — particularly for the purge in §4.4 — is unverified.
 4. **Baud.** `usb64` framing uses 115200 for the `cmd` path; whether the FIFO data path is baud-sensitive at all over VCP is unconfirmed.
 5. **EverDrive 3.0.** Whether the framing is identical on 3.0, and where the OS 3.07 incompatibility bites (§1.1).
+6. **Sending while receiving. Observed on one X7, cause not yet confirmed.** With the test ROM echoing each host message as it arrives, a burst of 17 messages came back with one cut off after its first 512-byte block; the host found the next message's payload where `CMPH` belonged. The same 17 messages sent one at a time, each echo read before the next, came back intact. libdragon's `usb_everdrive_write` gives up when the USB unit stays busy for 100 ms and returns part-way through the message, reporting it only through `usb_timedout()`; `n64/agent/ed64.c`'s `ed64_send` has the same shape. Test ROM 1.11 counts such writes in `DIAG` (`tx_failures`, `test-l3-application-v0.md` §11) to confirm the cause. The host already survives it: §4.4's resynchronisation drops the broken message and the stream continues, so the cost is a lost message, not a lost link.
+
+The same run bears on items 1–3 without closing them. Every check through `multi64d` passed with zero overflow, resync or bad-header drops, which is consistent with the 2-byte alignment and the padding layouts in §4.2, though no check targeted an odd-length payload. A `serialport` VCP handle carried the whole run; the §4.4 purge under load was not specifically tested.
 
 ---
 
@@ -197,12 +200,12 @@ No other N64-side change is expected. If validation turns one up, record it here
 | Component | Role |
 |-----------|------|
 | [`crates/multi64-ed64-link`](../../crates/multi64-ed64-link) | Rust **`multi64-ed64-link`**: X7 **`usb64`** **`cmd`** framing, `RomRead` — **not** the L3 stream adapter (**`ed64-l2`**). |
-| [`crates/ed64-l2`](../../crates/ed64-l2/README.md) | `Ed64L2Pipe` — implements §4 framing, mirroring `multi64-sc64-l2::Sc64L2Pipe`. Unit-tested for framing; **unvalidated on hardware**. |
+| [`crates/ed64-l2`](../../crates/ed64-l2/README.md) | `Ed64L2Pipe` — implements §4 framing, mirroring `multi64-sc64-l2::Sc64L2Pipe`. Unit-tested for framing, and run on one X7 (§4.5 item 6); **not validated** until §4.5 is closed. |
 | [`crates/ed64-smoke`](../../crates/ed64-smoke) | **`ed64-smoke`** binary: host **`cmd`/`t`** smoke test (§8, `usb64`-style), not L3. |
 | [`crates/ed64-echo-test`](../../crates/ed64-echo-test) | **`ed64-echo-test`**: same role as `sc64-echo-test` over **`Ed64L2Pipe`**; runs, exercising §4 framing that is still unvalidated. |
 | [`crates/ed64-l3-framing-e2e`](../../crates/ed64-l3-framing-e2e) | **`ed64-l3-framing-e2e`**: same role as `sc64-l3-framing-e2e` over **`Ed64L2Pipe`**; runs, exercising §4 framing that is still unvalidated. |
 | [`n64/test-rom`](../../n64/README.md) | Already uses libdragon `<usb.h>`, which supports both carts. Boots on `CART_SC64` and `CART_EVERDRIVE`, with an on-screen **UNVALIDATED** warning on the latter (§5). |
-| `multi64d` | `--cart ed64` selects `Ed64L2Pipe` ([daemon API §5.1](./daemon-api-v1.md)). Experimental: wired in and host-tested, but it has never carried L3 to a cart. |
+| `multi64d` | `--cart ed64` selects `Ed64L2Pipe` ([daemon API §5.1](./daemon-api-v1.md)). Experimental: has carried L3 both ways to one X7, with zero stream errors across the test app's checks (2026-09-18). |
 | [`n64/agent`](../../n64/agent/README.md) | `make CART=ed64` builds the in-game agent around `ed64.c`: the console side of §4 without libdragon, under the agent's PI rules. Never run on a cart. |
 | [`crates/multi64`](../../crates/multi64/README.md) | Settings → **Cart** → *EverDrive-64 X7 (beta)* starts the daemon with `--cart ed64`. Its default, *Auto-detect*, finds an X7 only by sending the `usb64` test (§8) to ports, since its FT245R has no cart-specific USB descriptor ([`multi64-cart-probe`](../../crates/cart-probe/README.md)). |
 
