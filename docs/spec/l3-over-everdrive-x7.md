@@ -200,12 +200,12 @@ No other N64-side change is expected. If validation turns one up, record it here
 | Component | Role |
 |-----------|------|
 | [`crates/multi64-ed64-link`](../../crates/multi64-ed64-link) | Rust **`multi64-ed64-link`**: X7 **`usb64`** **`cmd`** framing, `RomRead` — **not** the L3 stream adapter (**`ed64-l2`**). |
-| [`crates/ed64-l2`](../../crates/ed64-l2/README.md) | `Ed64L2Pipe` — implements §4 framing, mirroring `multi64-sc64-l2::Sc64L2Pipe`. Unit-tested for framing; **unvalidated on hardware**. |
+| [`crates/ed64-l2`](../../crates/ed64-l2/README.md) | `Ed64L2Pipe` — implements §4 framing, mirroring `multi64-sc64-l2::Sc64L2Pipe`. Unit-tested for framing, and run on one X7 (§4.5 item 6); **not validated** until §4.5 is closed. |
 | [`crates/ed64-smoke`](../../crates/ed64-smoke) | **`ed64-smoke`** binary: host **`cmd`/`t`** smoke test (§8, `usb64`-style), not L3. |
 | [`crates/ed64-echo-test`](../../crates/ed64-echo-test) | **`ed64-echo-test`**: same role as `sc64-echo-test` over **`Ed64L2Pipe`**; runs, exercising §4 framing that is still unvalidated. |
 | [`crates/ed64-l3-framing-e2e`](../../crates/ed64-l3-framing-e2e) | **`ed64-l3-framing-e2e`**: same role as `sc64-l3-framing-e2e` over **`Ed64L2Pipe`**; runs, exercising §4 framing that is still unvalidated. |
 | [`n64/test-rom`](../../n64/README.md) | Already uses libdragon `<usb.h>`, which supports both carts. Boots on `CART_SC64` and `CART_EVERDRIVE`, with an on-screen **UNVALIDATED** warning on the latter (§5). |
-| `multi64d` | `--cart ed64` selects `Ed64L2Pipe` ([daemon API §5.1](./daemon-api-v1.md)). Experimental: wired in and host-tested, but it has never carried L3 to a cart. |
+| `multi64d` | `--cart ed64` selects `Ed64L2Pipe` ([daemon API §5.1](./daemon-api-v1.md)). Experimental: has carried L3 both ways to one X7, with zero stream errors across the test app's checks (2026-09-18). |
 | [`n64/agent`](../../n64/agent/README.md) | `make CART=ed64` builds the in-game agent around `ed64.c`: the console side of §4 without libdragon, under the agent's PI rules. Never run on a cart. |
 | [`crates/multi64`](../../crates/multi64/README.md) | Settings → **Cart** → *EverDrive-64 X7 (beta)* starts the daemon with `--cart ed64`. Its default, *Auto-detect*, finds an X7 only by sending the `usb64` test (§8) to ports, since its FT245R has no cart-specific USB descriptor ([`multi64-cart-probe`](../../crates/cart-probe/README.md)). |
 

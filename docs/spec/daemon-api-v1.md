@@ -4,7 +4,7 @@
 
 This document describes **`multi64d`**, the reference PC daemon: HTTP metadata + health + **WebSocket** bridge to the **L3 octet stream** between host and N64.
 
-The daemon is **L3-facing**: clients send and receive **raw L3 bytes** on the WebSocket binary channel. How those bytes move over USB/serial is **L2** and depends on the cart. The daemon speaks the **SummerCart64** mapping ([`l3-over-sc64.md`](./l3-over-sc64.md)) by default, the **EverDrive-64 X7** mapping ([`l3-over-everdrive-x7.md`](./l3-over-everdrive-x7.md)) with `--cart ed64`, and the **EverDrive-64 PRO** mapping ([`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md)) with `--cart ed64pro` (§5.1). All three present the **same L3 stream** at this boundary. Both EverDrive mappings are **experimental**: neither has been run against a cart.
+The daemon is **L3-facing**: clients send and receive **raw L3 bytes** on the WebSocket binary channel. How those bytes move over USB/serial is **L2** and depends on the cart. The daemon speaks the **SummerCart64** mapping ([`l3-over-sc64.md`](./l3-over-sc64.md)) by default, the **EverDrive-64 X7** mapping ([`l3-over-everdrive-x7.md`](./l3-over-everdrive-x7.md)) with `--cart ed64`, and the **EverDrive-64 PRO** mapping ([`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md)) with `--cart ed64pro` (§5.1). All three present the **same L3 stream** at this boundary. Both EverDrive mappings are **experimental**: the X7's has run on one cart ([`l3-over-everdrive-x7.md`](./l3-over-everdrive-x7.md) §4.5), the PRO's on none.
 
 ---
 
