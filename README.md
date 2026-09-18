@@ -49,12 +49,13 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 |-------|------|
 | `multi64-l3` | L3 framing (`M64B`), `StreamDecoder`, session helpers |
 | `multi64d` | Daemon on `127.0.0.1:38765` → L3 over **SC64 L2** by default; `--cart ed64` / `--cart ed64pro` select the EverDrive mappings, implemented but never run against a cart |
-| `multi64-test-connector` | CLI ↔ **`multi64_test.z64`** ([`docs/connectors/test-rom.md`](docs/connectors/test-rom.md)) |
+| `multi64-test-connector` | CLI ↔ **`multi64_test.z64`**, and the end-to-end **suite** both it and the test app run ([`docs/connectors/test-rom.md`](docs/connectors/test-rom.md)) |
 | `multi64-sc64-sd` | FAT/exFAT over SC64 USB; optional EverDrive `RomRead` experiment (does not reach the SD card), optional EverDrive-64 PRO file access (experimental) — Xfer64 / tooling |
 | `multi64-ed64-link` | EverDrive X-series **`usb64`** serial (`RomRead` / `RamRead`) |
 | `multi64-ed64pro-link` | EverDrive-64 **PRO** host link (edlink Gen3): handshake, SD file system, cart memory — **never run against a cart** |
 | `multi64` (**Multi64**), `xfer64` (**Xfer64**) | Windows Tauri apps — READMEs under [`crates/multi64`](crates/multi64), [`crates/xfer64`](crates/xfer64) |
-| `multi64-test-connector-gui` | Optional GUI; same WebSocket contract as the CLI ([`test-rom.md`](docs/connectors/test-rom.md)) |
+| `multi64-test-app` (**Multi64 Test**) | Runs the end-to-end suite and shows pass/fail — one portable exe, for handing to a tester ([`crates/multi64-test-app`](crates/multi64-test-app)) |
+| `multi64-test-connector-gui` | Optional per-command GUI; same WebSocket contract as the CLI. Developer-only: it runs binaries from `target/` ([`test-rom.md`](docs/connectors/test-rom.md)) |
 
 ### SummerCart64
 
@@ -86,7 +87,7 @@ Build **[`n64/test-rom/`](n64/test-rom/)** → **`multi64_test.z64`** (needs **`
 
 **Serial (SC64, RAW_ECHO):** `cargo run -p sc64-l3-framing-e2e --release -- --port COM3` (add `--large` for multi-chunk USB). **EverDrive:** same ROM; the ED e2e crates run and **`Ed64L2Pipe::open`** opens the port — but that data path carries no identity handshake, so a successful open means only that the serial port opened, and the framing it drives has **never been run against a cart** ([`l3-over-everdrive-x7.md`](docs/spec/l3-over-everdrive-x7.md) §4.5 lists what to check first).
 
-**Via `multi64d`:** ROM in **M64T_PROTO** or **BENCH**, then e.g. `cargo run -p multi64-test-connector -- ping`. Optional: `pip install -r scripts/requirements.txt` and **`scripts/multi64_ws_test.py`** for HTTP/WebSocket smoke.
+**Via `multi64d`:** boot the ROM and run everything at once — `cargo run -p multi64-test-connector --release -- suite`, or **Multi64 Test** (`cargo build --release -p multi64-test-app`) for the same checks in a window. Neither needs the controller: the ROM boots into RAW_ECHO and the suite drives it out itself. Single commands still work, e.g. `cargo run -p multi64-test-connector -- ping` with the ROM in **M64T_PROTO** or **BENCH**. Optional: `pip install -r scripts/requirements.txt` and **`scripts/multi64_ws_test.py`** for HTTP/WebSocket smoke.
 
 **Vendor smoke:** `cargo run -p sc64-smoke -- --port COM5` · `cargo run -p ed64-smoke -- --port COM5` (EverDrive: try `--baud 57600 --flush` if the probe stalls).
 

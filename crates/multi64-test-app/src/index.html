@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi64 Test</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="app.css" />
+    <!-- Non-deferred and ahead of main.js: it applies the stored theme before the first paint,
+         and deferring it shows a flash of the wrong one. See docs/frontend-appearance.md §3. -->
+    <script src="appearance.js"></script>
+    <script src="main.js" defer></script>
+  </head>
+  <body>
+    <header class="header">
+      <div class="app-brand">
+        <img class="app-brand-mark" src="brand-mark.svg" alt="" width="28" height="28" />
+        <div class="app-brand-text">
+          <h1 class="app-title">Multi64 Test</h1>
+          <span class="app-productline">Test ROM end-to-end checks</span>
+        </div>
+      </div>
+      <p class="tagline">
+        Needs Multi64 running and <code>multi64_test.z64</code> booted on the console. You do not
+        need the controller.
+      </p>
+    </header>
+
+    <section class="card" id="setup">
+      <h2>Run</h2>
+      <div class="setup-grid">
+        <label class="field">
+          <span>Serial port</span>
+          <input id="port" class="input" type="text" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>Expected ROM</span>
+          <input id="expectedRom" class="input" type="text" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>Daemon</span>
+          <input id="baseUrl" class="input" type="text" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>WebSocket</span>
+          <input id="wsUrl" class="input" type="text" spellcheck="false" />
+        </label>
+      </div>
+      <label class="check">
+        <input id="skipSerial" type="checkbox" />
+        <span>Skip the direct-serial checks, leaving the daemon's port alone</span>
+      </label>
+      <div class="actions">
+        <button type="button" id="run" class="btn primary">Run tests</button>
+        <button type="button" id="copy" class="btn" disabled>Copy report</button>
+      </div>
+      <p class="hint" id="status" role="status" aria-live="polite">Ready.</p>
+    </section>
+
+    <section class="tally" id="summary">
+      <span class="badge badge-pass"><strong id="nPass">0</strong> passed</span>
+      <span class="badge badge-fail"><strong id="nFail">0</strong> failed</span>
+      <span class="badge badge-skip"><strong id="nSkip">0</strong> skipped</span>
+    </section>
+
+    <main id="results" aria-live="polite"></main>
+  </body>
+</html>

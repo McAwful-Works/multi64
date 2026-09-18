@@ -24,6 +24,7 @@ members = [
     "crates/ed64pro-l3-framing-e2e",
     "crates/cart-probe",
     "crates/multi64-test-connector-gui/src-tauri",
+    "crates/multi64-test-app/src-tauri",
 ]
 
 [workspace.package]

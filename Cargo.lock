@@ -2787,6 +2787,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "multi64-test-app"
+version = "0.1.0"
+dependencies = [
+ "multi64-test-connector",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tokio",
+]
+
+[[package]]
 name = "multi64-test-connector"
 version = "0.1.0"
 dependencies = [
@@ -2794,10 +2806,12 @@ dependencies = [
  "clap",
  "futures-util",
  "multi64-l3",
+ "multi64-sc64-l2",
  "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.30.0",
+ "ureq",
 ]
 
 [[package]]

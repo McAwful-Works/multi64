@@ -100,7 +100,7 @@ Host programs that use **`multi64d`**’s **WebSocket** for **raw L3**. The cart
 
 | Document | Programs |
 |----------|----------|
-| [test-rom.md](connectors/test-rom.md) | **`multi64-test-connector`** (+ optional GUI) ↔ **`multi64_test.z64`** ([`n64/test-rom`](../n64/README.md)) |
+| [test-rom.md](connectors/test-rom.md) | **`multi64-test-connector`** and **Multi64 Test** (`multi64-test-app`) ↔ **`multi64_test.z64`** ([`n64/test-rom`](../n64/README.md)) — single commands, and the end-to-end suite both run |
 
 WebSocket contract: [daemon-api-v1.md](spec/daemon-api-v1.md). Start **`multi64d`** before running a connector.
 

@@ -1,6 +1,8 @@
 //! Library for **`multi64_test.z64`** over **`multi64d`** WebSocket (L3 APPLICATION / **M64T**).
 //! See [`docs/connectors/test-rom.md`](../../docs/connectors/test-rom.md).
 
+pub mod suite;
+
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use multi64_l3::{Channel, Frame, FrameFlags, FrameType, StreamDecoder};

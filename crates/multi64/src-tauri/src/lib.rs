@@ -2944,9 +2944,13 @@ mod job_tests {
 
 #[cfg(test)]
 mod frontend_tests {
-    /// `styles.css` is the shared base of both apps' stylesheets: the palette, the size tokens and
-    /// the components both use (`docs/frontend-appearance.md` §5). Like `appearance.js` it is copied
-    /// rather than shared, so this is what keeps the two apps from drifting apart again.
+    /// Every app that carries the shared base. `frontendDist` is per-app and no file can be
+    /// shared across crates at runtime, so each holds its own copy and every copy must match.
+    const SHARED_BASE_APPS: [&str; 3] = ["multi64", "xfer64", "multi64-test-app"];
+
+    /// `styles.css` is the shared base of these apps' stylesheets: the palette, the size tokens and
+    /// the components they all use (`docs/frontend-appearance.md` §5). Like `appearance.js` it is
+    /// copied rather than shared, so this is what keeps them from drifting apart again.
     #[test]
     fn shared_styles_css_is_identical_in_both_apps() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2958,27 +2962,32 @@ mod frontend_tests {
             std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
         };
-        let (multi64, xfer64) = (read("multi64"), read("xfer64"));
-        if multi64 != xfer64 {
-            let first = multi64
-                .lines()
-                .zip(xfer64.lines())
-                .position(|(a, b)| a != b)
-                .map_or_else(
-                    || "same prefix, different lengths".to_string(),
-                    |i| format!("first differing line: {}", i + 1),
+        let base = read(SHARED_BASE_APPS[0]);
+        for app in &SHARED_BASE_APPS[1..] {
+            let other = read(app);
+            if base != other {
+                let first = base
+                    .lines()
+                    .zip(other.lines())
+                    .position(|(a, b)| a != b)
+                    .map_or_else(
+                        || "same prefix, different lengths".to_string(),
+                        |i| format!("first differing line: {}", i + 1),
+                    );
+                panic!(
+                    "styles.css has drifted between {} and {app} ({first}).
+                     Edit one and copy it to the others; every copy must stay byte-identical.",
+                    SHARED_BASE_APPS[0]
                 );
-            panic!(
-                "styles.css has drifted between the apps ({first}).
-                 Edit one and copy it to the other; they must stay byte-identical."
-            );
+            }
         }
     }
 
-    /// `appearance.js` is duplicated verbatim in both apps because `frontendDist` is per-app and no
-    /// file can be shared across crates at runtime. Nothing else enforces that, so a fix applied to
-    /// one copy would silently leave the other stale — one app quietly ignoring a preference the
-    /// other honours. Documented in `docs/frontend-appearance.md`; checked here.
+    /// `appearance.js` is duplicated verbatim in every app carrying the shared base, because
+    /// `frontendDist` is per-app and no file can be shared across crates at runtime. Nothing else
+    /// enforces that, so a fix applied to one copy would silently leave the others stale — one app
+    /// quietly ignoring a preference the rest honour. Documented in
+    /// `docs/frontend-appearance.md`; checked here.
     #[test]
     fn appearance_js_is_identical_in_both_apps() {
         let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -2987,31 +2996,29 @@ mod frontend_tests {
             .and_then(|p| p.parent())
             .and_then(|p| p.parent())
             .expect("crates/multi64/src-tauri -> repo root");
-        let multi64 = root.join("crates/multi64/src/appearance.js");
-        let xfer64 = root.join("crates/xfer64/src/appearance.js");
-
-        let a = std::fs::read_to_string(&multi64)
-            .unwrap_or_else(|e| panic!("read {}: {e}", multi64.display()));
-        let b = std::fs::read_to_string(&xfer64)
-            .unwrap_or_else(|e| panic!("read {}: {e}", xfer64.display()));
-
-        if a != b {
-            let first = a
-                .lines()
-                .zip(b.lines())
-                .position(|(x, y)| x != y)
-                .map(|i| format!("first differing line: {}", i + 1))
-                .unwrap_or_else(|| {
-                    format!(
-                        "same prefix, lengths differ: {} vs {} lines",
-                        a.lines().count(),
-                        b.lines().count()
-                    )
-                });
-            panic!(
-                "appearance.js has drifted between the apps ({first}).\n\
-                 Edit one and copy it to the other; they must stay byte-identical."
-            );
+        let read = |app: &str| {
+            let path = root.join(format!("crates/{app}/src/appearance.js"));
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+        };
+        let a = read(SHARED_BASE_APPS[0]);
+        for app in &SHARED_BASE_APPS[1..] {
+            let b = read(app);
+            if a != b {
+                let first = a
+                    .lines()
+                    .zip(b.lines())
+                    .position(|(x, y)| x != y)
+                    .map_or_else(
+                        || "same prefix, different lengths".to_string(),
+                        |i| format!("first differing line: {}", i + 1),
+                    );
+                panic!(
+                    "appearance.js has drifted between {} and {app} ({first}).
+                     Edit one and copy it to the others; every copy must stay byte-identical.",
+                    SHARED_BASE_APPS[0]
+                );
+            }
         }
     }
 
@@ -3242,8 +3249,9 @@ mod frontend_tests {
     /// switch, so it survives into Light and High contrast unchanged and usually becomes
     /// unreadable there — a failure a diff of the CSS does not show.
     ///
-    /// `crates/multi64-test-connector-gui` is out of scope: that window has one hardcoded palette
-    /// and no theme switch, so it has nothing to break.
+    /// Covers every app in [`SHARED_BASE_APPS`]. `crates/multi64-test-connector-gui` is out of
+    /// scope: that window has one hardcoded palette and no theme switch, so it has nothing to
+    /// break.
     #[test]
     fn no_colour_literals_outside_the_palette() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -3251,7 +3259,7 @@ mod frontend_tests {
             .nth(3)
             .expect("crates/multi64/src-tauri -> repo root");
         let mut sheets = Vec::new();
-        for app in ["multi64", "xfer64"] {
+        for app in SHARED_BASE_APPS {
             let dir = root.join(format!("crates/{app}/src"));
             let entries =
                 std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));

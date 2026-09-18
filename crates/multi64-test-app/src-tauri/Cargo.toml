@@ -1,0 +1,22 @@
+[package]
+name = "multi64-test-app"
+version = "0.1.0"
+description = "Run the Multi64 test ROM end-to-end suite and show pass/fail"
+authors = ["Multi64 contributors"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "multi64_test_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+multi64-test-connector = { path = "../../multi64-test-connector" }
