@@ -96,14 +96,30 @@ Selection is by port name, as elsewhere in this repository; there is no identity
 
 **Data to and from a running ROM does not use the 16-byte `cmd` packet.** That packet (§8, and `Ed64Link::command_packet`) is a *cartridge firmware* command — ROM upload, test connection — handled by the EverDrive OS. Once a ROM is running, the host writes into the cart's USB FIFO and the N64 drains it via `REG_USB_DATA`; the framing below is the application-level agreement between the host and the ROM's USB library.
 
-The framing is **symmetric**. Both directions send:
+Both directions send the same four fields:
 
 | Offset | Size | Field |
 |--------|------|-------|
 | 0 | 4 | ASCII **`DMA@`** (`0x44 0x4D 0x41 0x40`) |
 | 4 | 4 | **Big-endian `u32`**: `(datatype << 24) | (size & 0x00FF_FFFF)` |
-| 8 | *size*, padded | Payload (see §4.3) |
+| 8 | *size* | Payload |
 | — | 4 | ASCII **`CMPH`** (`0x43 0x4D 0x50 0x48`) |
+
+The framing is **not symmetric**: the two directions put the 2-byte alignment padding (§4.3) in
+different places, and only that.
+
+| Direction | Layout | Reference |
+|-----------|--------|-----------|
+| **Host → cart** | header, payload **padded** to 2, then `CMPH` | UNFLoader `device_senddata_everdrive` sends `ALIGN(size, 2)` payload bytes from a zero-filled copy, then the 4-byte trailer; libdragon's `usb_everdrive_poll` reads `ALIGN(usb_datasize, 2)` bytes and *then* the trailer |
+| **Cart → host** | header, **unpadded** payload, `CMPH`, then padding to a 2-byte **whole message** | libdragon's `usb_everdrive_write` restarts its copy loop to append `CMPH` straight after the data and sends `ALIGN(block+offset, 2)` bytes; UNFLoader's `device_receivedata_everdrive` checks the trailer at `size` and then consumes `alignment - (totalread % alignment)` bytes |
+
+Both layouts are the same total length, and both carry the unpadded length in the header, so they
+differ only for an **odd-length** payload — which is why the earlier "symmetric" reading of this
+section survived unit tests and was only caught by reading the two references (issue #134).
+
+A receiver MUST NOT assume the padding byte is zero. libdragon sends whatever its transmit buffer
+last held, so on the cart → host direction it is arbitrary; it is consumed with its own message and
+never inspected.
 
 `datatype` is the same enumeration the N64 side passes to `usb_write`. This repository's test ROM already emits `usb_write(MULTI64_L3, …)`, so **`MULTI64_L3` arrives in the top byte of the header** exactly as the SC64 path tags its `PKT` `U` payloads — the two backends agree at this level, which is what lets one L3 codec sit above both.
 
@@ -111,7 +127,7 @@ The framing is **symmetric**. Both directions send:
 
 ### 4.3 Fragmentation and padding
 
-- The sender pads the payload to an alignment that depends on the library's protocol version: **2 bytes** for `PROTOCOL_VERSION2`, **512 bytes** for version 1.
+- The alignment depends on the library's protocol version: **2 bytes** for `PROTOCOL_VERSION2`, **512 bytes** for version 1. What is aligned differs by direction — see the second table in §4.2.
 - Payload bytes move in **512-byte** chunks, matching the cart's `REG_USB_DATA` window (§3).
 - The **header carries the true length**, so reassembly is driven by `size`, not by transfer boundaries. An L3 frame larger than one transfer is simply a longer payload; the L2 adapter concatenates decoded payloads into one continuous octet stream.
 
@@ -131,22 +147,22 @@ further than the reference does: only a bad trailer is an error at all.
 | Resynchronisation | Purge RX **and** TX | `clear_serial_buffers` clears the port in both directions, the wire buffer, the decoded L3 queue, and any error held back |
 
 A `size` field that is wrong in a way the trailer check cannot yet see costs time rather than data:
-the parser must buffer `8 + align(size) + 4` bytes before it can check the trailer at all, and `size`
+the parser must buffer `align(8 + size + 4)` bytes before it can check the trailer at all, and `size`
 is 24 bits, so a `DMA@` invented by noise can hold the decoder until as much as 16 MiB has arrived.
 Nothing bounds that below the header's own limit.
 
-Which bytes the trailer check looks at depends on the padding direction in §4.2 and §4.3, and that
-direction is itself unconfirmed (issue #134): the parser expects `CMPH` after the payload padded up
-to 2 bytes, so if a cart instead puts the trailer straight after the unpadded data, every
-odd-length message lands on the trailer-mismatch row above. Resolve that on hardware before
-treating this row as settled.
+The trailer check reads the 4 bytes at `8 + size`, per the cart → host row of §4.2. It previously
+read them at `8 + align(size, 2)`, the host → cart layout, which put every odd-length message from
+a cart on the trailer-mismatch row above and faulted `multi64d`'s link (issue #134). That is fixed
+from the references; it has still never been exercised against a cart.
 
 ### 4.5 Open questions — resolve on hardware before dropping Draft
 
 1. ~~**Protocol version.**~~ **Resolved from source.** libdragon's `usb.c` declares `USBPROTOCOL_VERSION 2` and aligns payloads to **2 bytes**; `ed64-l2` matches. Still worth confirming on hardware that the cart's firmware agrees, but this is no longer an open guess.
-2. **VCP vs D2XX.** UNFLoader uses D2XX and purges the FTDI queues directly. Whether a `serialport` VCP handle gives equivalent behaviour under load — particularly for the purge in §4.4 — is unverified.
-3. **Baud.** `usb64` framing uses 115200 for the `cmd` path; whether the FIFO data path is baud-sensitive at all over VCP is unconfirmed.
-4. **EverDrive 3.0.** Whether the framing is identical on 3.0, and where the OS 3.07 incompatibility bites (§1.1).
+2. ~~**Padding direction.**~~ **Resolved from source (#134).** Read from all four reference functions — libdragon's `usb_everdrive_write` and `usb_everdrive_poll`, UNFLoader's `device_senddata_everdrive` and `device_receivedata_everdrive` — which agree with each other and disagree with this document's earlier "symmetric" claim. The layouts are in §4.2; `ed64-l2` and `n64/agent/ed64.c` both match them. Confirm on a cart along with the rest of §4, but this is no longer a guess.
+3. **VCP vs D2XX.** UNFLoader uses D2XX and purges the FTDI queues directly. Whether a `serialport` VCP handle gives equivalent behaviour under load — particularly for the purge in §4.4 — is unverified.
+4. **Baud.** `usb64` framing uses 115200 for the `cmd` path; whether the FIFO data path is baud-sensitive at all over VCP is unconfirmed.
+5. **EverDrive 3.0.** Whether the framing is identical on 3.0, and where the OS 3.07 incompatibility bites (§1.1).
 
 ---
 

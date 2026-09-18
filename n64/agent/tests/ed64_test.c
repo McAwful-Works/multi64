@@ -1,20 +1,22 @@
 /*
- * Host-side test of the EverDrive-64 X7 driver's receive path.
+ * Host-side test of the EverDrive-64 X7 driver.
  *
  * `make host-test` compiles the real ed64.c for the PC with this file in place of pi_io.c: the
  * pi_io_* functions below are a fake cart. It models the X7's USB unit as libdragon's usb.c drives
  * it: USBCFG (a read transfer of n bytes fills the last n bytes of the 512-byte USBDAT window from
- * what the host has sent; the status word carries POWER, RXF while nothing is waiting, and ACT
- * while a transfer is in progress), and the window itself. A read asking for more bytes than the
- * host sent never finishes, and any window load can be made to fail, the way pi_io.c fails when the
- * PI stays busy.
+ * what the host has sent; a write transfer sends the window from the offset it names to the
+ * window's end; the status word carries POWER, RXF while nothing is waiting, and ACT while a
+ * transfer is in progress), and the window itself. A read asking for more bytes than the host sent
+ * never finishes, and any window load can be made to fail, the way pi_io.c fails when the PI stays
+ * busy.
  *
  * Bytes are copied between the window and the driver's words in host byte order, so the driver's
  * byte view of a loaded word is the window's bytes in order, as it is on the big-endian console.
  *
- * It checks that a message is delivered in order and whole, or reported lost, and that every wait
- * is bounded. It says nothing about the cart: the register model is transcribed, not observed, and
- * this driver has never run on an X7.
+ * It checks that a received message is delivered in order and whole, or reported lost, that a sent
+ * message carries the framing the host parses, and that every wait is bounded. It says nothing
+ * about the cart: the register model is transcribed, not observed, and this driver has never run
+ * on an X7.
  */
 #undef NDEBUG
 #include <assert.h>
@@ -37,6 +39,8 @@
 #define F_MODE_MASK 0xFE00u
 #define F_MODE_RDNOP 0xC400u
 #define F_MODE_RD 0xC600u
+#define F_MODE_WRNOP 0xC000u
+#define F_MODE_WR 0xC200u
 
 #define F_ACT 0x0200u
 #define F_RXF 0x0400u
@@ -64,6 +68,11 @@ static struct {
     uint32_t fail_load;
     /* The next read-transfer write fails before its store, the PI busy from the start. */
     int fail_rd_before_store;
+
+    /* Everything the cart has transmitted, in order: a write transfer sends the window from the
+       offset it names to the window's end. */
+    uint8_t sent[F_HOST_BYTES];
+    uint32_t sent_len;
 } f;
 
 int pi_io_read(uint32_t addr, uint32_t *value)
@@ -104,8 +113,20 @@ int pi_io_write_stored(uint32_t addr, uint32_t value, int *stored)
             memcpy(f.window + start, f.host + f.host_pos, n);
             f.host_pos += n;
         }
+    } else if ((value & F_MODE_MASK) == F_MODE_WR) {
+        /* A write transfer sends the window from `start` to the window's end, as libdragon's
+           usb_everdrive_write drives it. */
+        uint32_t start = value & 0x1FFu;
+        uint32_t n;
+
+        assert(start < F_WINDOW);
+        n = F_WINDOW - start;
+        assert(f.sent_len + n <= F_HOST_BYTES);
+        memcpy(f.sent + f.sent_len, f.window + start, n);
+        f.sent_len += n;
     } else {
-        assert((value & F_MODE_MASK) == F_MODE_RDNOP && "only the receive path is modelled");
+        assert(((value & F_MODE_MASK) == F_MODE_RDNOP || (value & F_MODE_MASK) == F_MODE_WRNOP) &&
+               "a USB mode the fake does not model");
     }
     return 1;
 }
@@ -130,11 +151,10 @@ int pi_io_load_words(uint32_t *dst, uint32_t addr, uint32_t words)
 
 int pi_io_store_words(const uint32_t *src, uint32_t addr, uint32_t words)
 {
-    (void)src;
-    (void)addr;
-    (void)words;
-    assert(0 && "only the receive path is modelled");
-    return 0;
+    assert(addr >= F_USBDAT && (addr - F_USBDAT) % 4u == 0u);
+    assert(addr - F_USBDAT + 4u * words <= F_WINDOW);
+    memcpy(f.window + (addr - F_USBDAT), src, 4u * words);
+    return 1;
 }
 
 /* ---- helpers -------------------------------------------------------------------- */
@@ -362,6 +382,65 @@ static void a_message_too_big_even_with_the_leftover_buffer_is_lost(void)
     assert(f.host_pos == f.host_len);
 }
 
+/*
+ * #134: the cart writes CMPH straight after the unpadded payload and pads the whole message
+ * afterwards. libdragon's usb_everdrive_write does this by restarting its copy loop to append the
+ * trailer and then sending ALIGN(block+offset, 2) bytes, and UNFLoader's receive path reads the
+ * trailer at `size` before consuming the alignment. The driver used to pad the payload first and
+ * put CMPH after the pad, which mis-framed every odd-length message it sent.
+ */
+static void a_sent_message_puts_its_padding_after_the_trailer(void)
+{
+    uint8_t body[3];
+
+    fresh_cart();
+    pattern(body, sizeof body, 0x40u);
+    assert(ed64_send(body, sizeof body) == 1);
+
+    /* 8 header + 3 payload + 4 trailer, padded to 2. */
+    assert(f.sent_len == 16u);
+    assert(memcmp(f.sent, "DMA@", 4u) == 0);
+    assert(f.sent[4] == F_L3 && f.sent[5] == 0u && f.sent[6] == 0u && f.sent[7] == 3u);
+    assert(memcmp(f.sent + 8, body, sizeof body) == 0);
+    assert(memcmp(f.sent + 11, "CMPH", 4u) == 0);
+}
+
+/* An even payload needs no padding at all, so the trailer ends the message either way. */
+static void a_sent_even_message_has_no_padding(void)
+{
+    uint8_t body[4];
+
+    fresh_cart();
+    pattern(body, sizeof body, 0x70u);
+    assert(ed64_send(body, sizeof body) == 1);
+
+    assert(f.sent_len == 16u);
+    assert(f.sent[7] == 4u);
+    assert(memcmp(f.sent + 8, body, sizeof body) == 0);
+    assert(memcmp(f.sent + 12, "CMPH", 4u) == 0);
+}
+
+/*
+ * A message longer than the 512-byte window is sent in several transfers, and the trailer still
+ * lands straight after the payload - across a window boundary, which is where an off-by-one in the
+ * chunking would show.
+ */
+static void a_sent_message_longer_than_the_window_keeps_its_framing(void)
+{
+    static uint8_t body[600];
+    uint32_t total = 8u + sizeof body + 4u;
+
+    fresh_cart();
+    pattern(body, sizeof body, 0x11u);
+    assert(ed64_send(body, sizeof body) == 1);
+
+    assert((sizeof body % 2u) == 0u);
+    assert(f.sent_len == total);
+    assert(memcmp(f.sent, "DMA@", 4u) == 0);
+    assert(memcmp(f.sent + 8, body, sizeof body) == 0);
+    assert(memcmp(f.sent + 8 + sizeof body, "CMPH", 4u) == 0);
+}
+
 static void a_non_l3_message_is_drained_and_ignored(void)
 {
     fresh_cart();
@@ -406,6 +485,9 @@ int main(void)
     RUN(a_read_that_never_finishes_is_reported_lost);
     RUN(a_message_too_big_even_with_the_leftover_buffer_is_lost);
     RUN(a_non_l3_message_is_drained_and_ignored);
+    RUN(a_sent_message_puts_its_padding_after_the_trailer);
+    RUN(a_sent_even_message_has_no_padding);
+    RUN(a_sent_message_longer_than_the_window_keeps_its_framing);
     printf("ed64 driver: %d cases passed\n", s_cases);
     return 0;
 }

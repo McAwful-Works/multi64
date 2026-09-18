@@ -195,10 +195,15 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
     return got;
 }
 
-/** Byte `p` of the message DMA@ | type and size | payload | pad to 2 | CMPH. */
+/** Byte `p` of the message DMA@ | type and size | payload | CMPH | pad to 2.
+ *
+ * The trailer goes straight after the *unpadded* payload and the whole message is padded after it
+ * (#134), which is what libdragon's usb_everdrive_write sends and what the host reads. The other
+ * direction pads the payload instead and puts the trailer after the padding; ed64_receive drains
+ * that layout. The two differ only for an odd-length payload.
+ */
 static uint8_t message_byte(const uint8_t *data, uint32_t len, uint32_t p)
 {
-    uint32_t padded = (len + 1u) & ~1u;
     uint32_t head = (ED_DATATYPE_L3 << 24) | len;
 
     if (p < 4u) {
@@ -211,15 +216,18 @@ static uint8_t message_byte(const uint8_t *data, uint32_t len, uint32_t p)
     if (p < len) {
         return data[p];
     }
-    if (p < padded) {
-        return 0u;
+    if (p - len < 4u) {
+        return (uint8_t)"CMPH"[p - len];
     }
-    return (uint8_t)"CMPH"[p - padded];
+    /* The alignment byte. libdragon leaves whatever its buffer held here; a zero is as valid and
+       keeps what the cart sends from depending on uninitialised memory. */
+    return 0u;
 }
 
 int ed64_send(const uint8_t *data, uint32_t len)
 {
-    uint32_t total = 8u + ((len + 1u) & ~1u) + 4u;
+    /* Header, payload and trailer, the whole message padded to 2 bytes (#134). */
+    uint32_t total = (8u + len + 4u + 1u) & ~1u;
     uint32_t p = 0u;
     uint8_t *bytes = (uint8_t *)s_window;
 

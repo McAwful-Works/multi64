@@ -1,8 +1,13 @@
 //! EverDrive **64 X7** L2 adapter: maps the abstract L3 octet stream onto the EverDrive USB framing
 //! and parses the same framing coming back, so the L3 codec above sees one continuous byte stream.
 //!
-//! The wire format is **`docs/spec/l3-over-everdrive-x7.md` §4**: a symmetric 8-byte **`DMA@`** header
-//! carrying `(datatype << 24) | size`, the payload padded to a 2-byte boundary, then a **`CMPH`** trailer.
+//! The wire format is **`docs/spec/l3-over-everdrive-x7.md` §4**: an 8-byte **`DMA@`** header carrying
+//! `(datatype << 24) | size`, the payload, and a **`CMPH`** trailer, everything aligned to 2 bytes.
+//!
+//! The two directions are **not** symmetric about where that alignment goes (#134). Writing to the
+//! cart, the payload is padded and the trailer follows it; reading from the cart, the trailer follows
+//! the unpadded payload and the padding comes after it. Both carry the unpadded length in the header,
+//! so the layouts differ only for an odd-length payload.
 //!
 //! # Validation status
 //!
@@ -36,9 +41,13 @@ const DMA_MAGIC: [u8; 4] = *b"DMA@";
 /// Trailer magic, both directions (spec §4.2).
 const CMP_MAGIC: [u8; 4] = *b"CMPH";
 
-/// Payload alignment on send. libdragon's `usb.c` declares `USBPROTOCOL_VERSION 2`, which aligns to
-/// **2** bytes; version 1 aligned to 512. Sending the wrong alignment mis-frames every message.
-const SEND_ALIGN: usize = 2;
+/// Wire alignment, both directions. libdragon's `usb.c` declares `USBPROTOCOL_VERSION 2`, which
+/// aligns to **2** bytes; version 1 aligned to 512. The wrong alignment mis-frames every message.
+///
+/// *What* is aligned differs by direction, which is the whole of #134: the host pads the **payload**
+/// and then writes the trailer, while the cart writes the trailer straight after the unpadded
+/// payload and pads the **whole message**. See [`encode_message`] and [`WireBuffer::next_message`].
+const WIRE_ALIGN: usize = 2;
 
 /// The header's size field is 24 bits, so one message cannot carry more than this.
 const MAX_MESSAGE_BYTES: usize = 0x00FF_FFFF;
@@ -109,13 +118,18 @@ impl WireBuffer {
         let head = u32::from_be_bytes([self.buf[4], self.buf[5], self.buf[6], self.buf[7]]);
         let datatype = (head >> 24) as u8;
         let size = (head & 0x00FF_FFFF) as usize;
-        let padded = align_up(size, SEND_ALIGN);
-        let total = 8 + padded + CMP_MAGIC.len();
+        // A cart writes the trailer straight after the *unpadded* payload and pads the whole
+        // message afterwards, so the alignment byte of an odd payload follows `CMPH` rather than
+        // preceding it (#134). That is what libdragon's `usb_everdrive_write` sends and what
+        // UNFLoader's receive path reads; this used to assume the other direction's layout and
+        // looked for the trailer one byte late, failing every odd-length message from the cart.
+        let trailer = 8 + size;
+        let total = align_up(trailer + CMP_MAGIC.len(), WIRE_ALIGN);
         if self.buf.len() < total {
             return Ok(None);
         }
-        if self.buf[8 + padded..total] != CMP_MAGIC {
-            let got = self.buf[8 + padded..total].to_vec();
+        if self.buf[trailer..trailer + CMP_MAGIC.len()] != CMP_MAGIC {
+            let got = self.buf[trailer..trailer + CMP_MAGIC.len()].to_vec();
             // Drop the magic so the next resync cannot latch onto this same bad message forever.
             self.buf.drain(..DMA_MAGIC.len());
             return Err(io::Error::new(
@@ -123,13 +137,20 @@ impl WireBuffer {
                 format!("ED64: expected CMPH trailer, got {got:02x?}"),
             ));
         }
-        let payload = self.buf[8..8 + size].to_vec();
+        let payload = self.buf[8..trailer].to_vec();
+        // `total` covers the alignment byte, so it leaves with its own message. A cart sends
+        // whatever its buffer held there, so it is never looked at and never reaches L3.
         self.buf.drain(..total);
         Ok(Some(WireMessage { datatype, payload }))
     }
 }
 
-/// Encode one payload as a `DMA@` message (spec §4.2).
+/// Encode one payload as a `DMA@` message for the **cart** (spec §4.2).
+///
+/// Host to cart, the payload is zero-padded to [`WIRE_ALIGN`] and the trailer follows the padding —
+/// what libdragon's `usb_everdrive_poll` reads, and what UNFLoader's `device_senddata_everdrive`
+/// sends. The other direction places the padding differently, so this is not the inverse of
+/// [`WireBuffer::next_message`] for an odd-length payload (#134).
 fn encode_message(datatype: u8, payload: &[u8]) -> io::Result<Vec<u8>> {
     if payload.len() > MAX_MESSAGE_BYTES {
         return Err(io::Error::other(format!(
@@ -137,7 +158,7 @@ fn encode_message(datatype: u8, payload: &[u8]) -> io::Result<Vec<u8>> {
             payload.len()
         )));
     }
-    let padded = align_up(payload.len(), SEND_ALIGN);
+    let padded = align_up(payload.len(), WIRE_ALIGN);
     let mut out = Vec::with_capacity(8 + padded + CMP_MAGIC.len());
     out.extend_from_slice(&DMA_MAGIC);
     let head = (u32::from(datatype) << 24) | (payload.len() as u32 & 0x00FF_FFFF);
@@ -313,6 +334,66 @@ mod tests {
         Ok(out)
     }
 
+    /// Build a message as a **cart** sends one (spec §4.2): the trailer straight after the unpadded
+    /// payload, then the whole message padded to 2 bytes. `pad` is what the cart's buffer happened
+    /// to hold — libdragon sends leftover bytes there, not zeros.
+    /// [`cart_message`] with a zero alignment byte — for tests that care about what the parser does
+    /// with a message, not about what the padding held.
+    fn from_cart(datatype: u8, payload: &[u8]) -> Vec<u8> {
+        cart_message(datatype, payload, 0)
+    }
+
+    fn cart_message(datatype: u8, payload: &[u8], pad: u8) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&DMA_MAGIC);
+        let head = (u32::from(datatype) << 24) | (payload.len() as u32 & 0x00FF_FFFF);
+        out.extend_from_slice(&head.to_be_bytes());
+        out.extend_from_slice(payload);
+        out.extend_from_slice(&CMP_MAGIC);
+        out.resize(align_up(out.len(), WIRE_ALIGN), pad);
+        out
+    }
+
+    /// #134: a cart puts `CMPH` straight after the unpadded payload and pads the whole message
+    /// afterwards, so an odd payload's alignment byte lands *after* the trailer. The parser used to
+    /// read the padded layout of the other direction and looked for the trailer one byte late,
+    /// which failed every odd-length message from the cart.
+    #[test]
+    fn an_odd_payload_from_the_cart_has_its_padding_after_the_trailer() {
+        let msgs = decode_all(&cart_message(MULTI64_L3_TYPE, &[0xAA, 0xBB, 0xCC], 0x5A)).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].payload, vec![0xAA, 0xBB, 0xCC]);
+    }
+
+    /// The alignment byte is consumed with the message it belongs to: it is not payload, and it
+    /// must not be left to be resynchronised past — a cart sends whatever was in its buffer there,
+    /// which could be any byte at all.
+    #[test]
+    fn the_alignment_byte_is_consumed_and_never_reaches_l3() {
+        let mut wire = cart_message(MULTI64_L3_TYPE, &[1, 2, 3], 0xFF);
+        wire.extend_from_slice(&cart_message(MULTI64_L3_TYPE, &[4, 5, 6, 7], 0));
+        let msgs = decode_all(&wire).unwrap();
+        assert_eq!(msgs.len(), 2, "the second message parsed without resyncing");
+        assert_eq!(msgs[0].payload, vec![1, 2, 3]);
+        assert_eq!(msgs[1].payload, vec![4, 5, 6, 7]);
+    }
+
+    /// The framing is **not** symmetric (#134). The host pads the payload up to the trailer; the
+    /// cart pads the whole message after it. Both are 2-byte aligned and both carry the unpadded
+    /// length, so they differ only for an odd payload — which is why this went unnoticed.
+    #[test]
+    fn the_two_directions_place_an_odd_payloads_padding_differently() {
+        let sent = encode_message(MULTI64_L3_TYPE, &[0xAA, 0xBB, 0xCC]).unwrap();
+        let received = cart_message(MULTI64_L3_TYPE, &[0xAA, 0xBB, 0xCC], 0);
+        assert_eq!(sent.len(), received.len(), "same length either way");
+        assert_eq!(&sent[11..12], &[0x00], "host: pad, then the trailer");
+        assert_eq!(&sent[12..16], b"CMPH");
+        assert_eq!(&received[11..15], b"CMPH", "cart: trailer, then the pad");
+        assert_ne!(sent, received);
+    }
+
+    /// An even payload is framed identically in both directions, so this round trip is the only one
+    /// that holds; see [`the_two_directions_place_an_odd_payloads_padding_differently`].
     #[test]
     fn round_trip_even_length() {
         let wire = encode_message(MULTI64_L3_TYPE, b"M64B").unwrap();
@@ -324,14 +405,22 @@ mod tests {
         assert_eq!(msgs[0].payload, b"M64B");
     }
 
+    /// Send direction only: the payload is padded up to the trailer, and the header still carries
+    /// the unpadded length, so the cart hands 3 bytes to its L3 layer and drops the pad. Decoding
+    /// this back is *not* a valid round trip for an odd payload — see
+    /// [`the_two_directions_place_an_odd_payloads_padding_differently`].
     #[test]
-    fn odd_length_is_padded_but_payload_is_not() {
+    fn a_sent_odd_payload_is_padded_before_the_trailer() {
         let wire = encode_message(MULTI64_L3_TYPE, &[0xAA, 0xBB, 0xCC]).unwrap();
         // 8 header + 3 payload + 1 pad + 4 trailer
         assert_eq!(wire.len(), 16);
         assert_eq!(wire[11], 0x00, "pad byte");
-        let msgs = decode_all(&wire).unwrap();
-        assert_eq!(msgs[0].payload, vec![0xAA, 0xBB, 0xCC]);
+        assert_eq!(&wire[12..16], b"CMPH");
+        assert_eq!(
+            u32::from_be_bytes([wire[4], wire[5], wire[6], wire[7]]) & 0x00FF_FFFF,
+            3,
+            "the header carries the unpadded length"
+        );
     }
 
     #[test]
@@ -353,8 +442,8 @@ mod tests {
 
     #[test]
     fn two_messages_concatenate_into_one_stream() {
-        let mut wire = encode_message(MULTI64_L3_TYPE, b"abc").unwrap();
-        wire.extend(encode_message(MULTI64_L3_TYPE, b"de").unwrap());
+        let mut wire = from_cart(MULTI64_L3_TYPE, b"abc");
+        wire.extend(from_cart(MULTI64_L3_TYPE, b"de"));
         let mut q = VecDeque::new();
         let mut w = WireBuffer::default();
         w.push_bytes(&wire);
@@ -365,8 +454,8 @@ mod tests {
 
     #[test]
     fn other_datatypes_are_dropped_not_streamed() {
-        let mut wire = encode_message(0x02, b"debug text").unwrap();
-        wire.extend(encode_message(MULTI64_L3_TYPE, b"L3").unwrap());
+        let mut wire = from_cart(0x02, b"debug text");
+        wire.extend(from_cart(MULTI64_L3_TYPE, b"L3"));
         let mut q = VecDeque::new();
         let mut w = WireBuffer::default();
         w.push_bytes(&wire);
@@ -377,7 +466,7 @@ mod tests {
 
     #[test]
     fn partial_message_yields_none_until_complete() {
-        let wire = encode_message(MULTI64_L3_TYPE, b"hello").unwrap();
+        let wire = from_cart(MULTI64_L3_TYPE, b"hello");
         let mut w = WireBuffer::default();
         w.push_bytes(&wire[..wire.len() - 1]);
         assert_eq!(w.next_message().unwrap(), None);
@@ -388,7 +477,7 @@ mod tests {
     #[test]
     fn leading_garbage_is_resynchronised() {
         let mut wire = b"\x00\xffnoise".to_vec();
-        wire.extend(encode_message(MULTI64_L3_TYPE, b"ok").unwrap());
+        wire.extend(from_cart(MULTI64_L3_TYPE, b"ok"));
         let msgs = decode_all(&wire).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].payload, b"ok");
@@ -396,10 +485,10 @@ mod tests {
 
     #[test]
     fn bad_trailer_is_invalid_data_and_does_not_wedge() {
-        let mut wire = encode_message(MULTI64_L3_TYPE, b"xy").unwrap();
+        let mut wire = from_cart(MULTI64_L3_TYPE, b"xy");
         let n = wire.len();
         wire[n - 1] = b'!';
-        wire.extend(encode_message(MULTI64_L3_TYPE, b"next").unwrap());
+        wire.extend(from_cart(MULTI64_L3_TYPE, b"next"));
         let mut w = WireBuffer::default();
         w.push_bytes(&wire);
         let e = w.next_message().unwrap_err();
@@ -421,8 +510,8 @@ mod tests {
     /// the error, so a caller that drops the pipe on error (multi64d) does not lose them.
     #[test]
     fn queued_l3_bytes_are_returned_before_bad_trailer_error() {
-        let mut chunk = encode_message(MULTI64_L3_TYPE, b"M64B-queued").unwrap();
-        let mut bad = encode_message(MULTI64_L3_TYPE, b"xy").unwrap();
+        let mut chunk = from_cart(MULTI64_L3_TYPE, b"M64B-queued");
+        let mut bad = from_cart(MULTI64_L3_TYPE, b"xy");
         let n = bad.len();
         bad[n - 1] = b'!';
         chunk.extend_from_slice(&bad);
@@ -445,7 +534,7 @@ mod tests {
     /// With nothing queued, a bad trailer still surfaces on the read that parsed it.
     #[test]
     fn bad_trailer_with_empty_queue_errors_immediately() {
-        let mut bad = encode_message(MULTI64_L3_TYPE, b"xy").unwrap();
+        let mut bad = from_cart(MULTI64_L3_TYPE, b"xy");
         let n = bad.len();
         bad[n - 1] = b'!';
         let mut pipe = pipe_over(vec![bad]);
@@ -457,9 +546,9 @@ mod tests {
     #[test]
     fn oversized_message_is_rejected() {
         // Cheap check of the bound without allocating 16 MiB of payload.
-        assert!(align_up(MAX_MESSAGE_BYTES, SEND_ALIGN) >= MAX_MESSAGE_BYTES);
-        assert_eq!(align_up(0, SEND_ALIGN), 0);
-        assert_eq!(align_up(1, SEND_ALIGN), 2);
-        assert_eq!(align_up(2, SEND_ALIGN), 2);
+        assert!(align_up(MAX_MESSAGE_BYTES, WIRE_ALIGN) >= MAX_MESSAGE_BYTES);
+        assert_eq!(align_up(0, WIRE_ALIGN), 0);
+        assert_eq!(align_up(1, WIRE_ALIGN), 2);
+        assert_eq!(align_up(2, WIRE_ALIGN), 2);
     }
 }
