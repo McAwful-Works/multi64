@@ -15,7 +15,7 @@ it; this is that code, written to be dropped into a ROM its authors did not desi
 | **Call** | `agent_tick()`, once per frame |
 | **From** | the game's own thread, after its game logic — **never** from an interrupt or exception handler ([spec §4.1](../spec/memory-l3-application-v0.md#41-consistency)) |
 | **Stack** | about 300 bytes at the deepest point, measured |
-| **RAM** | about 21 KB: 4.2–4.9 KB code, 0–1.1 KB data (both depend on compiler and flags), 16.4 KB BSS |
+| **RAM** | about 24 KB: 6.7–8.3 KB code, 0–1.1 KB data (both depend on compiler, flags and cart), 16.4–19 KB BSS |
 | **Symbols** | none undefined. Nothing from libultra, libdragon, the C library or the game |
 | **Cart** | SummerCart64. EverDrive-64 X7 and PRO builds exist (`CART=ed64`, `CART=ed64pro`) and have **never run on a cart**; see §6 |
 
@@ -47,7 +47,9 @@ already in place. See [`mem_proto.h`](../../n64/test-rom/mem_proto.h).
 
 An injected agent touches the PI bus while the game is using it. These rules are in
 [`sc64.c`](../../n64/agent/sc64.c), and each one was paid for. The EverDrive drivers follow them
-through [`pi_io.c`](../../n64/agent/pi_io.c).
+through [`pi_io.c`](../../n64/agent/pi_io.c), and so does every build's
+[`cart_rom.c`](../../n64/agent/cart_rom.c), which reads the cartridge ROM for `PEEKROM`
+([spec §4.2](../spec/memory-l3-application-v0.md#42-cartridge-rom-peekrom)).
 
 - **It never writes the PI control registers** (`DRAM_ADDR`, `CART_ADDR`, `RD_LEN`, `WR_LEN`).
   Those belong to whatever DMA the game has in flight. Data moves by CPU load and store through
@@ -128,11 +130,12 @@ to test. Nothing about them counts as support.
 
 | Build | Driver | Wire | RAM, flat image |
 |---|---|---|---|
-| default | `sc64.c` | [l3-over-sc64.md](../spec/l3-over-sc64.md) | 21,132 B |
-| `CART=ed64` | `ed64.c` + `pi_io.c` | [l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4: `DMA@` messages through the cart's 512-byte USB window | 24,020 B |
-| `CART=ed64pro` | `ed64pro.c` + `pi_io.c` | [l3-over-everdrive-pro.md](../spec/l3-over-everdrive-pro.md): the cart FIFO | 22,216 B |
+| default | `sc64.c` | [l3-over-sc64.md](../spec/l3-over-sc64.md) | 23,664 B |
+| `CART=ed64` | `ed64.c` | [l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4: `DMA@` messages through the cart's 512-byte USB window | 26,976 B |
+| `CART=ed64pro` | `ed64pro.c` | [l3-over-everdrive-pro.md](../spec/l3-over-everdrive-pro.md): the cart FIFO | 23,136 B |
 
-Sizes are from [`templates/link-flat.sh`](../../n64/agent/templates/link-flat.sh) with libdragon's GCC 16.2.
+Every build also links `cart_rom.c` and `pi_io.c`. Sizes are the object's code, data and BSS with
+libdragon's GCC 16.2; a flat image adds only the few bytes of the host glue.
 
 What differs from the SC64 build:
 

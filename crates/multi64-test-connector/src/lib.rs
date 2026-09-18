@@ -39,6 +39,8 @@ const M64P_MSG_POKEV: u8 = 0x03;
 const M64P_MSG_HELLO_ACK: u8 = 0x81;
 const M64P_MSG_PEEKV_RESP: u8 = 0x82;
 const M64P_MSG_POKE_ACK: u8 = 0x83;
+const M64P_MSG_PEEKROM: u8 = 0x04;
+const M64P_MSG_PEEKROM_RESP: u8 = 0x84;
 const M64P_MSG_ERR: u8 = 0xE0;
 
 /// Name for an `ERR` code, so a failure says what was wrong rather than printing a number.
@@ -49,6 +51,8 @@ fn m64p_err_name(code: u8) -> &'static str {
         0x03 => "region or total too large",
         0x04 => "address outside RDRAM",
         0x05 => "agent does not accept writes",
+        0x06 => "agent cannot read the cart ROM",
+        0x07 => "PI stayed busy; try again",
         _ => "unknown",
     }
 }
@@ -158,6 +162,14 @@ pub enum ConnectorCommand {
     MemPoke {
         addr: u32,
         hex: String,
+    },
+    /// M64P `PEEKROM` — read the cartridge ROM (`addr` is a ROM offset). With `expect_hex`, the
+    /// command fails unless those are the bytes read.
+    MemRomPeek {
+        addr: u32,
+        len: u16,
+        #[serde(default)]
+        expect_hex: Option<String>,
     },
     /// Write a pattern into the ROM's scratch region, read it back, and restore what was there.
     ///
@@ -805,6 +817,14 @@ fn hex_of(b: &[u8]) -> String {
 }
 
 /// One `PEEKV` region, returning its bytes. Errors carry the `ERR` code's meaning.
+/// Which address space a peek reads: RDRAM (`PEEKV`) or the cartridge ROM (`PEEKROM`).
+#[derive(Clone, Copy)]
+enum PeekSpace {
+    Rdram,
+    CartRom,
+}
+
+/// One region from RDRAM (`PEEKV`).
 async fn peek_region(
     write: &mut WsWrite,
     read: &mut WsRead,
@@ -813,23 +833,40 @@ async fn peek_region(
     len: u16,
     what: &str,
 ) -> Result<Vec<u8>> {
+    peek(write, read, recv_to, PeekSpace::Rdram, addr, len, what).await
+}
+
+/// One region from either space. The two requests share a body and a reply layout.
+async fn peek(
+    write: &mut WsWrite,
+    read: &mut WsRead,
+    recv_to: Duration,
+    space: PeekSpace,
+    addr: u32,
+    len: u16,
+    what: &str,
+) -> Result<Vec<u8>> {
+    let (req, resp, name) = match space {
+        PeekSpace::Rdram => (M64P_MSG_PEEKV, M64P_MSG_PEEKV_RESP, "PEEKV"),
+        PeekSpace::CartRom => (M64P_MSG_PEEKROM, M64P_MSG_PEEKROM_RESP, "PEEKROM"),
+    };
     let mut quiet = |_: String| {};
     let (msg, body) = app_round_trip(
         write,
         read,
-        build_m64p_payload(M64P_MSG_PEEKV, &m64p_peek_body(1, &[(addr, len)])),
+        build_m64p_payload(req, &m64p_peek_body(1, &[(addr, len)])),
         what,
         recv_to,
         Expect {
             magic: M64P_MAGIC,
-            msgs: &[M64P_MSG_PEEKV_RESP, M64P_MSG_ERR],
+            msgs: &[resp, M64P_MSG_ERR],
         },
         &mut quiet,
     )
     .await?;
     if msg == M64P_MSG_ERR {
         let code = body.get(2).copied().unwrap_or(0);
-        anyhow::bail!("PEEKV rejected: {} ({:#04x})", m64p_err_name(code), code);
+        anyhow::bail!("{name} rejected: {} ({:#04x})", m64p_err_name(code), code);
     }
     m64p_first_region(&body)
 }
@@ -1319,13 +1356,25 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
             if body.len() < 8 {
                 anyhow::bail!("HELLO_ACK body is {} bytes, expected 8", body.len());
             }
+            // rom_bytes follows the flags only when bit 1 says the agent reads the cart ROM.
+            let cart_rom = (body[7] & 0x02) != 0;
+            let rom_bytes = match (cart_rom, body.get(8..12)) {
+                (true, Some(b)) => {
+                    format!("{} bytes", u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+                }
+                (true, None) => {
+                    anyhow::bail!("HELLO_ACK sets the cart ROM flag but carries no rom_bytes")
+                }
+                (false, _) => "no".to_string(),
+            };
             log_line!(
                 log,
-                "OK: M64P proto={} agent_ver={} rdram={} bytes writable={}",
+                "OK: M64P proto={} agent_ver={} rdram={} bytes writable={} cart_rom={}",
                 body[0],
                 u16::from_be_bytes([body[1], body[2]]),
                 u32::from_be_bytes([body[3], body[4], body[5], body[6]]),
-                (body[7] & 0x01) != 0
+                (body[7] & 0x01) != 0,
+                rom_bytes
             );
         }
         ConnectorCommand::MemPeek { addr, len } => {
@@ -1333,6 +1382,39 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
             log_line!(
                 log,
                 "OK: read {} bytes at 0x{:08X}: {}",
+                data.len(),
+                addr,
+                hex_of(&data)
+            );
+        }
+        ConnectorCommand::MemRomPeek {
+            addr,
+            len,
+            expect_hex,
+        } => {
+            let data = peek(
+                &mut write,
+                &mut read,
+                recv_to,
+                PeekSpace::CartRom,
+                addr,
+                len,
+                "M64P PEEKROM",
+            )
+            .await?;
+            if let Some(want) = expect_hex {
+                let want = parse_hex_body(&want)?;
+                if data != want {
+                    anyhow::bail!(
+                        "ROM 0x{addr:08X} holds {}, expected {}",
+                        hex_of(&data),
+                        hex_of(&want)
+                    );
+                }
+            }
+            log_line!(
+                log,
+                "OK: read {} bytes of cart ROM at 0x{:08X}: {}",
                 data.len(),
                 addr,
                 hex_of(&data)

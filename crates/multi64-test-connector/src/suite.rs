@@ -861,6 +861,27 @@ pub async fn run_suite<F: FnMut(CheckResult)>(
         ConnectorCommand::MemRoundTrip { len: 64 },
     )
     .await;
+    // Every N64 ROM starts with the PI configuration word 80 37 12 40: reading it back proves the
+    // agent reached the cartridge ROM, not RDRAM or a buffer of its own.
+    r.check(
+        "read the cartridge ROM header",
+        ConnectorCommand::MemRomPeek {
+            addr: 0,
+            len: 4,
+            expect_hex: Some("80371240".into()),
+        },
+    )
+    .await;
+    r.check_refused(
+        "a ROM read past the cart window is refused",
+        "PEEKROM rejected",
+        ConnectorCommand::MemRomPeek {
+            addr: 0x0400_0000,
+            len: 4,
+            expect_hex: None,
+        },
+    )
+    .await;
     // M64P addresses are RDRAM physical offsets, so 0 is the *start* of RDRAM and valid. This has
     // to be past the end of any N64's memory.
     r.check_refused(

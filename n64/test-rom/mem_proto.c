@@ -63,37 +63,49 @@ static void send_err(uint16_t rid, uint8_t code)
     m64p_transport_send(app, n + 3);
 }
 
+static void put_be32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
 static void handle_hello(void)
 {
-    uint8_t app[5 + 8];
+    uint8_t app[5 + 12];
     int n;
-    uint32_t sz;
+    uint32_t rom = m64p_cart_rom_size();
+    uint8_t flags = (uint8_t)M64P_FLAG_WRITABLE;
 
     n = app_header(app, M64P_MSG_HELLO_ACK);
     app[n] = (uint8_t)M64P_PROTO_VERSION;
     put_be16(app + n + 1, 0x0100U); /* agent_ver 1.0 */
-    sz = m64p_rdram_size();
-    app[n + 3] = (uint8_t)(sz >> 24);
-    app[n + 4] = (uint8_t)(sz >> 16);
-    app[n + 5] = (uint8_t)(sz >> 8);
-    app[n + 6] = (uint8_t)sz;
-    app[n + 7] = (uint8_t)M64P_FLAG_WRITABLE;
-    m64p_transport_send(app, n + 8);
+    put_be32(app + n + 3, m64p_rdram_size());
+    if (rom != 0U) {
+        /* rom_bytes follows the flags only when bit 1 says so, so a host that predates it
+           still finds every field where it expects. */
+        flags |= (uint8_t)M64P_FLAG_CART_ROM;
+        put_be32(app + n + 8, rom);
+    }
+    app[n + 7] = flags;
+    m64p_transport_send(app, n + (rom != 0U ? 12 : 8));
 }
 
 /**
  * Walk the region list of a PEEKV or POKEV, validating as we go.
  *
  * `stride_includes_data` distinguishes the two: POKEV carries `len` bytes inline
- * after each header, PEEKV does not. Returns 0 on success, or an M64P_ERR_* code.
+ * after each header, PEEKV and PEEKROM do not. `space` is the size of the address space
+ * the regions index (RDRAM, or the cart ROM window). Returns 0 on success, or an
+ * M64P_ERR_* code.
  * On success `*total_out` is the summed region length.
  */
 static uint8_t validate_regions(const uint8_t *body, size_t body_len, uint8_t n, int stride_includes_data,
-                                uint32_t *total_out)
+                                uint32_t space, uint32_t *total_out)
 {
     uint32_t total = 0;
     size_t off = 3; /* rid:u16 + n:u8 */
-    uint32_t ram = m64p_rdram_size();
     uint8_t i;
 
     if (n > (uint8_t)M64P_MAX_REGIONS) {
@@ -120,7 +132,7 @@ static uint8_t validate_regions(const uint8_t *body, size_t body_len, uint8_t n,
         }
         /* Range-check rather than fault: a bad address from the host would
            otherwise bus-error the console. Written to avoid overflow. */
-        if (addr > ram || (uint32_t)len > ram - addr) {
+        if (addr > space || (uint32_t)len > space - addr) {
             return M64P_ERR_RANGE;
         }
         if (stride_includes_data) {
@@ -153,7 +165,7 @@ static void handle_peekv(const uint8_t *body, size_t body_len)
     rid = read_be16(body);
     n = body[2];
 
-    err = validate_regions(body, body_len, n, 0, &total);
+    err = validate_regions(body, body_len, n, 0, m64p_rdram_size(), &total);
     if (err != 0U) {
         send_err(rid, err);
         return;
@@ -211,7 +223,7 @@ static void handle_pokev(const uint8_t *body, size_t body_len)
     rid = read_be16(body);
     n = body[2];
 
-    err = validate_regions(body, body_len, n, 1, &total);
+    err = validate_regions(body, body_len, n, 1, m64p_rdram_size(), &total);
     if (err != 0U) {
         send_err(rid, err);
         return;
@@ -244,6 +256,67 @@ static void handle_pokev(const uint8_t *body, size_t body_len)
     m64p_transport_send(app, an + 3);
 }
 
+/**
+ * PEEKROM: PEEKV's shape, over cartridge ROM instead of RDRAM. The ROM does not change
+ * while the game runs, so there is no consistency question here, only the bus: every
+ * byte comes through m64p_cart_rom_read(), which shares the PI with the game.
+ */
+static void handle_peekrom(const uint8_t *body, size_t body_len)
+{
+    uint16_t rid;
+    uint8_t n;
+    uint32_t total = 0;
+    uint32_t space = m64p_cart_rom_size();
+    uint8_t err;
+    uint8_t *reply;
+    int out;
+    size_t off;
+    uint8_t i;
+
+    if (body_len < 3U) {
+        send_err(0U, M64P_ERR_MALFORMED);
+        return;
+    }
+    rid = read_be16(body);
+    n = body[2];
+
+    if (space == 0U) {
+        send_err(rid, M64P_ERR_UNSUPPORTED);
+        return;
+    }
+    err = validate_regions(body, body_len, n, 0, space, &total);
+    if (err != 0U) {
+        send_err(rid, err);
+        return;
+    }
+
+    reply = m64p_reply_buffer();
+    out = app_header(reply, M64P_MSG_PEEKROM_RESP);
+    put_be16(reply + out, rid);
+    reply[out + 2] = n;
+    out += 3;
+
+    off = 3;
+    for (i = 0; i < n; i++) {
+        uint32_t addr = read_be32(body + off);
+        uint16_t len = read_be16(body + off + 4);
+
+        off += 6U;
+        put_be16(reply + out, len);
+        out += 2;
+        if (len != 0U && !m64p_cart_rom_read(addr, reply + out, (uint32_t)len)) {
+            /* The half-built reply is abandoned; ERR is built on the stack. */
+            send_err(rid, M64P_ERR_BUSY);
+            return;
+        }
+        out += (int)len;
+    }
+
+    s_requests++;
+    s_bytes_read += total;
+    m64p_transport_send(reply, out);
+}
+
 int m64p_handle(const uint8_t *p, size_t plen)
 {
     uint8_t msg;
@@ -271,6 +344,9 @@ int m64p_handle(const uint8_t *p, size_t plen)
         break;
     case M64P_MSG_POKEV:
         handle_pokev(body, body_len);
+        break;
+    case M64P_MSG_PEEKROM:
+        handle_peekrom(body, body_len);
         break;
     default:
         /* Unknown request: answer rather than go quiet, so a host driving a newer

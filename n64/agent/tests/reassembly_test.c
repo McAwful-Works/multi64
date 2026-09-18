@@ -124,6 +124,20 @@ int FAKE_SEND(const uint8_t *data, uint32_t len)
     return 1;
 }
 
+/* PEEKROM is not what this file tests (tests/cart_rom_test.c is), so no cart ROM here. */
+uint32_t m64p_cart_rom_size(void)
+{
+    return 0;
+}
+
+int m64p_cart_rom_read(uint32_t off, uint8_t *dst, uint32_t len)
+{
+    (void)off;
+    (void)dst;
+    (void)len;
+    return 0;
+}
+
 /* ---- helpers ------------------------------------------------------------------ */
 
 static void reset_script(void)

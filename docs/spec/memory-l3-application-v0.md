@@ -2,7 +2,7 @@
 
 **Spec-Revision:** 1  
 
-Payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATION` (`0x00`)** that let a host read and write **console RDRAM** while a ROM runs.
+Payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATION` (`0x00`)** that let a host read and write **console RDRAM**, and read the **cartridge ROM**, while a ROM runs.
 
 **Magic:** ASCII **`M64P`** — bytes `0x4D 0x36 0x34 0x50`.
 
@@ -33,6 +33,7 @@ Every request carries a **`rid`** (`uint16`), echoed in its response. A host may
 | `0x01` | `HELLO` | Empty |
 | `0x02` | `PEEKV` | `rid:uint16`, `n:uint8`, then `n` × (`addr:uint32`, `len:uint16`) |
 | `0x03` | `POKEV` | `rid:uint16`, `n:uint8`, then `n` × (`addr:uint32`, `len:uint16`, `len` bytes) |
+| `0x04` | `PEEKROM` | As `PEEKV`; addresses are cartridge ROM offsets (§4.2) |
 
 `HELLO` has no `rid`; `HELLO_ACK` carries none either.
 
@@ -45,9 +46,12 @@ Every request carries a **`rid`** (`uint16`), echoed in its response. A host may
 | `0x81` | `HELLO_ACK` | `proto:uint8`, `agent_ver:uint16`, `rdram_bytes:uint32`, `flags:uint8` |
 | `0x82` | `PEEKV_RESP` | `rid:uint16`, `n:uint8`, then `n` × (`len:uint16`, `len` bytes) — same order as the request |
 | `0x83` | `POKE_ACK` | `rid:uint16`, `applied:uint8` — count of regions written |
+| `0x84` | `PEEKROM_RESP` | As `PEEKV_RESP` |
 | `0xE0` | `ERR` | `rid:uint16`, `code:uint8` (§5) |
 
 `proto` is **0** for this revision. `flags` bit `0` set means writes are accepted; a read-only agent clears it and answers `POKEV` with `ERR`/`E_READONLY`.
+
+`flags` bit `1` set means the agent answers `PEEKROM`, and `HELLO_ACK` then carries one more field after `flags`: `rom_bytes:uint32`, the size of the ROM window `PEEKROM` may address (§4.2). An agent without it clears bit `1`, sends no `rom_bytes`, and answers `PEEKROM` with `ERR`/`E_UNSUPPORTED`. The field is appended, so every earlier field stays where a host that predates it reads it, and such a host can ignore both the bit and the extra four bytes. Other `flags` bits are reserved and sent as `0`.
 
 ---
 
@@ -74,7 +78,7 @@ necessary pays ~67 ms for each one.
 
 A request that exceeds any limit is answered with `ERR`, not truncated. `addr + len` beyond RDRAM is `E_RANGE` — the cart must range-check rather than fault, since a bad address from the host would otherwise bus-error the console.
 
-`n = 0` is legal and returns an empty `PEEKV_RESP` / `POKE_ACK` with `applied = 0`.
+`n = 0` is legal and returns an empty `PEEKV_RESP` / `POKE_ACK` with `applied = 0`, and an empty `PEEKROM_RESP`.
 
 ### 4.1 Consistency
 
@@ -83,6 +87,16 @@ All regions in one request are serviced **in a single pass, from the ROM's per-f
 A host may therefore treat one request as atomic with respect to the running ROM. That property comes from the **hook site**, not the transport: an implementation that services M64P from an interrupt does not satisfy this section even though its wire format is identical.
 
 Access is through **cached KSEG0**. The game manipulates its own structures with the CPU, so cached access is what stays coherent; uncached reads can return data the CPU has not written back.
+
+### 4.2 Cartridge ROM (`PEEKROM`)
+
+Hosts need the ROM as well as RAM: tools read it to recognise the game and to find data the game's patch wrote there, such as a player's login key. `PEEKROM` reads it from the cart itself, so what the host sees is the image the console is running, not a file that is meant to match it.
+
+- **Addresses are ROM offsets:** `0` is the first byte of the ROM, which the console sees on the PI bus at `0x10000000`. Any `addr` and `len` are allowed; alignment is the agent's problem, not the host's.
+- **Limits are §4's:** 32 regions, 4096 bytes per region, 7936 bytes per request. `addr + len` beyond `rom_bytes` is `E_RANGE`.
+- **`rom_bytes` is a window, not the image size.** Nothing on the console records how large the booted image is, so an agent reports the most it can address (64 MiB, the largest N64 ROM). Past the end of a smaller image a cart returns whatever it maps there. A host that needs the image size must learn it elsewhere.
+- **The agent reads the ROM over the PI bus, between the game's own transfers,** under the same rules as its cart driver: it never writes the PI control registers, it checks the PI is idle and masks interrupts around each short burst of loads, and every wait is bounded. If the PI stays busy past that bound, the whole request is answered with `ERR`/`E_BUSY` and nothing else. The host may simply retry.
+- **No consistency question arises:** the ROM does not change while the console runs. A host may therefore cache what it has read, but must drop that cache whenever the console may have been reset or another image loaded. The M64P link going silent and a new `HELLO` is the signal it has.
 
 ---
 
@@ -95,7 +109,10 @@ Access is through **cached KSEG0**. The game manipulates its own structures with
 | `0x03` | `E_TOO_LARGE` | Region or total exceeds the §4 limits |
 | `0x04` | `E_RANGE` | `addr + len` outside RDRAM |
 | `0x05` | `E_READONLY` | `POKEV` on an agent that does not accept writes |
+| `0x06` | `E_UNSUPPORTED` | `PEEKROM` on an agent that does not read the cart ROM (`flags` bit `1` clear) |
+| `0x07` | `E_BUSY` | `PEEKROM` could not get the PI bus within the agent's bound; nothing was read. Retry |
 
+An agent that predates a request type answers it with `E_MALFORMED`, as any unknown `msg`.
 ---
 
 ## 6. Revision
@@ -103,3 +120,4 @@ Access is through **cached KSEG0**. The game manipulates its own structures with
 | Spec-Revision | Change |
 |---------------|--------|
 | **1** | M64P v0: `HELLO`, `PEEKV`, `POKEV`. No change to the L3 byte contract — this is an APPLICATION payload, so **Protocol-Major/Minor are unaffected**. Per-request byte cap set to 7936 (§4) after hardware measurement showed latency is per-exchange, not per-byte. |
+| *unassigned* | `PEEKROM` / `PEEKROM_RESP` (§4.2), `HELLO_ACK` `flags` bit `1` and `rom_bytes`, `E_UNSUPPORTED`, `E_BUSY`. Additive: `proto` stays **0**, every earlier field keeps its offset, and an agent without `PEEKROM` still conforms. L3 **Protocol-Major/Minor are unaffected**. The Spec-Revision number is the maintainer's to assign. |

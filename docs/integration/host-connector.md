@@ -17,7 +17,8 @@ multi64 does not ship a stand-in. This guide is what one has to get right.
 Read the connector before anything else, and list every emulator function it calls. A stand-in
 can serve:
 
-- memory reads and writes against RDRAM, and against the ROM (served from the ROM file on the PC);
+- memory reads and writes against RDRAM, and reads of the ROM (from the cart with `PEEKROM`, or
+  from the ROM file on the PC where an agent predates it);
 - frame advance and frame counters, paced to real time;
 - sockets, JSON, bit operations — anything that is really the scripting environment, not the
   emulator;
@@ -77,18 +78,32 @@ M64P makes each request atomic against the running game
 ([spec §4.1](../spec/memory-l3-application-v0.md#41-consistency)); the stand-in has to make each
 *batch* one request.
 
-## 5. The ROM is a file on the PC
+## 5. The ROM comes from the cart
 
 Clients read the ROM too: to recognise the game, to find seed data and a login key, to detect a ROM
-swap by its hash. Serve the ROM domain and the hash from the ROM file the console booted.
+swap by its hash. An agent whose `HELLO_ACK` sets `flags` bit 1 reads it from the cart with `PEEKROM`
+([spec §4.2](../spec/memory-l3-application-v0.md#42-cartridge-rom-peekrom)), so the ROM the host
+serves is the one the console is running, and the player has no file to choose.
 
-- **It must be the exact file.** Nothing on the wire can prove the console runs the same image, so
-  log the file's internal name and hash at startup, where a mismatch is visible.
-- ROM reads cost no round trips. One client read the ROM on every pass, 500 times in two minutes;
-  from a file that is free.
-- Report the ROM hash in the emulator's format. If the client only compares it with the value it saw
-  first, stability matters more than matching exactly; if it compares against a known value, match
-  exactly.
+- **Cache it.** A `PEEKROM` costs a round trip like any request, and one client read the ROM on
+  every pass, 500 times in two minutes. The ROM cannot change while the console runs, so read each
+  part once and serve it from memory after that.
+- **Drop the cache when the link restarts.** A silent agent and a new `HELLO` may mean a reset or
+  another game; read the header again and start over.
+- **Batch it.** Gather the ROM regions a batch names, missing from the cache, into one `PEEKROM`,
+  as §4 does for RDRAM.
+- **Report a hash that is stable.** Hashing the whole image would mean reading all of it over the
+  link. If the client only compares the hash with the value it saw first, a hash of the header is
+  enough: it covers the boot checksum, which covers the first megabyte of code. If the client
+  compares against a known value, this cannot be served, and the tool needs the ROM file instead.
+- **`rom_bytes` is not the image size** (spec §4.2). A ROM domain size, if a client asks for one,
+  has to come from somewhere else, or be reported as the window.
+
+This has run on a SummerCart64: a game-resident agent advertised the window, served the header
+and the client's login data from the cart, and a client session ran on nothing but that.
+
+An agent that predates `PEEKROM` answers it with `ERR`. For those, serve the ROM from the exact file
+the console booted, and log its internal name and hash at startup, where a mismatch is visible.
 
 ## 6. Timing
 

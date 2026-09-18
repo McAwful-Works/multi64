@@ -1,5 +1,5 @@
 /**
- * PI-bus access for the EverDrive agent drivers.
+ * PI-bus access for the EverDrive agent drivers, and for cart_rom.c (PEEKROM) in every build.
  *
  * The same rules sc64.c established, and docs/integration/cart-agent.md section 3 explains:
  * never touch the PI control registers; move data by CPU load and store through the uncached
