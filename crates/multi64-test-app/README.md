@@ -26,9 +26,9 @@ this app and `multi64-test-connector suite` run exactly the same ones — there 
 second implementation to drift. This crate is the window: it starts a run, renders each result as it
 arrives, and hands back the summary.
 
-Everything is **linked, not spawned**. The direct-serial checks talk to `Sc64L2Pipe` directly rather
-than shelling out to `sc64-echo-test` and `sc64-l3-framing-e2e`, which is what collapses the
-handover to a single file. (The older `multi64-test-connector-gui` does shell out, with the path
+Everything is **linked, not spawned**. The direct-serial checks open the L2 pipe directly rather
+than shelling out to `sc64-echo-test` and `sc64-l3-framing-e2e` (or their `ed64-` twins), which is
+what collapses the handover to a single file. (The older `multi64-test-connector-gui` does shell out, with the path
 baked in at compile time, and so only works on a machine that has built the repo.)
 
 ## Things worth knowing before changing it
@@ -40,6 +40,10 @@ baked in at compile time, and so only works on a machine that has built the repo
 - **The serial port comes from the daemon**, not from a default. A compiled-in port is a port that
   can disagree with the machine it runs on, and disagreeing means the direct-serial checks open some
   other device entirely.
+- **So does the cart kind.** The direct-serial checks open the same pipe the daemon uses. Each cart
+  frames L3 differently on the wire, and the wrong pipe does not fail to open — it opens, writes
+  bytes the cart discards, and times out, which reads as a broken cart. A kind the suite has no pipe
+  for is skipped.
 - **The page's structure is built once and never grows.** Every phase section and the tally exist
   before the first run; a run only changes the rows inside them. Chrome that appears part-way
   through moves everything below it, which is exactly when someone is reading a result. The phase
