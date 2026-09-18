@@ -51,7 +51,7 @@ All of it runs under ASan and UBSan, in three parts:
 
 - It builds `n64/agent/agent.c` once per EverDrive cart against a fake driver, and checks that L3 frames arriving in pieces are reassembled and that a lost piece is never spliced into the next request.
 - It builds the real SC64 driver, `n64/agent/sc64.c`, against a fake cart and bus (`tests/sc64_test.c`, `SC64_HOST_TEST`), and checks that every bus wait is bounded and every failed register write is reported.
-- It builds the real X7 driver, `n64/agent/ed64.c`, with fake `pi_io_*` functions in place of `pi_io.c` (`tests/ed64_test.c`), and checks that a received `DMA@` message is delivered in order, including the part that did not fit the space offered, or reported lost, and that every wait is bounded. This driver has still never run on a cart: the one X7 run so far used the test ROM, which goes through libdragon instead.
+- It builds the real X7 driver, `n64/agent/ed64.c`, with fake `pi_io_*` functions in place of `pi_io.c` (`tests/ed64_test.c`), and checks that a received `DMA@` message is delivered in order, including the part that did not fit the space offered, or reported lost; that a send reads everything the host has sent first, since an X7 will not finish a write while host data waits unread; and that every wait is bounded. This driver has still never run on a cart: the one X7 run so far used the test ROM, which goes through libdragon instead.
 
 No part of it shows that a driver works on a cart.
 

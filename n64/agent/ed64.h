@@ -30,7 +30,10 @@ int ed64_init(void);
 #define ED64_RECEIVE_LOST 0xFFFFFFFFu
 
 /**
- * Receive at most one USB message. If it is a well-formed DMA@ message carrying the L3 datatype
+ * Hand over L3 bytes ed64_send read ahead, if any, before anything still on USB: as many as `cap`
+ * allows, and a message read ahead that was lost is reported as ED64_RECEIVE_LOST where it fell.
+ *
+ * Otherwise receive at most one USB message. If it is a well-formed DMA@ message carrying the L3 datatype
  * and fits in `cap`, copy its payload to `dst` and return the byte count. If it is larger than
  * `cap` by at most 512 bytes (one host message), copy the first `cap` bytes and keep the rest in the
  * driver, and the next call returns those before reading USB again, as much of them as its own `cap`
@@ -42,7 +45,13 @@ int ed64_init(void);
  */
 uint32_t ed64_receive(uint8_t *dst, uint32_t cap);
 
-/** Send `len` bytes as one DMA@ message of the L3 datatype. Returns 1 on success, 0 on timeout. */
+/**
+ * Send `len` bytes as one DMA@ message of the L3 datatype. Returns 1 on success, 0 on timeout.
+ *
+ * Reads every message the host has already sent first, keeping it for ed64_receive: an X7 does not
+ * finish a write while host bytes wait unread (l3-over-everdrive-x7.md 4.5 item 6). When more is
+ * waiting than the driver can hold (2 KiB), it returns 0 having sent nothing.
+ */
 int ed64_send(const uint8_t *data, uint32_t len);
 
 #endif

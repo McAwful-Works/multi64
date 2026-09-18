@@ -36,13 +36,25 @@
    moved by word, so a window offset that is not a word boundary costs nothing extra. */
 static uint32_t s_window[ED_WINDOW / 4u];
 
-/* The part of an L3 message that did not fit the space the caller offered, handed over by the next
-   call before USB is read again. One host message's worth: crates/ed64-l2 puts at most 512 L3 bytes
-   in a DMA@ message, so a message that arrives while the agent's buffer is nearly full is kept. */
-#define ED_PENDING_CAP ED_WINDOW
-static uint8_t s_pending[ED_PENDING_CAP];
-static uint32_t s_pending_off;
-static uint32_t s_pending_len;
+/* L3 bytes taken off USB but not yet handed to the agent, oldest first: s_rxq[s_rxq_off] onwards,
+   s_rxq_len of them. ed64_receive hands them over before reading USB again. Two things fill it:
+   the part of a message that did not fit the space the caller offered, and everything ed64_send
+   reads before it writes. If a message read ahead was lost, s_rxq_lost is set and the loss is
+   reported after the first s_rxq_before_loss bytes, where it fell in the stream. */
+#define ED_RXQ_CAP (4u * ED_WINDOW)
+static uint8_t s_rxq[ED_RXQ_CAP];
+static uint32_t s_rxq_off;
+static uint32_t s_rxq_len;
+static int s_rxq_lost;
+static uint32_t s_rxq_before_loss;
+
+/* The most of a message ed64_receive keeps back when it does not fit the space offered. One host
+   message's worth: crates/ed64-l2 puts at most 512 L3 bytes in a DMA@ message, so a message that
+   arrives while the agent's buffer is nearly full is kept. */
+#define ED_SPILL_CAP ED_WINDOW
+
+/* Messages ed64_send reads ahead in one call, at most. Bounds the loop if the PI stays busy. */
+#define ED_READ_AHEAD_MAX 32u
 
 static int usb_idle(void)
 {
@@ -103,39 +115,36 @@ static const uint8_t *usb_pull(uint32_t n)
     return usb_pull_started(n, &started);
 }
 
-uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
+/* 1 when the USB unit is idle, powered, and the host has sent something not yet read. */
+static int usb_waiting(void)
+{
+    uint32_t v;
+
+    if (!usb_idle()) {
+        return 0;
+    }
+    /* Powered, and the receive FIFO not empty. */
+    return pi_io_read(ED_REG_USBCFG, &v) &&
+           (v & (ED_USBSTAT_POWER | ED_USBSTAT_RXF)) == ED_USBSTAT_POWER;
+}
+
+/**
+ * Read the waiting message: its first `cap` L3 bytes to `dst`, and up to `spill_cap` more to the
+ * end of the queue. Returns what went to `dst`, 0 when nothing was taken or it was not L3, or
+ * ED64_RECEIVE_LOST. Call only when usb_waiting().
+ */
+static uint32_t usb_message(uint8_t *dst, uint32_t cap, uint32_t spill_cap)
 {
     const uint8_t *b;
-    uint32_t v;
     uint32_t size;
     uint32_t keep = 0u;
     uint32_t spill = 0u;
     uint32_t left;
     uint32_t got = 0u;
     uint32_t spilled = 0u;
+    uint8_t *spill_to = s_rxq + s_rxq_off + s_rxq_len;
     int is_l3;
     int started;
-
-    if (s_pending_len > 0u) {
-        /* The rest of the last message comes before anything still waiting on USB. */
-        uint32_t n = s_pending_len < cap ? s_pending_len : cap;
-        uint32_t i;
-
-        for (i = 0u; i < n; i++) {
-            dst[i] = s_pending[s_pending_off + i];
-        }
-        s_pending_off += n;
-        s_pending_len -= n;
-        return n;
-    }
-
-    if (!usb_idle()) {
-        return 0u;
-    }
-    /* Powered, and the receive FIFO not empty: a message is waiting. */
-    if (!pi_io_read(ED_REG_USBCFG, &v) || (v & (ED_USBSTAT_POWER | ED_USBSTAT_RXF)) != ED_USBSTAT_POWER) {
-        return 0u;
-    }
 
     /* A PI that stayed busy before the header's read was even asked for took nothing: the message
        is still whole in the cart for the next call. Reporting that as a loss made the agent throw
@@ -155,7 +164,7 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
     if (is_l3) {
         if (size <= cap) {
             keep = size;
-        } else if (size - cap <= ED_PENDING_CAP) {
+        } else if (size - cap <= spill_cap) {
             /* Too big for the space offered, but not for it and the pending buffer together. */
             keep = cap;
             spill = size - cap;
@@ -176,7 +185,7 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
             dst[got++] = b[i];
         }
         for (; i < n && spilled < spill; i++) {
-            s_pending[spilled++] = b[i];
+            spill_to[spilled++] = b[i];
         }
         left -= n;
     }
@@ -186,13 +195,94 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
         return ED64_RECEIVE_LOST;
     }
     if (is_l3 && keep + spill != size) {
-        /* Drained, but too big even with the pending buffer: its L3 bytes are gone. */
+        /* Drained, but too big even with what could be kept back: its L3 bytes are gone. */
         return ED64_RECEIVE_LOST;
     }
-    /* Only a message that arrived whole leaves its tail pending; on any loss above, nothing is. */
-    s_pending_off = 0u;
-    s_pending_len = spilled;
+    /* Only a message that arrived whole leaves its tail queued; on any loss above, nothing is. */
+    s_rxq_len += spilled;
     return got;
+}
+
+uint32_t ed64_receive(uint8_t *dst, uint32_t cap)
+{
+    uint32_t n;
+    uint32_t i;
+
+    if (s_rxq_lost && s_rxq_before_loss == 0u) {
+        s_rxq_lost = 0;
+        return ED64_RECEIVE_LOST;
+    }
+    if (s_rxq_len > 0u) {
+        /* What was already read comes before anything still waiting on USB, and a loss read ahead
+           stops the hand-over where it fell. */
+        n = s_rxq_len < cap ? s_rxq_len : cap;
+        if (s_rxq_lost && n > s_rxq_before_loss) {
+            n = s_rxq_before_loss;
+        }
+        for (i = 0u; i < n; i++) {
+            dst[i] = s_rxq[s_rxq_off + i];
+        }
+        s_rxq_off += n;
+        s_rxq_len -= n;
+        if (s_rxq_lost) {
+            s_rxq_before_loss -= n;
+        }
+        if (s_rxq_len == 0u) {
+            s_rxq_off = 0u;
+        }
+        return n;
+    }
+    if (!usb_waiting()) {
+        return 0u;
+    }
+    /* The queue is empty, so a message too big for `cap` can keep its tail there. */
+    return usb_message(dst, cap, ED_SPILL_CAP);
+}
+
+/**
+ * Read every message the host has sent into the queue. Returns 1 when nothing is left waiting, 0
+ * when something is and there is no room for it, or the PI stayed busy.
+ *
+ * An X7 does not finish a write while host bytes wait unread (l3-over-everdrive-x7.md 4.5 item 6):
+ * test ROM 1.11 lost 6 writes to it, and 1.12, reading everything waiting before each write, none.
+ */
+static int read_ahead(void)
+{
+    uint32_t i;
+
+    for (i = 0u; i < ED_READ_AHEAD_MAX; i++) {
+        uint32_t v;
+        uint32_t n;
+
+        if (!usb_idle() || !pi_io_read(ED_REG_USBCFG, &v)) {
+            return 0;
+        }
+        if ((v & (ED_USBSTAT_POWER | ED_USBSTAT_RXF)) != ED_USBSTAT_POWER) {
+            return 1;
+        }
+        if (s_rxq_off > 0u) {
+            for (n = 0u; n < s_rxq_len; n++) {
+                s_rxq[n] = s_rxq[s_rxq_off + n];
+            }
+            s_rxq_off = 0u;
+        }
+        /* Room for a whole host message, or it stays waiting. */
+        if (ED_RXQ_CAP - s_rxq_len < ED_WINDOW) {
+            return 0;
+        }
+        n = usb_message(s_rxq + s_rxq_len, ED_RXQ_CAP - s_rxq_len, 0u);
+        if (n != ED64_RECEIVE_LOST) {
+            s_rxq_len += n;
+        } else if (!s_rxq_lost) {
+            s_rxq_lost = 1;
+            s_rxq_before_loss = s_rxq_len;
+        } else {
+            /* The queue marks one loss. A second folds into the first, taking what lay between
+               them: a loss already costs the agent its partial frame, and it resyncs after. */
+            s_rxq_len = s_rxq_before_loss;
+        }
+    }
+    return 0;
 }
 
 /** Byte `p` of the message DMA@ | type and size | payload | CMPH | pad to 2.
@@ -234,7 +324,10 @@ int ed64_send(const uint8_t *data, uint32_t len)
     if (len == 0u || len > ED_MAX_MESSAGE) {
         return 0;
     }
-    if (!usb_idle()) {
+    /* A write started with host bytes unread gives up part-way, and the host gets a message cut off
+       after its first block. Read them first; if they cannot all be held, send nothing, since a
+       reply the host never gets is a timeout, but a malformed one is a resync. */
+    if (!read_ahead()) {
         return 0;
     }
 

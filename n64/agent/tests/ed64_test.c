@@ -10,6 +10,12 @@
  * never finishes, and any window load can be made to fail, the way pi_io.c fails when the PI stays
  * busy.
  *
+ * One behaviour is observed rather than transcribed: a write transfer started while the host has
+ * sent bytes the console has not read never finishes (ACT stays set), and the switch back to
+ * RDNOP that ends the wait abandons it with nothing sent. An X7 running test ROM 1.11 gave up on
+ * writes exactly then, and 1.12, which reads everything waiting before each write, gave up on none
+ * (l3-over-everdrive-x7.md 4.5 item 6).
+ *
  * Bytes are copied between the window and the driver's words in host byte order, so the driver's
  * byte view of a loaded word is the window's bytes in order, as it is on the big-endian console.
  *
@@ -61,6 +67,10 @@ static struct {
     uint8_t window[F_WINDOW];
     /* A read transfer is waiting for bytes the host never sent: ACT stays set. */
     int stuck;
+    /* A write transfer started with host bytes unread: ACT stays set until RDNOP abandons it. */
+    int write_stuck;
+    /* Write transfers asked for, whether or not they finished. */
+    uint32_t writes;
     /* Read transfers started, and window loads made. */
     uint32_t reads;
     uint32_t loads;
@@ -78,7 +88,8 @@ static struct {
 int pi_io_read(uint32_t addr, uint32_t *value)
 {
     if (addr == F_USBCFG) {
-        *value = F_POWER | (f.host_pos == f.host_len ? F_RXF : 0u) | (f.stuck ? F_ACT : 0u);
+        *value = F_POWER | (f.host_pos == f.host_len ? F_RXF : 0u) |
+                 (f.stuck || f.write_stuck ? F_ACT : 0u);
     } else if (addr == F_VERSION) {
         *value = 0xED640013u;
     } else {
@@ -121,12 +132,19 @@ int pi_io_write_stored(uint32_t addr, uint32_t value, int *stored)
 
         assert(start < F_WINDOW);
         n = F_WINDOW - start;
+        f.writes++;
+        if (f.host_pos < f.host_len) {
+            /* What an X7 did: the write does not go out while host bytes wait unread. */
+            f.write_stuck = 1;
+            return 1;
+        }
         assert(f.sent_len + n <= F_HOST_BYTES);
         memcpy(f.sent + f.sent_len, f.window + start, n);
         f.sent_len += n;
+    } else if ((value & F_MODE_MASK) == F_MODE_RDNOP) {
+        f.write_stuck = 0;
     } else {
-        assert(((value & F_MODE_MASK) == F_MODE_RDNOP || (value & F_MODE_MASK) == F_MODE_WRNOP) &&
-               "a USB mode the fake does not model");
+        assert((value & F_MODE_MASK) == F_MODE_WRNOP && "a USB mode the fake does not model");
     }
     return 1;
 }
@@ -455,6 +473,88 @@ static void a_non_l3_message_is_drained_and_ignored(void)
     assert(ed64_receive(got, sizeof got) == 0u && f.host_pos == f.host_len);
 }
 
+/*
+ * On an X7 a write does not finish while the host has sent bytes the cart has not read, and the old
+ * driver gave up part-way, leaving the host a message cut off after its first block. Everything
+ * waiting is read first and kept for ed64_receive, in order, and the message goes out whole.
+ */
+static void a_send_with_host_data_waiting_reads_it_first_and_sends_whole(void)
+{
+    static uint8_t body[600];
+    uint32_t reads;
+
+    fresh_cart();
+    pattern(payload, HOST_MESSAGE, 0xA1u);
+    pattern(payload2, 40u, 0xA2u);
+    pattern(body, sizeof body, 0xA3u);
+    host_message(F_L3, payload, HOST_MESSAGE);
+    host_message(F_L3, payload2, 40u);
+
+    assert(ed64_send(body, sizeof body) == 1 && "the send gave up with host data waiting");
+    assert(f.sent_len == 8u + sizeof body + 4u && memcmp(f.sent, "DMA@", 4u) == 0);
+    assert(memcmp(f.sent + 8, body, sizeof body) == 0);
+    assert(memcmp(f.sent + 8 + sizeof body, "CMPH", 4u) == 0);
+    assert(f.host_pos == f.host_len && "the host's messages were not read before the write");
+
+    /* What was read comes out of ed64_receive in order, and without another USB transfer. */
+    reads = f.reads;
+    assert(ed64_receive(got, 300u) == 300u && memcmp(got, payload, 300u) == 0);
+    assert(ed64_receive(got, sizeof got) == 252u);
+    assert(memcmp(got, payload + 300u, 212u) == 0 && memcmp(got + 212u, payload2, 40u) == 0);
+    assert(f.reads == reads);
+    assert(ed64_receive(got, sizeof got) == 0u);
+}
+
+/*
+ * A message read ahead that turns out lost is reported where it fell, not dropped or moved. A bad
+ * trailer, so the whole message is consumed and the one behind it lines up; a bad header takes only
+ * its own 8 bytes and leaves the stream out of step, here as in ed64_receive.
+ */
+static void a_loss_read_ahead_of_a_send_is_reported_in_order(void)
+{
+    uint8_t body[8];
+
+    fresh_cart();
+    pattern(payload, 100u, 0xB1u);
+    pattern(payload2, 20u, 0xB2u);
+    pattern(body, sizeof body, 0xB3u);
+    host_message(F_L3, payload, 100u);
+    host_message_framed("DMA@", F_L3, payload, 64u, "CMPX");
+    host_message(F_L3, payload2, 20u);
+
+    assert(ed64_send(body, sizeof body) == 1);
+    assert(ed64_receive(got, sizeof got) == 100u && memcmp(got, payload, 100u) == 0);
+    assert(ed64_receive(got, sizeof got) == ED64_RECEIVE_LOST);
+    assert(ed64_receive(got, sizeof got) == 20u && memcmp(got, payload2, 20u) == 0);
+    assert(ed64_receive(got, sizeof got) == 0u);
+}
+
+/*
+ * When more is waiting than the driver can hold, nothing is sent at all. A reply the agent loses is
+ * a timeout on the host; a reply cut off part-way is a malformed message it has to resync past.
+ */
+static void more_waiting_than_the_driver_holds_sends_nothing(void)
+{
+    uint8_t body[8];
+    uint32_t i;
+
+    fresh_cart();
+    pattern(payload, HOST_MESSAGE, 0xC1u);
+    for (i = 0u; i < 16u; i++) {
+        host_message(F_L3, payload, HOST_MESSAGE);
+    }
+    pattern(body, sizeof body, 0xC2u);
+
+    assert(ed64_send(body, sizeof body) == 0);
+    assert(f.writes == 0u && f.sent_len == 0u && "a write was started with host data unread");
+
+    /* Nothing read ahead is lost: all sixteen come out, in order. */
+    for (i = 0u; i < 16u; i++) {
+        assert(ed64_receive(got, HOST_MESSAGE) == HOST_MESSAGE && memcmp(got, payload, HOST_MESSAGE) == 0);
+    }
+    assert(ed64_receive(got, sizeof got) == 0u && f.host_pos == f.host_len);
+}
+
 /* ---- runner ------------------------------------------------------------------------ */
 
 static const char *s_case;
@@ -488,6 +588,9 @@ int main(void)
     RUN(a_sent_message_puts_its_padding_after_the_trailer);
     RUN(a_sent_even_message_has_no_padding);
     RUN(a_sent_message_longer_than_the_window_keeps_its_framing);
+    RUN(a_send_with_host_data_waiting_reads_it_first_and_sends_whole);
+    RUN(a_loss_read_ahead_of_a_send_is_reported_in_order);
+    RUN(more_waiting_than_the_driver_holds_sends_nothing);
     printf("ed64 driver: %d cases passed\n", s_cases);
     return 0;
 }
