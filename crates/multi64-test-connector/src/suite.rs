@@ -19,6 +19,8 @@
 //!   refused this" when nothing was ever asked — a check that cannot fail.
 
 use crate::{run_connector_command, run_listen, ConnectorCommand};
+use multi64_ed64_l2::Ed64L2Pipe;
+use multi64_ed64pro_l2::Ed64ProL2Pipe;
 use multi64_l3::{Channel, Frame, FrameFlags, FrameType};
 use multi64_sc64_l2::Sc64L2Pipe;
 use serde::Serialize;
@@ -242,14 +244,83 @@ fn link_note(base: &str) -> String {
 }
 
 // --- direct serial -----------------------------------------------------------------
-// These are what `sc64-echo-test` and `sc64-l3-framing-e2e` do, linked rather than spawned so the
-// app needs no binaries beside it. Both need the ROM in RAW_ECHO and the daemon's port released.
+// These are what `sc64-echo-test` and `sc64-l3-framing-e2e` (or their `ed64-` twins) do, linked
+// rather than spawned so the app needs no binaries beside it. Both need the ROM in RAW_ECHO and
+// the daemon's port released.
 
-fn serial_echo(port: &str, timeout: Duration) -> Result<String, String> {
-    let mut pipe = Sc64L2Pipe::open(port, 115_200).map_err(|e| e.to_string())?;
-    pipe.set_timeout(Duration::from_millis(100))
-        .map_err(|e| e.to_string())?;
-    pipe.clear_serial_buffers().map_err(|e| e.to_string())?;
+/// Which L2 pipe the direct-serial checks open: the daemon's, always.
+///
+/// Each cart frames L3 differently on the wire, so a pipe for the wrong cart does not fail to open
+/// — it opens, writes bytes the cart discards, and times out. That reads as a broken cart, so the
+/// kind is taken from the daemon rather than assumed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SerialCart {
+    Sc64,
+    Ed64,
+    Ed64Pro,
+}
+
+impl SerialCart {
+    /// From the daemon's `cart` field. `None` for anything else, so an unknown kind is skipped
+    /// rather than guessed at.
+    fn from_daemon(cart: &str) -> Option<Self> {
+        match cart {
+            "sc64" => Some(SerialCart::Sc64),
+            "ed64" => Some(SerialCart::Ed64),
+            "ed64pro" => Some(SerialCart::Ed64Pro),
+            _ => None,
+        }
+    }
+}
+
+enum SerialPipe {
+    Sc64(Sc64L2Pipe),
+    Ed64(Ed64L2Pipe),
+    Ed64Pro(Ed64ProL2Pipe),
+}
+
+macro_rules! each_pipe {
+    ($target:expr, $p:ident => $e:expr) => {
+        match $target {
+            SerialPipe::Sc64($p) => $e,
+            SerialPipe::Ed64($p) => $e,
+            SerialPipe::Ed64Pro($p) => $e,
+        }
+    };
+}
+
+impl SerialPipe {
+    /// Opens the port the way `multi64d` does, then readies it for a round trip.
+    fn open(cart: SerialCart, port: &str) -> Result<Self, String> {
+        let mut pipe = match cart {
+            SerialCart::Sc64 => {
+                SerialPipe::Sc64(Sc64L2Pipe::open(port, 115_200).map_err(|e| e.to_string())?)
+            }
+            SerialCart::Ed64 => {
+                SerialPipe::Ed64(Ed64L2Pipe::open(port, 115_200).map_err(|e| e.to_string())?)
+            }
+            // The PRO runs at its own fixed baud.
+            SerialCart::Ed64Pro => {
+                SerialPipe::Ed64Pro(Ed64ProL2Pipe::open(port).map_err(|e| e.to_string())?)
+            }
+        };
+        each_pipe!(&mut pipe, p => p.set_timeout(Duration::from_millis(100)))
+            .map_err(|e| e.to_string())?;
+        each_pipe!(&mut pipe, p => p.clear_serial_buffers()).map_err(|e| e.to_string())?;
+        Ok(pipe)
+    }
+
+    fn write_l3_stream(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        each_pipe!(self, p => p.write_l3_stream(buf))
+    }
+
+    fn read_l3_bytes_exact(&mut self, out: &mut [u8], deadline: Duration) -> std::io::Result<()> {
+        each_pipe!(self, p => p.read_l3_bytes_exact(out, deadline))
+    }
+}
+
+fn serial_echo(cart: SerialCart, port: &str, timeout: Duration) -> Result<String, String> {
+    let mut pipe = SerialPipe::open(cart, port)?;
     pipe.write_l3_stream(SERIAL_ECHO_PAYLOAD)
         .map_err(|e| e.to_string())?;
     let mut back = vec![0u8; SERIAL_ECHO_PAYLOAD.len()];
@@ -264,11 +335,8 @@ fn serial_echo(port: &str, timeout: Duration) -> Result<String, String> {
     Ok(format!("{} bytes echoed", SERIAL_ECHO_PAYLOAD.len()))
 }
 
-fn serial_framing(port: &str, timeout: Duration) -> Result<String, String> {
-    let mut pipe = Sc64L2Pipe::open(port, 115_200).map_err(|e| e.to_string())?;
-    pipe.set_timeout(Duration::from_millis(100))
-        .map_err(|e| e.to_string())?;
-    pipe.clear_serial_buffers().map_err(|e| e.to_string())?;
+fn serial_framing(cart: SerialCart, port: &str, timeout: Duration) -> Result<String, String> {
+    let mut pipe = SerialPipe::open(cart, port)?;
 
     let cases = vec![
         (
@@ -704,7 +772,13 @@ pub async fn run_suite<F: FnMut(CheckResult)>(
     r.phase = PHASES[5].into();
     if opts.skip_serial {
         r.skip("direct-serial checks", "skipped by request");
+    } else if SerialCart::from_daemon(&cart).is_none() {
+        r.skip(
+            "direct-serial checks",
+            &format!("the daemon reports cart={cart}, and the suite has no pipe for it"),
+        );
     } else {
+        let serial_cart = SerialCart::from_daemon(&cart).expect("checked above");
         r.set_mode(0, "RAW_ECHO").await;
         match post_text(
             &opts.base_url,
@@ -726,10 +800,13 @@ pub async fn run_suite<F: FnMut(CheckResult)>(
 
                 let timeout = Duration::from_secs(10);
                 for (name, res) in [
-                    ("serial echo round trip", serial_echo(&opts.port, timeout)),
+                    (
+                        "serial echo round trip",
+                        serial_echo(serial_cart, &opts.port, timeout),
+                    ),
                     (
                         "L3 framing over serial, including an 8 KiB frame",
-                        serial_framing(&opts.port, timeout),
+                        serial_framing(serial_cart, &opts.port, timeout),
                     ),
                 ] {
                     match res {
@@ -830,5 +907,15 @@ mod tests {
         assert_eq!(json_field(body, "cart").as_deref(), Some("sc64"));
         assert_eq!(json_field(body, "missing"), None);
         assert_eq!(json_field("not json", "serial"), None);
+    }
+    #[test]
+    fn the_direct_serial_checks_speak_the_daemons_cart() {
+        assert_eq!(SerialCart::from_daemon("sc64"), Some(SerialCart::Sc64));
+        assert_eq!(SerialCart::from_daemon("ed64"), Some(SerialCart::Ed64));
+        assert_eq!(
+            SerialCart::from_daemon("ed64pro"),
+            Some(SerialCart::Ed64Pro)
+        );
+        assert_eq!(SerialCart::from_daemon("?"), None);
     }
 }

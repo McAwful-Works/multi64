@@ -2805,6 +2805,8 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
+ "multi64-ed64-l2",
+ "multi64-ed64pro-l2",
  "multi64-l3",
  "multi64-sc64-l2",
  "serde",

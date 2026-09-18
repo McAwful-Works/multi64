@@ -111,7 +111,8 @@ what collapses the handover to one file.
    that **must** be refused.
 5. **BENCH** — three seconds of unsolicited `BENCH_TICK`.
 6. **Direct serial** — RAW_ECHO, release the daemon's port, echo and framing (including an
-   8,308-byte frame), resume, and confirm the link came back. These need a cart state the WebSocket
+   8,308-byte frame) over the same cart pipe the daemon uses, resume, and confirm the link came
+   back. These need a cart state the WebSocket
    checks cannot use, which is why nothing chained them before `REQ_SET_MODE` existed.
 7. **Stream health** — the `DIAG` counters. Every check above proves its own round trip; only this
    proves the stream underneath them never desynchronised.
