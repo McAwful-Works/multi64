@@ -12,8 +12,19 @@
 # Do NOT touch the controller. The ROM boots into RAW_ECHO and this script drives it out of that
 # mode itself (REQ_SET_MODE, test-l3-application-v0.md §10) - that is what makes the run unattended.
 #
-# Usage:  scripts/l3_e2e.sh [--port COM4] [--url ws://127.0.0.1:38765/ws] [--base http://127.0.0.1:38765]
-# Env:    MULTI64_PORT, MULTI64_WS_URL, MULTI64_BASE_URL, MULTI64_EXPECT_ROM, MULTI64_SKIP_SERIAL=1
+# It does not need a repo checkout or a Rust toolchain. Hand someone this script, the ROM, the
+# Multi64 installer and the three binaries it drives, and it runs:
+#
+#     multi64-test-connector(.exe)     every WebSocket check
+#     sc64-echo-test(.exe)             ) the direct-serial phase; without them those
+#     sc64-l3-framing-e2e(.exe)        ) checks are SKIPped, not failed
+#
+# Put them next to this script, or point --tools at the directory holding them. In a repo checkout
+# with cargo on PATH it builds and uses the connector itself, as before.
+#
+# Usage:  scripts/l3_e2e.sh [--port COM4] [--url ws://...] [--base http://...] [--tools DIR]
+# Env:    MULTI64_PORT, MULTI64_WS_URL, MULTI64_BASE_URL, MULTI64_EXPECT_ROM, MULTI64_TOOLS,
+#         MULTI64_SKIP_SERIAL=1
 #
 # The serial phase releases the daemon's port so the direct-serial tools can use it. If this script
 # is killed in the middle of that, the daemon is left released and Multi64 stays dead until it is
@@ -21,24 +32,40 @@
 
 set -uo pipefail   # deliberately NOT -e: a failing check is data, not a reason to stop.
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Only treat the parent as a repo when it actually looks like one. This script is meant to be
+# handed out on its own next to the binaries it drives, and in that case its parent directory is
+# somebody's Downloads folder, not a checkout.
+if [ -f "$ROOT/Cargo.toml" ] && [ -d "$ROOT/crates" ]; then
+    IN_REPO=1
+    cd "$ROOT"
+else
+    IN_REPO=0
+    ROOT="$SCRIPT_DIR"
+fi
 
 PORT="${MULTI64_PORT:-COM4}"
 WS_URL="${MULTI64_WS_URL:-ws://127.0.0.1:38765/ws}"
 BASE_URL="${MULTI64_BASE_URL:-http://127.0.0.1:38765}"
 # The ROM this build of the tree expects. A stale ROM on the card makes every later check
 # meaningless, so it is checked before anything else is believed.
-EXPECT_ROM="${MULTI64_EXPECT_ROM:-$(sed -n 's/.*TEST_ROM_VERSION_STR "\(.*\)".*/\1/p' n64/test-rom/test_proto.h)}"
+EXPECT_ROM="${MULTI64_EXPECT_ROM:-}"
+if [ -z "$EXPECT_ROM" ] && [ -f "$ROOT/n64/test-rom/test_proto.h" ]; then
+    EXPECT_ROM="$(sed -n 's/.*TEST_ROM_VERSION_STR "\(.*\)".*/\1/p' "$ROOT/n64/test-rom/test_proto.h")"
+fi
 SKIP_SERIAL="${MULTI64_SKIP_SERIAL:-0}"
+TOOLS="${MULTI64_TOOLS:-$SCRIPT_DIR}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --port) PORT="$2"; shift 2 ;;
         --url) WS_URL="$2"; shift 2 ;;
         --base) BASE_URL="$2"; shift 2 ;;
+        --tools) TOOLS="$2"; shift 2 ;;
         --skip-serial) SKIP_SERIAL=1; shift ;;
-        -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -50,7 +77,22 @@ FAILED_NAMES=""
 # Set once the daemon's port has been released, so the trap knows whether to resume.
 RELEASED=0
 
-CONNECTOR="target/release/multi64-test-connector"
+# Where a tool comes from, in order: --tools (or MULTI64_TOOLS), next to this script, then a repo
+# build. `.exe` is tried for each, so the same script works on Windows and everywhere else.
+find_tool() {
+    local n="$1" c
+    for c in "$TOOLS/$n" "$TOOLS/$n.exe" \
+             "$SCRIPT_DIR/$n" "$SCRIPT_DIR/$n.exe" \
+             "$ROOT/target/release/$n" "$ROOT/target/release/$n.exe"; do
+        if [ -x "$c" ]; then
+            printf '%s' "$c"
+            return 0
+        fi
+    done
+    return 1
+}
+
+CONNECTOR=""
 
 say() { printf '%s\n' "$*"; }
 hr() { printf '\n== %s ==\n' "$*"; }
@@ -174,16 +216,27 @@ trap on_exit EXIT INT TERM
 
 hr "preflight"
 
-say "building the connector once (not once per check)"
-if ! cargo build -p multi64-test-connector --release >/dev/null 2>&1; then
-    say "FATAL: multi64-test-connector does not build; nothing below could be trusted."
+HAVE_CARGO=0
+if [ "$IN_REPO" = "1" ] && command -v cargo >/dev/null 2>&1; then
+    HAVE_CARGO=1
+fi
+
+if [ "$HAVE_CARGO" = "1" ]; then
+    say "building the connector once (not once per check)"
+    # A checkout that does not build is not a run worth continuing: the binary sitting in
+    # target/release would be from some older state of the tree.
+    if ! cargo build -p multi64-test-connector --release >/dev/null 2>&1; then
+        say "FATAL: multi64-test-connector does not build; nothing below could be trusted."
+        exit 2
+    fi
+fi
+
+if ! CONNECTOR="$(find_tool multi64-test-connector)"; then
+    say "FATAL: multi64-test-connector not found."
+    say "  Put it next to this script, pass --tools DIR, or run from a repo checkout with cargo."
     exit 2
 fi
-[ -x "$CONNECTOR" ] || CONNECTOR="target/release/multi64-test-connector.exe"
-if [ ! -x "$CONNECTOR" ]; then
-    say "FATAL: built the connector but cannot find its binary at target/release/"
-    exit 2
-fi
+say "connector: $CONNECTOR"
 
 if curl -fsS --max-time 5 "$BASE_URL/health" 2>/dev/null | grep -q '"status":"ok"'; then
     pass "daemon answers /health"
@@ -216,7 +269,12 @@ set_mode 1 "M64T_PROTO (from whatever it booted into)"
 run_check "cart answers PING" ok ping
 
 if run_check "cart reports its ROM version" ok version; then
-    if printf '%s' "$LAST_OUT" | grep -q "$EXPECT_ROM"; then
+    if [ -z "$EXPECT_ROM" ]; then
+        # Outside a checkout there is nothing to compare against. Skipping says so; passing would
+        # be a check that cannot fail, which is worse than no check.
+        skip "ROM on the cart is the expected build" \
+            "no repo to read the expected version from; set MULTI64_EXPECT_ROM to assert it"
+    elif printf '%s' "$LAST_OUT" | grep -q "$EXPECT_ROM"; then
         pass "ROM on the cart is $EXPECT_ROM"
     else
         # The most valuable check here. Everything below tests whatever ROM is actually running,
@@ -296,10 +354,24 @@ else
         RELEASED=1
         pass "daemon released $PORT"
 
-        run_tool "serial echo round trip" \
-            cargo run -q -p sc64-echo-test --release -- --port "$PORT"
-        run_tool "L3 framing over serial, including an 8 KiB frame" \
-            cargo run -q -p sc64-l3-framing-e2e --release -- --port "$PORT" --large
+        if ECHO_TOOL="$(find_tool sc64-echo-test)"; then
+            run_tool "serial echo round trip" "$ECHO_TOOL" --port "$PORT"
+        elif [ "$HAVE_CARGO" = "1" ]; then
+            run_tool "serial echo round trip" \
+                cargo run -q -p sc64-echo-test --release -- --port "$PORT"
+        else
+            skip "serial echo round trip" "sc64-echo-test not found; ship it or pass --tools"
+        fi
+
+        if FRAMING_TOOL="$(find_tool sc64-l3-framing-e2e)"; then
+            run_tool "L3 framing over serial, including an 8 KiB frame" \
+                "$FRAMING_TOOL" --port "$PORT" --large
+        elif [ "$HAVE_CARGO" = "1" ]; then
+            run_tool "L3 framing over serial, including an 8 KiB frame" \
+                cargo run -q -p sc64-l3-framing-e2e --release -- --port "$PORT" --large
+        else
+            skip "L3 framing over serial" "sc64-l3-framing-e2e not found; ship it or pass --tools"
+        fi
 
         # Capturing the output puts resume_link in a subshell, so clear the flag here in the
         # parent: otherwise the EXIT trap below announces the port is still released, resumes an
