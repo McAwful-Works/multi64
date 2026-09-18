@@ -20,23 +20,31 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$script = Join-Path $PSScriptRoot "l3_e2e.sh"
 
-$bash = (Get-Command bash -ErrorAction SilentlyContinue).Source
-if (-not $bash) {
-    foreach ($candidate in @(
-            "$env:ProgramFiles\Git\bin\bash.exe",
-            "${env:ProgramFiles(x86)}\Git\bin\bash.exe",
-            "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe")) {
-        if (Test-Path $candidate) { $bash = $candidate; break }
-    }
+# Git Bash is looked for by path FIRST, before anything called "bash" on PATH. On most Windows
+# machines that name is C:\Windows\System32\bash.exe, the WSL launcher, which is the wrong bash
+# here twice over: it cannot open D:\... at all, and it would run Linux cargo and curl with no
+# COM port behind them.
+$bash = $null
+foreach ($candidate in @(
+        "$env:ProgramFiles\Git\bin\bash.exe",
+        "${env:ProgramFiles(x86)}\Git\bin\bash.exe",
+        "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe")) {
+    if (Test-Path $candidate) { $bash = $candidate; break }
 }
 if (-not $bash) {
-    Write-Error "bash not found. Install Git for Windows, or run scripts/l3_e2e.sh from Git Bash / WSL."
+    $onPath = (Get-Command bash -ErrorAction SilentlyContinue).Source
+    if ($onPath -and $onPath -notlike "$env:WINDIR\*") { $bash = $onPath }
+}
+if (-not $bash) {
+    Write-Error "Git Bash not found. Install Git for Windows, or run ./scripts/l3_e2e.sh from Git Bash directly. (WSL's bash will not work: it cannot reach the COM port.)"
     exit 2
 }
 
-$bashArgs = @($script)
+# A relative path, because bash reads backslashes as escapes: handing it the absolute Windows path
+# turned D:\Users\...\l3_e2e.sh into DUsers...l3_e2e.sh and it could not find the file. The
+# Push-Location below is what makes this resolve.
+$bashArgs = @("scripts/l3_e2e.sh")
 if ($Port) { $bashArgs += @("--port", $Port) }
 if ($Url) { $bashArgs += @("--url", $Url) }
 if ($Base) { $bashArgs += @("--base", $Base) }
