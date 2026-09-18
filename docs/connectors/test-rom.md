@@ -112,8 +112,15 @@ what collapses the handover to one file.
 5. **BENCH** — three seconds of unsolicited `BENCH_TICK`.
 6. **Direct serial** — RAW_ECHO, release the daemon's port, echo and framing (including an
    8,308-byte frame) over the same cart pipe the daemon uses, resume, and confirm the link came
-   back. These need a cart state the WebSocket
-   checks cannot use, which is why nothing chained them before `REQ_SET_MODE` existed.
+   back. These need a cart state the WebSocket checks cannot use, which is why nothing chained them
+   before `REQ_SET_MODE` existed.
+
+   The 8,308-byte frame is sent twice. First it goes **in one burst**, so the cart is echoing early
+   messages while later ones are still arriving. Then it goes **one USB message at a time**, each
+   echo read before the next message is sent. A cart that passes the second and fails the first
+   cannot send while the host is sending: large frames work, full-duplex traffic does not. The one
+   EverDrive X7 run so far points that way, but has not confirmed it: libdragon's EverDrive write
+   gives up after 100 ms and leaves the message half sent.
 7. **Stream health** — the `DIAG` counters. Every check above proves its own round trip; only this
    proves the stream underneath them never desynchronised.
 
