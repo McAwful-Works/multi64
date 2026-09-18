@@ -683,6 +683,8 @@ static void handle_m64t(const uint8_t *p, size_t plen)
            gives the physical address from either a cached or an uncached pointer. */
         put_be32(b + 28, (uint32_t)(uintptr_t)s_m64p_scratch & 0x1FFFFFFFU);
         put_be32(b + 32, (uint32_t)sizeof s_m64p_scratch);
+        /* Since boot, unlike everything above: see cart_link_tx_failures(). */
+        put_be32(b + 36, cart_link_tx_failures());
         m64t_send(M64T_MSG_DIAG, b, sizeof b);
         return;
     }

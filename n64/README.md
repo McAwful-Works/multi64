@@ -86,8 +86,26 @@ Runs of the committed `multi64_test.z64` on real carts, newest first. Add one wh
 
 | Date | Cart | ROM | Host | Result |
 |------|------|-----|------|--------|
+| 2026-09-18 | EverDrive-64 X7 (OS version not recorded) | `multi64-test-rom 1.10`; SHA-256 `75cce6950c3667be8ef89392f90b9a359783543fd1ef5e86e40a67df9181fe4a` | Windows (version not recorded); `multi64d --cart ed64`; test app from `611c89d`, `06d55d2`, then `e71631e` | **Partial**: one failure on the last run, the burst framing check |
 | 2026-09-17 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | `multi64-test-rom 1.10`; SHA-256 `75cce6950c3667be8ef89392f90b9a359783543fd1ef5e86e40a67df9181fe4a` | Windows 11 Pro 10.0.26200; host tools and `multi64d` from `a593195` | **Pass** (31/31) |
 | 2026-09-13 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | built from `52098ce`; SHA-256 `68b0544013c1622abe03dedf5a13cb95a8288d1d59421e0b2dbd565c6a884ba3` | Windows 11 Pro 10.0.26200; host tools and `multi64d` from `c7b13bb` | **Pass** |
+
+**2026-09-18, EverDrive-64 X7.** The first time the X7 mapping ran on a cart, run by someone else
+with the three-file handover (Multi64 installer, ROM, test app).
+
+- **Through `multi64d`:** every check passed — liveness, ROM version, all of M64T including the
+  4 KiB echo across USB chunks, all of M64P, BENCH — with `DIAG` reporting the cart as
+  "EverDrive X-series" and zero overflow, resync and bad-header drops. `Ed64L2Pipe` carried L3
+  both ways.
+- **Direct serial:** the 12-byte echo and the small framing cases passed. The 8,308-byte frame
+  sent **in one burst** failed with `expected CMPH trailer, got [f0, f1, f2, f3]`; the same frame
+  sent **one USB message at a time** passed. The cart cannot reliably send while the host is still
+  sending; see [`l3-over-everdrive-x7.md`](../docs/spec/l3-over-everdrive-x7.md) §4.5 item 6.
+- **Not recorded:** the EverDrive OS version and the host's Windows version.
+
+The first run failed both direct-serial checks with timeouts, and that was the test app: it opened
+the port with the SummerCart64 pipe whatever cart the daemon used, so its messages had no `DMA@`
+framing and the X7 dropped them.
 
 **2026-09-17, SummerCart64.** First unattended run: the
 ROM was booted and the controller was not touched again. **31 checks, 0 failures.**

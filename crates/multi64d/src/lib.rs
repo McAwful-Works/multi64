@@ -67,7 +67,7 @@ const READ_BUF_BYTES: usize = 65536;
 ///
 /// [`CartKind::Ed64`] selects the EverDrive-64 X7 `DMA@` mapping from
 /// `docs/spec/l3-over-everdrive-x7.md` §4. It is **experimental**: transcribed from UNFLoader and
-/// libdragon, and never run against a cart. Selecting it here is wiring only.
+/// libdragon, and run on one X7 so far. Selecting it here is wiring only.
 ///
 /// [`CartKind::Ed64Pro`] selects the EverDrive-64 PRO mapping from
 /// `docs/spec/l3-over-everdrive-pro.md`: L3 octets written to the cart FIFO and read back raw. It
@@ -79,7 +79,7 @@ pub enum CartKind {
     /// SummerCart64 (`docs/spec/l3-over-sc64.md`); the only backend verified on hardware.
     #[default]
     Sc64,
-    /// EverDrive-64 X7 (experimental; never run against a cart).
+    /// EverDrive-64 X7 (experimental; run on one cart so far).
     Ed64,
     /// EverDrive-64 PRO (experimental; never run against a cart).
     #[value(name = "ed64pro")]

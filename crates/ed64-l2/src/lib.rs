@@ -11,9 +11,10 @@
 //!
 //! # Validation status
 //!
-//! **This has never been run against EverDrive hardware.** The framing is transcribed from
+//! **This has run on one X7 only.** The framing is transcribed from
 //! [UNFLoader](https://github.com/buu342/N64-UNFLoader) and libdragon's `usb.c`, both of which drive an
-//! X7 in practice, but nothing here has been confirmed against a cart. Spec §4.0 and §4.5 record what
+//! X7 in practice. On that cart L3 went both ways through `multi64d`, and a message the cart sent
+//! while the host was still sending arrived cut off — survivable here, since the parser resyncs. Spec §4.0 and §4.5 record what
 //! that means and what to check first. Treat a successful [`Ed64L2Pipe::open`] as "the serial port
 //! opened", not as "EverDrive support works" — there is no identity handshake in the data path, so use
 //! `ed64-smoke` (spec §8) to confirm a port really is an EverDrive.

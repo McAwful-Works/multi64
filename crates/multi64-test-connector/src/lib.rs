@@ -680,11 +680,16 @@ pub struct DiagSnapshot {
     pub tx_bytes: u32,
     pub scratch_addr: u32,
     pub scratch_len: u32,
+    /// Cart writes that gave up before the whole message was sent, **since boot** — unlike the
+    /// counters above, a mode change does not reset it. `None` from a version-1 body, which does
+    /// not carry it.
+    pub tx_failures: Option<u32>,
 }
 
 impl DiagSnapshot {
-    pub const BODY_LEN: usize = 36;
-    pub const BODY_VERSION: u8 = 1;
+    /// Bytes in a version-1 body. Version 2 appends `tx_failures`.
+    pub const BODY_LEN_V1: usize = 36;
+    pub const BODY_LEN_V2: usize = 40;
 
     pub fn parse(body: &[u8]) -> Result<Self> {
         if body.is_empty() {
@@ -692,18 +697,18 @@ impl DiagSnapshot {
         }
         // Refusing an unknown version is the point of the byte: a later ROM may add fields, and
         // reading them at these offsets would report confident nonsense.
-        if body[0] != Self::BODY_VERSION {
+        let need = match body[0] {
+            1 => Self::BODY_LEN_V1,
+            2 => Self::BODY_LEN_V2,
+            v => anyhow::bail!(
+                "DIAG body version {v} is not one this build understands (1 or 2) - update the                  connector to match the ROM"
+            ),
+        };
+        if body.len() < need {
             anyhow::bail!(
-                "DIAG body version {} is not the version {} this build understands - update the                  connector to match the ROM",
+                "DIAG body version {} is {} bytes, expected at least {need}",
                 body[0],
-                Self::BODY_VERSION
-            );
-        }
-        if body.len() < Self::BODY_LEN {
-            anyhow::bail!(
-                "DIAG body is {} bytes, expected at least {}",
-                body.len(),
-                Self::BODY_LEN
+                body.len()
             );
         }
         let be =
@@ -719,6 +724,7 @@ impl DiagSnapshot {
             tx_bytes: be(24),
             scratch_addr: be(28),
             scratch_len: be(32),
+            tx_failures: (body[0] >= 2).then(|| be(36)),
         })
     }
 
@@ -741,7 +747,10 @@ impl DiagSnapshot {
             self.bad_header_drops,
             self.scratch_addr,
             self.scratch_len
-        )
+        ) + &self
+            .tx_failures
+            .map(|n| format!(" tx_failures={n}"))
+            .unwrap_or_default()
     }
 }
 
@@ -1756,7 +1765,12 @@ mod hex_tests {
     }
     /// A DIAG body as the ROM builds it (spec §11), so the offsets are asserted end to end.
     fn diag_body(version: u8, extra: &[(usize, u32)]) -> Vec<u8> {
-        let mut b = vec![0u8; DiagSnapshot::BODY_LEN];
+        let len = if version >= 2 {
+            DiagSnapshot::BODY_LEN_V2
+        } else {
+            DiagSnapshot::BODY_LEN_V1
+        };
+        let mut b = vec![0u8; len];
         b[0] = version;
         b[1] = 2; // BENCH
         b[2] = 1; // SummerCart64
@@ -1808,17 +1822,41 @@ mod hex_tests {
     /// so an unknown version is refused rather than parsed.
     #[test]
     fn an_unknown_diag_body_version_is_refused() {
-        let e = DiagSnapshot::parse(&diag_body(2, &[]))
+        let e = DiagSnapshot::parse(&diag_body(3, &[]))
             .unwrap_err()
             .to_string();
-        assert!(e.contains("version 2"), "{e}");
+        assert!(e.contains("version 3"), "{e}");
     }
 
     #[test]
     fn a_truncated_diag_body_is_refused() {
-        let short = diag_body(1, &[])[..DiagSnapshot::BODY_LEN - 1].to_vec();
+        let short = diag_body(1, &[])[..DiagSnapshot::BODY_LEN_V1 - 1].to_vec();
         assert!(DiagSnapshot::parse(&short).is_err());
         assert!(DiagSnapshot::parse(&[]).is_err());
+        // A version-2 body cut back to version 1's length is still short: the version byte, not
+        // the length, says which fields are there.
+        let short = diag_body(2, &[])[..DiagSnapshot::BODY_LEN_V1].to_vec();
+        assert!(DiagSnapshot::parse(&short).is_err());
+    }
+
+    /// Version 2 appends the count of cart writes that gave up part-way, and shows it in the
+    /// summary line the suite reads.
+    #[test]
+    fn a_version_2_diag_body_carries_the_cart_write_failures() {
+        let d = DiagSnapshot::parse(&diag_body(2, &[(20, 4096), (36, 3)])).unwrap();
+        assert_eq!(
+            d.rx_bytes, 4096,
+            "the version-1 fields stay where they were"
+        );
+        assert_eq!(d.tx_failures, Some(3));
+        assert!(d.summary().ends_with(" tx_failures=3"), "{}", d.summary());
+    }
+
+    #[test]
+    fn a_version_1_diag_body_has_no_write_failure_count() {
+        let d = DiagSnapshot::parse(&diag_body(1, &[])).unwrap();
+        assert_eq!(d.tx_failures, None);
+        assert!(!d.summary().contains("tx_failures"), "{}", d.summary());
     }
 
     #[test]

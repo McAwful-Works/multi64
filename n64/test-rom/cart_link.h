@@ -39,4 +39,10 @@ void cart_link_read(uint8_t *dst, int len);
 /** Send L3 bytes to the host. */
 void cart_link_write(const uint8_t *data, int len);
 
+/**
+ * Writes that gave up before the whole message was sent, since boot. Never reset: the checks that
+ * provoke it run in RAW_ECHO, which cannot report it, between two mode changes.
+ */
+uint32_t cart_link_tx_failures(void);
+
 #endif

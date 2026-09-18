@@ -82,9 +82,9 @@
 #define M64T_SET_MODE_ERR_MODE 1U
 
 /** `M64T_MSG_DIAG` body[0]: the layout of the rest of the body. */
-#define M64T_DIAG_BODY_VERSION 1U
+#define M64T_DIAG_BODY_VERSION 2U
 /** Bytes in a `M64T_MSG_DIAG` body at [`M64T_DIAG_BODY_VERSION`]. */
-#define M64T_DIAG_BODY_LEN 36
+#define M64T_DIAG_BODY_LEN 40
 
 /**
  * Bytes of RDRAM the host may freely write over M64P (`REQ_DIAG` reports where).
@@ -95,7 +95,7 @@
  */
 #define TEST_M64P_SCRATCH_BYTES 256
 
-#define TEST_ROM_VERSION_STR "multi64-test-rom 1.10"
+#define TEST_ROM_VERSION_STR "multi64-test-rom 1.11"
 
 /**
  * Counters the ROM shell owns rather than test_proto.c, gathered for `M64T_MSG_REQ_DIAG`.

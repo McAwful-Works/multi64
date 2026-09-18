@@ -39,7 +39,7 @@ Krikzz's N64 carts fall into two USB families: the **X-series** (X7, 3.0; X5 has
 | **Rust L2** | `multi64-sc64-l2` | `multi64-ed64-l2` (implemented, **unvalidated on hardware**) |
 | **USB smoke** (not L3) | `sc64-smoke` | `ed64-smoke` ([§8](spec/l3-over-everdrive-x7.md)) |
 | **Serial e2e** | `sc64-echo-test`, `sc64-l3-framing-e2e` | `ed64-echo-test`, `ed64-l3-framing-e2e` (run, but **unvalidated on hardware**) |
-| **`multi64d`** | SC64 L2 (default) | `--cart ed64` (experimental, never run against a cart) |
+| **`multi64d`** | SC64 L2 (default) | `--cart ed64` (experimental; run on one X7 so far) |
 
 The **EverDrive-64 PRO** has its own L2, [l3-over-everdrive-pro.md](spec/l3-over-everdrive-pro.md), implemented by `multi64-ed64pro-l2` (`multi64d --cart ed64pro`) and the test ROM's `ed64pro.c`, **unvalidated on hardware**. Its tools are `ed64pro-echo-test` and `ed64pro-l3-framing-e2e` (§9); opening its link runs the edlink handshake, so it needs no separate smoke tool. Neither has run on a cart.
 
