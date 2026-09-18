@@ -78,7 +78,7 @@ so a tester never has to know one. **Copy report** puts the whole run on the cli
 **The command line** — same checks, for a terminal or a script:
 
 ```sh
-cargo run -p multi64-test-connector --release -- suite --expect-rom "multi64-test-rom 1.11"
+cargo run -p multi64-test-connector --release -- suite --expect-rom "multi64-test-rom 1.12"
 ```
 
 Options: `--port` (default `COM4`), `--base`, `--url`, `--expect-rom`, `--skip-serial`.

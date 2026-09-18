@@ -46,6 +46,18 @@ enum run_mode {
 
 static uint8_t s_pkt[USB_READ_CHUNK];
 
+/* RAW_ECHO's messages read but not yet echoed, in arrival order: bytes in s_echo_q from
+   s_echo_off to s_echo_end, one length per message in the ring s_echo_len. Room for a
+   largest-possible message is kept free before reading another. */
+#define ECHO_QUEUE_BYTES (3u * USB_READ_CHUNK)
+#define ECHO_QUEUE_MSGS 64
+static uint8_t s_echo_q[ECHO_QUEUE_BYTES];
+static uint32_t s_echo_len[ECHO_QUEUE_MSGS];
+static uint32_t s_echo_off;
+static uint32_t s_echo_end;
+static int s_echo_first;
+static int s_echo_count;
+
 static uint32_t s_rx_bytes;
 static uint32_t s_tx_bytes;
 static uint32_t s_frame;
@@ -98,10 +110,19 @@ static void read_exact(uint8_t *dst, size_t cap, int total)
     }
 }
 
+static void echo_queue_clear(void)
+{
+    s_echo_off = 0u;
+    s_echo_end = 0u;
+    s_echo_first = 0;
+    s_echo_count = 0;
+}
+
 static void reset_stats(void)
 {
     s_rx_bytes = 0;
     s_tx_bytes = 0;
+    echo_queue_clear();
     test_proto_reset_all();
 }
 
@@ -200,27 +221,62 @@ static void hud_redraw(uint32_t frame_ticks)
     console_render();
 }
 
+/* Echo the oldest queued message. */
+static void echo_oldest(void)
+{
+    uint32_t n = s_echo_len[s_echo_first];
+
+    cart_link_write(s_echo_q + s_echo_off, (int)n);
+    s_tx_bytes += n;
+    s_echo_off += n;
+    s_echo_first = (s_echo_first + 1) % ECHO_QUEUE_MSGS;
+    if (--s_echo_count == 0) {
+        echo_queue_clear();
+    }
+}
+
+/* Every message the host has sent comes back verbatim, in order, one echo per pass of the main
+   loop as before. What changed in 1.12 is that everything already waiting is read first, before
+   each echo, so no write starts with host data unread. On an EverDrive X7 a write started while
+   the host was still sending gave up part-way (l3-over-everdrive-x7.md 4.5 item 6); this shows
+   whether reading first is enough to stop that. */
 static void run_raw_echo(void)
 {
-    uint8_t type = 0;
-    int n = (int)cart_link_poll(&type);
+    while (s_echo_count < ECHO_QUEUE_MSGS && ECHO_QUEUE_BYTES - s_echo_end >= USB_READ_CHUNK) {
+        uint8_t type = 0;
+        int n = (int)cart_link_poll(&type);
+        uint8_t *dst = s_echo_q + s_echo_end;
 
-    if (n <= 0) {
-        return;
-    }
-
-    read_exact(s_pkt, USB_READ_CHUNK, n);
-    s_rx_bytes += (uint32_t)n;
-
-    if (type == MULTI64_L3 && n <= (int)USB_READ_CHUNK) {
-        /* RAW_ECHO's one exception: a host has no other way out of the mode the ROM boots in,
-           so REQ_SET_MODE is acted on instead of echoed. Everything else still goes back
-           verbatim. See test_proto_raw_echo_intercept(). */
-        if (test_proto_raw_echo_intercept(s_pkt, n)) {
+        if (n <= 0) {
+            break;
+        }
+        s_rx_bytes += (uint32_t)n;
+        if (n > (int)USB_READ_CHUNK) {
+            /* Too big to echo in one write: read, so the link moves on, and dropped. */
+            read_exact(dst, USB_READ_CHUNK, n);
+            continue;
+        }
+        cart_link_read(dst, n);
+        if (type != MULTI64_L3) {
+            continue;
+        }
+        /* RAW_ECHO's one exception: a host has no other way out of the mode the ROM boots in, so
+           REQ_SET_MODE is acted on instead of echoed. What arrived before it is echoed first, and
+           it is acted on only then, so the host sees the same order as before. See
+           test_proto_raw_echo_intercept(). */
+        if (test_proto_raw_echo_is_set_mode(dst, n)) {
+            while (s_echo_count > 0) {
+                echo_oldest();
+            }
+            (void)test_proto_raw_echo_intercept(dst, n);
             return;
         }
-        cart_link_write(s_pkt, n);
-        s_tx_bytes += (uint32_t)n;
+        s_echo_len[(s_echo_first + s_echo_count) % ECHO_QUEUE_MSGS] = (uint32_t)n;
+        s_echo_count++;
+        s_echo_end += (uint32_t)n;
+    }
+    if (s_echo_count > 0) {
+        echo_oldest();
     }
 }
 
