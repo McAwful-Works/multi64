@@ -28,7 +28,7 @@ ends, whether IPL3 or the header CRC changed, and which RAM addresses its new co
 
 ## 2. Find RAM for the agent
 
-About 21 KB, never touched by the game or its patch, for as long as the game runs.
+About 24 KB, never touched by the game or its patch, for as long as the game runs.
 
 ### 2.1 Measure during play
 

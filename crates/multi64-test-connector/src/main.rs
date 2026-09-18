@@ -112,6 +112,16 @@ enum Command {
         #[arg(long)]
         hex: String,
     },
+    /// M64P PEEKROM: read the cartridge ROM. --addr is a ROM offset (0 is the header).
+    MemRomPeek {
+        #[arg(long, value_parser = parse_u32_maybe_hex)]
+        addr: u32,
+        #[arg(long)]
+        len: u16,
+        /// Fail unless these are the bytes read (hex).
+        #[arg(long)]
+        expect_hex: Option<String>,
+    },
     /// Write, read back and restore the ROM's scratch region (address read from DIAG).
     MemRoundTrip {
         #[arg(long, default_value_t = 64)]
@@ -178,6 +188,15 @@ fn map_command(cmd: Command) -> ConnectorCommand {
         Command::MemPeek { addr, len } => ConnectorCommand::MemPeek { addr, len },
         Command::MemPoke { addr, hex } => ConnectorCommand::MemPoke { addr, hex },
         Command::MemRoundTrip { len } => ConnectorCommand::MemRoundTrip { len },
+        Command::MemRomPeek {
+            addr,
+            len,
+            expect_hex,
+        } => ConnectorCommand::MemRomPeek {
+            addr,
+            len,
+            expect_hex,
+        },
         Command::Listen { .. } | Command::ControllerPoll { .. } | Command::Suite { .. } => {
             unreachable!()
         }

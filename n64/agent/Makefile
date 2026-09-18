@@ -6,8 +6,8 @@
 #   make CART=ed64                build/ed64/m64p_agent.o, for an EverDrive-64 X7 (experimental)
 #   make CART=ed64pro             build/ed64pro/m64p_agent.o, for an EverDrive-64 PRO (experimental)
 #   make host-test                the EverDrive builds' L3 reassembly, the SC64 driver's failure
-#                                 handling and the X7 driver's receive path, compiled and run on
-#                                 the PC
+#                                 handling, the X7 driver's receive path and PEEKROM, compiled
+#                                 and run on the PC
 #
 # For a game with no buildable source, link a flat image at a fixed address instead:
 # templates/link-flat.sh. See docs/integration/cart-agent.md.
@@ -37,11 +37,11 @@ ifeq ($(CART),sc64)
   CART_DEFINE  =
 else ifeq ($(CART),ed64)
   BUILD        = build/ed64
-  CART_OBJECTS = $(BUILD)/ed64.o $(BUILD)/pi_io.o
+  CART_OBJECTS = $(BUILD)/ed64.o
   CART_DEFINE  = -DAGENT_CART_ED64
 else ifeq ($(CART),ed64pro)
   BUILD        = build/ed64pro
-  CART_OBJECTS = $(BUILD)/ed64pro.o $(BUILD)/pi_io.o
+  CART_OBJECTS = $(BUILD)/ed64pro.o
   CART_DEFINE  = -DAGENT_CART_ED64PRO
 else
   $(error CART must be sc64, ed64 or ed64pro)
@@ -55,7 +55,8 @@ CFLAGS ?= -O1 -fno-reorder-blocks -march=vr4300 -mtune=vr4300 -mabi=32 -mno-gpop
           -Wall -Wextra
 CPPFLAGS = $(EXTRA_CPPFLAGS) $(CART_DEFINE) -I. -I$(PROTO)
 
-OBJECTS = $(BUILD)/agent.o $(CART_OBJECTS) $(BUILD)/mem_proto.o
+# cart_rom.o (PEEKROM) is the same for every cart, and reads through pi_io.o.
+OBJECTS = $(BUILD)/agent.o $(CART_OBJECTS) $(BUILD)/cart_rom.o $(BUILD)/pi_io.o $(BUILD)/mem_proto.o
 
 all: $(BUILD)/m64p_agent.o
 .PHONY: all clean symbols host-test
@@ -76,6 +77,9 @@ $(BUILD)/ed64pro.o: ed64pro.c ed64pro.h pi_io.h $(PROTO)/m64p_types.h | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 $(BUILD)/pi_io.o: pi_io.c pi_io.h $(PROTO)/m64p_types.h | $(BUILD)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(BUILD)/cart_rom.o: cart_rom.c pi_io.h $(PROTO)/mem_proto.h $(PROTO)/m64p_types.h | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 $(BUILD)/mem_proto.o: $(PROTO)/mem_proto.c $(PROTO)/mem_proto.h $(PROTO)/m64p_types.h | $(BUILD)
@@ -103,6 +107,10 @@ HOST_TEST_SOURCES = tests/reassembly_test.c agent.c $(PROTO)/mem_proto.c
 # mask through a fake cart that can hold the bus busy. It checks that every wait is bounded and every
 # failure is reported, not that the register model matches an SC64.
 #
+# tests/cart_rom_test.c: the real mem_proto.c and cart_rom.c with a fake pi_io_load_words serving a
+# known ROM image. It checks PEEKROM's protocol handling and cart_rom.c's byte extraction at every
+# alignment, not that a cart answers.
+#
 # tests/ed64_test.c: the real ed64.c linked against fake pi_io_* functions in place of pi_io.c,
 # modelling the X7's USBCFG register and USB window. It checks that a received message is delivered
 # in order and whole, or reported lost, and that every wait is bounded, not that the model matches
@@ -117,6 +125,8 @@ host-test:
 	build/host/sc64
 	$(HOSTCC) $(HOST_CFLAGS) -I. -I$(PROTO) tests/ed64_test.c ed64.c -o build/host/ed64
 	build/host/ed64
+	$(HOSTCC) $(HOST_CFLAGS) -I. -I$(PROTO) tests/cart_rom_test.c cart_rom.c $(PROTO)/mem_proto.c -o build/host/cart_rom
+	build/host/cart_rom
 
 clean:
 	rm -rf build

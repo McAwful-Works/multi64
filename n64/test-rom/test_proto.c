@@ -6,6 +6,7 @@
 #include "mem_proto.h"
 #include "save_hw.h"
 
+#include <dma.h>
 #include <joypad.h>
 #include <n64sys.h>
 #include <stdint.h>
@@ -229,6 +230,31 @@ volatile uint8_t *m64p_rdram_base(void)
     /* Cached KSEG0: the game touches these structures with the CPU, so cached
        access is what stays coherent. See memory-l3-application-v0.md 4.1. */
     return (volatile uint8_t *)0x80000000U;
+}
+
+/* PEEKROM (memory-l3-application-v0.md 4.2): the cartridge ROM on the PI bus, the 64 MiB window
+   the game-resident agent also offers. libdragon's io_read waits for the PI itself. */
+uint32_t m64p_cart_rom_size(void)
+{
+    return 0x04000000U;
+}
+
+int m64p_cart_rom_read(uint32_t off, uint8_t *dst, uint32_t len)
+{
+    uint32_t end = off + len;
+    uint32_t pos;
+
+    for (pos = off & ~3U; pos < end; pos += 4U) {
+        uint32_t w = io_read(0x10000000U + pos);
+        uint32_t i;
+        for (i = 0; i < 4U; i++) {
+            uint32_t at = pos + i;
+            if (at >= off && at < end) {
+                dst[at - off] = (uint8_t)(w >> (24U - 8U * i));
+            }
+        }
+    }
+    return 1;
 }
 
 static void m64t_send(uint8_t msg, const uint8_t *body, size_t blen)

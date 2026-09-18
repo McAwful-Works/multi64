@@ -8,7 +8,7 @@ RDRAM peek and poke to a host over a SummerCart64 (or, experimentally, an EverDr
 the same protocol; this is the form that goes into someone else's ROM.
 
 It has **no undefined symbols**: it calls nothing from libultra, libdragon, the C library or
-the game. What a game has to give it is one call per frame and about 21 KB of RAM. Where
+the game. What a game has to give it is one call per frame and about 24 KB of RAM. Where
 those come from is the whole of an integration — see
 [placing-the-agent.md](../../docs/integration/placing-the-agent.md).
 
@@ -20,7 +20,8 @@ those come from is the whole of an integration — see
 | `sc64.c`, `sc64.h` | SummerCart64 USB driver over the PI bus: staging, bounded waits, interrupt masking |
 | `ed64.c`, `ed64.h` | EverDrive-64 X7 driver (`CART=ed64`): `DMA@` messages through the cart's USB window. **Never run on a cart** |
 | `ed64pro.c`, `ed64pro.h` | EverDrive-64 PRO driver (`CART=ed64pro`): the cart FIFO. **Never run on a cart** |
-| `pi_io.c`, `pi_io.h` | PI access for the EverDrive drivers, under the same rules as `sc64.c` |
+| `pi_io.c`, `pi_io.h` | PI access for the EverDrive drivers and `cart_rom.c`, under the same rules as `sc64.c` |
+| `cart_rom.c` | The cartridge ROM for M64P's `PEEKROM`, the same on every cart |
 | [`../test-rom/mem_proto.c`](../test-rom/mem_proto.c), `mem_proto.h`, `m64p_types.h` | The protocol handler and types header, **shared with the test ROM** — not copied here |
 | `Makefile` | One relocatable object, `build/m64p_agent.o`, for a build you control |
 | `templates/flat.ld`, `templates/segment_magic.c` | Link the agent as a flat image at a fixed address, with a load marker |

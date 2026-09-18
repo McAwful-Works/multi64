@@ -20,10 +20,12 @@
 #define M64P_MSG_HELLO 0x01U
 #define M64P_MSG_PEEKV 0x02U
 #define M64P_MSG_POKEV 0x03U
+#define M64P_MSG_PEEKROM 0x04U
 
 #define M64P_MSG_HELLO_ACK 0x81U
 #define M64P_MSG_PEEKV_RESP 0x82U
 #define M64P_MSG_POKE_ACK 0x83U
+#define M64P_MSG_PEEKROM_RESP 0x84U
 #define M64P_MSG_ERR 0xE0U
 
 #define M64P_ERR_MALFORMED 0x01U
@@ -31,11 +33,15 @@
 #define M64P_ERR_TOO_LARGE 0x03U
 #define M64P_ERR_RANGE 0x04U
 #define M64P_ERR_READONLY 0x05U
+#define M64P_ERR_UNSUPPORTED 0x06U
+#define M64P_ERR_BUSY 0x07U
 
 /** Protocol revision reported in `HELLO_ACK`. */
 #define M64P_PROTO_VERSION 0U
 /** `HELLO_ACK` flags bit 0: this agent accepts `POKEV`. */
 #define M64P_FLAG_WRITABLE 0x01U
+/** `HELLO_ACK` flags bit 1: this agent answers `PEEKROM`, and `rom_bytes` follows the flags. */
+#define M64P_FLAG_CART_ROM 0x02U
 
 /** Spec §4 limits. Exceeding any of them is an error, never a truncation. */
 #define M64P_MAX_REGIONS 32
@@ -84,14 +90,35 @@ uint32_t m64p_rdram_size(void);
 volatile uint8_t *m64p_rdram_base(void);
 
 /**
+ * Bytes of cartridge ROM that PEEKROM may address, counted from ROM offset 0 (PI address
+ * 0x10000000). Return 0 when this host cannot read the cart: HELLO_ACK then leaves
+ * M64P_FLAG_CART_ROM clear and PEEKROM is answered with E_UNSUPPORTED.
+ *
+ * An upper bound on what can be read, not the size of the image the console booted:
+ * nothing on the console records that.
+ */
+uint32_t m64p_cart_rom_size(void);
+
+/**
+ * Copy `len` bytes of cartridge ROM, from ROM offset `off`, to `dst`. `off` and `len` need
+ * not be aligned, and are already range-checked against m64p_cart_rom_size().
+ *
+ * Called from the same per-frame hook as everything else here, so it runs between the
+ * game's own PI transfers and must share the bus with them the way the cart driver does.
+ * Return 1 on success; 0 if the PI stayed busy, in which case `dst` is incomplete and the
+ * host is told E_BUSY.
+ */
+int m64p_cart_rom_read(uint32_t off, uint8_t *dst, uint32_t len);
+
+/**
  * Handle one APPLICATION payload whose magic is `M64P`. Returns 1 if the payload
  * was an M64P message (handled or answered with `ERR`), 0 if it was not ours.
  */
 int m64p_handle(const uint8_t *p, size_t plen);
 
-/** Requests served since reset — HELLO, PEEKV and POKEV all count. */
+/** Requests served since reset — HELLO, PEEKV, POKEV and PEEKROM all count. */
 uint32_t m64p_get_requests(void);
-/** Total bytes returned by PEEKV and consumed by POKEV. */
+/** Total bytes returned by PEEKV and PEEKROM, and consumed by POKEV. */
 uint32_t m64p_get_bytes_read(void);
 uint32_t m64p_get_bytes_written(void);
 /** Requests rejected with ERR. */
