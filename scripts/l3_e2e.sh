@@ -262,7 +262,9 @@ run_check "M64P says hello" ok mem-hello
 run_check "write, read back and restore RDRAM" ok mem-round-trip --len 64
 # The error path is worth as much as the happy one: an agent that answers ERR for an address
 # outside RDRAM is an agent that will not scribble over something else when a host asks it to.
-run_check "a read outside RDRAM is refused" "fail:PEEKV rejected" mem-peek --addr 0x00000000 --len 16
+# M64P addresses are RDRAM physical offsets, so 0 is the *start* of RDRAM and perfectly valid -
+# this has to be an offset past the end of any N64's memory (8 MiB expanded).
+run_check "a read outside RDRAM is refused" "fail:PEEKV rejected" mem-peek --addr 0x7F000000 --len 16
 
 # --- 4. BENCH: the cart talking without being asked --------------------------------
 
@@ -299,7 +301,11 @@ else
         run_tool "L3 framing over serial, including an 8 KiB frame" \
             cargo run -q -p sc64-l3-framing-e2e --release -- --port "$PORT" --large
 
+        # Capturing the output puts resume_link in a subshell, so clear the flag here in the
+        # parent: otherwise the EXIT trap below announces the port is still released, resumes an
+        # already-resumed link, and ends a clean run with an alarming message.
         if RESUME_ERR="$(resume_link)"; then
+            RELEASED=0
             pass "daemon resumed $PORT"
         else
             fail "daemon resumed $PORT" "$RESUME_ERR"
@@ -310,8 +316,11 @@ else
         else
             fail "link is back up after resume" "serialActive:false; restart multi64d"
         fi
-        run_check "cart still answers through the daemon" ok ping
+        # Back to M64T_PROTO *before* pinging: the cart is still in RAW_ECHO from the serial
+        # checks, and RAW_ECHO echoes a PING rather than answering it, so pinging first fails for
+        # a reason that has nothing to do with whether the link came back.
         set_mode 1 "M64T_PROTO"
+        run_check "cart still answers through the daemon" ok ping
     else
         fail "daemon released $PORT" "release refused; skipping the direct-serial checks"
         skip "serial echo round trip" "port not released"

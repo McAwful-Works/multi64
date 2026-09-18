@@ -44,7 +44,7 @@ Rust CLI: **`multi64_test.z64`** ([`n64/test-rom`](../../n64/README.md)) ↔ **`
 
 Global options: `--url` (default `ws://127.0.0.1:38765/ws`), `--recv-timeout-secs` (default `5` for request/response commands).
 
-`--addr` accepts `0x`-prefixed hex or decimal.
+`--addr` accepts `0x`-prefixed hex or decimal, and is an **RDRAM physical offset**, not a KSEG0 pointer: `0` is the start of RDRAM ([`memory-l3-application-v0.md`](../spec/memory-l3-application-v0.md) §4).
 
 **`mem-*` talk to M64P**, a different profile on the same channel ([`memory-l3-application-v0.md`](../spec/memory-l3-application-v0.md)). The ROM dispatches on the payload magic, not on its mode, so they work in every mode except **RAW_ECHO** — **MEM_AGENT** is not required.
 

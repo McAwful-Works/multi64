@@ -90,14 +90,14 @@ enum Command {
     },
     /// M64P HELLO: protocol version, RDRAM size, whether writes are accepted.
     MemHello,
-    /// M64P PEEKV: read RDRAM.
+    /// M64P PEEKV: read RDRAM. --addr is an RDRAM physical offset, not a KSEG0 pointer.
     MemPeek {
         #[arg(long, value_parser = parse_u32_maybe_hex)]
         addr: u32,
         #[arg(long)]
         len: u16,
     },
-    /// M64P POKEV: write RDRAM. Prefer `mem-round-trip`, which picks a safe address itself.
+    /// M64P POKEV: write RDRAM (--addr is an RDRAM physical offset). Prefer `mem-round-trip`, which picks a safe address itself.
     MemPoke {
         #[arg(long, value_parser = parse_u32_maybe_hex)]
         addr: u32,

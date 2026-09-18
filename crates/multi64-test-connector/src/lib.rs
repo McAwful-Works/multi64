@@ -775,7 +775,12 @@ async fn app_round_trip<F: FnMut(String) + Send>(
     match recv_app_body(read, &mut decoder, deadline, expect.magic, expect.msgs, log).await? {
         Some(r) => Ok(r),
         None => anyhow::bail!(
-            "timeout waiting for a reply to {} - the cart said nothing. A write to a released or              faulted link is accepted and discarded by the daemon, so check GET / :              serialActive:false means the request never reached the cart.",
+            concat!(
+                "timeout waiting for a reply to {} - the cart said nothing. ",
+                "A write to a released or faulted link is accepted and discarded by the daemon, ",
+                "so check GET / : serialActive:false means the request never reached the cart, ",
+                "and serialActive:true means the cart itself did not answer (is the ROM booted?).",
+            ),
             what
         ),
     }

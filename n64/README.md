@@ -86,7 +86,31 @@ Runs of the committed `multi64_test.z64` on real carts, newest first. Add one wh
 
 | Date | Cart | ROM | Host | Result |
 |------|------|-----|------|--------|
+| 2026-09-17 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | `multi64-test-rom 1.10`; SHA-256 `75cce6950c3667be8ef89392f90b9a359783543fd1ef5e86e40a67df9181fe4a` | Windows 11 Pro 10.0.26200; host tools and `multi64d` from `a593195` | **Pass** (31/31) |
 | 2026-09-13 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | built from `52098ce`; SHA-256 `68b0544013c1622abe03dedf5a13cb95a8288d1d59421e0b2dbd565c6a884ba3` | Windows 11 Pro 10.0.26200; host tools and `multi64d` from `c7b13bb` | **Pass** |
+
+**2026-09-17, SummerCart64.** First run of `scripts/l3_e2e.sh`, and the first unattended one: the
+ROM was booted and the controller was not touched again. **31 checks, 0 failures.**
+
+- **Host-set mode:** `REQ_SET_MODE` took the ROM out of **RAW_ECHO**, the mode it boots into and the
+  one that parses nothing. This is what makes the run unattended, and it works on hardware.
+- **M64T:** ping, version, echo (including 4 KiB across USB chunks), controller snapshot, and the
+  session / EEPROM / SRAM sequence. `sram-info` still reports size 0, as built.
+- **M64P:** `HELLO`, a full `PEEKV`/`POKEV` round trip through the ROM's scratch region, and an
+  out-of-range read correctly refused with `E_RANGE`. **The first time M64P has run on hardware** —
+  nothing in the tree spoke it before.
+- **BENCH:** 3 unsolicited `BENCH_TICK` in 3 s.
+- **RAW_ECHO over direct serial:** `sc64-echo-test` and `sc64-l3-framing-e2e --large` (8,308-byte
+  frame), run in the same pass as the checks above by releasing and resuming the daemon's port —
+  two cart states that previously only a person with a controller could switch between.
+- **Stream health:** `DIAG` reported zero overflow, resync and bad-header drops across the run.
+- **Not run:** CTRL_POLL, and an SRAM build.
+
+The first attempt was **28/31**, and all three failures were real. Two were one bug in the new
+`DIAG` field, which reported the scratch region as a KSEG0 pointer when M64P addresses are RDRAM
+physical offsets: the cart refused the round trip, and the negative check passed `0x00000000`,
+which is the *start* of RDRAM and therefore valid. The third was ordering in the script — it pinged
+while the cart was still in RAW_ECHO, which echoes a ping rather than answering it.
 
 **2026-09-13, SummerCart64.** The first run since the ROM's USB traffic moved behind `test-rom/cart_link.c`, which probes for an EverDrive-64 PRO before libdragon's `usb_initialize`. The ROM went onto the SD card with `sc64-sd-e2e --upload` and was read back byte for byte with `--verify`.
 

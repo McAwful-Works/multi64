@@ -161,7 +161,7 @@ The test ROM may also emit **non-APPLICATION** L3 frames (e.g. `HEARTBEAT` on Co
 | 16 | 4 | `bad_header_drops` — frames dropped for a bad type/channel or an impossible length |
 | 20 | 4 | `rx_bytes` — bytes read from the cart link |
 | 24 | 4 | `tx_bytes` — bytes written back in RAW_ECHO (`0` in every other mode) |
-| 28 | 4 | `m64p_scratch_addr` — base of the RDRAM scratch region, as the CPU sees it (cached KSEG0) |
+| 28 | 4 | `m64p_scratch_addr` — base of the RDRAM scratch region, as an **RDRAM physical offset**: the address space `M64P` uses ([`memory-l3-application-v0.md`](./memory-l3-application-v0.md) §4), not a KSEG0 pointer |
 | 32 | 4 | `m64p_scratch_len` — its length in bytes |
 
 The three counters at offsets 8–19 are the point of this message: they are the only way a host can tell a clean run from one that silently desynchronised and recovered. They were previously **screen-only**, so an automated run could assert that a reply arrived but never that the stream underneath it was intact.
