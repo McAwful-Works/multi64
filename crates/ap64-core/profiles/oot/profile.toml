@@ -1,0 +1,119 @@
+# Ocarina of Time (NTSC 1.0) seeds of Archipelago's OoT world (OoTR's payload, AP 0.6.7).
+# Blobs: agent/build.sh oot (see BUILD_REV). Offsets are in the decompressed image, where a
+# file's vrom and its ROM offset are the same.
+#
+# The game's own boot loader reads the OoTR payload into RAM at 0x80400000. It is pointed at
+# a new file holding a copy of the seed's payload, the hook stub right after it
+# (0x80461C40) and the agent (0x80462000) with its BSS as zeros, so everything is loaded at
+# boot by the game itself. The original payload file stays where it was, untouched.
+
+id = "oot"
+name = "Ocarina of Time"
+release = "NTSC 1.0"
+game_code = "CZLE"
+version = 0
+cic = "6105"
+randomizer = "Archipelago's Ocarina of Time world"
+connector = "oot"         # Archipelago's OoT Client
+
+[transform]
+kind = "yaz0_dmadata"
+table = 0x7430
+
+[agent]
+image = "agent.bin"
+region = 0x3520000      # the new file: past the decompressed image, 64 KiB aligned for the lui
+rom = 0x3582000         # region + 0x62000: RAM 0x80462000
+bss = 16380             # agent_BSS_END - agent_BSS_START, zeroed by being loaded as zeros
+dma_slot = 0xD2D0       # first free entry of the file table
+vram = 0x80462000
+min_ram = 0             # OoTR's payload already needs the Expansion Pak
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0xB12A34           # 0x8009CAD4: jal before_game_state_update_hook (payload)
+equals = 0x0C100762
+hint = "This seed's randomizer payload is not the one this profile was measured against."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0x3481D88          # before_game_state_update_hook, 0x80401D88
+len = 0x40
+sha1 = "329a699ef7ddd206ca057f904481cc0300f2609c"
+hint = "This seed's randomizer payload is not the one this profile was measured against."
+
+[[require]]
+kind = "word"
+label = "Payload loader: size, high half"
+at = 0xB17BC0           # 0x800A1C60: lui a2, 0x0006
+equals = 0x3C060006
+hint = "The payload is not the size this profile expects: a different randomizer version?"
+
+[[require]]
+kind = "word"
+label = "Payload loader: size, low half"
+at = 0xB17BC4           # addiu a2, a2, 0x1C40
+equals = 0x24C61C40
+hint = "The payload is not the size this profile expects: a different randomizer version?"
+
+[[require]]
+kind = "word"
+label = "Payload loader: file"
+at = 0xB17BCC           # lui a1, 0x0348 (vrom 0x03480000)
+equals = 0x3C050348
+hint = "The payload is not where this profile expects it."
+
+[[require]]
+kind = "word"
+label = "Payload file: start"
+at = 0xD1B0
+equals = 0x03480000
+
+[[require]]
+kind = "word"
+label = "Payload file: end"
+at = 0xD1B4
+equals = 0x034E1C40
+
+[[require]]
+kind = "sha1"
+label = "Free file table entries"
+at = 0xD2D0             # the end-of-table entry and the one after it, both empty
+len = 0x20
+sha1 = "de8a847bff8c343d69b853a215e6ee775ef2ef96"
+hint = "The file table has no free entry where this profile adds one."
+
+[[write]]
+kind = "copy"
+label = "Payload (copy)"
+from = 0x3480000
+len = 0x61C40
+at = 0x3520000
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0x3581C40
+file = "stub.bin"
+max_len = 0x3C0
+
+[[write]]
+kind = "imm"
+label = "Loader reads the new file"
+hi = 0xB17BCC
+value = "region_start"
+
+[[write]]
+kind = "imm"
+label = "Loader reads all of it"
+hi = 0xB17BC0
+lo = 0xB17BC4
+value = "region_size"
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0xB12A34
+target = 0x80461C40

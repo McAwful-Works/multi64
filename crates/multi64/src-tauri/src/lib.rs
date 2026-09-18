@@ -3016,7 +3016,7 @@ mod job_tests {
 mod frontend_tests {
     /// Every app that carries the shared base. `frontendDist` is per-app and no file can be
     /// shared across crates at runtime, so each holds its own copy and every copy must match.
-    const SHARED_BASE_APPS: [&str; 3] = ["multi64", "xfer64", "multi64-test-app"];
+    const SHARED_BASE_APPS: [&str; 4] = ["multi64", "xfer64", "multi64-test-app", "ap64"];
 
     /// `styles.css` is the shared base of these apps' stylesheets: the palette, the size tokens and
     /// the components they all use (`docs/frontend-appearance.md` §5). Like `appearance.js` it is

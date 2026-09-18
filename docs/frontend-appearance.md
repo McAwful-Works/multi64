@@ -29,8 +29,8 @@ The rule is checked by a test, so it holds whether or not anyone remembers it:
 cargo test -p multi64 no_colour_literals_outside_the_palette
 ```
 
-It reads every `.css` file under the `src/` of each app in `SHARED_BASE_APPS` — Multi64, Xfer64 and
-Multi64 Test (`crates/multi64-test-app`) — and fails on any
+It reads every `.css` file under the `src/` of each app in `SHARED_BASE_APPS` — Multi64, Xfer64,
+Multi64 Test (`crates/multi64-test-app`) and AP64 (`crates/ap64`) — and fails on any
 declaration outside a `:root` palette block whose value names a colour: a hex literal, a colour
 function called with numbers rather than a token (`rgba(138, 180, 248, 0.12)` is reported,
 `rgba(var(--accent-rgb), 0.12)` is not), or one of the CSS named colours. `transparent` and
@@ -65,7 +65,7 @@ which is the most likely way to reintroduce a contrast failure.
 
 ## 3. `appearance.js`
 
-One script, **duplicated verbatim in every app that carries the shared base** — `crates/multi64/src/`, `crates/xfer64/src/` and `crates/multi64-test-app/src/`.
+One script, **duplicated verbatim in every app that carries the shared base** — `crates/multi64/src/`, `crates/xfer64/src/`, `crates/multi64-test-app/src/` and `crates/ap64/src/`.
 There is no shared frontend directory: `frontendDist` points at each app's own `src`, so a file
 cannot be referenced across crates. **Edit one, copy to the other.** `appearance_js_is_identical_in_both_apps` in the `multi64` crate fails when they differ.
 
@@ -102,7 +102,7 @@ meaningless — element sizes come back unchanged no matter what you set.
 
 ## 5. The shared base: `styles.css` and the size tokens
 
-`crates/multi64/src/styles.css`, `crates/xfer64/src/styles.css` and `crates/multi64-test-app/src/styles.css` are the **same file**. `shared_styles_css_is_identical_in_both_apps` in the `multi64` crate fails when any of them differ, so edit one and copy it to the others. It holds everything the apps must agree on:
+`crates/multi64/src/styles.css`, `crates/xfer64/src/styles.css`, `crates/multi64-test-app/src/styles.css` and `crates/ap64/src/styles.css` are the **same file**. `shared_styles_css_is_identical_in_both_apps` in the `multi64` crate fails when any of them differ, so edit one and copy it to the others. It holds everything the apps must agree on:
 
 - **The palette** (§1–2).
 - **The scale tokens:** `--font-xs`, `--font-sm`, `--font-md`, `--font-lg` and `--font-title` for text; `--radius-sm`, `--radius-md` and `--radius-lg` for corners; `--z-dialog` and `--z-dialog-top` for stacking.

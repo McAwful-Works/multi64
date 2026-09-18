@@ -84,6 +84,26 @@ jobs:
         working-directory: crates/multi64/e2e
         run: npm test
 
+  ap64-frontend:
+    name: AP64 frontend checks (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # The same kind of checks for AP64's window: the Patch and Play cards against a stubbed
+      # Tauri bridge. No seed, cart or Archipelago client is involved.
+      - name: Install harness
+        working-directory: crates/ap64/e2e
+        run: npm ci
+      - name: Install Chromium
+        working-directory: crates/ap64/e2e
+        run: npx playwright install --with-deps chromium
+      - name: Run frontend checks
+        working-directory: crates/ap64/e2e
+        run: npm test
+
   agent-host-test:
     name: Cart agent reassembly (host)
     runs-on: ubuntu-latest

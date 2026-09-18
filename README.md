@@ -10,7 +10,7 @@
 
 **Status:** **`multi64d`** ships with **SummerCart64** L2 ([`l3-over-sc64.md`](docs/spec/l3-over-sc64.md)). **EverDrive-64 X7** L2 is **implemented but unvalidated on hardware** — crate **`multi64-ed64-l2`** speaks the mapping in [`l3-over-everdrive-x7.md`](docs/spec/l3-over-everdrive-x7.md) §4, which stays **Draft** until §4.5 is answered against a cart. **EverDrive-64 PRO** L2 is implemented too (**`multi64-ed64pro-l2`**, [`l3-over-everdrive-pro.md`](docs/spec/l3-over-everdrive-pro.md)) and is less proven still: no reference implementation exists, so the mapping is this repo's own design.
 
-**Windows:** [**Multi64**](crates/multi64/README.md) (start and stop the bridge, serial port, tray). [**Xfer64**](crates/xfer64/README.md) (SD card over USB; no drive letter).  
+**Windows:** [**Multi64**](crates/multi64/README.md) (start and stop the bridge, serial port, tray). [**Xfer64**](crates/xfer64/README.md) (SD card over USB; no drive letter). [**AP64**](crates/ap64/README.md) (Archipelago N64 seeds on a console: adds the cart agent to a seed and connects Archipelago's client to the cart through Multi64).  
 **Developers:** [`docs/README.md`](docs/README.md) (spec map, reading order). [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, layout).
 
 ---
@@ -31,7 +31,7 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 
 | Path | Contents |
 |------|----------|
-| [`crates/`](crates/) | Rust workspace: L3, SC64/ED crates, `multi64d`, smoke/e2e, **Multi64** & **Xfer64** (Tauri) |
+| [`crates/`](crates/) | Rust workspace: L3, SC64/ED crates, `multi64d`, smoke/e2e, **Multi64**, **Xfer64** & **AP64** (Tauri) |
 | [`docs/spec/`](docs/spec/) | Normative protocols |
 | [`docs/connectors/`](docs/connectors/) | Host programs that use `multi64d` + L3 |
 | [`docs/integration/`](docs/integration/) | Guides: putting the M64P agent into a game ROM |
@@ -55,6 +55,7 @@ cargo run -p multi64d --release -- --serial COM3   # or /dev/ttyACM0
 | `multi64-ed64pro-link` | EverDrive-64 **PRO** host link (edlink Gen3): handshake, SD file system, cart memory — **never run against a cart** |
 | `multi64` (**Multi64**), `xfer64` (**Xfer64**) | Windows Tauri apps — READMEs under [`crates/multi64`](crates/multi64), [`crates/xfer64`](crates/xfer64) |
 | `multi64-test-app` (**Multi64 Test**) | Runs the end-to-end suite and shows pass/fail — one portable exe, for handing to a tester ([`crates/multi64-test-app`](crates/multi64-test-app)) |
+| `ap64` (**AP64**), `ap64-core`, `ap64-cli`, `ap64-cart`, `ap64-connector` | Archipelago on a console: splice the cart agent into a seed, then run a forked connector against the cart through `multi64d`. The only game-specific code in the repo ([`crates/ap64`](crates/ap64/README.md)) |
 | `multi64-test-connector-gui` | Optional per-command GUI; same WebSocket contract as the CLI. Developer-only: it runs binaries from `target/` ([`test-rom.md`](docs/connectors/test-rom.md)) |
 
 ### SummerCart64

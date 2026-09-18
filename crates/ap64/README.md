@@ -1,0 +1,101 @@
+# AP64
+
+Play Archipelago N64 seeds on a real console. AP64 does two jobs:
+
+1. **Patch.** It adds the M64P cart agent to a seed that Archipelago has already
+   patched. The agent is a small program that lets the PC read and write the game's
+   RAM over the cart's USB link.
+2. **Play.** It runs a connector for that game against the cart, through
+   [Multi64](../multi64/README.md)'s bridge, so Archipelago's own client can talk to the console
+   as it would to an emulator. The ROM is read from the cart itself (M64P `PEEKROM`),
+   so there is no file to choose: pick the game, press Start, open the client.
+
+Supported today, each patched and played on a SummerCart64 with checks sent and items
+received (2026-09-18):
+
+- **Castlevania 64 (US 1.0)**, through Archipelago's BizHawk Client.
+- **Paper Mario (US 1.0)** with the Paper Mario Randomizer, through BizHawk Client.
+- **Ocarina of Time (NTSC 1.0)**, Archipelago's OoT world, through OoT Client. The seed is
+  decompressed and the agent loaded with the randomizer's payload; the connector is a fork
+  of Archipelago's OoT connector.
+
+## Patching a seed
+
+Generate and patch your seed with Archipelago as usual, then either drop the `.z64` onto
+the AP64 window or run:
+
+```sh
+cargo run -p ap64-cli -- <seed.z64>            # writes <seed>-agent.z64 beside it
+cargo run -p ap64-cli -- <seed.z64> --check    # verify only
+```
+
+The seed is checked before anything is written. AP64 refuses it if any of these fail:
+
+- The header must match a known game and release.
+- The code the agent hooks into, and the space its stub goes in, must hash to exactly
+  what the profile was measured against. Some randomizer options move that code; the
+  check says which.
+- Nothing of the seed may lie where the agent is appended.
+- After any known boot-code changes are undone, the boot code must be a retail one, so
+  the header checksum can be recomputed.
+
+After writing, the output is diffed against the seed. A change that no step accounts
+for withholds the output.
+
+No retail ROM is needed, and none of Nintendo's code ships with AP64. The profiles
+contain hashes, addresses and a few single instruction words; the agent and stubs are
+our own code.
+
+## Layout
+
+AP64 is the one part of this repository that is game-specific. Multi64, Xfer64, the cart
+agent and the specs name no game; everything that does lives in these crates.
+
+| Path | What |
+|---|---|
+| [`crates/ap64`](.) | The Tauri 2 app (`src-tauri/` + plain-JS `src/`, no bundler), `e2e/` headless checks |
+| [`crates/ap64-core`](../ap64-core) | ROM byte orders, the CIC-6102/6103/6105 header checksum, profiles, verify/apply |
+| `crates/ap64-core/profiles/<game>/` | `profile.toml` plus the agent image and hook stub it writes, with the build's `layout.env` |
+| `crates/ap64-core/agent/` | `build.sh <game>`, and per game a `game.env` and hand-written `stub.S` |
+| `crates/ap64-core/tools/<game>/` | BizHawk probe scripts for checking a patched ROM before it goes on a cart |
+| [`crates/ap64-cli`](../ap64-cli) | `ap64-patch`, a thin command line over the core |
+| [`crates/ap64-cart`](../ap64-cart) | M64P over multi64d: RDRAM reads and writes, cart ROM reads (cached), retry and reconnect |
+| [`crates/ap64-connector`](../ap64-connector) | Embedded Lua running a connector script, the `ap64` API it calls, the TCP side the client connects to |
+| `crates/ap64-connector/connectors/<id>/` | Forked Archipelago connector scripts (MIT, with `UPSTREAM` provenance) |
+
+A profile's blobs are this repository's own cart agent ([`n64/agent`](../../n64/agent/README.md),
+with the M64P handler from `n64/test-rom`), built flat at the profile's addresses with the
+N64 toolchain (`crates/ap64-core/agent/build.sh <game>`, in WSL). CI has no N64 toolchain,
+so the blobs are committed, and `BUILD_REV` records the revision they were built from.
+Rebuild them after any change to the agent. `layout.env` is written by that build, and a
+test checks that the hand-typed profile agrees with it.
+
+## Checks
+
+CI's Rust job covers the crates. The page has its own headless job, against a stubbed
+Tauri bridge:
+
+```sh
+cd crates/ap64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
+```
+
+Byte-identity against outputs that have run on a console. ROMs can't be committed, so
+this test reads paths from the environment:
+
+```sh
+AP64_CV64_SEED=<seed.z64> AP64_CV64_EXPECTED=<spliced.z64> \
+  cargo test -p ap64-core --test local_roms -- --ignored
+```
+
+## Building the app
+
+```sh
+cd crates/ap64 && npm install && npm run build    # NSIS installer under target/release/bundle
+```
+
+The icons are placeholders taken from Multi64.
+
+## License
+
+MIT OR Apache-2.0, like the rest of the repository. The forked connector scripts keep
+Archipelago's MIT notice beside them (`UPSTREAM`).

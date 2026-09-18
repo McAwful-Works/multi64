@@ -33,6 +33,6 @@ Check that a toolchain exists: `cargo --version`. Some machines that hold this r
 
 ## Not covered here
 
-Three more CI jobs, all `ubuntu-latest`, which pre-flight does not run: the Xfer64 and Multi64 frontend checks (`crates/{xfer64,multi64}/e2e`, headless Chromium) and the cart agent's host tests (`make -C n64/agent host-test`). They gate a merge too, so say they were not run when a change touches those apps' frontends or `n64/agent`.
+Four more CI jobs, all `ubuntu-latest`, which pre-flight does not run: the Xfer64, Multi64 and AP64 frontend checks (`crates/{xfer64,multi64,ap64}/e2e`, headless Chromium) and the cart agent's host tests (`make -C n64/agent host-test`). They gate a merge too, so say they were not run when a change touches those apps' frontends or `n64/agent`.
 
 Anything needing a cart: `multi64d`, the `*-smoke` binaries, and the `*-echo-test` / `*-l3-framing-e2e` crates. Those never run in CI, so passing pre-flight says nothing about whether a serial change actually works on hardware. Say that explicitly when a change touches the serial path.

@@ -19,7 +19,7 @@ The `multi64d` builds are not optional and are not a packaging step — anything
 
 Clippy runs with `-D warnings`, so an unused import or a stray `mut` fails CI the same as a type error.
 
-CI runs three more jobs, all on Ubuntu only. The first is the Xfer64 frontend checks, which nothing above covers:
+CI runs four more jobs, all on Ubuntu only. The first is the Xfer64 frontend checks, which nothing above covers:
 
 ```sh
 cd crates/xfer64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
@@ -40,7 +40,13 @@ They drive `crates/multi64/src/index.html` the same way and check the Status car
 Cart and Serial port selects, including a saved port that is unplugged. See
 [`crates/multi64/e2e/README.md`](crates/multi64/e2e/README.md).
 
-And the third — the cart agent's host tests, the only CI job that compiles N64 code
+AP64's frontend checks are a third job of the same kind, for its Patch and Play cards:
+
+```sh
+cd crates/ap64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
+```
+
+And the last — the cart agent's host tests, the only CI job that compiles N64 code
 (for the PC, not the console). It needs a host `gcc` or `clang` and `make`, nothing from the N64 toolchain:
 
 ```sh
@@ -63,13 +69,13 @@ cargo test -p multi64-l3 stream_decoder_resync  # one test by substring
 cargo test -p multi64-sc64-sd -- --exact partition::tests::detect_partition_legacy_mbr_first_lba
 ```
 
-Tests live in `crates/{l3,sc64-link,sc64-l2,ed64-l2,ed64pro-link,ed64pro-l2,cart-probe,multi64-sc64-sd,multi64-ed64-link,ed64-smoke,xfer64,multi64d,multi64,sc64-sd-e2e}` — note `multi64d` has an HTTP integration suite in `tests/http.rs` (origin guard, faulted `serialActive`, resume), and `crates/multi64/src-tauri` unit-tests the settings and tray-menu label logic. Everything in CI is host-only — the SD/FAT logic is covered by RAM-disk tests, and no test touches hardware.
+Tests live in `crates/{l3,sc64-link,sc64-l2,ed64-l2,ed64pro-link,ed64pro-l2,cart-probe,multi64-sc64-sd,multi64-ed64-link,ed64-smoke,xfer64,multi64d,multi64,sc64-sd-e2e,ap64-core,ap64-cart,ap64-connector}` — note `multi64d` has an HTTP integration suite in `tests/http.rs` (origin guard, faulted `serialActive`, resume), and `crates/multi64/src-tauri` unit-tests the settings and tray-menu label logic. Everything in CI is host-only — the SD/FAT logic is covered by RAM-disk tests, and no test touches hardware.
 
-### Tauri apps (`multi64`, `xfer64`, `multi64-test-app`, `multi64-test-connector-gui`)
+### Tauri apps (`multi64`, `xfer64`, `multi64-test-app`, `ap64`, `multi64-test-connector-gui`)
 
 `npm install` inside `crates/<app>/` first — it supplies the Tauri CLI. `npm run build` maps to `tauri build`. `frontendDist` points at `../src`, so the frontend is plain JS served as-is; there is no bundler output step to run.
 
-Styling is tokenised: `:root` in each app's `styles.css` holds the palette and **no rule outside it may contain a colour literal**, or the change survives unchanged into the Light and High-contrast themes. `appearance.js` is duplicated verbatim in every app carrying the shared base — Multi64, Xfer64 and Multi64 Test — must stay Tauri-free, and must load non-deferred in `<head>`. `styles.css` is duplicated verbatim too: it is the shared base (palette, size tokens, buttons, fields, dialogs), app-only rules go in the app's own sheet, and a test fails if any copy differs. `multi64-test-connector-gui` is deliberately outside all of this. See [`docs/frontend-appearance.md`](docs/frontend-appearance.md) before editing any CSS or frontend JS.
+Styling is tokenised: `:root` in each app's `styles.css` holds the palette and **no rule outside it may contain a colour literal**, or the change survives unchanged into the Light and High-contrast themes. `appearance.js` is duplicated verbatim in every app carrying the shared base — Multi64, Xfer64, Multi64 Test and AP64 — must stay Tauri-free, and must load non-deferred in `<head>`. `styles.css` is duplicated verbatim too: it is the shared base (palette, size tokens, buttons, fields, dialogs), app-only rules go in the app's own sheet, and a test fails if any copy differs. `multi64-test-connector-gui` is deliberately outside all of this. See [`docs/frontend-appearance.md`](docs/frontend-appearance.md) before editing any CSS or frontend JS.
 
 Build `multi64d` **before** anything that compiles the Multi64 Tauri crate, and with the **same** profile. `crates/multi64/src-tauri/build.rs` copies the daemon into `resources/`, and `tauri.conf.json` declares `resources/multi64d.exe` under `bundle.resources`. A declared resource that is missing is a **hard error** in `tauri-build`: the `cargo:warning` from `build.rs` is not the whole story — the build then fails anyway. Everything `build.rs` writes into `resources/` is gitignored (`multi64d.exe` and both `xfer64-setup.*`; only `xfer64-installer-prompt.ps1` is tracked), so this bites a clean checkout running `cargo clippy --workspace` or `cargo build --workspace`, not just packaging.
 
@@ -116,14 +122,14 @@ The **EverDrive-64 PRO** has its own pipe, `Ed64ProL2Pipe` (`multi64-ed64pro-l2`
 - **`docs/spec/` is normative.** Wire behavior changes must land with the spec edit in the same change. Bump L3 **Protocol-Major**/**Protocol-Minor** only when the byte contract changes (`l3-bridge-protocol-v1.md` §12); **Spec-Revision** is maintainer-controlled — do not bump it on your own.
 - `docs/README.md` is the spec map and states the intended reading order for implementors.
 - `hadris-fat` is pinned to a git rev in the workspace `[patch.crates-io]` because the 1.1.0 release fails to build with `--features exfat`. Do not unpin it to resolve a dependency conflict.
-- MSRV is 1.74 and edition 2021, set once in `[workspace.package]`.
+- MSRV is 1.80 and edition 2021, set once in `[workspace.package]`.
 - Licensing is `MIT OR Apache-2.0`; new crates should inherit `license.workspace = true`.
 
 ## Repo tooling
 
 Committed under `.claude/`, so they apply for anyone working on this repo:
 
-- **`/preflight`** — runs the six steps of CI's Rust job in order and reports the first failure. It does not run CI's three Ubuntu-only jobs (the two frontend suites and the agent host test). Not every machine holding this repo has a Rust toolchain; when `cargo` is absent, say the change is unverified rather than implying otherwise.
+- **`/preflight`** — runs the six steps of CI's Rust job in order and reports the first failure. It does not run CI's four Ubuntu-only jobs (the three frontend suites and the agent host test). Not every machine holding this repo has a Rust toolchain; when `cargo` is absent, say the change is unverified rather than implying otherwise.
 - **`/check-docs`** — validates markdown links, heading anchors, backtick-wrapped links, and `docs/spec/` paths cited from Rust/JS. Run after any spec rename or file move; nothing in CI covers this.
 - **`/implement-ed64-l2`** — the ED64 L2 backend walkthrough. The blocker is `l3-over-everdrive-x7.md` §4, not the code.
 - **`spec-reviewer`** subagent — reviews a diff against `docs/spec/` as normative. Worth running on changes to `crates/l3`, any `*-l2` or `*-link` crate, `multi64d`'s WebSocket path, or the specs themselves.

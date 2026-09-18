@@ -1,0 +1,61 @@
+# Paper Mario (US 1.0) with the Paper Mario Randomizer (icebound777's papermario.apworld).
+# Blobs: agent/build.sh pmr (see BUILD_REV). Addresses from the pret decomp's map.
+
+id = "pmr"
+name = "Paper Mario"
+release = "US 1.0"
+game_code = "NMQE"
+version = 0
+cic = "6103"
+randomizer = "Paper Mario Randomizer (papermario.apworld)"
+connector = "generic"     # Archipelago's BizHawk Client
+
+[agent]
+image = "agent.bin"
+rom = 0x2B00000         # past the randomizer's base mod, which ends at 0x2AE40C0
+vram = 0x80480000       # Expansion Pak, clear of the mod's code and heaps (measured)
+min_ram = 0x800000      # the stub skips the agent without an Expansion Pak
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0x151C             # gfxRetrace_Callback: jal step_game_loop
+equals = 0x0C0099D0
+hint = "The randomizer changed the frame callback, so the hook has nowhere to go."
+
+[[require]]
+kind = "sha1"
+label = "Space for the hook stub"
+at = 0xB0E0             # update_camera_unused_ahead (0x8002FCE0), never called
+len = 0x320
+sha1 = "5e214d9d69eae834ea324425215012e543816834"
+hint = "The randomizer wrote over the unused function the stub goes in."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0x1B40             # step_game_loop, 0x80026740
+len = 0x100
+sha1 = "6504f24dccd8919439333a6d386e285c52ce4187"
+hint = "The randomizer changed the game loop the hook passes each frame through to."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine"
+at = 0x4B3C             # dma_copy, 0x8002973C
+len = 0x80
+sha1 = "e5ec7f177443321f36df6f63854522e22017e0d2"
+hint = "The randomizer changed the routine the stub loads the agent with."
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0xB0E0
+file = "stub.bin"
+max_len = 0x320
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0x151C
+target = 0x8002FCE0
