@@ -19,7 +19,7 @@
 //!   refused this" when nothing was ever asked — a check that cannot fail.
 
 use crate::{run_connector_command, run_listen, ConnectorCommand};
-use multi64_ed64_l2::Ed64L2Pipe;
+use multi64_ed64_l2::{Ed64L2Pipe, DEFAULT_ED64_CHUNK};
 use multi64_ed64pro_l2::Ed64ProL2Pipe;
 use multi64_l3::{Channel, Frame, FrameFlags, FrameType};
 use multi64_sc64_l2::Sc64L2Pipe;
@@ -47,6 +47,13 @@ pub const PHASES: [&str; 7] = [
 
 /// The payload `sc64-echo-test` uses, kept identical so the two agree on hardware.
 const SERIAL_ECHO_PAYLOAD: &[u8] = b"multi64_test";
+/// The direct-serial checks, named once so a run that skips them lists the same rows as one that
+/// does not.
+const SERIAL_CHECKS: [&str; 3] = [
+    "serial echo round trip",
+    "L3 framing over serial, including an 8 KiB frame",
+    "the 8 KiB frame again, one USB message at a time",
+];
 /// The multi-chunk frame `sc64-l3-framing-e2e --large` sends.
 const LARGE_PAYLOAD_LEN: usize = 8292;
 
@@ -310,6 +317,33 @@ impl SerialPipe {
         Ok(pipe)
     }
 
+    /// Discard input until the line has been quiet for 500 ms (at most 5 s), then clear.
+    fn settle(&mut self) -> Result<(), String> {
+        let started = Instant::now();
+        let mut quiet_since = Instant::now();
+        let mut scratch = [0u8; 512];
+        while quiet_since.elapsed() < Duration::from_millis(500) {
+            if started.elapsed() > Duration::from_secs(5) {
+                return Err("the cart was still sending after 5 s".into());
+            }
+            // Errors are what is being drained — a half-sent message fails to parse — so they
+            // count as traffic, not as a reason to stop.
+            match each_pipe!(&mut *self, p => p.read_l3_bytes(&mut scratch)) {
+                Ok(0) => {}
+                _ => quiet_since = Instant::now(),
+            }
+        }
+        each_pipe!(&mut *self, p => p.clear_serial_buffers()).map_err(|e| e.to_string())
+    }
+}
+
+/// The two operations the direct-serial checks need, so they can run against a fake in tests.
+trait L3Link {
+    fn write_l3_stream(&mut self, buf: &[u8]) -> std::io::Result<()>;
+    fn read_l3_bytes_exact(&mut self, out: &mut [u8], deadline: Duration) -> std::io::Result<()>;
+}
+
+impl L3Link for SerialPipe {
     fn write_l3_stream(&mut self, buf: &[u8]) -> std::io::Result<()> {
         each_pipe!(self, p => p.write_l3_stream(buf))
     }
@@ -336,8 +370,35 @@ fn serial_echo(cart: SerialCart, port: &str, timeout: Duration) -> Result<String
 }
 
 fn serial_framing(cart: SerialCart, port: &str, timeout: Duration) -> Result<String, String> {
-    let mut pipe = SerialPipe::open(cart, port)?;
+    framing_burst(&mut SerialPipe::open(cart, port)?, timeout)
+}
 
+fn serial_framing_lockstep(
+    cart: SerialCart,
+    port: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    let mut pipe = SerialPipe::open(cart, port)?;
+    // If the burst check failed, the cart may still be echoing what is left of it; clearing the
+    // host's buffers once does not stop bytes that are yet to arrive.
+    pipe.settle()?;
+    framing_lockstep(&mut pipe, timeout)
+}
+
+/// The frame that spans many USB messages: 8,308 bytes on the wire.
+fn large_frame() -> Frame {
+    Frame {
+        ty: FrameType::Data,
+        channel: Channel::Application,
+        flags: FrameFlags::FINAL,
+        request_id: 0xAABB_CCDD,
+        payload: (0..LARGE_PAYLOAD_LEN).map(|i| (i & 0xFF) as u8).collect(),
+    }
+}
+
+/// Each frame written whole, then read back. The cart echoes every USB message as it arrives, so
+/// for the large frame it is sending while the host still is.
+fn framing_burst(pipe: &mut impl L3Link, timeout: Duration) -> Result<String, String> {
     let cases = vec![
         (
             "small DATA",
@@ -359,16 +420,7 @@ fn serial_framing(cart: SerialCart, port: &str, timeout: Duration) -> Result<Str
                 payload: Vec::new(),
             },
         ),
-        (
-            "large DATA across USB chunks",
-            Frame {
-                ty: FrameType::Data,
-                channel: Channel::Application,
-                flags: FrameFlags::FINAL,
-                request_id: 0xAABB_CCDD,
-                payload: (0..LARGE_PAYLOAD_LEN).map(|i| (i & 0xFF) as u8).collect(),
-            },
-        ),
+        ("large DATA across USB chunks", large_frame()),
     ];
 
     for (label, frame) in cases {
@@ -380,31 +432,63 @@ fn serial_framing(cart: SerialCart, port: &str, timeout: Duration) -> Result<Str
         let mut back = vec![0u8; wire.len()];
         pipe.read_l3_bytes_exact(&mut back, timeout)
             .map_err(|e| format!("{label}: read: {e}"))?;
-        if back != wire {
-            return Err(format!("{label}: wire bytes came back different"));
-        }
-        // Decoding as well as comparing: identical bytes that will not decode would still be a
-        // broken frame, and the decode is what every real consumer does.
-        let (decoded, consumed) =
-            Frame::decode(&back).map_err(|e| format!("{label}: decode: {e}"))?;
-        if consumed != back.len() {
-            return Err(format!(
-                "{label}: decode consumed {consumed} of {} bytes",
-                back.len()
-            ));
-        }
-        if decoded.ty != frame.ty
-            || decoded.channel != frame.channel
-            || decoded.flags != frame.flags
-            || decoded.request_id != frame.request_id
-            || decoded.payload != frame.payload
-        {
-            return Err(format!(
-                "{label}: the decoded frame does not match the original"
-            ));
-        }
+        verify_echo(label, &frame, &wire, &back)?;
     }
     Ok("small DATA, HEARTBEAT and an 8,308-byte frame".into())
+}
+
+/// The large frame again, one USB message at a time, each echo read before the next is sent.
+///
+/// Beside [`framing_burst`] this tells apart two failures that look alike. Burst failing while this
+/// passes means the cart cannot send while the host is sending — libdragon's EverDrive write gives
+/// up after 100 ms and leaves the message half sent — not that large frames are broken. Both
+/// failing means the problem is somewhere else.
+fn framing_lockstep(pipe: &mut impl L3Link, timeout: Duration) -> Result<String, String> {
+    let label = "large DATA, one message at a time";
+    let frame = large_frame();
+    let wire = frame
+        .encode()
+        .map_err(|e| format!("{label}: encode: {e}"))?;
+    let mut back = Vec::with_capacity(wire.len());
+    let messages = wire.chunks(DEFAULT_ED64_CHUNK).len();
+    for (i, msg) in wire.chunks(DEFAULT_ED64_CHUNK).enumerate() {
+        let at = format!("{label}: message {} of {messages}", i + 1);
+        pipe.write_l3_stream(msg)
+            .map_err(|e| format!("{at}: write: {e}"))?;
+        let mut echo = vec![0u8; msg.len()];
+        pipe.read_l3_bytes_exact(&mut echo, timeout)
+            .map_err(|e| format!("{at}: read: {e}"))?;
+        back.extend_from_slice(&echo);
+    }
+    verify_echo(label, &frame, &wire, &back)?;
+    Ok(format!("{} bytes in {messages} messages", wire.len()))
+}
+
+/// An echoed frame must be the same bytes, and decode to the frame that was sent.
+fn verify_echo(label: &str, frame: &Frame, wire: &[u8], back: &[u8]) -> Result<(), String> {
+    if back != wire {
+        return Err(format!("{label}: wire bytes came back different"));
+    }
+    // Decoding as well as comparing: identical bytes that will not decode would still be a
+    // broken frame, and the decode is what every real consumer does.
+    let (decoded, consumed) = Frame::decode(back).map_err(|e| format!("{label}: decode: {e}"))?;
+    if consumed != back.len() {
+        return Err(format!(
+            "{label}: decode consumed {consumed} of {} bytes",
+            back.len()
+        ));
+    }
+    if decoded.ty != frame.ty
+        || decoded.channel != frame.channel
+        || decoded.flags != frame.flags
+        || decoded.request_id != frame.request_id
+        || decoded.payload != frame.payload
+    {
+        return Err(format!(
+            "{label}: the decoded frame does not match the original"
+        ));
+    }
+    Ok(())
 }
 
 /// Puts the daemon's serial port back if the suite unwinds between release and resume.
@@ -787,8 +871,9 @@ pub async fn run_suite<F: FnMut(CheckResult)>(
         ) {
             Err(e) => {
                 r.fail("daemon released the serial port", e, 0);
-                r.skip("serial echo round trip", "the port was not released");
-                r.skip("L3 framing over serial", "the port was not released");
+                for name in SERIAL_CHECKS {
+                    r.skip(name, "the port was not released");
+                }
                 r.set_mode(1, "M64T_PROTO").await;
             }
             Ok(_) => {
@@ -801,12 +886,16 @@ pub async fn run_suite<F: FnMut(CheckResult)>(
                 let timeout = Duration::from_secs(10);
                 for (name, res) in [
                     (
-                        "serial echo round trip",
+                        SERIAL_CHECKS[0],
                         serial_echo(serial_cart, &opts.port, timeout),
                     ),
                     (
-                        "L3 framing over serial, including an 8 KiB frame",
+                        SERIAL_CHECKS[1],
                         serial_framing(serial_cart, &opts.port, timeout),
+                    ),
+                    (
+                        SERIAL_CHECKS[2],
+                        serial_framing_lockstep(serial_cart, &opts.port, timeout),
                     ),
                 ] {
                     match res {
@@ -917,5 +1006,51 @@ mod tests {
             Some(SerialCart::Ed64Pro)
         );
         assert_eq!(SerialCart::from_daemon("?"), None);
+    }
+    /// Echoes like RAW_ECHO, but cannot send while the host is sending: a message that arrives
+    /// while an earlier echo is still unread breaks the stream, which is what a truncated X7 write
+    /// looks like from the host.
+    #[derive(Default)]
+    struct HalfDuplexEcho {
+        unread: std::collections::VecDeque<u8>,
+        broken: bool,
+    }
+
+    impl L3Link for HalfDuplexEcho {
+        fn write_l3_stream(&mut self, buf: &[u8]) -> std::io::Result<()> {
+            // One message per DEFAULT_ED64_CHUNK, as the X7 pipe sends them.
+            for msg in buf.chunks(DEFAULT_ED64_CHUNK) {
+                if !self.unread.is_empty() {
+                    self.broken = true;
+                }
+                self.unread.extend(msg);
+            }
+            Ok(())
+        }
+
+        fn read_l3_bytes_exact(&mut self, out: &mut [u8], _: Duration) -> std::io::Result<()> {
+            if self.broken {
+                return Err(std::io::Error::other("ED64: expected CMPH trailer"));
+            }
+            if self.unread.len() < out.len() {
+                return Err(std::io::Error::other("deadline exceeded"));
+            }
+            for b in out.iter_mut() {
+                *b = self.unread.pop_front().expect("length checked");
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_cart_that_cannot_send_while_receiving_fails_the_burst_check() {
+        let err = framing_burst(&mut HalfDuplexEcho::default(), Duration::ZERO).unwrap_err();
+        assert!(err.starts_with("large DATA"), "{err}");
+    }
+
+    #[test]
+    fn the_lockstep_check_passes_on_a_cart_that_cannot_send_while_receiving() {
+        let note = framing_lockstep(&mut HalfDuplexEcho::default(), Duration::ZERO).unwrap();
+        assert!(note.contains("17 messages"), "{note}");
     }
 }
