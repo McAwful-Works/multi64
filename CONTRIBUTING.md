@@ -67,8 +67,9 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [crates/sc64-l2](crates/sc64-l2) | **`multi64-sc64-l2`** — L3 byte stream over SC64 serial |
 | [crates/ed64-l2](crates/ed64-l2) | **`multi64-ed64-l2`** — EverDrive X7 L2 (implemented; **unvalidated on hardware**, see spec §4.0) |
 | [crates/multi64d](crates/multi64d) | Reference daemon (`multi64d`) + library API |
-| [crates/multi64-test-connector](crates/multi64-test-connector) | CLI for test ROM / M64T |
-| [crates/multi64-test-connector-gui](crates/multi64-test-connector-gui) | Optional GUI; same WebSocket contract as the CLI |
+| [crates/multi64-test-connector](crates/multi64-test-connector) | CLI for test ROM / M64T, and the end-to-end **suite** (`suite.rs`) the test app also runs |
+| [crates/multi64-test-app](crates/multi64-test-app) | **Multi64 Test** — the suite in a window, as one portable exe |
+| [crates/multi64-test-connector-gui](crates/multi64-test-connector-gui) | Optional per-command GUI; same WebSocket contract as the CLI. Developer-only: runs binaries from `target/` |
 | [crates/multi64-sc64-sd](crates/multi64-sc64-sd) | **SC64 SD over USB** — `Sc64SdSession`, FAT32 + exFAT (Xfer64 and the `sc64-sd-e2e` tool; **not** `multi64d`, which speaks L3 only); RAM-disk tests in `cargo test` |
 | [crates/multi64-ed64-link](crates/multi64-ed64-link) | EverDrive X-series **`usb64`** serial (`RomRead` / `RamRead`) |
 | [crates/ed64pro-link](crates/ed64pro-link) | **`multi64-ed64pro-link`** — EverDrive-64 PRO host link over edlink Gen3 ([spec](docs/spec/ed64-pro-usb-host.md)); scripted-transport tests only, **never run against a cart** |
