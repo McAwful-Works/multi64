@@ -108,6 +108,44 @@ the WebSocket; the script reads `GET /` at the moment of failure to tell them ap
 even that fails it says so loudly — `multi64d` would then be holding no port, and Multi64 needs a
 restart.
 
+### What it needs
+
+On the PC: **`bash`** and **`curl`** — on Windows, Git for Windows (**not** WSL's bash, which cannot
+reach the COM port) — and **`multi64d`** running against the cart, which the Multi64 installer
+provides and starts.
+
+On the desk: a **SummerCart64** in a powered console, and **`multi64_test.z64`** on its SD card,
+booted, with the controller then left alone.
+
+It does **not** need Node, Python, `jq`, or the N64 toolchain. It does not need a repo checkout or
+a Rust toolchain either — see below.
+
+### Running it without a checkout
+
+The script drives three binaries. In a repo checkout with `cargo` on `PATH` it builds the connector
+itself, as before. Outside one, put the binaries next to the script or point `--tools` at them:
+
+| Binary | Covers |
+|--------|--------|
+| `multi64-test-connector` | every WebSocket check |
+| `sc64-echo-test` | the direct-serial phase — **SKIP**ped, not failed, when absent |
+| `sc64-l3-framing-e2e` | as above |
+
+Build them with:
+
+```sh
+cargo build --release -p multi64-test-connector -p sc64-echo-test -p sc64-l3-framing-e2e
+```
+
+and copy them, plus `scripts/l3_e2e.sh` (and `l3_e2e.ps1` for Windows) and `multi64_test.z64`, into
+one folder. With the Multi64 installer, that folder is everything a recipient needs — Multi64
+carries the daemon, and the Xfer64 it installs can put the ROM on the card.
+
+**Set `MULTI64_EXPECT_ROM`** when you hand it over, e.g. `MULTI64_EXPECT_ROM="multi64-test-rom
+1.10"`. Outside a checkout there is no header to read the expected version from, so the version
+guard **skips** rather than passes: a check that cannot fail is worse than no check, and this is the
+one that stops the whole run being a test of some other ROM.
+
 GitHub **CI** does not run this (no cart); it only builds and tests the Rust workspace. The latest
 hardware run is recorded in [`n64/README.md`](../../n64/README.md#hardware-record).
 
