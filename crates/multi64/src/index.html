@@ -97,20 +97,6 @@
       <p class="hint hint-error card-error" id="status-error" role="alert" hidden></p>
     </section>
 
-    <!-- Removed outright in the standalone build, which bundles no Xfer64 installer and has none
-         of the code that looks for an installed one. See build_info() and the xfer64 feature. -->
-    <section class="card" id="xfer64-card" hidden>
-      <h2>Xfer64</h2>
-      <p class="hint" id="xfer64-card-hint">
-        Xfer64 is a separate app that copies files between the cart's SD card and This PC over USB. The button
-        runs the bundled installer when Xfer64 is not installed, or opens it when it is.
-      </p>
-      <div class="row">
-        <button type="button" id="btn-open-explorer" class="btn primary" aria-describedby="xfer64-card-hint xfer64-error">Xfer64</button>
-      </div>
-      <p class="hint hint-error card-error" id="xfer64-error" role="alert" hidden></p>
-    </section>
-
     <section class="card" id="dev-panel" hidden>
       <h2>Developer</h2>
       <p class="hint">
@@ -309,14 +295,6 @@
             <p class="help-text">
               With the notification area (system tray) turned on, closing the window can hide Multi64 there instead
               of exiting. Open it again, or start, stop and restart the bridge, from the tray icon.
-            </p>
-          </section>
-
-          <section class="dialog-section">
-            <h3 class="dialog-section-title">Xfer64</h3>
-            <p class="help-text">
-              Xfer64 is a separate app that copies files between the cart's SD card and This PC over USB. The
-              Xfer64 card installs it, or opens it once it is installed.
             </p>
           </section>
         </div>

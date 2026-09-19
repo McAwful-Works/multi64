@@ -67,7 +67,6 @@ Var UpdateMode
 Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
-Var Xfer64InstallChoice
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -375,43 +374,10 @@ Var AppStartMenuFolder
 !endif
 !insertmacro MUI_PAGE_STARTMENU Application $AppStartMenuFolder
 
-; 7. Optional Xfer64 (radio-style choice; skipped for silent / passive)
-Page custom Xfer64PageCreate Xfer64PageLeave
-
-Function Xfer64PageCreate
-  ${If} ${Silent}
-    Abort
-  ${EndIf}
-  ${If} $PassiveMode = 1
-    Abort
-  ${EndIf}
-  !insertmacro MUI_HEADER_TEXT "Optional components" "Install Xfer64"
-  nsDialogs::Create 1018
-  Pop $R4
-  ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
-  ${NSD_CreateLabel} 0 0 100% 48u "Xfer64 is a separate app for transferring files to your flash cart SD card over USB. Choose whether to run its installer after Multi64 is installed."
-  Pop $R5
-  ${NSD_CreateRadioButton} 30u 58u -30u 12u "Install Xfer64 (recommended)"
-  Pop $R6
-  ${NSD_CreateRadioButton} 30u 80u -30u 12u "Skip for now"
-  Pop $R7
-  SendMessage $R6 ${BM_SETCHECK} ${BST_CHECKED} 0
-  nsDialogs::Show
-FunctionEnd
-
-Function Xfer64PageLeave
-  ${NSD_GetState} $R6 $R0
-  ${If} $R0 == ${BST_CHECKED}
-    StrCpy $Xfer64InstallChoice 1
-  ${Else}
-    StrCpy $Xfer64InstallChoice 0
-  ${EndIf}
-FunctionEnd
-
-; 8. Installation page
+; 7. Installation page
 !insertmacro MUI_PAGE_INSTFILES
 
-; 9. Finish page
+; 8. Finish page
 ;
 ; Don't auto jump to finish page after installation page,
 ; because the installation page has useful info that can be used debug any issues with the installer.
@@ -485,7 +451,6 @@ FunctionEnd
 {{/each}}
 
 Function .onInit
-  StrCpy $Xfer64InstallChoice 1
   ${GetOptions} $CMDLINE "/P" $PassiveMode
   ${IfNot} ${Errors}
     StrCpy $PassiveMode 1

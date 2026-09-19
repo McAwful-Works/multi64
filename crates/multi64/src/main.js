@@ -498,68 +498,14 @@ async function refreshLog() {
   }
 }
 
-/**
- * Show the Xfer64 card only in a build that has Xfer64, and keep it hidden otherwise.
- *
- * A build fact, not a runtime one: the standalone package carries no installer and cannot find or
- * launch anything, so the card is removed rather than shown disabled. Hiding is done once, here,
- * before the first refresh, so the card never flashes in a build that has no use for it.
- */
-async function applyBuildInfo() {
-  const card = document.getElementById("xfer64-card");
-  if (!card) return false;
-  try {
-    const info = await invoke("build_info");
-    card.hidden = !info.xfer64;
-    return !!info.xfer64;
-  } catch {
-    // An older shell without the command still has Xfer64: showing the card is the safe default,
-    // since its button reports its own state anyway.
-    card.hidden = false;
-    return true;
-  }
-}
-
-async function updateXfer64Button() {
-  const card = document.getElementById("xfer64-card");
-  if (card && card.hidden) return;
-  const btn = document.getElementById("btn-open-explorer");
-  try {
-    const st = await invoke("get_xfer64_state");
-    btn.textContent = st.installed ? "Open Xfer64" : "Install Xfer64…";
-    btn.disabled = !st.installed && !st.installerAvailable;
-    btn.title =
-      btn.disabled && !st.installed
-        ? "The Xfer64 installer was not bundled. Build Xfer64 before building Multi64."
-        : "";
-  } catch (e) {
-    btn.textContent = "Xfer64";
-    btn.disabled = false;
-    btn.title = String(e);
-  }
-}
-
 window.addEventListener("DOMContentLoaded", async () => {
-  await applyBuildInfo();
   await loadSettings();
   await refreshStatus();
-  await updateXfer64Button();
   if (document.getElementById("developer-mode").checked) {
     await refreshLog();
   }
 
   document.getElementById("btn-refresh").addEventListener("click", refreshStatus);
-
-  document.getElementById("btn-open-explorer").addEventListener("click", async () => {
-    showInlineError("xfer64-error", "");
-    try {
-      await invoke("launch_or_install_xfer64");
-      await updateXfer64Button();
-    } catch (e) {
-      console.error("launch_or_install_xfer64:", e);
-      showInlineError("xfer64-error", String(e));
-    }
-  });
 
   document.getElementById("btn-open-settings").addEventListener("click", () => {
     setSettingsOpen(true);
@@ -690,8 +636,4 @@ window.addEventListener("DOMContentLoaded", async () => {
       refreshLog();
     });
   }
-
-  window.addEventListener("focus", () => {
-    void updateXfer64Button();
-  });
 });

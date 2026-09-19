@@ -2,7 +2,7 @@
 
 Desktop app for **`multi64d`**, which the UI calls the **bridge**: serial port (with Auto-detect), start and stop the bridge, health, optional tray. Any **L3** client can use the same WebSocket as the app — see [`daemon-api-v1.md`](../../docs/spec/daemon-api-v1.md).
 
-**Xfer64** (package **`xfer64`**) is a separate installer: SD over USB file manager — [`../xfer64/README.md`](../xfer64/README.md). Multi64 can bundle the Xfer64 installer (NSIS or MSI pairing — see **Release** below).
+Multi64, **Xfer64** (SD over USB file manager — [`../xfer64/README.md`](../xfer64/README.md)) and **AP64** ([`../ap64/README.md`](../ap64/README.md)) are separate apps, each installed with its own installer. Multi64's installer contains only Multi64 and `multi64d`.
 
 ## Prerequisites
 
@@ -21,57 +21,14 @@ npm run dev
 
 ```sh
 cargo build -p multi64d --release
-cargo build -p xfer64 --release
-cd crates/xfer64 && npm install && npm run build
-cd ../multi64 && npm install && npm run build
+cd crates/multi64 && npm install && npm run build
 ```
 
 **Both installers stop `multi64d` before touching files**, on install and uninstall — NSIS via `NSIS_HOOK_PREINSTALL` / `PREUNINSTALL`, MSI via a custom action sequenced before `InstallValidate`. Without it the daemon holds `resources\multi64d.exe` open and the install fails on a locked file, which is not rare: the installer terminates the GUI, so the GUI's own `kill_daemon` never runs and the daemon is orphaned. Both match by **image name**, so a `multi64d` you are running from `cargo run` is killed too.
 
 Installer graphics come from `windows/*.bmp`, regenerated from the brand masters by [`branding/installer-images`](../../branding/installer-images/README.md).
 
-Artifacts under `target/release/bundle/`. **`src-tauri/build.rs`** copies one real Xfer64 installer (`xfer64-setup.exe` or `.msi`) and leaves the other as a placeholder. Use **`MULTI64_XFER64_BUNDLE=msi`** when building Multi64 if you built Xfer64 with **`tauri build --bundles msi`**. [Tauri `bundle.resources`](https://v2.tauri.app/reference/config/#bundle) lists `multi64d.exe`, Xfer64 payloads, and **`xfer64-installer-prompt.ps1`**. First-run installer can offer Xfer64 (skipped for silent NSIS **`/S`** or MSI **UILevel** 2).
-
-## Standalone build (no Xfer64)
-
-A second package that carries **no Xfer64 at all**: no bundled installer, no card in the window, no
-tray item, and none of the registry and path searching that finds an installed copy. About **2.6 MB
-smaller**, for embedding somewhere that wants Multi64 and nothing else.
-
-It is the same app — same name, same identifier — so installing one over the other replaces it
-rather than leaving two Multi64s on the machine.
-
-```sh
-cargo build -p multi64d --release
-cd crates/multi64 && npm install && npm run build:standalone
-```
-
-That script does three things, and all three are needed:
-
-- **`--no-default-features`** turns off the crate's `xfer64` feature, which drops the code and tells
-  `build.rs` not to copy any Xfer64 installer into `resources/`.
-- **`--config src-tauri/tauri.standalone.conf.json`** drops those files from `bundle.resources`. A
-  declared resource that is missing is a **hard error** in `tauri-build`, so the two go together:
-  building standalone with the default config fails outright.
-- **`rename-standalone.mjs`** renames the bundles afterwards. `productName` is `Multi64` in both
-  builds, so both write `Multi64_0.1.0_x64-setup.exe` and the second would otherwise overwrite the
-  first with no warning. Renaming the artifact rather than changing `productName` keeps the app
-  itself identical — same window title, same install directory, one Start-menu entry.
-
-Output, alongside the full installer rather than on top of it:
-
-| Build | Installer | Size |
-|-------|-----------|------|
-| `npm run build` | `Multi64_0.1.0_x64-setup.exe` | ~6.4 MB |
-| `npm run build:standalone` | `Multi64-standalone_0.1.0_x64-setup.exe` | ~3.8 MB |
-
-Size is the quick check that the right one came out. Searching the installer for `xfer64` is **not**
-a check: NSIS compresses its payload, so the string is absent from both.
-
-The window asks the backend what it is (`build_info`) and hides the Xfer64 card when the answer is
-no, so the card never flashes in a build that has no use for it. Two checks in
-[`e2e/`](e2e/README.md) cover it: the card is not shown, and the window does not go looking for
-Xfer64 at all.
+Artifacts under `target/release/bundle/`: an NSIS `*-setup.exe` and an MSI. **`src-tauri/build.rs`** copies `multi64d.exe` into `src-tauri/resources/`, and [Tauri `bundle.resources`](https://v2.tauri.app/reference/config/#bundle) declares it; that is the only resource. Build `multi64d` with the same profile first — a declared resource that is missing is a hard error in `tauri-build`.
 
 ## Appearance
 
@@ -108,7 +65,6 @@ These preferences live in **`localStorage`**, *not* in the settings file — the
 | `Bridge: …` | Status line, disabled. While running, names the port the daemon was actually started on (not what the settings would pick now), else the listen address; while stopped, says so when there is no serial port, or when something else already listens on the listen address. Any cart other than the default SummerCart64 is named after it (`· EverDrive-64 X7 (beta)`), again the one the running process was started for. Reflects whether the **process** is alive — the window shows finer-grained health, since a status line that polled `/health` would issue a blocking request on every update |
 | **Start / Stop bridge** | One item, whichever applies. Disabled with no serial port configured, because starting would fail; **Stop** stays enabled without one, since the port can disappear while the daemon runs. **Start** stays enabled while the listen address is taken, as the window's Start button does: the menu is only rebuilt when the bridge changes, so a greyed item would stay greyed after the other process exits |
 | **Restart bridge** | Disabled while stopped — that case is **Start** |
-| **Open Xfer64** | Reads *Install Xfer64…* when only the bundled installer is present, and is greyed when neither is |
 | **Show window**, **Exit Multi64** | |
 
 The menu tracks state live: starting or stopping the bridge from the window updates the tray, and vice versa.

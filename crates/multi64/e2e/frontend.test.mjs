@@ -92,9 +92,6 @@ function installTauriStub(scenario = {}) {
       ...(a.withPorts ? { portOptions: portOptions() } : {}),
     }),
     get_daemon_logs: () => [],
-    get_xfer64_state: () => ({ installed: false, installerAvailable: true }),
-    // `sc.xfer64 === false` is the standalone build: no bundled installer, no card.
-    build_info: () => ({ xfer64: sc.xfer64 !== false }),
   };
 
   window.__TAURI__ = {
@@ -124,17 +121,16 @@ const browser = await chromium.launch({
 });
 const consoleErrors = [];
 
-/** A fresh page on `scenario`, loaded as far as the window's startup status refresh. */
+/** A fresh page on `scenario`, loaded to the end of the window's startup. */
 async function openScenario(scenario) {
   const p = await browser.newPage({ viewport: { width: 900, height: 800 } });
   p.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
   p.on("pageerror", (e) => consoleErrors.push(`uncaught: ${e.message}`));
   await p.addInitScript(installTauriStub, scenario);
   await p.goto(`${origin}/index.html`);
-  // A standalone build never asks about Xfer64, so wait on the status refresh every build does.
-  const settled =
-    scenario && scenario.xfer64 === false ? "get_daemon_status" : "get_xfer64_state";
-  await until(p, (cmd) => window.__TAURI_CALLS__.some((c) => c.cmd === cmd), settled);
+  // Startup subscribes to `daemon-changed` last, after the settings load and the first status
+  // refresh have finished.
+  await until(p, () => "daemon-changed" in window.__TAURI_LISTENERS__);
   return p;
 }
 
@@ -250,25 +246,6 @@ async function openSettings(p) {
     return !document.getElementById("discard-panel").hidden;
   });
   check("#168: none of that counts as an unsaved edit", !edits);
-  await p.close();
-}
-
-// --- the standalone build: no Xfer64 at all -----------------------------------
-// The whole point of that build is that it carries no Xfer64, so the card must not be rendered and
-// the window must not go looking for one. Nothing else would catch the card coming back.
-{
-  const p = await openScenario({ xfer64: false });
-  const hidden = await p.evaluate(() => document.getElementById("xfer64-card").hidden);
-  check("standalone: the Xfer64 card is not shown", hidden);
-  const asked = await callsOf(p, "get_xfer64_state");
-  check("standalone: the window does not look for Xfer64", asked.length === 0);
-  await p.close();
-}
-
-{
-  const p = await openScenario({});
-  const shown = await p.evaluate(() => document.getElementById("xfer64-card").hidden === false);
-  check("the full build still shows the Xfer64 card", shown);
   await p.close();
 }
 
