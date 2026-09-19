@@ -132,7 +132,7 @@ version = "0.1.0"
 dependencies = [
  "ap64-cart",
  "ap64-core",
- "base64 0.22.1",
+ "base64 0.23.1",
  "mlua",
  "sha1 0.11.0",
 ]

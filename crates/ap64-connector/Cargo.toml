@@ -11,5 +11,5 @@ ap64-cart = { path = "../ap64-cart" }
 ap64-core = { path = "../ap64-core" }
 # `vendored` builds Lua from source: nothing to install on Windows.
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
-base64 = "0.22"
+base64 = "0.23"
 sha1 = "0.11"
