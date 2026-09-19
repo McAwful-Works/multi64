@@ -249,6 +249,56 @@ async function openSettings(p) {
   await p.close();
 }
 
+// --- The window fits the page ------------------------------------------------
+{
+  /** The height the page last asked the window for, and the page's own height. */
+  const fit = (p) => p.evaluate(() => ({
+    asked: window.__TAURI_CALLS__.filter((c) => c.cmd === "fit_window_height").at(-1)?.args.height,
+    page: Math.ceil(document.body.getBoundingClientRect().height),
+  }));
+  const settle = (p, want) => until(p, ([w]) => {
+    const asked = window.__TAURI_CALLS__.filter((c) => c.cmd === "fit_window_height").at(-1)?.args.height;
+    return w === "page" ? asked === Math.ceil(document.body.getBoundingClientRect().height) : asked >= w;
+  }, [want]);
+
+  const plain = await openScenario({});
+  await plain.setViewportSize({ width: 560, height: 640 });
+  const plainFit = (await settle(plain, "page")) && await fit(plain);
+  check("the window is fitted to the page: the Status card alone is well under the old 640 px",
+    plainFit && plainFit.asked === plainFit.page && plainFit.page < 480, JSON.stringify(plainFit));
+
+  const dev = await openScenario({ settings: { developerMode: true } });
+  await dev.setViewportSize({ width: 560, height: 640 });
+  const devFit = (await settle(dev, "page")) && await fit(dev);
+  const log = () => dev.evaluate(() => document.getElementById("daemon-log").getBoundingClientRect().height);
+  const emptyLog = await log();
+  check("Developer mode grows the window by the Developer card",
+    devFit && plainFit && devFit.asked === devFit.page && devFit.page > plainFit.page + emptyLog, JSON.stringify({ devFit, plainFit, emptyLog }));
+
+  // A long log scrolls inside the box; neither the box nor the window grows.
+  await dev.evaluate(() => {
+    document.getElementById("daemon-log").textContent = Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n");
+  });
+  const fullLog = await log();
+  const scrolls = await dev.evaluate(() => {
+    const el = document.getElementById("daemon-log");
+    return el.scrollHeight > el.clientHeight && getComputedStyle(el).overflowY === "auto";
+  });
+  const devAfter = await fit(dev);
+  check("the log is a fixed height that scrolls inside, however much is logged",
+    emptyLog === fullLog && scrolls && devAfter.asked === devFit.asked, JSON.stringify({ emptyLog, fullLog, scrolls, devAfter }));
+  await dev.close();
+
+  const opened = (await openSettings(plain)) && (await settle(plain, 640)) && await fit(plain);
+  check("while a dialog is open the window is at least 640 px, room for the dialog to scroll in",
+    opened && opened.asked === 640, JSON.stringify(opened));
+  await plain.click("#btn-cancel-settings");
+  const closed = (await settle(plain, "page")) && await fit(plain);
+  check("and it shrinks back to the page when the dialog closes",
+    closed && closed.asked === closed.page && closed.page === plainFit.page, JSON.stringify(closed));
+  await plain.close();
+}
+
 check("no console errors", consoleErrors.length === 0, consoleErrors.join("\n        "));
 
 // --- report --------------------------------------------------------------

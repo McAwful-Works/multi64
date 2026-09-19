@@ -13,7 +13,7 @@
         "label": "main",
         "title": "Multi64",
         "width": 560,
-        "height": 640,
+        "height": 400,
         "resizable": false,
         "maximizable": false,
         "visible": true

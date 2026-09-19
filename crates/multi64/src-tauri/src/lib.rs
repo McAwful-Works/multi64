@@ -1162,6 +1162,31 @@ fn get_settings(state: tauri::State<'_, AppState>) -> Settings {
     state.settings.lock().clone()
 }
 
+/// Bounds on [`fit_window_height`], in logical pixels: a page that measured nothing, or a runaway
+/// one, must not leave the window unusable.
+const WINDOW_MIN_HEIGHT: f64 = 240.0;
+const WINDOW_MAX_HEIGHT: f64 = 1600.0;
+
+/// Size the window's content area to `height` logical pixels, keeping its width. The window is not
+/// resizable by the user: the page calls this whenever what it shows changes height (Developer mode,
+/// a dialog opening), so the window always fits it.
+#[tauri::command]
+fn fit_window_height(window: tauri::WebviewWindow, height: f64) -> Result<(), String> {
+    if !height.is_finite() {
+        return Err(format!("not a height: {height}"));
+    }
+    let height = height.clamp(WINDOW_MIN_HEIGHT, WINDOW_MAX_HEIGHT);
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let width = window
+        .inner_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale)
+        .width;
+    window
+        .set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|e| e.to_string())
+}
+
 /// Writes the settings file, may touch the autostart registry entry, and may restart the daemon.
 #[tauri::command]
 async fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), String> {
@@ -1594,6 +1619,7 @@ pub fn run() {
             clear_daemon_logs,
             daemon_start,
             daemon_stop,
+            fit_window_height,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
