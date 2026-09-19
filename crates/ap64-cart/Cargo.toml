@@ -9,4 +9,4 @@ rust-version.workspace = true
 [dependencies]
 multi64-l3 = { path = "../l3" }
 # Synchronous WebSocket, no TLS: multi64d binds loopback and speaks ws://.
-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
