@@ -74,7 +74,8 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
-   Developer card: the daemon log.
+   Developer card: the daemon log. A fixed height, scrolling inside, so the card (and the
+   window, which fits the page) is the same size however much or little the bridge has logged.
    --------------------------------------------------------------------------- */
 
 .log {
@@ -85,8 +86,9 @@ body {
   padding: 0.65rem 0.75rem;
   font-size: var(--font-sm);
   line-height: 1.35;
-  max-height: 220px;
-  overflow: auto;
+  height: 220px;
+  overflow-x: hidden;
+  overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
 }

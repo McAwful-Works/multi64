@@ -302,6 +302,24 @@ function syncDialogOpen() {
   const open = DIALOG_IDS.some((id) => !document.getElementById(id).hidden);
   document.documentElement.classList.toggle("dialog-open", open);
   document.body.classList.toggle("dialog-open", open);
+  fitWindow();
+}
+
+/**
+ * The window fits the page: the Status card, plus the Developer card when Developer mode is on.
+ * The dialogs are taller than the page and scroll inside what the window gives them, so while one
+ * is open the window is at least this tall, and shrinks back when it closes. CSS pixels, which are
+ * the backend's logical pixels; the width never changes.
+ */
+const DIALOG_WINDOW_HEIGHT = 640;
+let fittedHeight = 0;
+
+function fitWindow() {
+  const page = Math.ceil(document.body.getBoundingClientRect().height);
+  const height = document.body.classList.contains("dialog-open") ? Math.max(page, DIALOG_WINDOW_HEIGHT) : page;
+  if (height === fittedHeight) return;
+  fittedHeight = height;
+  invoke("fit_window_height", { height }).catch((e) => console.error("fit_window_height:", e));
 }
 
 /**
@@ -499,6 +517,9 @@ async function refreshLog() {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  // Whatever changes the page's height (the Developer card, an error line, the UI scale), the
+  // window follows. It also fires once now, for the first fit.
+  new ResizeObserver(fitWindow).observe(document.body);
   await loadSettings();
   await refreshStatus();
   if (document.getElementById("developer-mode").checked) {
