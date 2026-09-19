@@ -144,9 +144,245 @@ pub fn yaz0_dmadata(rom: &[u8], table: u32) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// A patched image laid back out over its seed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repacked {
+    pub rom: Vec<u8>,
+    /// Files left exactly as the seed stores them, compressed or not.
+    pub kept: usize,
+    /// Files the patch changed, stored uncompressed: `(vrom_start, vrom_end, rom_start)`.
+    pub moved: Vec<(u32, u32, u32)>,
+}
+
+/// Lay `patched` (the decompressed image after a profile's writes) back out over `seed`, the
+/// ROM it was decompressed from, so that only what the patch changed costs space.
+///
+/// Decompressing the whole image is what lets a profile patch code, but it roughly doubles an
+/// Ocarina of Time seed. Nearly every file comes through a patch untouched, and an untouched
+/// file's seed bytes are already right, compressed or not: those stay exactly where the seed
+/// has them. A file the patch changed, and a file it added, is stored uncompressed after the
+/// seed's data, and its entry points there; the game reads a plain file from wherever its entry
+/// says. A changed plain file that still fits where it was, the file table among them, is
+/// rewritten in place. The seed's padding past its data is dropped.
+///
+/// `original` is `yaz0_dmadata(seed)`. The caller must check that the result decompresses back
+/// to `patched`: a write that fell outside every file would otherwise be lost silently.
+pub fn repack(
+    seed: &[u8],
+    original: &[u8],
+    patched: &[u8],
+    table: u32,
+) -> Result<Repacked, String> {
+    const ABSENT: u32 = 0xFFFF_FFFF;
+    let t = table as usize;
+    let seed_entries = dma_entries(seed, t)?;
+    let new_entries = dma_entries(patched, t)?;
+    if !seed_entries
+        .iter()
+        .any(|e| e.vrom_start == table && e.rom_start == table && e.rom_end == 0)
+    {
+        return Err(format!(
+            "the file table at 0x{t:X} is not stored plain in place"
+        ));
+    }
+
+    // Where the seed's data ends. Past it is padding, dropped unless something else is there.
+    let stored_end = |e: &DmaEntry| {
+        if e.rom_end != 0 {
+            e.rom_end
+        } else {
+            e.rom_start
+                .saturating_add(e.vrom_end.saturating_sub(e.vrom_start))
+        }
+    };
+    let data_end = seed_entries
+        .iter()
+        .filter(|e| e.rom_start != ABSENT)
+        .map(|e| stored_end(e) as usize)
+        .max()
+        .unwrap_or(0)
+        .max(crate::crc::CRC_END)
+        .min(seed.len());
+    let tail_is_padding = seed[data_end..].iter().all(|&b| b == 0x00 || b == 0xFF);
+    let keep = if tail_is_padding {
+        data_end
+    } else {
+        seed.len()
+    };
+    let mut rom = seed[..keep].to_vec();
+    // The header is read straight from the ROM, never through the table, in both layouts.
+    rom[..0x1000].copy_from_slice(
+        patched
+            .get(..0x1000)
+            .ok_or("the patched image has no header")?,
+    );
+
+    let mut kept = 0;
+    let mut moved = Vec::new();
+    let mut entries = Vec::with_capacity(new_entries.len());
+    for (i, e) in new_entries.iter().enumerate() {
+        let before = seed_entries
+            .get(i)
+            .filter(|o| o.vrom_start == e.vrom_start && o.vrom_end == e.vrom_end);
+        if e.rom_start == ABSENT {
+            entries.push((
+                e.at,
+                before.map_or([e.vrom_start, e.vrom_end, ABSENT, ABSENT], |o| {
+                    [o.vrom_start, o.vrom_end, o.rom_start, o.rom_end]
+                }),
+            ));
+            continue;
+        }
+        let (vs, ve) = (e.vrom_start as usize, e.vrom_end as usize);
+        let data = patched
+            .get(vs..ve)
+            .ok_or_else(|| format!("file at vrom 0x{vs:X} is past the end of the image"))?;
+        let entry = match before {
+            Some(o) if o.rom_start != ABSENT && original.get(vs..ve) == Some(data) => {
+                kept += 1;
+                [o.vrom_start, o.vrom_end, o.rom_start, o.rom_end]
+            }
+            Some(o) if o.rom_start != ABSENT && o.rom_end == 0 => {
+                let at = o.rom_start as usize;
+                rom.get_mut(at..at + data.len())
+                    .ok_or_else(|| format!("plain file at ROM 0x{at:X} is past the end"))?
+                    .copy_from_slice(data);
+                [o.vrom_start, o.vrom_end, o.rom_start, 0]
+            }
+            _ => {
+                rom.resize(rom.len().next_multiple_of(16), 0);
+                let at = rom.len() as u32;
+                rom.extend_from_slice(data);
+                moved.push((e.vrom_start, e.vrom_end, at));
+                [e.vrom_start, e.vrom_end, at, 0]
+            }
+        };
+        entries.push((e.at, entry));
+    }
+    // After the data, since the table is itself a file the loop may have copied over.
+    for (at, words) in entries {
+        for (k, w) in words.iter().enumerate() {
+            crate::rom::write_u32(&mut rom, at + 4 * k, *w);
+        }
+    }
+    Ok(Repacked { rom, kept, moved })
+}
+
+/// A valid Yaz0 stream of literals only: what the decoder reads, without a compressor.
+#[cfg(test)]
+pub(crate) fn yaz0_literal(plain: &[u8]) -> Vec<u8> {
+    let mut y = b"Yaz0".to_vec();
+    y.extend_from_slice(&(plain.len() as u32).to_be_bytes());
+    y.extend_from_slice(&[0; 8]);
+    for chunk in plain.chunks(8) {
+        y.push(0xFF);
+        y.extend_from_slice(chunk);
+    }
+    y
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const T: usize = 0x1000;
+
+    fn put_entry(rom: &mut [u8], i: usize, w: [u32; 4]) {
+        for (k, v) in w.iter().enumerate() {
+            crate::rom::write_u32(rom, T + i * 16 + 4 * k, *v);
+        }
+    }
+
+    /// A seed with a plain table, two compressed files (A, B) and one plain file (C), padded
+    /// with 0xFF past its data as a randomizer's output is.
+    fn compressed_seed() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let a: Vec<u8> = (0..0x300u32).map(|i| (i * 3) as u8).collect();
+        let b: Vec<u8> = (0..0x200u32).map(|i| (i * 5 + 1) as u8).collect();
+        let (ya, yb) = (yaz0_literal(&a), yaz0_literal(&b));
+        let mut rom = vec![0u8; 0x0014_0000];
+        rom[0x0012_0000..].fill(0xFF);
+        put_entry(&mut rom, 0, [0x1000, 0x1080, 0x1000, 0]);
+        let (ra, rb) = (0x0010_2000u32, 0x0010_4000u32);
+        put_entry(
+            &mut rom,
+            1,
+            [0x0020_0000, 0x0020_0300, ra, ra + ya.len() as u32],
+        );
+        put_entry(
+            &mut rom,
+            2,
+            [0x0020_1000, 0x0020_1200, rb, rb + yb.len() as u32],
+        );
+        put_entry(&mut rom, 3, [0x0020_2000, 0x0020_2010, 0x0010_6000, 0]);
+        rom[ra as usize..ra as usize + ya.len()].copy_from_slice(&ya);
+        rom[rb as usize..rb as usize + yb.len()].copy_from_slice(&yb);
+        rom[0x0010_6000..0x0010_6010].copy_from_slice(b"PLAIN FILE BYTES");
+        (rom, a, b)
+    }
+
+    /// The patch changes file A, restores a header byte (the header is read straight from the
+    /// ROM, not through the table), and adds a file after the image with its entry in slot 4.
+    fn patch(original: &[u8]) -> Vec<u8> {
+        let mut p = original.to_vec();
+        p[0x66C] = 0xA5;
+        p[0x0020_0010..0x0020_0014].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        p.resize(0x0021_0000, 0);
+        p.extend_from_slice(&[0xA6; 0x40]);
+        put_entry(&mut p, 4, [0x0021_0000, 0x0021_0040, 0x0021_0000, 0]);
+        p
+    }
+
+    #[test]
+    fn untouched_files_keep_their_seed_bytes_and_place() {
+        let (seed, _, b) = compressed_seed();
+        let original = yaz0_dmadata(&seed, T as u32).unwrap();
+        let patched = patch(&original);
+        let r = repack(&seed, &original, &patched, T as u32).unwrap();
+
+        let e = dma_entries(&r.rom, T).unwrap();
+        let s = dma_entries(&seed, T).unwrap();
+        // B is still compressed where it was, byte for byte; so is plain C.
+        assert_eq!(e[2], s[2], "file B's entry changed");
+        let (rs, re_) = (s[2].rom_start as usize, s[2].rom_end as usize);
+        assert_eq!(r.rom[rs..re_], seed[rs..re_]);
+        assert_eq!(yaz0(&r.rom, rs).unwrap(), b);
+        assert_eq!(e[3], s[3], "plain file C's entry changed");
+        assert_eq!(
+            r.kept, 2,
+            "B and C are kept; the table is rewritten in place"
+        );
+    }
+
+    #[test]
+    fn a_changed_file_and_a_new_one_are_stored_uncompressed_past_the_seed_data() {
+        let (seed, _, _) = compressed_seed();
+        let original = yaz0_dmadata(&seed, T as u32).unwrap();
+        let patched = patch(&original);
+        let r = repack(&seed, &original, &patched, T as u32).unwrap();
+
+        let e = dma_entries(&r.rom, T).unwrap();
+        assert_eq!(e[1].rom_end, 0, "file A is stored uncompressed");
+        assert!(
+            e[1].rom_start >= 0x0010_6010,
+            "file A goes past the seed's data"
+        );
+        assert_eq!((e[4].vrom_start, e[4].rom_end), (0x0021_0000, 0));
+        assert_eq!(r.moved.len(), 2);
+        assert!(
+            r.rom.len() < 0x0012_0000,
+            "the seed's padding is not carried over"
+        );
+    }
+
+    /// The whole point: the game, reading the repacked ROM, sees exactly the patched image.
+    #[test]
+    fn a_repacked_rom_decompresses_to_the_patched_image() {
+        let (seed, _, _) = compressed_seed();
+        let original = yaz0_dmadata(&seed, T as u32).unwrap();
+        let patched = patch(&original);
+        let r = repack(&seed, &original, &patched, T as u32).unwrap();
+        assert_eq!(yaz0_dmadata(&r.rom, T as u32).unwrap(), patched);
+    }
 
     /// "abcabcabc!" as literals then one back-reference, and a long-run reference.
     fn sample() -> (Vec<u8>, Vec<u8>) {
