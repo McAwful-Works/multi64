@@ -88,12 +88,12 @@ daemon) — so a caller can tell a broken cart from a run that never happened.
 
 ### Handing it to someone else
 
-Three things, and nothing else:
+Four things, and nothing else:
 
-1. the **Multi64 installer** — it carries `multi64d`, and the Xfer64 it installs can put the ROM on
-   the card;
-2. **`multi64_test.z64`**;
-3. **`multi64-test-app.exe`**.
+1. the **Multi64 installer** — it carries `multi64d`;
+2. the **Xfer64 installer** — Xfer64 can put the ROM on the card;
+3. **`multi64_test.z64`**;
+4. **`multi64-test-app.exe`**.
 
 No Rust, no Node, no Python, no `bash`, no loose helper binaries. The direct-serial checks are
 linked into the app rather than shelling out to `sc64-echo-test` and `sc64-l3-framing-e2e`, which is

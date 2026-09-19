@@ -27,10 +27,7 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "resources/multi64d.exe",
-      "resources/xfer64-setup.exe",
-      "resources/xfer64-setup.msi",
-      "resources/xfer64-installer-prompt.ps1"
+      "resources/multi64d.exe"
     ],
     "icon": [
       "icons/32x32.png",
@@ -49,7 +46,7 @@
       },
       "wix": {
         "fragmentPaths": [
-          "windows/wix-xfer64-option.wxs"
+          "windows/wix-installer-actions.wxs"
         ],
         "componentGroupRefs": [
           "Multi64InstallerActions"

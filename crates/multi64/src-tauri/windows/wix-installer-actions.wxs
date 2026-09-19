@@ -4,9 +4,8 @@
     <!--
       Anchor for the fragment. WiX links a Fragment only when something references it, and Tauri
       exposes no `customActionRefs`, so without a referencable element here `light` silently drops
-      this whole file: before this group existed, neither custom action below reached the MSI and
-      the optional-Xfer64 prompt never ran from an MSI install. Referenced from tauri.conf.json
-      via `bundle.windows.wix.componentGroupRefs`.
+      this whole file: before this group existed, the custom action below never reached the MSI.
+      Referenced from tauri.conf.json via `bundle.windows.wix.componentGroupRefs`.
     -->
     <ComponentGroup Id="Multi64InstallerActions" />
     <!--
@@ -25,7 +24,7 @@
 
       `util:CloseApplication` would be the idiomatic tool, but the WiX util extension is not linked
       into this build, so declaring its namespace here would fail candle. A CustomAction needs no
-      extension and matches the prompt action below.
+      extension.
 
       Sequenced before InstallValidate (the point at which MSI detects files in use) and left
       unconditioned so it runs on uninstall too. Return="ignore" because taskkill exits 128 when no
@@ -37,16 +36,8 @@
       Execute="immediate"
       Impersonate="yes"
       Return="ignore" />
-    <!-- After Multi64 files are on disk, optionally launch the bundled Xfer64 installer (same PS1 as NSIS). -->
-    <CustomAction Id="Multi64Xfer64OptionalPrompt"
-      Directory="SystemFolder"
-      ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]resources\xfer64-installer-prompt.ps1&quot; -InstallDir &quot;[INSTALLDIR]&quot; -UiLevel [UILevel]"
-      Execute="immediate"
-      Impersonate="yes"
-      Return="ignore" />
     <InstallExecuteSequence>
       <Custom Action="Multi64StopDaemon" Before="InstallValidate" />
-      <Custom Action="Multi64Xfer64OptionalPrompt" After="InstallFinalize"><![CDATA[NOT REMOVE]]></Custom>
     </InstallExecuteSequence>
   </Fragment>
 </Wix>
