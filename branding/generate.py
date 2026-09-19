@@ -35,12 +35,13 @@ AP64 = ap.scene_ap()
 
 # The intersecting spheres leave faces cut into BSP fragments that merge_runs
 # cannot regroup (other faces paint between them), so AP64 widens the
-# same-colour stroke enough to close the hairlines along those cuts.
-for name, polys, elev, stroke in (
-        ("multi64.svg", MULTI64, n.ELEV, 0.6),
-        ("xfer64.svg", XFER64, n.ELEV, 0.6),
-        ("ap64.svg", AP64, ap.elev_for_tilt(ap.TILT), 1.5)):
+# same-colour stroke enough to close the hairlines along those cuts. Its ring
+# is also cropped tighter than the other marks' 6%, so it fills the icon.
+for name, polys, elev, stroke, pad in (
+        ("multi64.svg", MULTI64, n.ELEV, 0.6, 0.06),
+        ("xfer64.svg", XFER64, n.ELEV, 0.6, 0.06),
+        ("ap64.svg", AP64, ap.elev_for_tilt(ap.TILT), 1.5, 0.015)):
     path = os.path.join(HERE, name)
     with open(path, "w", newline="\n") as f:
-        f.write(n.svg_single(polys, elev=elev, stroke=stroke))
+        f.write(n.svg_single(polys, pad=pad, elev=elev, stroke=stroke))
     print("wrote", path)
