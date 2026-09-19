@@ -21,7 +21,8 @@ use ap64_cart::backend::{Backend, Multi64, Stats};
 use ap64_cart::Log;
 use ap64_connector::server::{self, Event};
 use ap64_connector::{Connector, Script, SCRIPTS};
-use ap64_core::profile::Write;
+use ap64_core::profile::{Transform, Write};
+use ap64_core::transform::{dma_entries, rom_address, DmaEntry};
 use ap64_core::{rom as rom_fmt, Bundle};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -107,8 +108,30 @@ impl Backend for SharedCart {
     }
 }
 
+/// The file table in the cart's ROM at `table`, read a piece at a time up to its end.
+fn cart_table(cart: &mut Multi64, table: u32) -> Result<Vec<DmaEntry>, String> {
+    const STEP: usize = 0x1000;
+    // dma_entries gives up past 0x2000 entries; so does this.
+    const MAX: usize = 0x2_0000;
+    let mut bytes = Vec::new();
+    while bytes.len() < MAX {
+        let got = cart
+            .read_rom_many(&[(table + bytes.len() as u32, STEP)])
+            .map_err(|e| e.to_string())?;
+        bytes.extend_from_slice(&got[0]);
+        if let Ok(entries) = dma_entries(&bytes, 0) {
+            return Ok(entries);
+        }
+    }
+    Err(format!("the cart ROM has no file table at 0x{table:X}"))
+}
+
 /// Check the cart is running `bundle`'s game with its agent: the header names the game, and
 /// every hook the profile writes is in place. Returns the ROM's internal name.
+///
+/// A profile's offsets are where the game sees its bytes. For a profile with a transform they
+/// are not ROM offsets: AP64 stores a file it patched away from where the seed had it
+/// (`transform::repack`), so each hook is looked up in the cart's own file table first.
 fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<String, String> {
     let p = &bundle.profile;
     let jals: Vec<(u32, u32)> = p
@@ -122,9 +145,9 @@ fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<String, String> {
         })
         .collect();
     // The header and boot code in one region: what the hash covers too, so it is cached.
-    let mut regions = vec![(0u32, 0x1000usize)];
-    regions.extend(jals.iter().map(|&(at, _)| (at, 4)));
-    let got = cart.read_rom_many(&regions).map_err(|e| e.to_string())?;
+    let got = cart
+        .read_rom_many(&[(0u32, 0x1000usize)])
+        .map_err(|e| e.to_string())?;
     let h = rom_fmt::header(&got[0]).ok_or("the cart ROM header could not be read")?;
     if h.game_code != p.game_code || h.version != p.version {
         return Err(format!(
@@ -138,14 +161,38 @@ fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<String, String> {
             p.version
         ));
     }
-    for (i, &(at, want)) in jals.iter().enumerate() {
-        let word = u32::from_be_bytes(got[i + 1][..4].try_into().unwrap());
+    let without = |why: String| {
+        format!(
+            "the cart is running {} without AP64's agent ({why}); add the agent to the seed and \
+             load that ROM",
+            p.name
+        )
+    };
+    let table = match &p.transform {
+        None => None,
+        Some(Transform::Yaz0Dmadata { table }) => Some(cart_table(cart, *table)?),
+    };
+    let mut at_rom = Vec::with_capacity(jals.len());
+    for &(at, _) in &jals {
+        at_rom.push(match &table {
+            None => at,
+            Some(t) => rom_address(t, at).ok_or_else(|| {
+                without(format!(
+                    "the file holding the hook at 0x{at:X} is still compressed"
+                ))
+            })?,
+        });
+    }
+    let regions: Vec<(u32, usize)> = at_rom.iter().map(|&r| (r, 4)).collect();
+    let words = cart.read_rom_many(&regions).map_err(|e| e.to_string())?;
+    for ((&(at, want), &rom), word) in jals.iter().zip(&at_rom).zip(&words) {
+        let word = u32::from_be_bytes(word[..4].try_into().unwrap());
         if word != want {
-            return Err(format!(
-                "the cart is running {} without AP64's agent (the hook at ROM 0x{at:X} is \
-                 0x{word:08X}); add the agent to the seed and load that ROM",
-                p.name
-            ));
+            return Err(without(if rom == at {
+                format!("the hook at ROM 0x{at:X} is 0x{word:08X}")
+            } else {
+                format!("the hook at 0x{at:X}, ROM 0x{rom:X}, is 0x{word:08X}")
+            }));
         }
     }
     Ok(h.name)

@@ -144,6 +144,20 @@ pub fn yaz0_dmadata(rom: &[u8], table: u32) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Where the ROM stores the byte a game reads at `vrom`, going by `entries`, a file table read
+/// from that ROM. `None` when no file holds it, or when its file is compressed, since its bytes
+/// are then at no single ROM address.
+///
+/// A seed patched through `repack` keeps most files where the seed had them and moves the ones
+/// it changed, so a profile's decompressed offsets are not ROM offsets. Anything reading a
+/// patched ROM at a profile offset, rather than the image `yaz0_dmadata` rebuilds, needs this.
+pub fn rom_address(entries: &[DmaEntry], vrom: u32) -> Option<u32> {
+    let e = entries
+        .iter()
+        .find(|e| e.rom_start != 0xFFFF_FFFF && e.vrom_start <= vrom && vrom < e.vrom_end)?;
+    (e.rom_end == 0).then(|| e.rom_start + (vrom - e.vrom_start))
+}
+
 /// A patched image laid back out over its seed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repacked {
@@ -372,6 +386,53 @@ mod tests {
             r.rom.len() < 0x0012_0000,
             "the seed's padding is not carried over"
         );
+    }
+
+    fn e(vs: u32, ve: u32, rs: u32, re_: u32) -> DmaEntry {
+        DmaEntry {
+            at: 0,
+            vrom_start: vs,
+            vrom_end: ve,
+            rom_start: rs,
+            rom_end: re_,
+        }
+    }
+
+    #[test]
+    fn a_plain_file_is_read_where_its_entry_says() {
+        let t = [
+            e(0x1000, 0x2000, 0x1000, 0),
+            e(0x0020_0000, 0x0020_1000, 0x0080_0000, 0),
+        ];
+        assert_eq!(rom_address(&t, 0x1234), Some(0x1234), "in place");
+        assert_eq!(
+            rom_address(&t, 0x0020_0100),
+            Some(0x0080_0100),
+            "moved by repack"
+        );
+    }
+
+    #[test]
+    fn a_compressed_absent_or_unlisted_byte_has_no_rom_address() {
+        let t = [
+            e(0x1000, 0x2000, 0x0010_0000, 0x0010_0800),
+            e(0x3000, 0x4000, 0xFFFF_FFFF, 0xFFFF_FFFF),
+        ];
+        assert_eq!(rom_address(&t, 0x1800), None, "compressed");
+        assert_eq!(rom_address(&t, 0x3800), None, "absent");
+        assert_eq!(rom_address(&t, 0x5000), None, "in no file");
+        assert_eq!(rom_address(&t, 0x2000), None, "a file's end is not in it");
+    }
+
+    /// Every hook of a repacked seed is found where the ROM holds it.
+    #[test]
+    fn a_repacked_roms_table_finds_the_changed_bytes() {
+        let (seed, _, _) = compressed_seed();
+        let original = yaz0_dmadata(&seed, T as u32).unwrap();
+        let patched = patch(&original);
+        let r = repack(&seed, &original, &patched, T as u32).unwrap();
+        let at = rom_address(&dma_entries(&r.rom, T).unwrap(), 0x0020_0010).unwrap() as usize;
+        assert_eq!(r.rom[at..at + 4], [0xDE, 0xAD, 0xBE, 0xEF]);
     }
 
     /// The whole point: the game, reading the repacked ROM, sees exactly the patched image.
