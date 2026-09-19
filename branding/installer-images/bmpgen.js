@@ -52,7 +52,7 @@ http.createServer((req, res) => {
     });
     return;
   }
-  const file = u.pathname === '/' ? path.join(OUT, 'gen.html') : path.join(ROOT, u.pathname.slice(1));
+  const file = u.pathname === '/' ? path.join(__dirname, 'gen.html') : path.join(ROOT, u.pathname.slice(1));
   fs.readFile(file, (e, b) => {
     if (e) { res.writeHead(404); return res.end('nf ' + u.pathname); }
     res.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream' });

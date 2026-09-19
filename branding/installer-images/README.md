@@ -1,7 +1,8 @@
 # Installer images
 
-Regenerates the Windows installer bitmaps for Multi64 and Xfer64 from the brand masters
-(`branding/multi64.svg`, `branding/xfer64.svg`) into each app's `src-tauri/windows/`.
+Regenerates the Windows installer bitmaps for Multi64, Xfer64 and AP64 from the brand masters
+(`branding/multi64.svg`, `branding/xfer64.svg`, `branding/ap64.svg`) into each app's
+`src-tauri/windows/`. AP64 builds only an NSIS installer, so it gets only the two `nsis-*` files.
 
 | File | Size | Used by |
 |------|------|---------|
@@ -24,7 +25,7 @@ either side — BMP is simple enough to emit directly.
 node branding/installer-images/bmpgen.js <output-dir>
 ```
 
-Then open <http://127.0.0.1:8792/> and wait for "done: 8 files". Copy each `<app>-<kind>.bmp` to
+Then open <http://127.0.0.1:8792/> and wait for "done: 10 files". Copy each `<app>-<kind>.bmp` to
 `crates/<app>/src-tauri/windows/<kind>.bmp`. The page renders every canvas on screen, so the
 placements can be checked before anything is copied in.
 
