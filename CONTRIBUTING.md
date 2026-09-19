@@ -6,7 +6,7 @@ Thanks for helping improve the bridge stack. This document is for **developers**
 
 | | |
 | --- | --- |
-| **Rust** | `rust-version` in the workspace [Cargo.toml](Cargo.toml) (currently **1.74+**). Install via [rustup](https://rustup.rs/). |
+| **Rust** | `rust-version` in the workspace [Cargo.toml](Cargo.toml) (currently **1.80+**). Install via [rustup](https://rustup.rs/). |
 | **SummerCart64** (optional) | Hardware runs: USB serial, [vendor USB docs](https://github.com/Polprzewodnikowy/SummerCart64). |
 | **EverDrive-64 X7** (optional) | **`multi64-ed64-l2`** / [docs/spec/l3-over-everdrive-x7.md](docs/spec/l3-over-everdrive-x7.md): USB model differs from SC64; see [Krikzz dev files](https://krikzz.com/pub/support/everdrive-64/x-series/dev/) and [N64brew ED64 X7](https://n64brew.dev/wiki/EverDrive-64_X7). **CI does not** exercise ED64 hardware. |
 | **EverDrive-64 PRO** (optional) | **`multi64-ed64pro-l2`** / [docs/spec/l3-over-everdrive-pro.md](docs/spec/l3-over-everdrive-pro.md): edlink Gen3, unrelated to the X7's USB model; start from spec §9. **CI does not** exercise it either. |
@@ -70,6 +70,11 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [crates/multi64-test-connector](crates/multi64-test-connector) | CLI for test ROM / M64T, and the end-to-end **suite** (`suite.rs`) the test app also runs |
 | [crates/multi64-test-app](crates/multi64-test-app) | **Multi64 Test** — the suite in a window, as one portable exe |
 | [crates/multi64-test-connector-gui](crates/multi64-test-connector-gui) | Optional per-command GUI; same WebSocket contract as the CLI. Developer-only: runs binaries from `target/` |
+| [crates/ap64](crates/ap64) | **AP64** — Archipelago N64 seeds on a console (Tauri app); the only game-specific code in the repo, see its [README](crates/ap64/README.md) |
+| [crates/ap64-core](crates/ap64-core) | **`ap64-core`** — seed detection, per-game profiles, splicing the cart agent in; the prebuilt agent images and their build |
+| [crates/ap64-cli](crates/ap64-cli) | **`ap64-cli`** — `ap64-patch`, the patcher from the command line |
+| [crates/ap64-cart](crates/ap64-cart) | **`ap64-cart`** — RDRAM and cart ROM over M64P through `multi64d` |
+| [crates/ap64-connector](crates/ap64-connector) | **`ap64-connector`** — forked Archipelago connector scripts in embedded Lua, and the TCP side their client connects to |
 | [crates/multi64-sc64-sd](crates/multi64-sc64-sd) | **SC64 SD over USB** — `Sc64SdSession`, FAT32 + exFAT (Xfer64 and the `sc64-sd-e2e` tool; **not** `multi64d`, which speaks L3 only); RAM-disk tests in `cargo test` |
 | [crates/multi64-ed64-link](crates/multi64-ed64-link) | EverDrive X-series **`usb64`** serial (`RomRead` / `RamRead`) |
 | [crates/ed64pro-link](crates/ed64pro-link) | **`multi64-ed64pro-link`** — EverDrive-64 PRO host link over edlink Gen3 ([spec](docs/spec/ed64-pro-usb-host.md)); scripted-transport tests only, **never run against a cart** |

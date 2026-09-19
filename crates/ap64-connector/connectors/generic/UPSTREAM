@@ -1,0 +1,9 @@
+connector.lua is AP64's fork of connector_bizhawk_generic.lua from an Archipelago
+0.6.7 install (C:\ProgramData\Archipelago\data\lua), taken 2026-09-13 via
+oot-ap-cart's vendor/ copy.
+
+upstream sha256
+0c2b1ea5f6aa5313c41b9184f111cf6bcb799c09e3a5f42fdf37fd2fd2b7c445  connector_bizhawk_generic.lua
+
+MIT licensed (Copyright (c) 2023 Zunawe); the notice is kept at the top of the fork.
+What changed is described in the fork's second comment block.

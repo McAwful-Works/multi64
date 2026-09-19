@@ -1,0 +1,228 @@
+/* ===========================================================================
+   AP64-only rules, laid out the way the Multi64 window is: a header with a tagline, cards
+   of at most 40rem, status rows in a two-column grid, and any list that can grow held in a
+   box of fixed height. The palette, size tokens, buttons, fields and hints come from
+   styles.css (the shared base, copied verbatim from multi64). No colour, font-size or
+   border-radius literals here -- use the tokens.
+   =========================================================================== */
+
+body {
+  padding: 1rem 1.25rem 2rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Header: as Multi64's.
+   --------------------------------------------------------------------------- */
+
+.header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.tagline {
+  margin: 0.5rem 0 0;
+  max-width: 52rem;
+  font-size: var(--font-md);
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Cards: as Multi64's.
+   --------------------------------------------------------------------------- */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.1rem;
+  margin-top: 1rem;
+  max-width: 40rem;
+}
+
+.card h2 {
+  margin: 0 0 0.75rem;
+  font-size: var(--font-lg);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* An error under a card's content. */
+.hint.card-error {
+  margin: 0.6rem 0 0;
+}
+
+/* Status rows: Multi64's status grid. */
+.status-grid {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: 0.35rem 0.75rem;
+  margin: 0 0 1rem;
+  font-size: var(--font-md);
+}
+
+.status-grid dt {
+  margin: 0;
+  color: var(--muted);
+}
+
+.status-grid dd {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+  overflow-wrap: anywhere;
+}
+
+/* Multi64's log box. */
+.log {
+  margin: 0.75rem 0 0;
+  background: var(--surface-sunken);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.65rem 0.75rem;
+  font-size: var(--font-sm);
+  line-height: 1.35;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------------------------------------------------------------------------
+   Patch card.
+   --------------------------------------------------------------------------- */
+
+.drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+}
+
+.drop-zone[data-state="over"] {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.drop-zone[data-state="busy"] {
+  opacity: 0.6;
+}
+
+.drop-zone-text {
+  font-size: var(--font-md);
+  color: var(--text-dim);
+}
+
+#result {
+  margin-top: 0.75rem;
+}
+
+/* Failed checks: shown open, one line and its hint each. */
+.failed-checks {
+  list-style: none;
+  margin: -0.5rem 0 1rem;
+  padding: 0;
+  font-size: var(--font-sm);
+}
+
+.failed-checks li {
+  margin: 0 0 0.4rem;
+  color: var(--danger-text);
+}
+
+.failed-checks .check-hint {
+  color: var(--warning-text);
+}
+
+/* Anything that can grow with the seed: behind a toggle, in a box of fixed height. */
+.more {
+  margin: 0 0 0.75rem;
+  font-size: var(--font-sm);
+  color: var(--muted);
+}
+
+.more summary {
+  cursor: pointer;
+}
+
+.more[open] summary {
+  margin-bottom: 0.4rem;
+}
+
+.scroll-box {
+  max-height: 10rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.checklist {
+  list-style: none;
+}
+
+.check-item {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+  color: var(--text-dim);
+}
+
+.check-mark {
+  flex: none;
+  width: 1rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.check-item[data-ok="true"] .check-mark {
+  color: var(--success-text);
+}
+
+.check-item[data-ok="false"] {
+  color: var(--danger-text);
+}
+
+.check-detail {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.summary {
+  padding-left: 1.6rem;
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------------------
+   Play card.
+   --------------------------------------------------------------------------- */
+
+.row.nowrap {
+  flex-wrap: nowrap;
+}
+
+.row.nowrap .input {
+  flex: 1;
+  min-width: 0;
+}
+
+#play-status[data-state="playing"] {
+  color: var(--success-text);
+}
+
+#play-status[data-state="waiting-client"],
+#play-status[data-state="connecting"] {
+  color: var(--warning-text);
+}
+
+#play-status[data-state="failed"] {
+  color: var(--danger-text);
+}

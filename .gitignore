@@ -38,3 +38,12 @@ crates/multi64-test-connector-gui/node_modules/
 n64/test-rom/build/
 n64/agent/build/
 n64/agent/tools/*.txt
+
+# AP64: npm, per-game agent build intermediates, probe output, and seeds (never commit ROMs)
+crates/ap64/node_modules/
+crates/ap64/e2e/node_modules/
+crates/ap64-core/agent/*/build/
+crates/ap64-core/tools/*/*.txt
+crates/ap64*/**/*.z64
+crates/ap64*/**/*.v64
+crates/ap64*/**/*.n64

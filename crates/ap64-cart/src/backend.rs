@@ -1,0 +1,532 @@
+//! Where RDRAM and the cartridge ROM come from: the console, through multi64d, or images
+//! in tests.
+//!
+//! Every operation takes a whole batch, because over USB the cost is per exchange, not
+//! per byte: a connector names every region a request needs and gets them in as few
+//! wire requests as the M64P limits allow, in the order asked, with nothing added.
+//!
+//! The ROM is read from the cart itself (M64P `PEEKROM`) and cached: it cannot change
+//! while the console runs, and clients read it far more often than it could be fetched.
+//! The cache is dropped whenever the link to the cart restarts, since that is when the
+//! console may have been reset or another game loaded.
+
+use std::collections::HashMap;
+use std::io;
+use std::time::{Duration, Instant};
+
+use crate::m64p;
+use crate::transport::Multi64Transport;
+use crate::Log;
+
+pub trait Backend {
+    /// RDRAM size the cart reports (8 MiB with an Expansion Pak).
+    fn rdram_size(&self) -> u32;
+
+    /// One block per region, in order.
+    fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>>;
+
+    /// All of `writes`, in order.
+    fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()>;
+
+    /// The cartridge ROM window that can be read, from offset 0; `None` when the cart's
+    /// agent predates `PEEKROM`. An upper bound, not the size of the image that booted.
+    fn rom_window(&self) -> Option<u32>;
+
+    /// Cartridge ROM, one block per region, in order.
+    fn read_rom_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>>;
+
+    /// Changes each time the link to the cart restarts. Anything derived from the ROM
+    /// (a hash, a header) must be read again when it does.
+    fn generation(&self) -> u32 {
+        0
+    }
+}
+
+fn check(addr: u32, len: usize, size: u32) -> io::Result<()> {
+    check_in(addr, len, size, "RDRAM")
+}
+
+fn check_in(addr: u32, len: usize, size: u32, what: &str) -> io::Result<()> {
+    let end = addr as u64 + len as u64;
+    if end > size as u64 {
+        // Zero-filling would turn a wrong address into a plausible-looking answer,
+        // which is the hardest kind of bug to notice.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("0x{addr:X}..0x{end:X} is outside the cart's 0x{size:X} bytes of {what}"),
+        ));
+    }
+    Ok(())
+}
+
+/// A flat RDRAM image, and optionally a ROM image. No console involved.
+pub struct RamImage {
+    pub ram: Vec<u8>,
+    pub rom: Option<Vec<u8>>,
+}
+
+impl RamImage {
+    pub fn new(ram: Vec<u8>) -> Self {
+        Self { ram, rom: None }
+    }
+
+    /// With a cart ROM, as an agent with `PEEKROM` serves it.
+    pub fn with_rom(ram: Vec<u8>, rom: Vec<u8>) -> Self {
+        Self {
+            ram,
+            rom: Some(rom),
+        }
+    }
+}
+
+impl Backend for RamImage {
+    fn rdram_size(&self) -> u32 {
+        self.ram.len() as u32
+    }
+
+    fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        regions
+            .iter()
+            .map(|&(addr, len)| {
+                check(addr, len, self.rdram_size())?;
+                Ok(self.ram[addr as usize..addr as usize + len].to_vec())
+            })
+            .collect()
+    }
+
+    fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
+        for &(addr, data) in writes {
+            check(addr, data.len(), self.rdram_size())?;
+        }
+        for &(addr, data) in writes {
+            self.ram[addr as usize..addr as usize + data.len()].copy_from_slice(data);
+        }
+        Ok(())
+    }
+
+    fn rom_window(&self) -> Option<u32> {
+        self.rom.as_ref().map(|r| r.len() as u32)
+    }
+
+    fn read_rom_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        let rom = self
+            .rom
+            .as_ref()
+            .ok_or_else(|| io::Error::other("no cart ROM"))?;
+        regions
+            .iter()
+            .map(|&(addr, len)| {
+                check_in(addr, len, rom.len() as u32, "cart ROM")?;
+                Ok(rom[addr as usize..addr as usize + len].to_vec())
+            })
+            .collect()
+    }
+}
+
+/// Give up on a cart unreachable for this long. Long enough for a console to be
+/// power-cycled or the cart re-plugged; the Archipelago client waits it out.
+const RECONNECT_DEADLINE: Duration = Duration::from_secs(300);
+const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(2);
+/// Timeouts retried on the same transport before rebuilding it. A silent agent
+/// (scene load, reset) answers again once its frame hook runs; a rebuild would redo
+/// HELLO for nothing.
+const SOFT_RETRIES: u32 = 2;
+
+/// Cached ROM is kept in pages of this size, fetched several to a request.
+const ROM_PAGE: u32 = 1024;
+/// Tries at a `PEEKROM` the cart answered `E_BUSY` (the game held the PI bus).
+const ROM_BUSY_TRIES: u32 = 5;
+
+/// Counters worth showing a player: what the session has survived.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// PEEKV/POKEV/PEEKROM round trips.
+    pub requests: u64,
+    /// Regions put on the wire.
+    pub regions: u64,
+    /// Timeouts ridden out on the same transport.
+    pub stalls: u32,
+    /// Transports rebuilt.
+    pub reconnects: u32,
+}
+
+/// The console, through multi64d.
+pub struct Multi64 {
+    t: Multi64Transport,
+    url: String,
+    log: Log,
+    retired_requests: u64,
+    stats: Stats,
+    /// Cart ROM pages read so far, by page number. Dropped on reconnect.
+    rom_pages: HashMap<u32, Vec<u8>>,
+    generation: u32,
+}
+
+impl Multi64 {
+    /// Connect and complete HELLO. Fails if the daemon holds no serial link or no agent
+    /// answers.
+    pub fn connect(url: &str, log: Log) -> io::Result<Self> {
+        Ok(Self {
+            t: Multi64Transport::connect(url, log.clone())?,
+            url: url.to_string(),
+            log,
+            retired_requests: 0,
+            stats: Stats::default(),
+            rom_pages: HashMap::new(),
+            generation: 0,
+        })
+    }
+
+    pub fn writable(&self) -> bool {
+        self.t.writable
+    }
+
+    pub fn stats(&self) -> Stats {
+        Stats {
+            requests: self.retired_requests + self.t.requests() as u64,
+            ..self.stats
+        }
+    }
+
+    /// Run `op`, riding out a silent agent, then rebuilding the transport with backoff.
+    ///
+    /// Both operations are idempotent -- `PEEKV` is a read, and a repeated `POKEV`
+    /// writes the same bytes -- so retrying a half-finished exchange is safe.
+    fn with_retry<T>(
+        &mut self,
+        what: &str,
+        mut op: impl FnMut(&mut Multi64Transport) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let mut last = match op(&mut self.t) {
+            Ok(v) => return Ok(v),
+            Err(e) => e,
+        };
+
+        // Silence first, on the same transport. A late reply to the request we gave up
+        // on is discarded by rid, so asking again is safe.
+        for attempt in 1..=SOFT_RETRIES {
+            if last.kind() != io::ErrorKind::TimedOut {
+                break;
+            }
+            match op(&mut self.t) {
+                Ok(v) => {
+                    self.stats.stalls += 1;
+                    (self.log)(format!(
+                        "cart {what}: agent silent, answered on attempt {} (stall #{})",
+                        attempt + 1,
+                        self.stats.stalls
+                    ));
+                    return Ok(v);
+                }
+                Err(e) => last = e,
+            }
+        }
+
+        (self.log)(format!(
+            "cart {what} failed: {last}; reconnecting to {}",
+            self.url
+        ));
+        let deadline = Instant::now() + RECONNECT_DEADLINE;
+        let mut wait = Duration::from_millis(250);
+        loop {
+            if Instant::now() >= deadline {
+                return Err(io::Error::other(format!(
+                    "cart {what}: gave up after {}s trying to reach {}: {last}",
+                    RECONNECT_DEADLINE.as_secs(),
+                    self.url
+                )));
+            }
+            std::thread::sleep(wait);
+            wait = (wait * 2).min(RECONNECT_BACKOFF_MAX);
+            match Multi64Transport::connect(&self.url, self.log.clone()) {
+                Ok(t) => {
+                    self.retired_requests += self.t.requests() as u64;
+                    self.t = t;
+                    self.stats.reconnects += 1;
+                    // A new HELLO: the console may have been reset, or be running
+                    // another image. Nothing read from the old one can be trusted.
+                    self.rom_pages.clear();
+                    self.generation += 1;
+                    (self.log)(format!(
+                        "cart reconnected (reconnect #{})",
+                        self.stats.reconnects
+                    ));
+                    match op(&mut self.t) {
+                        Ok(v) => return Ok(v),
+                        Err(e) => last = e,
+                    }
+                }
+                Err(e) => last = e,
+            }
+        }
+    }
+}
+
+impl Multi64 {
+    /// Fetch the ROM pages in `pages` that are not cached, as few requests as the limits
+    /// allow.
+    fn fill_rom_pages(&mut self, pages: &[u32]) -> io::Result<()> {
+        let missing: Vec<m64p::Region> = pages
+            .iter()
+            .filter(|p| !self.rom_pages.contains_key(p))
+            .map(|&p| m64p::Region {
+                addr: p * ROM_PAGE,
+                len: ROM_PAGE as u16,
+            })
+            .collect();
+        for batch in batches(&missing) {
+            self.stats.regions += batch.len() as u64;
+            let mut tries = 0;
+            let got = loop {
+                match self.with_retry("ROM read", |t| t.peek_rom(&batch)) {
+                    Err(e)
+                        if e.kind() == io::ErrorKind::WouldBlock && tries + 1 < ROM_BUSY_TRIES =>
+                    {
+                        // The game held the PI bus past the agent's bound: it is streaming
+                        // from ROM. Give it a frame or two.
+                        tries += 1;
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    other => break other?,
+                }
+            };
+            for (region, bytes) in batch.iter().zip(got) {
+                self.rom_pages.insert(region.addr / ROM_PAGE, bytes);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Backend for Multi64 {
+    fn rdram_size(&self) -> u32 {
+        self.t.rdram_bytes
+    }
+
+    fn rom_window(&self) -> Option<u32> {
+        self.t.rom_bytes
+    }
+
+    fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    fn read_rom_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        let window = self.rom_window().ok_or_else(|| {
+            io::Error::other(
+                "this cart agent cannot read the cart ROM (it predates PEEKROM); \
+                 add the agent to the seed again with this version of AP64",
+            )
+        })?;
+        let mut pages = Vec::new();
+        for &(addr, len) in regions {
+            check_in(addr, len, window, "cart ROM window")?;
+            if len > 0 {
+                let first = addr / ROM_PAGE;
+                let last = (addr + len as u32 - 1) / ROM_PAGE;
+                pages.extend(first..=last);
+            }
+        }
+        pages.sort_unstable();
+        pages.dedup();
+        self.fill_rom_pages(&pages)?;
+        regions
+            .iter()
+            .map(|&(addr, len)| {
+                let mut out = Vec::with_capacity(len);
+                let mut at = addr;
+                let end = addr + len as u32;
+                while at < end {
+                    let page = &self.rom_pages[&(at / ROM_PAGE)];
+                    let off = (at % ROM_PAGE) as usize;
+                    let take = ((end - at) as usize).min(ROM_PAGE as usize - off);
+                    out.extend_from_slice(&page[off..off + take]);
+                    at += take as u32;
+                }
+                Ok(out)
+            })
+            .collect()
+    }
+
+    fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        let (chunks, counts) = split(regions, self.rdram_size())?;
+        let mut flat = Vec::with_capacity(chunks.len());
+        for batch in batches(&chunks) {
+            self.stats.regions += batch.len() as u64;
+            let done = self.with_retry("read", |t| t.peek(&batch))?;
+            flat.extend(done);
+        }
+        stitch(flat, &counts)
+    }
+
+    fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
+        // Validate and split everything first, so a rejected address fails before any
+        // of the batch has been sent.
+        let size = self.rdram_size();
+        let mut chunks: Vec<(u32, &[u8])> = Vec::new();
+        for &(addr, data) in writes {
+            check(addr, data.len(), size)?;
+            chunks.extend(
+                data.chunks(m64p::MAX_REGION_BYTES)
+                    .enumerate()
+                    .map(|(i, c)| (addr + (i * m64p::MAX_REGION_BYTES) as u32, c)),
+            );
+        }
+        let mut batch: Vec<(u32, &[u8])> = Vec::new();
+        let mut bytes = 0usize;
+        for c in chunks {
+            if batch.len() == m64p::MAX_REGIONS || bytes + c.1.len() > m64p::MAX_TOTAL_BYTES {
+                self.stats.regions += batch.len() as u64;
+                self.with_retry("write", |t| t.poke(&batch))?;
+                batch.clear();
+                bytes = 0;
+            }
+            bytes += c.1.len();
+            batch.push(c);
+        }
+        if !batch.is_empty() {
+            self.stats.regions += batch.len() as u64;
+            self.with_retry("write", |t| t.poke(&batch))?;
+        }
+        Ok(())
+    }
+}
+
+/// Split regions into wire-legal chunks, remembering how many chunks each became so
+/// the replies can be stitched back together.
+fn split(regions: &[(u32, usize)], size: u32) -> io::Result<(Vec<m64p::Region>, Vec<usize>)> {
+    let mut chunks = Vec::new();
+    let mut counts = Vec::with_capacity(regions.len());
+    for &(addr, len) in regions {
+        check(addr, len, size)?;
+        let before = chunks.len();
+        let mut done = 0usize;
+        while done < len {
+            let take = (len - done).min(m64p::MAX_REGION_BYTES);
+            chunks.push(m64p::Region {
+                addr: addr + done as u32,
+                len: take as u16,
+            });
+            done += take;
+        }
+        counts.push(chunks.len() - before);
+    }
+    Ok((chunks, counts))
+}
+
+/// Pack chunks into requests in their original order, cutting only where the
+/// per-request region or byte limit forces it.
+fn batches(chunks: &[m64p::Region]) -> Vec<Vec<m64p::Region>> {
+    let mut out = Vec::new();
+    let mut batch: Vec<m64p::Region> = Vec::new();
+    let mut bytes = 0usize;
+    for &c in chunks {
+        if batch.len() == m64p::MAX_REGIONS || bytes + c.len as usize > m64p::MAX_TOTAL_BYTES {
+            out.push(std::mem::take(&mut batch));
+            bytes = 0;
+        }
+        bytes += c.len as usize;
+        batch.push(c);
+    }
+    if !batch.is_empty() {
+        out.push(batch);
+    }
+    out
+}
+
+/// Join per-chunk replies back into one block per requested region.
+fn stitch(flat: Vec<Vec<u8>>, counts: &[usize]) -> io::Result<Vec<Vec<u8>>> {
+    let mut out = Vec::with_capacity(counts.len());
+    let mut it = flat.into_iter();
+    for &n in counts {
+        let mut joined = Vec::new();
+        for _ in 0..n {
+            joined.extend(
+                it.next().ok_or_else(|| {
+                    io::Error::other("cart returned fewer regions than requested")
+                })?,
+            );
+        }
+        out.push(joined);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r(addr: u32, len: u16) -> m64p::Region {
+        m64p::Region { addr, len }
+    }
+
+    fn spans(chunks: &[m64p::Region]) -> Vec<(u32, u16)> {
+        chunks.iter().map(|c| (c.addr, c.len)).collect()
+    }
+
+    /// The three regions read from Paper Mario on hardware go out as one request, as
+    /// asked, with nothing added.
+    #[test]
+    fn batches_send_exactly_the_chunks_given_in_order() {
+        let chunks = [r(0x0040_11E0, 4), r(0x0040_51C0, 32), r(0x0010_F290, 16)];
+        let out = batches(&chunks);
+        assert_eq!(out.len(), 1);
+        assert_eq!(spans(&out[0]), spans(&chunks));
+    }
+
+    #[test]
+    fn batches_cut_only_where_the_wire_limits_force_it() {
+        let many: Vec<m64p::Region> = (0..=m64p::MAX_REGIONS as u32)
+            .map(|i| r(i * 16, 1))
+            .collect();
+        let out = batches(&many);
+        assert_eq!(
+            out.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![m64p::MAX_REGIONS, 1]
+        );
+        assert_eq!(spans(&out.concat()), spans(&many));
+        assert_eq!(
+            batches(&[r(0, 4096), r(0x1000, 4096)]).len(),
+            2,
+            "8192 B > 7936 B"
+        );
+        assert!(batches(&[]).is_empty());
+    }
+
+    #[test]
+    fn split_cuts_large_regions_and_counts_them() {
+        let (chunks, counts) = split(&[(0x100, 9000), (0x10, 4)], 0x80_0000).unwrap();
+        assert_eq!(
+            spans(&chunks),
+            vec![(0x100, 4096), (0x1100, 4096), (0x2100, 808), (0x10, 4)]
+        );
+        assert_eq!(counts, vec![3, 1]);
+        assert!(
+            split(&[(0x7F_FFFF, 2)], 0x80_0000).is_err(),
+            "past the end of RDRAM"
+        );
+    }
+
+    #[test]
+    fn stitch_rejoins_split_regions_and_rejects_a_short_reply() {
+        let flat = vec![vec![1, 2], vec![3], vec![4, 5]];
+        assert_eq!(
+            stitch(flat, &[2, 1]).unwrap(),
+            vec![vec![1, 2, 3], vec![4, 5]]
+        );
+        assert!(stitch(vec![vec![1]], &[2]).is_err());
+    }
+
+    #[test]
+    fn a_ram_image_refuses_out_of_range_and_writes_nothing_on_refusal() {
+        let mut ram = RamImage::new(vec![0; 16]);
+        assert!(ram.read_many(&[(12, 8)]).is_err());
+        assert!(ram.write_many(&[(0, &[1]), (15, &[2, 3])]).is_err());
+        assert_eq!(ram.ram[0], 0, "a batch with a bad write applies none of it");
+        ram.write_many(&[(4, &[9, 8])]).unwrap();
+        assert_eq!(
+            ram.read_many(&[(4, 2), (0, 1)]).unwrap(),
+            vec![vec![9, 8], vec![0]]
+        );
+    }
+}

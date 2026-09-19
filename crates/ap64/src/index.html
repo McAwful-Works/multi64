@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AP64</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="app.css" />
+    <script src="appearance.js"></script>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+  <body>
+    <header class="header">
+      <div class="header-top">
+        <div class="app-brand">
+          <img class="app-brand-mark" src="brand-mark.svg" alt="" width="28" height="28" />
+          <div class="app-brand-text">
+            <h1 class="app-title">AP64</h1>
+            <span class="app-productline">Archipelago on a real N64</span>
+          </div>
+        </div>
+      </div>
+      <p class="tagline">Adds the cart agent to a patched seed, then connects Archipelago to the console.</p>
+    </header>
+
+    <!-- Patch: results are kept to a few status rows. The full checklist and the list of
+         writes sit behind a toggle, in a box of fixed height, so a seed never stretches the
+         window. Only failed checks are shown open, because they are what needs acting on. -->
+    <section class="card" aria-labelledby="patch-title">
+      <h2 id="patch-title">Add the agent</h2>
+      <div id="drop-zone" class="drop-zone" data-state="idle">
+        <span class="drop-zone-text">Drop a patched seed here, or</span>
+        <button type="button" id="btn-browse" class="btn">Browse…</button>
+      </div>
+      <p class="hint" id="supported"></p>
+      <p class="hint hint-error card-error" id="load-error" role="alert" hidden></p>
+
+      <div id="seed" hidden>
+        <dl class="status-grid">
+          <dt>File</dt>
+          <dd id="seed-file">—</dd>
+          <dt>Header</dt>
+          <dd id="seed-header">—</dd>
+          <dt>Game</dt>
+          <dd id="seed-game">—</dd>
+          <dt>Checks</dt>
+          <dd id="seed-checks">—</dd>
+        </dl>
+        <ul id="failed-checks" class="failed-checks" aria-label="Failed checks" hidden></ul>
+        <details class="more" id="checks-more">
+          <summary>All checks</summary>
+          <ul id="checks" class="checklist scroll-box" aria-label="Checks"></ul>
+        </details>
+
+        <div id="patch-controls" hidden>
+          <label class="field">
+            <span>Save as</span>
+            <input id="output" class="input" type="text" spellcheck="false" />
+          </label>
+          <div class="row">
+            <button type="button" id="btn-patch" class="btn primary">Add agent</button>
+            <button type="button" id="btn-output" class="btn">Save as…</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="hint hint-error card-error" id="patch-error" role="alert" hidden></p>
+      <div id="result" role="status" hidden>
+        <dl class="status-grid result-grid">
+          <dt>Wrote</dt>
+          <dd id="result-path">—</dd>
+          <dt>SHA-1</dt>
+          <dd id="result-sha1">—</dd>
+        </dl>
+        <details class="more">
+          <summary>What was written</summary>
+          <ul id="result-summary" class="summary scroll-box"></ul>
+        </details>
+        <div class="row">
+          <button type="button" id="btn-reveal" class="btn">Show in folder</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="play-title">
+      <h2 id="play-title">Play</h2>
+      <p class="hint">
+        Load the ROM with the agent on the console, with the Multi64 app running and the cart
+        plugged in. Start here, then open the game's client from the Archipelago Launcher. The ROM
+        is read from the cart, so there is no file to choose.
+      </p>
+      <label class="field">
+        <span>Game</span>
+        <select id="play-game-select" class="input">
+          <option value="">Choose a game…</option>
+        </select>
+      </label>
+      <p class="hint hint-error card-error" id="play-error" role="alert" hidden></p>
+
+      <dl class="status-grid" id="play-facts" hidden>
+        <dt>Connector</dt>
+        <dd id="play-connector">—</dd>
+        <dt>Client</dt>
+        <dd id="play-client">—</dd>
+      </dl>
+      <dl class="status-grid">
+        <dt>Status</dt>
+        <dd id="play-status" data-state="idle" role="status">Not running</dd>
+        <dt>Activity</dt>
+        <dd id="play-counters">—</dd>
+      </dl>
+
+      <details class="more" id="play-advanced">
+        <summary>Advanced</summary>
+        <label class="field">
+          <span>Multi64 bridge (WebSocket)</span>
+          <input id="play-url" class="input" type="text" spellcheck="false" />
+        </label>
+      </details>
+
+      <div class="row">
+        <button type="button" id="btn-play-start" class="btn primary" disabled>Start</button>
+        <button type="button" id="btn-play-stop" class="btn" disabled>Stop</button>
+      </div>
+      <pre id="play-log" class="log" aria-label="Connector log" hidden></pre>
+    </section>
+  </body>
+</html>

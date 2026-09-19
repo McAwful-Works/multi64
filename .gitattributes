@@ -20,3 +20,7 @@ Makefile text eol=lf
 *.ld text eol=lf
 *.S text eol=lf
 toolchain.lock text eol=lf
+*.lua text eol=lf
+
+# AP64's prebuilt agent images and hook stubs.
+*.bin binary

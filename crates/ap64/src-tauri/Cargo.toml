@@ -1,0 +1,23 @@
+[package]
+name = "ap64-app"
+description = "Add the M64P cart agent to Archipelago N64 seeds"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "ap64_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ap64-core = { path = "../../ap64-core" }
+ap64-cart = { path = "../../ap64-cart" }
+ap64-connector = { path = "../../ap64-connector" }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+rfd = "0.17"
