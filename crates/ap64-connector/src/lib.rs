@@ -234,7 +234,7 @@ fn install(
                 let mut owned: Vec<(u32, Vec<u8>)> = Vec::new();
                 for w in list.sequence_values::<Table>() {
                     let w = w?;
-                    let data: mlua::String = w.get(2)?;
+                    let data: mlua::LuaString = w.get(2)?;
                     owned.push((w.get::<u32>(1)?, data.as_bytes().to_vec()));
                 }
                 let writes: Vec<(u32, &[u8])> =
@@ -321,13 +321,13 @@ fn install(
 
     ap64.set(
         "b64encode",
-        lua.create_function(|_, s: mlua::String| {
+        lua.create_function(|_, s: mlua::LuaString| {
             Ok(base64::engine::general_purpose::STANDARD.encode(s.as_bytes()))
         })?,
     )?;
     ap64.set(
         "b64decode",
-        lua.create_function(|lua, s: mlua::String| {
+        lua.create_function(|lua, s: mlua::LuaString| {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(s.as_bytes().trim_ascii())
                 .map_err(|e| mlua::Error::RuntimeError(format!("bad base64: {e}")))?;
