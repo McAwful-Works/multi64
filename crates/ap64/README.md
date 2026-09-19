@@ -15,9 +15,11 @@ received (2026-09-18):
 
 - **Castlevania 64 (US 1.0)**, through Archipelago's BizHawk Client.
 - **Paper Mario (US 1.0)** with the Paper Mario Randomizer, through BizHawk Client.
-- **Ocarina of Time (NTSC 1.0)**, Archipelago's OoT world, through OoT Client. The seed is
-  decompressed and the agent loaded with the randomizer's payload; the connector is a fork
-  of Archipelago's OoT connector.
+- **Ocarina of Time (NTSC 1.0)**, Archipelago's OoT world, through OoT Client. The agent is
+  loaded with the randomizer's payload; the connector is a fork of Archipelago's OoT connector.
+  The patch is made in the decompressed game, but only the files it changes are stored
+  uncompressed: every other file keeps the seed's compressed bytes, so the output is about
+  1.2 MiB larger than the seed rather than 21 MiB.
 
 ## Patching a seed
 

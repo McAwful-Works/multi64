@@ -3,6 +3,10 @@
 //! `apply` re-runs `verify` and refuses on any failure, then diffs its output against the
 //! input: a byte changed anywhere a profile write, the header checksum or the appended
 //! agent does not account for is a bug, and the output is withheld.
+//!
+//! A profile with a transform is checked and patched in the decompressed image, then laid back
+//! out over the seed (`transform::repack`), and withheld unless that decompresses to exactly
+//! the image that was patched.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -342,9 +346,6 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
     allowed.push(CRC_OFFSET..CRC_OFFSET + 8);
     allowed.push(region_start..usize::MAX);
     let mut summary = Vec::new();
-    if p.transform.is_some() {
-        summary.push(format!("Decompressed: {} bytes", input.len()));
-    }
 
     for w in &p.write {
         let (at, bytes) = match w {
@@ -388,8 +389,9 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
     let align = if p.agent.dma_slot.is_some() { 16 } else { 4 };
     out.resize(out.len().next_multiple_of(align), 0);
     summary.push(format!(
-        "Agent: {} bytes at ROM 0x{agent_rom:X}{}, runs at 0x{:08X}{}",
+        "Agent: {} bytes at {} 0x{agent_rom:X}{}, runs at 0x{:08X}{}",
         agent.len(),
+        if p.transform.is_some() { "vrom" } else { "ROM" },
         if p.agent.bss > 0 {
             format!(" with {} bytes of BSS", p.agent.bss)
         } else {
@@ -468,6 +470,13 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
         ));
     }
 
+    let out = match &p.transform {
+        None => out,
+        Some(crate::profile::Transform::Yaz0Dmadata { table }) => {
+            repacked(rom, &input, &out, *table, cic, &mut summary)?
+        }
+    };
+
     let sha1 = crc::hex(&Sha1::digest(&out)).to_uppercase();
     Ok(Patched {
         rom: out,
@@ -476,9 +485,68 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
     })
 }
 
+/// Only what the patch changed, laid out over `seed`: see `transform::repack`. `patched` is the
+/// finished decompressed image, checksum and all.
+fn repacked(
+    seed: &[u8],
+    original: &[u8],
+    patched: &[u8],
+    table: u32,
+    cic: crc::Cic,
+    summary: &mut Vec<String>,
+) -> Result<Vec<u8>, ApplyError> {
+    let r =
+        crate::transform::repack(seed, original, patched, table).map_err(ApplyError::Internal)?;
+    let mut out = r.rom;
+    let (a, b) = crc::fix(&mut out, cic);
+
+    // What the game reads must be exactly what was patched. The checksum is the one exception:
+    // it covers different bytes in the two layouts.
+    let mut seen = crate::transform::yaz0_dmadata(&out, table).map_err(ApplyError::Internal)?;
+    if seen.len() >= CRC_OFFSET + 8 {
+        seen[CRC_OFFSET..CRC_OFFSET + 8].copy_from_slice(&patched[CRC_OFFSET..CRC_OFFSET + 8]);
+    }
+    if seen != patched {
+        return Err(ApplyError::Internal(
+            "the repacked ROM does not decompress to the patched image".to_string(),
+        ));
+    }
+    if crc::identify(&out) != Some(cic) || crc::stored(&out) != Some(crc::compute(&out, cic)) {
+        return Err(ApplyError::Internal(
+            "repacked output does not boot-check".to_string(),
+        ));
+    }
+
+    // The decompressed image's checksum line is replaced by the one the output carries.
+    summary.retain(|l| !l.starts_with("Checksum:"));
+    summary.push(format!(
+        "Files: {} kept exactly as the seed stores them",
+        r.kept
+    ));
+    for (vs, ve, at) in &r.moved {
+        summary.push(format!(
+            "File 0x{vs:X}-0x{ve:X}: stored uncompressed at ROM 0x{at:X}"
+        ));
+    }
+    summary.push(format!(
+        "Size: {} bytes (seed {}, decompressed image {})",
+        out.len(),
+        seed.len(),
+        patched.len()
+    ));
+    summary.push(format!("Checksum: {cic} 0x{a:08X} 0x{b:08X}"));
+    Ok(out)
+}
+
 /// Whether `rom` (big-endian) already carries this profile's agent: every hook points
-/// at its target, every blob is in place, and the agent image sits at its offset.
+/// at its target, every blob is in place, and the agent image sits at its offset. For a
+/// profile with a transform, all of that is read in the decompressed image, since the patched
+/// files are not where the seed kept them.
 pub fn has_agent(bundle: &Bundle, rom: &[u8]) -> bool {
+    let rom: &[u8] = &match prepare(bundle, rom) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
     let p = &bundle.profile;
     let agent = match bundle.blobs.get(&p.agent.image) {
         Some(a) => a,
@@ -618,6 +686,139 @@ target = 0x80019C00
         assert!(!has_agent(&b, &rom));
         let out = apply(&b, &rom).unwrap().rom;
         assert!(has_agent(&b, &out));
+    }
+
+    /// An Ocarina-of-Time-shaped seed: a file table at 0x1000, the hook inside a compressed
+    /// `code` file, and a second compressed file the patch never touches.
+    mod compressed {
+        use super::*;
+        use crate::transform::{dma_entries, yaz0_dmadata, yaz0_literal};
+
+        const TABLE: usize = 0x1000;
+        const CODE: u32 = 0x20_0000;
+        const CODE_HOOK: u32 = CODE + 0x100;
+        const OTHER: u32 = 0x20_2000;
+        const REGION: u32 = 0x30_0000;
+
+        fn entry(rom: &mut [u8], i: usize, w: [u32; 4]) {
+            for (k, v) in w.iter().enumerate() {
+                rom::write_u32(rom, TABLE + i * 16 + 4 * k, *v);
+            }
+        }
+
+        fn seed_rom() -> Vec<u8> {
+            let mut rom = seed();
+            rom[TABLE..TABLE + 0x100].fill(0);
+            let mut code = vec![0u8; 0x1000];
+            code[0x100..0x104].copy_from_slice(&0x0C00_08CDu32.to_be_bytes());
+            let other: Vec<u8> = (0..0x800u32).map(|i| (i * 11) as u8).collect();
+            let (yc, yo) = (yaz0_literal(&code), yaz0_literal(&other));
+            let (rc, ro) = (0x10_2000u32, 0x10_4000u32);
+            entry(&mut rom, 0, [0x1000, 0x1100, 0x1000, 0]);
+            entry(&mut rom, 1, [CODE, CODE + 0x1000, rc, rc + yc.len() as u32]);
+            entry(
+                &mut rom,
+                2,
+                [OTHER, OTHER + 0x800, ro, ro + yo.len() as u32],
+            );
+            rom[rc as usize..rc as usize + yc.len()].copy_from_slice(&yc);
+            rom[ro as usize..ro as usize + yo.len()].copy_from_slice(&yo);
+            rom
+        }
+
+        fn bundle() -> Bundle {
+            let free = crc::hex(&Sha1::digest([0u8; 0x20]));
+            let text = format!(
+                r#"
+id = "test"
+name = "Test"
+release = "US"
+game_code = "NTSE"
+version = 0
+cic = "6102"
+randomizer = "none"
+connector = "generic"
+[transform]
+kind = "yaz0_dmadata"
+table = {TABLE}
+[agent]
+image = "agent.bin"
+region = {REGION}
+rom = {REGION}
+bss = 0x100
+dma_slot = 0x1030
+vram = 0x80480000
+min_ram = 0
+[[require]]
+kind = "word"
+label = "Hook"
+at = {CODE_HOOK}
+equals = 0x0C0008CD
+[[require]]
+kind = "sha1"
+label = "Free file table entries"
+at = 0x1030
+len = 0x20
+sha1 = "{free}"
+[[write]]
+kind = "restore"
+label = "IPL3"
+at = 0x66C
+bytes = "a5a5a5a5"
+accept = ["00000000"]
+[[write]]
+kind = "jal"
+label = "Jal"
+at = {CODE_HOOK}
+target = 0x80019C00
+"#
+            );
+            let blobs = HashMap::from([("agent.bin".to_string(), vec![0x11; 0x1103])]);
+            Bundle::new(Profile::parse(&text).unwrap(), blobs).unwrap()
+        }
+
+        #[test]
+        fn only_the_changed_file_is_stored_uncompressed() {
+            let rom = seed_rom();
+            let b = bundle();
+            let decompressed = yaz0_dmadata(&rom, TABLE as u32).unwrap().len();
+            let out = apply(&b, &rom).unwrap().rom;
+            assert!(
+                out.len() < decompressed,
+                "{} bytes out, the decompressed image is {decompressed}",
+                out.len()
+            );
+
+            // The untouched file is still the seed's compressed bytes, under its seed entry.
+            let (s, e) = (
+                dma_entries(&rom, TABLE).unwrap(),
+                dma_entries(&out, TABLE).unwrap(),
+            );
+            assert_eq!(e[2], s[2]);
+            let (rs, re_) = (s[2].rom_start as usize, s[2].rom_end as usize);
+            assert_eq!(out[rs..re_], rom[rs..re_]);
+            // `code` is moved and plain; the new file has its entry.
+            assert_eq!(e[1].rom_end, 0);
+            assert_eq!((e[3].vrom_start, e[3].rom_end), (REGION, 0));
+        }
+
+        #[test]
+        fn the_game_sees_the_hook_and_the_agent() {
+            let rom = seed_rom();
+            let b = bundle();
+            let out = apply(&b, &rom).unwrap().rom;
+            let seen = yaz0_dmadata(&out, TABLE as u32).unwrap();
+            assert_eq!(rom::read_u32(&seen, CODE_HOOK as usize), Some(0x0C00_6700));
+            assert_eq!(
+                seen[REGION as usize..REGION as usize + 0x1103],
+                [0x11; 0x1103]
+            );
+            assert_eq!(
+                crc::stored(&out),
+                Some(crc::compute(&out, crc::Cic::Cic6102))
+            );
+            assert!(has_agent(&b, &out) && !has_agent(&b, &rom));
+        }
     }
 
     #[test]
