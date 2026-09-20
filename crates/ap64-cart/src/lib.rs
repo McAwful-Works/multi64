@@ -5,8 +5,9 @@
 //! and reconnected, or a RAM image standing in for a console in tests.
 //!
 //! [`watch`] is the one thing a backend does that a plain read does not: a slot the game
-//! overwrites between polls is sampled on requests already going out, and the changes are
-//! queued so the connector is shown each one.
+//! overwrites between polls is followed, and every change queued, so the connector is shown
+//! each one. An agent that can do it watches the slot itself, every frame, and its events
+//! ride back on responses; one that cannot is sampled from here instead.
 //!
 //! Ported from oot-ap-cart's host (the plain path, which has run Paper Mario and
 //! Castlevania 64 sessions on hardware).

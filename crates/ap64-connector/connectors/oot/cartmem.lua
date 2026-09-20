@@ -27,9 +27,11 @@ local PAGE = 1024
 -- The next event overwrites it. An emulator reads it every frame; a cart poll is ~67-100 ms
 -- and misses what happened in between, and the check then waits until you leave the room.
 --
--- So AP64 watches the slot: it is read alongside every request that goes out and on idle
--- time, and each change is queued. The read below hands back the oldest one the connector
--- has not been shown, and live bytes once the queue has drained. The types are the ones a
+-- So AP64 watches the slot. An agent that can do it follows the slot on the console every
+-- frame and sends what it saw back on responses already going out; an older one is sampled
+-- from the host instead, alongside each request and on idle time. Either way each change is
+-- queued, and the read below hands back the oldest one the connector has not been shown,
+-- and live bytes once the queue has drained. The types are the ones a
 -- check_temp_context call site is ever called with -- chests (0x01), freestanding (0x02),
 -- great fairies (0x05), and 0x00 for the one-offs -- so an event no call site could match
 -- never takes a scan's place in the queue. See ap64_cart::watch.

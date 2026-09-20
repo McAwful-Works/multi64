@@ -21,8 +21,10 @@ received (2026-09-18):
   uncompressed: every other file keeps the seed's compressed bytes, so the output is about
   1.2 MiB larger than the seed rather than 21 MiB. The game's one in-scene sign that a
   check was collected is a slot the next event overwrites, which an emulator reads every
-  frame and a cart cannot; AP64 samples it alongside requests already going out and queues
-  what it sees, so a check does not wait for the scene to change.
+  frame. The agent watches that slot on the console, also every frame, and its events ride
+  back on requests that were already going out, so a check does not wait for the scene to
+  change. A ROM patched before this falls back to AP64 sampling the slot from the host,
+  which narrows the gap rather than closing it.
 
 ## Patching a seed
 

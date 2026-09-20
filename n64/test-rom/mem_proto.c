@@ -8,6 +8,40 @@
 #include "mem_proto.h"
 
 
+/*
+ * Watched slots (spec 4.3).
+ *
+ * A game that records an event in one place the next event overwrites gives a host
+ * polling over USB no way to see them all: it reads the slot once per exchange at best.
+ * This runs every frame, where the game writes them. What it sees goes in one queue and
+ * rides back on responses that were already being sent.
+ *
+ * Nothing here knows what a slot means. The address, the length and the filter are the
+ * host's; the agent only reports that the bytes changed.
+ */
+struct watch_slot {
+    uint32_t addr;
+    uint8_t len;
+    uint8_t at;      /* filter: the byte to test... */
+    uint8_t nvalues; /* ...against these, or none to keep every change */
+    uint8_t values[M64P_WATCH_MAX_VALUES];
+    uint8_t last[M64P_WATCH_MAX_LEN];
+    uint8_t have_last; /* the first read is a baseline, not an event */
+};
+
+struct watch_event {
+    uint8_t slot;
+    uint8_t len;
+    uint8_t bytes[M64P_WATCH_MAX_LEN];
+};
+
+static struct watch_slot s_watch[M64P_WATCH_SLOTS];
+static uint8_t s_watching;
+static struct watch_event s_events[M64P_WATCH_QUEUE];
+static uint8_t s_events_first;
+static uint8_t s_events_count;
+static uint16_t s_events_dropped;
+
 static uint32_t s_requests;
 static uint32_t s_bytes_read;
 static uint32_t s_bytes_written;
@@ -71,10 +105,19 @@ static void put_be32(uint8_t *p, uint32_t v)
     p[3] = (uint8_t)v;
 }
 
+static void watch_clear(void)
+{
+    s_watching = 0;
+    s_events_first = 0;
+    s_events_count = 0;
+    s_events_dropped = 0;
+}
+
 static void handle_hello(void)
 {
-    uint8_t app[5 + 12];
+    uint8_t app[5 + 13];
     int n;
+    int len = 8;
     uint32_t rom = m64p_cart_rom_size();
     uint8_t flags = (uint8_t)M64P_FLAG_WRITABLE;
 
@@ -87,9 +130,19 @@ static void handle_hello(void)
            still finds every field where it expects. */
         flags |= (uint8_t)M64P_FLAG_CART_ROM;
         put_be32(app + n + 8, rom);
+        len = 12;
     }
+    /* Then watch_slots, in bit order: a host reads the appended fields in the order of
+       the bits that announce them. */
+    flags |= (uint8_t)M64P_FLAG_WATCH;
+    app[n + len] = (uint8_t)M64P_WATCH_SLOTS;
+    len++;
     app[n + 7] = flags;
-    m64p_transport_send(app, n + (rom != 0U ? 12 : 8));
+
+    /* A HELLO is a new host, or the same one starting again: it has not said what to
+       watch yet, and events from before it arrived are not its to read. */
+    watch_clear();
+    m64p_transport_send(app, n + len);
 }
 
 /**
@@ -147,6 +200,192 @@ static uint8_t validate_regions(const uint8_t *body, size_t body_len, uint8_t n,
     return 0U;
 }
 
+/** Queue one event, dropping the oldest when the queue is full. */
+static void watch_push(uint8_t slot, const uint8_t *bytes, uint8_t len)
+{
+    uint8_t at;
+    uint8_t i;
+
+    if (s_events_count == (uint8_t)M64P_WATCH_QUEUE) {
+        s_events_first = (uint8_t)((s_events_first + 1U) % (uint8_t)M64P_WATCH_QUEUE);
+        s_events_count--;
+        if (s_events_dropped != 0xFFFFU) {
+            s_events_dropped++;
+        }
+    }
+    at = (uint8_t)((s_events_first + s_events_count) % (uint8_t)M64P_WATCH_QUEUE);
+    s_events[at].slot = slot;
+    s_events[at].len = len;
+    for (i = 0; i < len; i++) {
+        s_events[at].bytes[i] = bytes[i];
+    }
+    s_events_count++;
+}
+
+void m64p_watch_tick(void)
+{
+    uint8_t i;
+
+    for (i = 0; i < s_watching; i++) {
+        struct watch_slot *w = &s_watch[i];
+        uint8_t now[M64P_WATCH_MAX_LEN];
+        volatile uint8_t *src = rdram_at(w->addr);
+        int changed = 0;
+        int zero = 1;
+        uint8_t keep;
+        uint8_t j;
+
+        for (j = 0; j < w->len; j++) {
+            now[j] = src[j];
+            if (now[j] != w->last[j]) {
+                changed = 1;
+            }
+            if (now[j] != 0U) {
+                zero = 0;
+            }
+            w->last[j] = now[j];
+        }
+        if (!w->have_last) {
+            /* Whatever was in the slot before the host asked is not an event. */
+            w->have_last = 1;
+            continue;
+        }
+        /* A slot going to zero is the game finishing with it, not something happening. */
+        if (!changed || zero) {
+            continue;
+        }
+        keep = (uint8_t)(w->nvalues == 0U);
+        for (j = 0; j < w->nvalues; j++) {
+            if (now[w->at] == w->values[j]) {
+                keep = 1;
+            }
+        }
+        if (keep) {
+            watch_push(i, now, w->len);
+        }
+    }
+}
+
+/**
+ * Write as many queued events as `room` allows, oldest first, and remove them.
+ *
+ * Returns the bytes written, or 0 when the trailer does not fit at all -- the events stay
+ * queued and ride the next response. Only called while a slot is watched, so a host that
+ * asked for nothing never sees these bytes.
+ */
+static int watch_trailer(uint8_t *out, int room)
+{
+    int at = 3; /* n:u8 + dropped:u16 */
+    uint8_t n = 0;
+
+    if (room < at) {
+        return 0;
+    }
+    while (n < s_events_count) {
+        const struct watch_event *e =
+            &s_events[(s_events_first + n) % (uint8_t)M64P_WATCH_QUEUE];
+        uint8_t j;
+
+        if (at + 2 + (int)e->len > room) {
+            break;
+        }
+        out[at] = e->slot;
+        out[at + 1] = e->len;
+        for (j = 0; j < e->len; j++) {
+            out[at + 2 + j] = e->bytes[j];
+        }
+        at += 2 + (int)e->len;
+        n++;
+    }
+    out[0] = n;
+    put_be16(out + 1, s_events_dropped);
+    s_events_first = (uint8_t)((s_events_first + n) % (uint8_t)M64P_WATCH_QUEUE);
+    s_events_count = (uint8_t)(s_events_count - n);
+    return at;
+}
+
+static void handle_watch(const uint8_t *body, size_t body_len)
+{
+    uint8_t app[5 + 3];
+    struct watch_slot next[M64P_WATCH_SLOTS];
+    uint16_t rid;
+    uint8_t n;
+    size_t off = 3;
+    uint8_t i;
+    int an;
+
+    if (body_len < 3U) {
+        send_err(0U, M64P_ERR_MALFORMED);
+        return;
+    }
+    rid = read_be16(body);
+    n = body[2];
+    if (n > (uint8_t)M64P_WATCH_SLOTS) {
+        send_err(rid, M64P_ERR_TOO_MANY);
+        return;
+    }
+
+    /* Built aside and only then installed, so a request rejected part way through leaves
+       the slots the host set last time exactly as they were. */
+    for (i = 0; i < n; i++) {
+        uint8_t len;
+        uint8_t nvalues;
+        uint8_t j;
+
+        if (body_len < off + 7U) {
+            send_err(rid, M64P_ERR_MALFORMED);
+            return;
+        }
+        len = body[off + 4];
+        nvalues = body[off + 6];
+        if (len == 0U || len > (uint8_t)M64P_WATCH_MAX_LEN ||
+            nvalues > (uint8_t)M64P_WATCH_MAX_VALUES) {
+            send_err(rid, M64P_ERR_TOO_LARGE);
+            return;
+        }
+        if (body_len < off + 7U + (size_t)nvalues) {
+            send_err(rid, M64P_ERR_MALFORMED);
+            return;
+        }
+        next[i].addr = read_be32(body + off);
+        next[i].len = len;
+        next[i].at = body[off + 5];
+        next[i].nvalues = nvalues;
+        /* A filter on a byte outside the slot could never match. */
+        if (nvalues != 0U && next[i].at >= len) {
+            send_err(rid, M64P_ERR_RANGE);
+            return;
+        }
+        if ((uint32_t)(next[i].addr + (uint32_t)len) > m64p_rdram_size() ||
+            next[i].addr > m64p_rdram_size()) {
+            send_err(rid, M64P_ERR_RANGE);
+            return;
+        }
+        for (j = 0; j < nvalues; j++) {
+            next[i].values[j] = body[off + 7U + j];
+        }
+        for (j = 0; j < (uint8_t)M64P_WATCH_MAX_LEN; j++) {
+            next[i].last[j] = 0;
+        }
+        next[i].have_last = 0;
+        off += 7U + (size_t)nvalues;
+    }
+
+    /* A new list starts a new history: events queued for slots that may no longer exist,
+       or now mean something else, are not an answer to the question just asked. */
+    watch_clear();
+    for (i = 0; i < n; i++) {
+        s_watch[i] = next[i];
+    }
+    s_watching = n;
+
+    s_requests++;
+    an = app_header(app, M64P_MSG_WATCH_ACK);
+    put_be16(app + an, rid);
+    app[an + 2] = s_watching;
+    m64p_transport_send(app, an + 3);
+}
+
 static void handle_peekv(const uint8_t *body, size_t body_len)
 {
     uint16_t rid;
@@ -198,6 +437,10 @@ static void handle_peekv(const uint8_t *body, size_t body_len)
             reply[out + j] = src[j];
         }
         out += (int)len;
+    }
+
+    if (s_watching != 0U) {
+        out += watch_trailer(reply + out, M64P_APP_CAP - out);
     }
 
     s_requests++;
@@ -348,6 +591,9 @@ int m64p_handle(const uint8_t *p, size_t plen)
     case M64P_MSG_PEEKROM:
         handle_peekrom(body, body_len);
         break;
+    case M64P_MSG_WATCH:
+        handle_watch(body, body_len);
+        break;
     default:
         /* Unknown request: answer rather than go quiet, so a host driving a newer
            protocol sees a refusal instead of a timeout. */
@@ -380,6 +626,16 @@ uint32_t m64p_get_errors(void)
 uint8_t m64p_get_last_error(void)
 {
     return s_last_error;
+}
+
+uint8_t m64p_get_watching(void)
+{
+    return s_watching;
+}
+
+uint16_t m64p_get_watch_dropped(void)
+{
+    return s_events_dropped;
 }
 
 void m64p_reset_stats(void)

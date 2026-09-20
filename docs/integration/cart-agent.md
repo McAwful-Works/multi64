@@ -43,6 +43,23 @@ where an agent is hardest to place. If you supply the hooks yourself: the reply 
 overlap the request being read, and `m64p_transport_send()` must not copy a payload that is
 already in place. See [`mem_proto.h`](../../n64/test-rom/mem_proto.h).
 
+### 2.1 Two calls per frame
+
+A hook calls `agent_tick()`, which polls the cart and services whatever arrived. It also calls
+`m64p_watch_tick()` — in `agent.c` that is the first thing `agent_tick()` does, so an integration
+using this agent gets it for free; one supplying its own hook must make both calls.
+
+`m64p_watch_tick()` is what makes a **watched slot** mean anything
+([spec §4.3](../spec/memory-l3-application-v0.md#43-watched-slots-watch)). A host can ask the agent
+to follow a few bytes the game rewrites between its polls — the place a game records "this just
+happened" and overwrites next time. The agent reads them every frame, queues what changed, and the
+queue rides back on responses that were already being sent, so it costs no exchange. Reading those
+bytes costs a handful of byte compares, and nothing at all until a host asks.
+
+It must run **every frame, whether or not a request arrived**. A host that sets a watch is promised
+a per-frame sample and cannot tell a slow sampler from a quiet game, so a hook that cannot make the
+call that often must report no watch support rather than call it less.
+
 ## 3. What it does to the machine
 
 An injected agent touches the PI bus while the game is using it. These rules are in
