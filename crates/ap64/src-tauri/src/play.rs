@@ -360,6 +360,10 @@ fn run(
     let ports = script.ports;
     let mut last_stats = Instant::now();
     let mut handled = 0u64;
+    // A check the game showed only between two polls, handed to the client by the watch
+    // rather than waiting for the scene to change. Worth a line: it is the only place a
+    // session says the queue is doing anything.
+    let mut last_watch = ap64_cart::watch::WatchStats::default();
     let push_stats = |stats: Stats, handled: u64| {
         set(&|s| {
             s.requests = stats.requests;
@@ -396,6 +400,21 @@ fn run(
         }
         Event::Handled => {
             handled += 1;
+            if let Some(w) = connector.watch_stats() {
+                if w.replayed > last_watch.replayed || w.dropped > last_watch.dropped {
+                    log(format!(
+                        "in-scene events: {} seen, {} given to the client{}",
+                        w.events,
+                        w.replayed,
+                        if w.dropped > 0 {
+                            format!(", {} dropped by a full queue", w.dropped)
+                        } else {
+                            String::new()
+                        }
+                    ));
+                }
+                last_watch = w;
+            }
             if last_stats.elapsed() >= STATS_EVERY {
                 last_stats = Instant::now();
                 push_stats(cart.borrow().stats(), handled);

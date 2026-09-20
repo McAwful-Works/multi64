@@ -19,7 +19,10 @@ received (2026-09-18):
   loaded with the randomizer's payload; the connector is a fork of Archipelago's OoT connector.
   The patch is made in the decompressed game, but only the files it changes are stored
   uncompressed: every other file keeps the seed's compressed bytes, so the output is about
-  1.2 MiB larger than the seed rather than 21 MiB.
+  1.2 MiB larger than the seed rather than 21 MiB. The game's one in-scene sign that a
+  check was collected is a slot the next event overwrites, which an emulator reads every
+  frame and a cart cannot; AP64 samples it alongside requests already going out and queues
+  what it sees, so a check does not wait for the scene to change.
 
 ## Patching a seed
 

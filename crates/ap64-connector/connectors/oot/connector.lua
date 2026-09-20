@@ -13,6 +13,12 @@ one out. Everything that reads the game is upstream's, unchanged. What changed, 
   that fetches what the last poll touched in one call, and writes sent before the reply.
   `bit` is BizHawk's, on Lua 5.4 operators (connectors/lib/bit.lua).
 
+* The transient slot. BizHawk reads 0x40002C every frame; a cart poll cannot, so an event
+  written and overwritten between scans used to leave the check waiting for a scene
+  transition. AP64 watches that slot and hands each change to the scan in turn, which is
+  the one place cartmem.lua serves something other than live memory. Its reasoning is in
+  cartmem.lua and ap64_cart::watch.
+
 * Item delivery. The received-item count and the item mailbox are re-read together, in
   one request, just before an item is queued. Read apart, the game can take the mailbox
   in between and the same item is delivered twice.

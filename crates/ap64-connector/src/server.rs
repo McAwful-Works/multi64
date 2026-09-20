@@ -19,6 +19,13 @@ use crate::Connector;
 const IDLE: Duration = Duration::from_millis(10);
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How often to read a watched slot while the client has nothing to say.
+///
+/// A slot the game rewrites between polls is missed by as much as it goes unread, and a
+/// session waiting on its client is not using the cart for anything else. 250 ms buys
+/// several extra looks per poll out of time that was being spent in `IDLE` sleeps.
+const SAMPLE_EVERY: Duration = Duration::from_millis(250);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Listening(u16),
@@ -142,6 +149,7 @@ pub fn serve(
         bind(ports).map_err(|e| format!("listening for the Archipelago client: {e}"))?;
     on_event(Event::Listening(listeners.port));
     let mut client: Option<Client> = None;
+    let mut sampled = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
         let mut busy = false;
@@ -192,9 +200,17 @@ pub fn serve(
             }
         }
 
-        if !busy {
-            std::thread::sleep(IDLE);
+        if busy {
+            continue;
         }
+        // Only while a client is connected: with nobody listening there is nothing a
+        // replayed event could be handed to, and the cart is better left alone.
+        if client.is_some() && sampled.elapsed() >= SAMPLE_EVERY {
+            sampled = Instant::now();
+            connector.sample_watch()?;
+            continue;
+        }
+        std::thread::sleep(IDLE);
     }
     Ok(())
 }

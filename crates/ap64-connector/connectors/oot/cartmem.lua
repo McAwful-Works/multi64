@@ -13,10 +13,29 @@
 -- connector uses it where two values must come from the same instant: the received-item
 -- count and the item mailbox. Read apart, the game can consume the mailbox between the
 -- two reads, and the same item is delivered twice.
+--
+-- The one place this serves something other than the bytes in memory now is the transient
+-- slot below, and it is what stops a check waiting for a scene change.
 
 local M = {}
 
 local PAGE = 1024
+
+-- OoT commits scene flags to the save context on a scene transition. Until then the only
+-- sign a check was collected is this 4-byte slot -- scene, type, 0, id -- holding the most
+-- recent flag-set event, which connector.lua reads once per scan (check_temp_context).
+-- The next event overwrites it. An emulator reads it every frame; a cart poll is ~67-100 ms
+-- and misses what happened in between, and the check then waits until you leave the room.
+--
+-- So AP64 watches the slot: it is read alongside every request that goes out and on idle
+-- time, and each change is queued. The read below hands back the oldest one the connector
+-- has not been shown, and live bytes once the queue has drained. The types are the ones a
+-- check_temp_context call site is ever called with -- chests (0x01), freestanding (0x02),
+-- great fairies (0x05), and 0x00 for the one-offs -- so an event no call site could match
+-- never takes a scan's place in the queue. See ap64_cart::watch.
+local TEMP_CONTEXT = 0x40002C
+local TEMP_CONTEXT_LEN = 4
+ap64.watch(TEMP_CONTEXT, TEMP_CONTEXT_LEN, 1, { 0x00, 0x01, 0x02, 0x05 })
 
 local pages = {}      -- page number -> string of PAGE bytes, this poll
 local touched = {}    -- page number -> true, this poll
@@ -125,6 +144,22 @@ function mainmemory.read_u32_be(a) return read_be(a, 4) end
 -- it (`for i=0,#(bytes)`). Do not make it 1-indexed.
 function mainmemory.readbyterange(a, len)
     local t = {}
+    if a == TEMP_CONTEXT and len == TEMP_CONTEXT_LEN then
+        local queued = ap64.take_watched()
+        if queued then
+            -- Taking an event consumes it, so anything but the four bytes the watch
+            -- promises has already lost one. Falling through to live bytes would hide
+            -- that.
+            if #queued ~= TEMP_CONTEXT_LEN then
+                error(("ap64.take_watched returned %d bytes, want %d")
+                    :format(#queued, TEMP_CONTEXT_LEN))
+            end
+            for i = 0, TEMP_CONTEXT_LEN - 1 do
+                t[i] = string.byte(queued, i + 1)
+            end
+            return t
+        end
+    end
     for i = 0, len - 1 do
         t[i] = byte_at(a + i)
     end
