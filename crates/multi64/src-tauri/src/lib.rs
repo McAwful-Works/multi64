@@ -1979,12 +1979,34 @@ mod tests {
     /// must say so instead of spawning a daemon that exits at once.
     #[test]
     fn a_listener_on_the_listen_address_is_detected() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        assert!(listen_address_in_use(&addr), "{addr}");
-        assert!(listen_address_in_use(&format!("http://{addr}/")), "{addr}");
-        drop(listener);
-        assert!(!listen_address_in_use(&addr), "{addr}");
+        use socket2::{Domain, Protocol, Socket, Type};
+
+        // What can be lost to the rest of the machine is getting the port back, so that
+        // is what is retried; no check below depends on winning a race.
+        for attempt in 1..=16 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let text = addr.to_string();
+            assert!(listen_address_in_use(&text), "{text}");
+            assert!(listen_address_in_use(&format!("http://{text}/")), "{text}");
+            drop(listener);
+
+            // The same port, held by a socket that never listens: connecting to it is
+            // refused exactly as it is for a port nothing holds at all, and holding it
+            // stops anything else on this machine from taking it between the drop and
+            // the check and being reported as the bridge this is looking for.
+            let held = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+            if held.bind(&addr.into()).is_err() {
+                assert!(
+                    attempt < 16,
+                    "lost {text} to something else on this machine 16 ports running"
+                );
+                continue;
+            }
+            assert!(!listen_address_in_use(&text), "{text}");
+            break;
+        }
+
         assert!(!listen_address_in_use("not an address"));
         let msg = listen_in_use_message("127.0.0.1:38765");
         assert!(

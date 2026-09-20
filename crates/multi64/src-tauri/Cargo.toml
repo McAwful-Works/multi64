@@ -35,3 +35,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 # Tests check the saved cart names against the daemon's own `--cart` values.
 multi64d = { path = "../../multi64d" }
 
+# Binding a port without listening on it, so a test can hold one while checking that
+# nothing is listening there.
+socket2 = "0.6"
