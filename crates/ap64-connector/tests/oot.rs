@@ -248,6 +248,56 @@ fn a_check_seen_only_between_polls_still_reaches_the_client() {
     assert_eq!((stats.events, stats.replayed), (1, 1));
 }
 
+/// A dungeon sets flags far faster than a cart poll: chests, the clears between them, and
+/// everything else that writes the slot. Showing a scan one change per poll let a real
+/// check be pushed out of the agent's queue before any scan saw it -- "it only registered
+/// when I left the room". A scan is shown every change since the last one.
+#[test]
+fn several_checks_between_two_polls_all_reach_the_client() {
+    let (c, ram, _) = setup();
+    let poll = |c: &Connector| c.handle(&block(&[])).unwrap();
+    poll(&c);
+
+    // Two checks collected in the time one poll takes, the game clearing the slot after
+    // each, and the scan never sees any of it live.
+    for event in [
+        [0x60, 0x01, 0x00, 0x01], // DMT Chest: scene 0x60, chest, id 0x01
+        [0, 0, 0, 0],
+        [0x60, 0x02, 0x00, 0x1E], // DMT Freestanding PoH: same scene, on the ground
+        [0, 0, 0, 0],
+    ] {
+        ram.borrow_mut()
+            .write_many(&[(TEMP_CONTEXT, &event)])
+            .unwrap();
+        c.sample_watch().unwrap();
+    }
+
+    let reply = poll(&c);
+    for want in ["\"DMT Chest\":true", "\"DMT Freestanding PoH\":true"] {
+        assert!(
+            reply.contains(want),
+            "one poll must report both: {want} missing from {}",
+            &reply[..300.min(reply.len())]
+        );
+    }
+    // The two checks are events; the clears between them are not (a slot going to zero is
+    // the game finishing with it), so nothing waits behind them either.
+    let stats = c.watch_stats().expect("the script watches the slot");
+    assert_eq!(
+        (stats.events, stats.queued, stats.dropped),
+        (2, 2, 0),
+        "both changes queued, none lost"
+    );
+
+    // Nothing is left over to report a check that has not happened again.
+    let next = poll(&c);
+    assert!(
+        next.contains("\"DMT Chest\":false") && next.contains("\"DMT Freestanding PoH\":false"),
+        "the queue drained: {}",
+        &next[..300.min(next.len())]
+    );
+}
+
 #[test]
 fn a_steady_poll_costs_few_exchanges() {
     let (c, _, reads) = setup();

@@ -15,9 +15,11 @@ one out. Everything that reads the game is upstream's, unchanged. What changed, 
 
 * The transient slot. BizHawk reads 0x40002C every frame; a cart poll cannot, so an event
   written and overwritten between scans used to leave the check waiting for a scene
-  transition. AP64 watches that slot and hands each change to the scan in turn, which is
-  the one place cartmem.lua serves something other than live memory. Its reasoning is in
-  cartmem.lua and ap64_cart::watch.
+  transition. AP64 watches that slot, and a scan matches against every change since the
+  last one as well as the live bytes -- a dungeon sets flags far faster than a poll, and
+  one change per scan let a real check fall out of the queue before any scan saw it. This
+  is the one place cartmem.lua serves something other than live memory. Its reasoning is
+  in cartmem.lua and ap64_cart::watch.
 
 * Item delivery. The received-item count and the item mailbox are re-read together, in
   one request, just before an item is queued. Read apart, the game can take the mailbox
@@ -53,7 +55,7 @@ local fishing_context_offset = save_context_offset + 0xEC0 --0x11B490
 local item_get_inf_offset = save_context_offset + 0xEF0 --0x11B4C0
 local inf_table_offset = save_context_offset + 0xEF8 -- 0x11B4C8
 
-local temp_context = nil
+local temp_contexts = nil
 
 local collectibles_overrides = nil
 local collectible_offsets = nil
@@ -76,14 +78,16 @@ end
 -- REORDERED IN 7.0 TO scene id - location type - 0x00 - location id
 -- Note that temp_context is 0-indexed and expected_values is 1-indexed, because consistency.
 local check_temp_context = function(expected_values)
-    -- if temp_context[0] ~= 0x00 then return false end
-    -- for i=1,3 do
-    --     if temp_context[i] ~= expected_values[i] then return false end
-    -- end
-    if temp_context[0] ~= expected_values[1] then return false end
-    if temp_context[1] ~= expected_values[2] then return false end
-    if temp_context[3] ~= expected_values[3] then return false end
-    return true
+    -- AP64: every change the slot took since the last scan, then its live bytes, rather
+    -- than the one value a scan used to read. See cartmem.temp_events and the header.
+    for _, temp_context in ipairs(temp_contexts) do
+        if temp_context[0] == expected_values[1]
+            and temp_context[1] == expected_values[2]
+            and temp_context[3] == expected_values[3] then
+            return true
+        end
+    end
+    return false
 end
 
 -- When checking locations, we check two spots:
@@ -1180,7 +1184,7 @@ end
 local check_all_locations = function(mq_table_address)
 -- TODO: make MQ better
     local location_checks = {}
-    temp_context = mainmemory.readbyterange(0x40002C, 4)
+    temp_contexts = cartmem.temp_events()
     for k,v in pairs(read_kokiri_forest_checks()) do location_checks[k] = v end
     for k,v in pairs(read_lost_woods_checks()) do location_checks[k] = v end
     for k,v in pairs(read_sacred_forest_meadow_checks()) do location_checks[k] = v end
