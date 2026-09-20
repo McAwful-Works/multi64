@@ -14,6 +14,9 @@ const COOP_CTX: u32 = 0x40_0100;
 const COUNT: u32 = 0x11A5D0 + 0x90;
 const MAILBOX_PLAYER: u32 = COOP_CTX + 6;
 const MAILBOX_ITEM: u32 = COOP_CTX + 8;
+/// The slot OoTR writes the most recent flag-set event to, and the only sign in-scene
+/// that a check was collected. connector.lua reads it once per scan.
+const TEMP_CONTEXT: u32 = 0x40_002C;
 
 fn ram() -> Vec<u8> {
     let mut ram = vec![0u8; 0x80_0000];
@@ -56,6 +59,18 @@ impl Backend for Counted {
     }
     fn read_rom_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
         Ok(r.iter().map(|&(_, l)| vec![0; l]).collect())
+    }
+    fn set_watch(&mut self, w: ap64_cart::watch::Watch) {
+        self.ram.borrow_mut().set_watch(w);
+    }
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        self.ram.borrow_mut().take_watched()
+    }
+    fn sample_watch(&mut self) -> io::Result<()> {
+        self.ram.borrow_mut().sample_watch()
+    }
+    fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+        self.ram.borrow().watch_stats()
     }
 }
 
@@ -191,6 +206,43 @@ fn a_torn_count_and_mailbox_never_deliver_an_item_twice() {
         0x43,
         "0x42 must not be queued again"
     );
+}
+
+/// A check collected and gone again before the next poll still reaches the client.
+///
+/// OoT commits scene flags on a scene transition; until then the only sign a check
+/// happened is one slot holding the most recent event, which the next one overwrites. The
+/// connector reads it once per scan, so at cart poll rates an event between scans used to
+/// be lost and the check waited for the scene change -- "I opened the chest, but it only
+/// showed up after I left the grotto". The slot is watched and its changes queued, so the
+/// scan is shown each one.
+#[test]
+fn a_check_seen_only_between_polls_still_reaches_the_client() {
+    let (c, ram, _) = setup();
+    let poll = |c: &Connector| c.handle(&block(&[])).unwrap();
+    assert!(
+        poll(&c).contains("\"DMT Chest\":false"),
+        "the check has not been collected yet"
+    );
+
+    // DMT Chest collected: scene 0x60, type 0x01 (chest), id 0x01.
+    ram.borrow_mut()
+        .write_many(&[(TEMP_CONTEXT, &[0x60, 0x01, 0x00, 0x01])])
+        .unwrap();
+    c.sample_watch().unwrap();
+    // The game clears the slot before the connector's next scan reads it.
+    ram.borrow_mut()
+        .write_many(&[(TEMP_CONTEXT, &[0, 0, 0, 0])])
+        .unwrap();
+
+    let reply = poll(&c);
+    assert!(
+        reply.contains("\"DMT Chest\":true"),
+        "the collected check never reached the client: {}",
+        &reply[..300.min(reply.len())]
+    );
+    let stats = c.watch_stats().expect("the script watches the slot");
+    assert_eq!((stats.events, stats.replayed), (1, 1));
 }
 
 #[test]

@@ -15,6 +15,8 @@
 //! | `rom_size()`, `rom_read(addr, len)` | the cartridge ROM, read from the cart and cached |
 //! | `rom_read_many({{addr, len}, ...})` | several ROM regions in one call, to fetch a batch's at once |
 //! | `rom_hash()` | a stable identity for the running ROM: SHA-1 of its first 4 KiB |
+//! | `watch(addr, len[, at, values])` | follow a slot the game rewrites between polls |
+//! | `take_watched()` | the oldest change to it not yet shown, or `nil` for live memory |
 //! | `b64encode(str)`, `b64decode(str)` | base64, which the protocols carry bytes in |
 //! | `log(str)`, `message(str)` | a line for AP64's log; a message meant for the player |
 //!
@@ -28,6 +30,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use ap64_cart::backend::Backend;
+use ap64_cart::watch;
 use ap64_cart::Log;
 use base64::Engine as _;
 use mlua::{Lua, Table};
@@ -129,6 +132,26 @@ impl Connector {
 
     pub fn script(&self) -> &Script {
         &self.script
+    }
+
+    /// Read the watched slot, if the script asked for one ([`ap64_cart::watch`]).
+    ///
+    /// For time the session would spend idle: a slot the game rewrites between polls is
+    /// missed by exactly as much as it goes unread, and a connector waiting on its client
+    /// is not using the cart for anything else. Does nothing when no watch is set.
+    pub fn sample_watch(&self) -> Result<(), String> {
+        if self.backend.borrow().watch_stats().is_none() {
+            return Ok(());
+        }
+        self.backend
+            .borrow_mut()
+            .sample_watch()
+            .map_err(|e| format!("cart read: {e}"))
+    }
+
+    /// What the watch has seen and handed over, if one is set.
+    pub fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+        self.backend.borrow().watch_stats()
     }
 
     /// One line from the client in, the line to send back out (no newline).
@@ -243,6 +266,45 @@ fn install(
                     .borrow_mut()
                     .write_many(&writes)
                     .map_err(cart_err.clone())
+            })?,
+        )?;
+    }
+
+    {
+        // A script asks for this where the game gives it no better option: one slot
+        // holding the most recent event, overwritten by the next. `at`/`values` name a
+        // byte the script would act on, so changes it could never match stay out of the
+        // queue. See ap64_cart::watch for why replaying them is sound.
+        let backend = backend.clone();
+        ap64.set(
+            "watch",
+            lua.create_function(
+                move |_, (addr, len, at, values): (u32, usize, Option<usize>, Option<Table>)| {
+                    let filter = match (at, values) {
+                        (Some(at), Some(values)) => Some(watch::Filter {
+                            at,
+                            values: values.sequence_values::<u8>().collect::<Result<_, _>>()?,
+                        }),
+                        _ => None,
+                    };
+                    backend
+                        .borrow_mut()
+                        .set_watch(watch::Watch::new(addr, len, filter));
+                    Ok(())
+                },
+            )?,
+        )?;
+    }
+    {
+        let backend = backend.clone();
+        ap64.set(
+            "take_watched",
+            lua.create_function(move |lua, ()| {
+                match backend.borrow_mut().take_watched() {
+                    Some(bytes) => Ok(mlua::Value::String(lua.create_string(bytes)?)),
+                    // Nothing waiting: the caller reads live memory, as it always did.
+                    None => Ok(mlua::Value::Nil),
+                }
             })?,
         )?;
     }

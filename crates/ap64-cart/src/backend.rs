@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::m64p;
 use crate::transport::Multi64Transport;
+use crate::watch::{Watch, WatchStats};
 use crate::Log;
 
 pub trait Backend {
@@ -40,6 +41,27 @@ pub trait Backend {
     fn generation(&self) -> u32 {
         0
     }
+
+    /// Watch a slot the game rewrites faster than the connector reads it ([`crate::watch`]).
+    ///
+    /// The region is then read alongside every batch of reads, and each change it catches
+    /// is queued for [`Backend::take_watched`]. A backend that does not implement this
+    /// serves live memory, which is what a connector falls back to anyway.
+    fn set_watch(&mut self, _watch: Watch) {}
+
+    /// The oldest change to the watched slot the connector has not been shown.
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Read the watched slot now, outside any batch. For time that would be spent idle.
+    fn sample_watch(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn watch_stats(&self) -> Option<WatchStats> {
+        None
+    }
 }
 
 fn check(addr: u32, len: usize, size: u32) -> io::Result<()> {
@@ -63,11 +85,16 @@ fn check_in(addr: u32, len: usize, size: u32, what: &str) -> io::Result<()> {
 pub struct RamImage {
     pub ram: Vec<u8>,
     pub rom: Option<Vec<u8>>,
+    watch: Option<Watch>,
 }
 
 impl RamImage {
     pub fn new(ram: Vec<u8>) -> Self {
-        Self { ram, rom: None }
+        Self {
+            ram,
+            rom: None,
+            watch: None,
+        }
     }
 
     /// With a cart ROM, as an agent with `PEEKROM` serves it.
@@ -75,7 +102,13 @@ impl RamImage {
         Self {
             ram,
             rom: Some(rom),
+            watch: None,
         }
+    }
+
+    fn at(&self, addr: u32, len: usize) -> io::Result<Vec<u8>> {
+        check(addr, len, self.ram.len() as u32)?;
+        Ok(self.ram[addr as usize..addr as usize + len].to_vec())
     }
 }
 
@@ -85,13 +118,13 @@ impl Backend for RamImage {
     }
 
     fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
-        regions
+        let out: io::Result<Vec<Vec<u8>>> = regions
             .iter()
-            .map(|&(addr, len)| {
-                check(addr, len, self.rdram_size())?;
-                Ok(self.ram[addr as usize..addr as usize + len].to_vec())
-            })
-            .collect()
+            .map(|&(addr, len)| self.at(addr, len))
+            .collect();
+        // What the cart does per wire exchange, since a read is what this stands in for.
+        self.sample_watch()?;
+        out
     }
 
     fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
@@ -120,6 +153,28 @@ impl Backend for RamImage {
                 Ok(rom[addr as usize..addr as usize + len].to_vec())
             })
             .collect()
+    }
+
+    fn set_watch(&mut self, watch: Watch) {
+        self.watch = Some(watch);
+    }
+
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        self.watch.as_mut()?.take()
+    }
+
+    fn sample_watch(&mut self) -> io::Result<()> {
+        let (addr, len) = match self.watch.as_ref() {
+            Some(w) => w.region(),
+            None => return Ok(()),
+        };
+        let bytes = self.at(addr, len)?;
+        self.watch.as_mut().expect("just checked").observe(&bytes);
+        Ok(())
+    }
+
+    fn watch_stats(&self) -> Option<WatchStats> {
+        self.watch.as_ref().map(Watch::stats)
     }
 }
 
@@ -160,6 +215,8 @@ pub struct Multi64 {
     /// Cart ROM pages read so far, by page number. Dropped on reconnect.
     rom_pages: HashMap<u32, Vec<u8>>,
     generation: u32,
+    /// A slot read alongside every batch of reads, if a connector asked for one.
+    watch: Option<Watch>,
 }
 
 impl Multi64 {
@@ -174,6 +231,7 @@ impl Multi64 {
             stats: Stats::default(),
             rom_pages: HashMap::new(),
             generation: 0,
+            watch: None,
         })
     }
 
@@ -351,12 +409,60 @@ impl Backend for Multi64 {
     fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
         let (chunks, counts) = split(regions, self.rdram_size())?;
         let mut flat = Vec::with_capacity(chunks.len());
-        for batch in batches(&chunks) {
+        for mut batch in batches(&chunks) {
+            // The probe rides a request that was going out anyway, so it costs no
+            // exchange and cannot slow the poll rate it exists to compensate for. A batch
+            // already at a wire limit goes without it rather than becoming two requests.
+            let probe = self
+                .watch
+                .as_ref()
+                .map(|w| w.region())
+                .filter(|&(_, len)| fits(&batch, len));
+            if let Some((addr, len)) = probe {
+                batch.push(m64p::Region {
+                    addr,
+                    len: len as u16,
+                });
+            }
             self.stats.regions += batch.len() as u64;
-            let done = self.with_retry("read", |t| t.peek(&batch))?;
+            let mut done = self.with_retry("read", |t| t.peek(&batch))?;
+            if probe.is_some() {
+                let bytes = done.pop().unwrap_or_default();
+                if let Some(w) = self.watch.as_mut() {
+                    w.observe(&bytes);
+                }
+            }
             flat.extend(done);
         }
         stitch(flat, &counts)
+    }
+
+    fn set_watch(&mut self, watch: Watch) {
+        self.watch = Some(watch);
+    }
+
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        self.watch.as_mut()?.take()
+    }
+
+    fn sample_watch(&mut self) -> io::Result<()> {
+        let Some((addr, len)) = self.watch.as_ref().map(|w| w.region()) else {
+            return Ok(());
+        };
+        let region = [m64p::Region {
+            addr,
+            len: len as u16,
+        }];
+        self.stats.regions += 1;
+        let done = self.with_retry("read", |t| t.peek(&region))?;
+        if let (Some(w), Some(bytes)) = (self.watch.as_mut(), done.first()) {
+            w.observe(bytes);
+        }
+        Ok(())
+    }
+
+    fn watch_stats(&self) -> Option<WatchStats> {
+        self.watch.as_ref().map(Watch::stats)
     }
 
     fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
@@ -412,6 +518,12 @@ fn split(regions: &[(u32, usize)], size: u32) -> io::Result<(Vec<m64p::Region>, 
         counts.push(chunks.len() - before);
     }
     Ok((chunks, counts))
+}
+
+/// Whether one more region of `len` bytes still fits `batch` within the wire limits.
+fn fits(batch: &[m64p::Region], len: usize) -> bool {
+    let bytes: usize = batch.iter().map(|r| r.len as usize).sum();
+    batch.len() < m64p::MAX_REGIONS && bytes + len <= m64p::MAX_TOTAL_BYTES
 }
 
 /// Pack chunks into requests in their original order, cutting only where the
@@ -472,6 +584,21 @@ mod tests {
         let out = batches(&chunks);
         assert_eq!(out.len(), 1);
         assert_eq!(spans(&out[0]), spans(&chunks));
+    }
+
+    /// The probe must never turn one request into two: the whole point is that it is free.
+    #[test]
+    fn a_probe_rides_a_batch_only_while_the_wire_limits_leave_room() {
+        assert!(fits(&[r(0x0040_11E0, 4)], 4));
+        let full: Vec<m64p::Region> = (0..m64p::MAX_REGIONS as u32)
+            .map(|i| r(i * 16, 1))
+            .collect();
+        assert!(!fits(&full, 4), "a batch already at the region limit");
+        assert!(
+            !fits(&[r(0, m64p::MAX_TOTAL_BYTES as u16)], 4),
+            "a batch already at the byte limit"
+        );
+        assert!(fits(&[r(0, (m64p::MAX_TOTAL_BYTES - 4) as u16)], 4));
     }
 
     #[test]
