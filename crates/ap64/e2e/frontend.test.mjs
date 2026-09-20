@@ -68,6 +68,9 @@ function installTauriStub(scenario) {
     ]),
     play_start: () => answer(sc.start ?? null),
     play_stop: () => answer(null),
+    play_log: () => answer(sc.log ?? []),
+    open_log_window: () => answer(sc.openLog ?? null),
+    fit_window_height: () => answer(null),
   };
   window.__TAURI__ = {
     core: {
@@ -148,32 +151,52 @@ const drop = (p, paths) =>
 
 const visible = (p, id) => p.evaluate((i) => !document.getElementById(i).hidden, id);
 const text = (p, id) => p.evaluate((i) => document.getElementById(i).textContent, id);
+/** Shown to whoever is looking: `dev-only` rows are display:none until the switch is on. */
+const onScreen = (p, id) => p.evaluate((i) => document.getElementById(i).offsetParent !== null, id);
+const cardHeights = (p) =>
+  p.evaluate(() => [...document.querySelectorAll(".card")].map((c) => Math.round(c.getBoundingClientRect().height)));
+const setDev = async (p, on) => {
+  await p.evaluate((v) => {
+    const d = document.getElementById("dev-mode");
+    d.checked = v;
+    d.dispatchEvent(new Event("change"));
+  }, on);
+};
 
 {
   const p = await openScenario({ load: loadOk, patch: { output: "C:\\seeds\\seed-agent.z64", size: 12587268, sha1: "66B5", summary: ["Frame hook: jal", "Agent: 4356 bytes"] } });
   check("lists the supported games", (await text(p, "supported")).includes("Game One (US 1.0)"));
+  const idle = await cardHeights(p);
   await drop(p, ["C:\\seeds\\seed.z64", "C:\\other.z64"]);
-  await until(p, () => !document.getElementById("seed").hidden);
+  await until(p, () => !document.getElementById("patch-dialog").hidden);
   const loads = await callsOf(p, "load_rom");
   check("a drop loads the first file dropped", loads.length === 1 && loads[0].args.path === "C:\\seeds\\seed.z64", JSON.stringify(loads));
+  check("a drop opens the dialog rather than growing the card", (await cardHeights(p)).join() === idle.join(), `${idle} then ${await cardHeights(p)}`);
+  check("the card names the seed and its game", (await text(p, "seed-line")).includes("seed.z64") && (await text(p, "seed-line")).includes("Game One"));
   const marks = await p.evaluate(() => [...document.querySelectorAll(".check-item")].map((li) => li.dataset.ok));
   check("every check is listed", marks.join() === "true,true,true", marks.join());
   check("a passing seed offers to patch", await visible(p, "patch-controls"));
   check("the output defaults beside the seed", (await p.inputValue("#output")) === "C:\\seeds\\seed-agent.z64");
   check("the game is named", (await text(p, "seed-game")).startsWith("Game One (US 1.0)"));
-  check("passing checks are one status row", (await text(p, "seed-checks")) === "All 3 passed" && !(await visible(p, "failed-checks")));
-  check("the full checklist starts folded", !(await p.evaluate(() => document.getElementById("checks-more").open)));
+  check("passing checks read as ready", (await text(p, "seed-checks")) === "Ready for the agent" && !(await visible(p, "failed-checks")));
+  check("the detail starts folded", !(await p.evaluate(() => document.getElementById("checks-more").open)));
+  check("the detail is there without Developer details", await p.evaluate(() => document.querySelector("#checks-more summary").offsetParent !== null));
+  check("the header line is inside it", (await text(p, "seed-header")).includes("NG1E") && (await text(p, "seed-header")).includes("z64 (big-endian)"));
   await p.click("#btn-patch");
-  await until(p, () => !document.getElementById("result").hidden);
+  await until(p, () => !document.getElementById("pane-result").hidden);
   const patches = await callsOf(p, "patch_rom");
   check("Add agent patches to the chosen output", patches.length === 1 && patches[0].args.output === "C:\\seeds\\seed-agent.z64", JSON.stringify(patches));
   check("the result shows the summary", (await p.locator("#result-summary li").count()) === 2);
-  check("the list of writes starts folded", !(await p.evaluate(() => document.querySelector("#result details").open)));
+  check("the list of writes starts folded", !(await p.evaluate(() => document.querySelector("#pane-result details").open)));
   check("the result shows the SHA-1", (await text(p, "result-sha1")).includes("66B5"));
-  check("the result names the file, with the path on hover", (await text(p, "result-path")).startsWith("seed-agent.z64") && (await p.getAttribute("#result-path", "title")) === "C:\\seeds\\seed-agent.z64");  check("the patch controls fold away once done", !(await visible(p, "patch-controls")));
-  check("the file line names its byte order", (await text(p, "seed-file")).includes("z64 (big-endian)"));
+  check("the result names the file, with the path on hover", (await text(p, "result-path")).startsWith("seed-agent.z64") && (await p.getAttribute("#result-path", "title")) === "C:\\seeds\\seed-agent.z64");
+  check("the seed pane gives way to the result", !(await visible(p, "pane-seed")));
+  await p.click("#btn-patch-close");
+  check("patching leaves the cards where they were", (await cardHeights(p)).join() === idle.join(), `${idle} then ${await cardHeights(p)}`);
+  check("the card says the ROM is ready", (await text(p, "seed-line")).includes("ready for the console"));
+  check("Show in folder is offered on the card", !(await p.evaluate(() => document.getElementById("btn-reveal").disabled)));
   check("a loaded seed picks its game for Play", (await p.inputValue("#play-game-select")) === "g1");
-  check("Play names the client to open", (await text(p, "play-client")).startsWith("BizHawk Client"));
+  check("Play names the client to open", (await text(p, "link-client")).includes("BizHawk Client"));
   check("Start is enabled once a game is chosen", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
   check("Play asks for no ROM file", (await p.locator("#play-rom, #btn-play-rom").count()) === 0);
   await p.close();
@@ -184,10 +207,11 @@ const text = (p, id) => p.evaluate((i) => document.getElementById(i).textContent
   check("the daemon URL defaults to the Multi64 app's", (await p.inputValue("#play-url")) === "ws://127.0.0.1:38765/ws");
   const options = await p.evaluate(() => [...document.getElementById("play-game-select").options].map((o) => o.value));
   check("the game list offers every game", options.join() === ",g1,g2", options.join());
-  check("no game chosen shows no connector", !(await visible(p, "play-facts")));
   check("Start is disabled until a game is chosen", await p.evaluate(() => document.getElementById("btn-play-start").disabled));
+  const before = await cardHeights(p);
   await p.selectOption("#play-game-select", "g2");
-  check("choosing a game names its connector and client", (await text(p, "play-connector")) === "Game Two connector" && (await text(p, "play-client")).startsWith("Game Two Client"));
+  check("choosing a game names the client to open", (await text(p, "link-client")).includes("Game Two Client"));
+  check("choosing a game does not move the card", (await cardHeights(p)).join() === before.join(), `${before} then ${await cardHeights(p)}`);
   check("and enables Start", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
   await p.close();
 }
@@ -195,34 +219,135 @@ const text = (p, id) => p.evaluate((i) => document.getElementById(i).textContent
 {
   const p = await openScenario({});
   await p.selectOption("#play-game-select", "g1");
-  await p.click("#play-advanced summary");
+  await setDev(p, true);
+  await p.click("#btn-advanced");
   await p.fill("#play-url", "ws://127.0.0.1:38766/ws");
+  await p.click("#btn-advanced-close");
   await p.click("#btn-play-start");
   await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_start"));
   const starts = await callsOf(p, "play_start");
   check("Start sends the game and the daemon URL, no ROM", starts.length === 1 && starts[0].args.game === "g1" && !("romPath" in starts[0].args) && starts[0].args.url === "ws://127.0.0.1:38766/ws", JSON.stringify(starts));
   const emit = (name, payload) => p.evaluate(([n, pl]) => window.__TAURI_LISTENERS__[n]({ payload: pl }), [name, payload]);
-  await emit("play://status", { state: "waiting-client", detail: "open BizHawk Client from the Archipelago Launcher", port: 43055, requests: 0, reconnects: 0, stalls: 0, handled: 0 });
+  await emit("play://status", { state: "waiting-client", detail: "open BizHawk Client from the Archipelago Launcher", port: 43055, requests: 0, reconnects: 0, stalls: 0, handled: 0, bridge: "ok", console: "ok", client: "waiting" });
   check("waiting shows what to do next", (await text(p, "play-status")).includes("open BizHawk Client"));
+  // Each link is tracked on its own: one line can say what is happening, but not which part is.
+  const links = () => p.evaluate(() => ["link-bridge", "link-console", "link-client"].map((i) => {
+    const el = document.getElementById(i);
+    return `${el.dataset.state}: ${el.textContent}`;
+  }));
+  check("waiting has the cart up and the client not", (await links()).join(" | ") === "ok: Connected | ok: Running | waiting: Open BizHawk Client to connect", (await links()).join(" | "));
+  check("a link that is up says so in one word", (await links()).filter((l) => l.startsWith("ok:")).every((l) => l.split(": ")[1].split(" ").length === 1), (await links()).join(" | "));
   check("running disables Start and enables Stop", await p.evaluate(() => document.getElementById("btn-play-start").disabled && !document.getElementById("btn-play-stop").disabled));
   check("running locks the game", await p.evaluate(() => document.getElementById("play-game-select").disabled));
   check("running locks the URL", await p.evaluate(() => document.getElementById("play-url").disabled));
-  await emit("play://status", { state: "playing", detail: "BizHawk Client connected", port: 43055, requests: 120, reconnects: 1, stalls: 2, handled: 40 });
+  await emit("play://status", { state: "playing", detail: "BizHawk Client connected", port: 43055, requests: 120, reconnects: 1, stalls: 2, handled: 40, bridge: "ok", console: "ok", client: "ok" });
   check("playing shows the counters", (await text(p, "play-counters")).includes("120 cart round trips") && (await text(p, "play-counters")).includes("1 reconnects"));
-  await emit("play://log", "Archipelago: Got Roast Chicken");
-  check("log lines are shown", (await visible(p, "play-log")) && (await text(p, "play-log")).includes("Got Roast Chicken"));
+  check("playing has all three up", (await links()).every((l) => l.startsWith("ok:")), (await links()).join(" | "));
+  // A console reset while a session runs: the cart stops answering and the row must say so.
+  await emit("play://status", { state: "waiting-console", detail: "the ROM stopped answering; load it again on the console", port: 43055, requests: 120, reconnects: 1, stalls: 2, handled: 40, bridge: "ok", console: "failed", client: "ok" });
+  check("a ROM that stopped is reported, with Multi64 still up", (await links())[1] === "failed: Not answering" && (await links())[0] === "ok: Connected", (await links()).join(" | "));
+  check("and the status says what to do", (await text(p, "play-status")).includes("Waiting for the console"));
+  await emit("play://status", { state: "playing", detail: "BizHawk Client connected", port: 43055, requests: 140, reconnects: 1, stalls: 2, handled: 41, bridge: "ok", console: "ok", client: "ok" });
+  check("and it goes back up on its own when the ROM returns", (await links())[1] === "ok: Running", (await links()).join(" | "));
   await p.click("#btn-play-stop");
   await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_stop"));
   check("Stop asks the backend to stop", (await callsOf(p, "play_stop")).length === 1);
-  await emit("play://status", { state: "failed", detail: "the cart is running ZELDA [CZLE v0], not Game One US 1.0 [NG1E v0]", port: null, requests: 3, reconnects: 0, stalls: 0, handled: 0 });
-  check("a cart running another game is reported, and Start comes back", (await text(p, "play-status")).includes("the cart is running ZELDA") && !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
+  await emit("play://status", { state: "failed", detail: "the cart is running ZELDA [CZLE v0], not Game One US 1.0 [NG1E v0]", port: null, requests: 3, reconnects: 0, stalls: 0, handled: 0, bridge: "ok", console: "failed", client: "idle" });
+  check("a failure names the link that is down, not just the session", (await links())[1].startsWith("failed:") && (await links())[0].startsWith("ok:"), (await links()).join(" | "));
+  // A failure is its own sentence, capitalised, with no "Stopped with an error" in front of it:
+  // the row is already red, and the two together needed a third line of reserved space.
+  check("a cart running another game is reported, and Start comes back", (await text(p, "play-status")).startsWith("The cart is running ZELDA") && !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
+  // A cart that stays away ends the session, so the client sees a closed socket and recovers.
+  await emit("play://status", { state: "failed", detail: "the cart stopped answering; load the ROM again and press Start", detailDev: "cart read: gave up after 8s trying to reach ws://127.0.0.1:38765/ws", port: null, requests: 140, reconnects: 2, stalls: 2, handled: 41, bridge: "ok", console: "failed", client: "idle" });
+  check("a session that gave up says what to do next", (await text(p, "play-status")).startsWith("The cart stopped answering; load the ROM again and press Start"));
+  check("and Start is offered again", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
+  await p.close();
+}
+
+// What a player is shown, and what turning the switch on adds. The page is built off by
+// default so a player never sees developer rows appear and then vanish.
+{
+  const p = await openScenario({});
+  check("developer details start off", await p.evaluate(() => document.getElementById("dev-mode").checked === false));
+  // The window cannot be resized by hand, so the page must ask for the room it needs.
+  const fits = () => callsOf(p, "fit_window_height");
+  const firstFit = (await fits()).at(-1)?.args.height;
+  const pageHeight = await p.evaluate(() => Math.ceil(document.body.getBoundingClientRect().height));
+  check("the window is fitted to the page", firstFit === pageHeight, `asked ${firstFit}, page ${pageHeight}`);
+  await p.selectOption("#play-game-select", "g1");
+  for (const id of ["play-connector", "play-counters", "btn-advanced"]) {
+    check(`${id} is hidden from a player`, !(await onScreen(p, id)));
+  }
+  check("the session log is offered to everyone", await onScreen(p, "btn-log"));
+  await setDev(p, true);
+  for (const id of ["play-connector", "play-counters", "btn-advanced"]) {
+    check(`${id} appears with developer details`, await onScreen(p, id));
+  }
+  const emit = (name, payload) => p.evaluate(([n, pl]) => window.__TAURI_LISTENERS__[n]({ payload: pl }), [name, payload]);
+  const failure = { state: "failed", detail: "the cart is running Game One without AP64's agent", detailDev: "the hook at 0x1601C is 0x00000000", port: null, requests: 0, reconnects: 0, stalls: 0, handled: 0 };
+  await emit("play://status", failure);
+  check("a failure shows its addresses with developer details", (await text(p, "play-status")).includes("0x1601C"));
+  await setDev(p, false);
+  check("and reads plainly without them", !(await text(p, "play-status")).includes("0x1601C") && (await text(p, "play-status")).includes("without AP64's agent"));
+  const stored = await p.evaluate(() => localStorage.getItem("ap64.devDetails"));
+  check("the choice is remembered", stored === "off", String(stored));
+  await setDev(p, true);
+  // The page is measured by a ResizeObserver, which fires after the layout it is watching.
+  const grew = await until(
+    p,
+    (h) => window.__TAURI_CALLS__.filter((c) => c.cmd === "fit_window_height").some((c) => c.args.height > h),
+    firstFit,
+  );
+  const taller = (await fits()).at(-1)?.args.height;
+  check("developer rows are given more window, not a scrollbar", grew && taller > firstFit, `${firstFit} then ${taller}`);
+  await setDev(p, false);
+  await p.close();
+}
+
+// The log is a window of its own, kept by the backend: the page only asks for it.
+{
+  const p = await openScenario({});
+  // Nothing to move the card with: the page neither listens for log lines nor holds any.
+  check("the page keeps no log of its own", await p.evaluate(() => document.getElementById("play-log") === null));
+  check("and does not listen for log lines", await p.evaluate(() => !("play://log" in window.__TAURI_LISTENERS__)));
+  await p.click("#btn-log");
+  check("the button asks for the log window", (await callsOf(p, "open_log_window")).length === 1);
+  await p.click("#btn-log");
+  check("asking again is the backend's to answer, not a second window here", (await callsOf(p, "open_log_window")).length === 2);
+  await p.close();
+}
+
+// The log window itself: what the session logged before it opened, then what arrives after.
+{
+  const p = await browser.newPage({ viewport: { width: 620, height: 420 } });
+  p.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
+  p.on("pageerror", (e) => consoleErrors.push(`uncaught: ${e.message}`));
+  await p.addInitScript(installTauriStub, { log: ["cart agent answered: 8 MiB RDRAM, writable", "OoT Client connected"] });
+  await p.goto(`${origin}/log.html`);
+  await until(p, () => document.getElementById("log").textContent.includes("OoT Client connected"));
+  check("the log window shows what it missed", (await text(p, "log")).includes("8 MiB RDRAM"));
+  check("and counts the lines", (await text(p, "log-count")) === "2 lines");
+  await p.evaluate(() => window.__TAURI_LISTENERS__["play://log"]({ payload: "Archipelago: Got Roast Chicken" }));
+  check("and follows the session while open", (await text(p, "log")).includes("Roast Chicken") && (await text(p, "log-count")) === "3 lines");
+  await p.close();
+}
+
+// A log that cannot be read must say so: an empty window reads as a quiet session, which is how
+// a backlog that never arrived went unnoticed.
+{
+  const p = await browser.newPage({ viewport: { width: 620, height: 420 } });
+  p.on("pageerror", (e) => consoleErrors.push(`uncaught: ${e.message}`));
+  await p.addInitScript(installTauriStub, { log: { error: "play_log: command not found" } });
+  await p.goto(`${origin}/log.html`);
+  await until(p, () => document.getElementById("log").textContent.includes("could not read"));
+  check("a log that cannot be read says so", (await text(p, "log")).includes("play_log: command not found"));
   await p.close();
 }
 
 {
   const p = await openScenario({ load: loadFailing });
   await drop(p, ["C:\\seeds\\bad.z64"]);
-  await until(p, () => !document.getElementById("seed").hidden);
+  await until(p, () => !document.getElementById("patch-dialog").hidden);
   check("a failing seed does not offer to patch", !(await visible(p, "patch-controls")));
   check("a failing seed says why", (await visible(p, "load-error")) && (await text(p, "load-error")).includes("failed checks"));
   const failed = await p.evaluate(() => document.querySelector('#failed-checks .check-hint')?.textContent);
@@ -238,6 +363,7 @@ const text = (p, id) => p.evaluate((i) => document.getElementById(i).textContent
   await until(p, () => !document.getElementById("load-error").hidden);
   check("an unknown game names what is supported", (await text(p, "load-error")).includes("Game One"));
   check("an unknown game does not offer to patch", !(await visible(p, "patch-controls")));
+  check("and does not open the dialog", !(await visible(p, "patch-dialog")));
   await p.close();
 }
 
@@ -247,7 +373,7 @@ const text = (p, id) => p.evaluate((i) => document.getElementById(i).textContent
   await until(p, () => !document.getElementById("load-error").hidden);
   check("Browse loads the picked file", (await callsOf(p, "load_rom"))[0]?.args.path === "C:\\x.zip");
   check("a load error is shown", (await text(p, "load-error")).includes("not an N64 ROM"));
-  check("a load error hides the seed", !(await visible(p, "seed")));
+  check("a load error leaves no seed on the card", (await text(p, "seed-line")) === "No seed chosen");
   await p.close();
 }
 
@@ -258,7 +384,7 @@ const text = (p, id) => p.evaluate((i) => document.getElementById(i).textContent
   await p.click("#btn-patch");
   await until(p, () => !document.getElementById("patch-error").hidden);
   check("a write error is shown", (await text(p, "patch-error")).includes("Access is denied"));
-  check("a write error shows no result", !(await visible(p, "result")));
+  check("a write error shows no result", !(await visible(p, "pane-result")));
   check("the button is usable again", !(await p.evaluate(() => document.getElementById("btn-patch").disabled)));
   await p.close();
 }

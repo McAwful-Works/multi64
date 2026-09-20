@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::m64p;
@@ -178,8 +179,11 @@ impl Backend for RamImage {
     }
 }
 
-/// Give up on a cart unreachable for this long. Long enough for a console to be
-/// power-cycled or the cart re-plugged; the Archipelago client waits it out.
+/// Give up on a cart unreachable for this long, unless the caller says otherwise.
+///
+/// Long enough for a console to be power-cycled or the cart re-plugged. A caller with a client
+/// waiting on the other side wants far less than this -- see [`Multi64::set_reconnect_deadline`]
+/// -- because nothing it asked for can be answered in the meantime.
 const RECONNECT_DEADLINE: Duration = Duration::from_secs(300);
 const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(2);
 /// Timeouts retried on the same transport before rebuilding it. A silent agent
@@ -205,6 +209,21 @@ pub struct Stats {
     pub reconnects: u32,
 }
 
+/// Asked whether to give up on a cart that is not answering.
+///
+/// Reconnecting rides out a power cycle, which is why it is allowed to take minutes -- but the
+/// session it belongs to can be stopped by the person waiting, and they should not have to wait
+/// out a console they have already decided to give up on.
+pub type Cancelled = Rc<dyn Fn() -> bool>;
+
+/// Told when the cart stops answering, and when it answers again.
+///
+/// The caller cannot see this for itself: a request that fails is retried and then reconnected
+/// for as long as [`RECONNECT_DEADLINE`], and nothing returns to the caller in the meantime. A
+/// console that was reset would otherwise go unreported for minutes, while the session sat
+/// inside one call looking exactly as it did when everything worked.
+pub type Health = Rc<dyn Fn(bool)>;
+
 /// The console, through multi64d.
 pub struct Multi64 {
     t: Multi64Transport,
@@ -222,6 +241,14 @@ pub struct Multi64 {
     /// The agent looks every frame, which is what the host cannot do at any poll rate, so
     /// while this holds nothing here samples: the events ride back on responses.
     watch_on_cart: bool,
+    /// Told on the way down and on the way back up, never on every request.
+    health: Option<Health>,
+    /// Asked before each attempt at a cart that is not answering.
+    cancelled: Option<Cancelled>,
+    /// How long to keep trying to reach a cart that has stopped answering.
+    reconnect_deadline: Duration,
+    /// Whether the last request had to be retried, so recovery is reported once.
+    ailing: bool,
     /// The link generation the watch was last set up for, so a cart that restarted is
     /// asked again before anything relies on it.
     watch_armed_at: Option<u32>,
@@ -242,7 +269,34 @@ impl Multi64 {
             watch: None,
             watch_on_cart: false,
             watch_armed_at: None,
+            health: None,
+            cancelled: None,
+            reconnect_deadline: RECONNECT_DEADLINE,
+            ailing: false,
         })
+    }
+
+    /// Be told when the cart stops and starts answering ([`Health`]).
+    pub fn set_health(&mut self, health: Health) {
+        self.health = Some(health);
+    }
+
+    /// How long to keep trying before giving up on a cart that has stopped answering.
+    ///
+    /// Shorter is kinder when something is waiting on the answer: a request that cannot be
+    /// served is better failed than held, since failing it ends the session and lets whoever
+    /// was waiting start again, while holding it looks to them exactly like a hang.
+    pub fn set_reconnect_deadline(&mut self, deadline: Duration) {
+        self.reconnect_deadline = deadline;
+    }
+
+    /// Give up on an unanswering cart when `cancelled` says so ([`Cancelled`]).
+    pub fn set_cancelled(&mut self, cancelled: Cancelled) {
+        self.cancelled = Some(cancelled);
+    }
+
+    fn give_up(&self) -> bool {
+        self.cancelled.as_ref().is_some_and(|c| c())
     }
 
     pub fn writable(&self) -> bool {
@@ -265,8 +319,17 @@ impl Multi64 {
         what: &str,
         mut op: impl FnMut(&mut Multi64Transport) -> io::Result<T>,
     ) -> io::Result<T> {
+        let health = self.health.clone();
         let mut last = match op(&mut self.t) {
-            Ok(v) => return Ok(v),
+            Ok(v) => {
+                if self.ailing {
+                    self.ailing = false;
+                    if let Some(h) = &health {
+                        h(true);
+                    }
+                }
+                return Ok(v);
+            }
             Err(e) => e,
         };
 
@@ -284,6 +347,12 @@ impl Multi64 {
                         attempt + 1,
                         self.stats.stalls
                     ));
+                    if self.ailing {
+                        self.ailing = false;
+                        if let Some(h) = &health {
+                            h(true);
+                        }
+                    }
                     return Ok(v);
                 }
                 Err(e) => last = e,
@@ -294,17 +363,31 @@ impl Multi64 {
             "cart {what} failed: {last}; reconnecting to {}",
             self.url
         ));
-        let deadline = Instant::now() + RECONNECT_DEADLINE;
+        // Past the soft retries: whatever the caller asked for, the cart is not answering, and
+        // from here this call may not return for minutes.
+        if !self.ailing {
+            self.ailing = true;
+            if let Some(h) = &health {
+                h(false);
+            }
+        }
+        let deadline = Instant::now() + self.reconnect_deadline;
         let mut wait = Duration::from_millis(250);
         loop {
-            if Instant::now() >= deadline {
+            if self.give_up() {
                 return Err(io::Error::other(format!(
-                    "cart {what}: gave up after {}s trying to reach {}: {last}",
-                    RECONNECT_DEADLINE.as_secs(),
+                    "cart {what}: stopped while reconnecting to {}",
                     self.url
                 )));
             }
-            std::thread::sleep(wait);
+            if Instant::now() >= deadline {
+                return Err(io::Error::other(format!(
+                    "cart {what}: gave up after {}s trying to reach {}: {last}",
+                    self.reconnect_deadline.as_secs(),
+                    self.url
+                )));
+            }
+            wait_unless(wait, &|| self.give_up());
             wait = (wait * 2).min(RECONNECT_BACKOFF_MAX);
             match Multi64Transport::connect(&self.url, self.log.clone()) {
                 Ok(t) => {
@@ -323,7 +406,13 @@ impl Multi64 {
                         self.stats.reconnects
                     ));
                     match op(&mut self.t) {
-                        Ok(v) => return Ok(v),
+                        Ok(v) => {
+                            self.ailing = false;
+                            if let Some(h) = &health {
+                                h(true);
+                            }
+                            return Ok(v);
+                        }
                         Err(e) => last = e,
                     }
                 }
@@ -334,6 +423,21 @@ impl Multi64 {
 }
 
 impl Multi64 {
+    /// Is the agent answering right now?
+    ///
+    /// One small read, sent once: no soft retries, no reconnect, no waiting out a deadline. A
+    /// caller asking "is the ROM still there" wants an answer in one round trip, and the retry
+    /// machinery exists for requests that must not be lost -- this one may be lost freely, and
+    /// asked again in a moment.
+    pub fn alive(&mut self) -> bool {
+        let probe = [m64p::Region { addr: 0, len: 4 }];
+        let ok = self.t.peek(&probe).is_ok();
+        if ok {
+            self.collect_events();
+        }
+        ok
+    }
+
     /// Ask the agent to watch the slot itself, if it can (spec 4.3).
     ///
     /// The host's own sampling catches what it happens to look at; an agent looks every
@@ -608,6 +712,21 @@ fn split(regions: &[(u32, usize)], size: u32) -> io::Result<(Vec<m64p::Region>, 
     Ok((chunks, counts))
 }
 
+/// Sleep up to `total`, giving up as soon as `cancelled` says so.
+///
+/// In slices rather than one sleep: the backoff between reconnect attempts runs to seconds, and
+/// a session being stopped should be felt in a moment rather than at the end of one.
+fn wait_unless(total: Duration, cancelled: &dyn Fn() -> bool) {
+    const SLICE: Duration = Duration::from_millis(50);
+    let until = Instant::now() + total;
+    while Instant::now() < until {
+        if cancelled() {
+            return;
+        }
+        std::thread::sleep(SLICE.min(total));
+    }
+}
+
 /// Whether one more region of `len` bytes still fits `batch` within the wire limits.
 fn fits(batch: &[m64p::Region], len: usize) -> bool {
     let bytes: usize = batch.iter().map(|r| r.len as usize).sum();
@@ -672,6 +791,29 @@ mod tests {
         let out = batches(&chunks);
         assert_eq!(out.len(), 1);
         assert_eq!(spans(&out[0]), spans(&chunks));
+    }
+
+    /// A stop must not wait out a backoff meant for a console being power-cycled.
+    #[test]
+    fn a_cancelled_wait_returns_at_once() {
+        let started = Instant::now();
+        wait_unless(Duration::from_secs(30), &|| true);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_wait_nobody_cancels_runs_its_course() {
+        let started = Instant::now();
+        wait_unless(Duration::from_millis(150), &|| false);
+        assert!(
+            started.elapsed() >= Duration::from_millis(140),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     /// The probe must never turn one request into two: the whole point is that it is free.

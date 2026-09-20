@@ -73,6 +73,129 @@ body {
   overflow-wrap: anywhere;
 }
 
+/*
+ * Developer details.
+ *
+ * Addresses, hashes, counters and the log: true, and useful when something is wrong, but not
+ * what someone holding a controller needs to read. Hidden unless the page says otherwise, so
+ * the quiet view is the one that costs nothing to render and the one a player gets by default.
+ */
+.dev-only {
+  display: none;
+}
+
+body[data-dev="on"] .dev-only {
+  display: revert;
+}
+
+/*
+ * Rows that hold text of varying length keep the space for the longest they normally reach,
+ * so a card is the same height with a seed loaded, an error showing, or neither. Without this
+ * every status change nudged everything below it, and the window with it.
+ */
+.line-2 {
+  min-height: 3.2em;
+}
+
+
+
+.btn-quiet {
+  margin-left: auto;
+}
+
+/*
+ * The session log window (log.html). Its own window, so unlike the main one it is resizable and
+ * the log fills whatever room it is given.
+ */
+.log-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  margin: 0;
+  padding: 0.6rem 0.75rem 0.75rem;
+  box-sizing: border-box;
+}
+
+.log-actions {
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 0.5rem;
+}
+
+.log-fill {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  max-height: none;
+}
+
+/*
+ * A link's own row: a dot in the colour of its state, then what that state means. The dot is
+ * decoration -- the words carry it, so a reader who cannot tell the colours apart loses nothing.
+ */
+.link::before {
+  content: "";
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  margin-right: 0.5em;
+  border-radius: 50%;
+  vertical-align: baseline;
+  background: var(--muted);
+}
+
+.link[data-state="ok"] {
+  color: var(--success-text);
+}
+
+.link[data-state="ok"]::before {
+  background: var(--success-text);
+}
+
+.link[data-state="waiting"],
+.link[data-state="nocart"],
+.link[data-state="nobridge"] {
+  color: var(--warning-text);
+}
+
+.link[data-state="waiting"]::before,
+.link[data-state="nocart"]::before,
+.link[data-state="nobridge"]::before {
+  background: var(--warning-text);
+}
+
+.link[data-state="failed"] {
+  color: var(--danger-text);
+}
+
+.link[data-state="failed"]::before {
+  background: var(--danger-text);
+}
+
+/*
+ * The shared base leaves room under the last card for a page that scrolls. This window is sized
+ * to its content and cannot be resized, so that room is dead space at the bottom: the gap under
+ * the switch matches the one above the header instead.
+ */
+body {
+  padding-bottom: 1rem;
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0.25rem 0 0;
+}
+
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--font-sm);
+  color: var(--muted);
+  cursor: pointer;
+}
+
 /* Multi64's log box. */
 .log {
   margin: 0.75rem 0 0;
@@ -219,6 +342,7 @@ body {
 }
 
 #play-status[data-state="waiting-client"],
+#play-status[data-state="waiting-console"],
 #play-status[data-state="connecting"] {
   color: var(--warning-text);
 }

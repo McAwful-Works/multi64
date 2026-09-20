@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AP64 — Session log</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="app.css" />
+    <script src="appearance.js"></script>
+    <script type="module" src="/log.js" defer></script>
+  </head>
+  <!-- A window of its own, so it can be resized, moved to another screen and left open beside
+       the game. It shows the session's lines, which the backend keeps: closing this window
+       loses nothing, and opening it mid-session shows what already happened. -->
+  <body class="log-page">
+    <div class="row log-actions">
+      <span class="hint" id="log-count">No lines yet.</span>
+      <button type="button" id="btn-copy" class="btn btn-quiet">Copy</button>
+    </div>
+    <pre id="log" class="log log-fill" aria-label="Session log" tabindex="0"></pre>
+  </body>
+</html>
