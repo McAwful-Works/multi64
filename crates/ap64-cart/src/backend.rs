@@ -375,11 +375,14 @@ impl Multi64 {
         if !self.watch_on_cart {
             return;
         }
-        let events = self.t.take_events();
+        let (events, dropped) = self.t.take_events();
         if let Some(w) = self.watch.as_mut() {
             for e in events {
                 w.push_event(&e.bytes);
             }
+            // An event the agent's queue lost is as lost as one this one lost, and a
+            // session that reports only its own would understate it.
+            w.add_dropped(dropped);
         }
     }
 

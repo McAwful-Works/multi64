@@ -48,6 +48,14 @@ pub struct Multi64Transport {
     pub watch_slots: Option<u8>,
     /// What watched slots held between our reads, as responses brought it back.
     events: Vec<m64p::Event>,
+    /// The agent's own dropped total, as last reported, and how much of it is new.
+    ///
+    /// The agent counts since the last `WATCH` and saturates, so this follows the rise
+    /// rather than the value: what it reports is events known to have been lost, wherever
+    /// they were lost. Once the agent's counter pins at its maximum, further losses there
+    /// cannot be counted by anyone.
+    dropped_seen: u16,
+    dropped_new: u32,
 }
 
 fn other(msg: impl Into<String>) -> io::Error {
@@ -113,6 +121,8 @@ impl Multi64Transport {
             rom_bytes: None,
             watch_slots: None,
             events: Vec::new(),
+            dropped_seen: 0,
+            dropped_new: 0,
         };
 
         t.send_app(&m64p::encode_hello())?;
@@ -270,6 +280,7 @@ impl Multi64Transport {
             m64p::Response::PeekV {
                 regions: got,
                 events,
+                dropped,
                 ..
             } => {
                 if got.len() != regions.len() {
@@ -282,6 +293,10 @@ impl Multi64Transport {
                 // Only ever non-empty once this host has set a watch, and it rides the
                 // response it was already waiting for. See take_events.
                 self.events.extend(events);
+                if dropped > self.dropped_seen {
+                    self.dropped_new += u32::from(dropped - self.dropped_seen);
+                    self.dropped_seen = dropped;
+                }
                 Ok(got)
             }
             other_msg => Err(other(format!("expected PEEKV_RESP, got {other_msg:?}"))),
@@ -298,7 +313,9 @@ impl Multi64Transport {
         self.send_app(&app)?;
         match self.await_response(Some(rid))? {
             m64p::Response::WatchAck { watching, .. } => {
+                // The agent starts a new history on WATCH, counters included.
                 self.events.clear();
+                self.dropped_seen = 0;
                 Ok(watching)
             }
             m64p::Response::Err { code, .. } => Err(other(format!(
@@ -309,9 +326,13 @@ impl Multi64Transport {
         }
     }
 
-    /// Everything the watched slots held since this was last called, oldest first.
-    pub fn take_events(&mut self) -> Vec<m64p::Event> {
-        std::mem::take(&mut self.events)
+    /// Everything the watched slots held since this was last called, oldest first, and
+    /// how many the agent's own queue lost in that time.
+    pub fn take_events(&mut self) -> (Vec<m64p::Event>, u32) {
+        (
+            std::mem::take(&mut self.events),
+            std::mem::take(&mut self.dropped_new),
+        )
     }
 
     /// One vectored read of the cartridge ROM (`PEEKROM`).

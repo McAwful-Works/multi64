@@ -85,6 +85,9 @@ pub enum Response {
         /// What the agent's watched slots held between this host's reads (spec 4.3).
         /// Always empty unless this host set a watch.
         events: Vec<Event>,
+        /// Events the agent's own queue lost since `WATCH`, as a running total that
+        /// saturates. 0 without a trailer.
+        dropped: u16,
     },
     PeekRom {
         rid: u16,
@@ -254,6 +257,11 @@ pub fn encode_watch(rid: u16, slots: &[Slot]) -> Result<Vec<u8>, Error> {
         if s.values.len() > WATCH_MAX_VALUES {
             return Err(Error::RegionTooLarge(s.values.len()));
         }
+        // A filter byte outside the slot could never match, and the agent refuses it
+        // (spec 4.3). Saying so here names the slot instead of an error code.
+        if !s.values.is_empty() && s.at >= s.len {
+            return Err(Error::RegionTooLarge(s.at as usize));
+        }
     }
     let mut v = Vec::with_capacity(8 + slots.len() * 12);
     v.extend_from_slice(&MAGIC);
@@ -343,9 +351,11 @@ pub fn parse(app: &[u8]) -> Result<Response, Error> {
             // The trailer is there only for a host that set a watch, so its absence is
             // the normal case and never an error.
             let mut events = Vec::new();
+            let mut dropped = 0u16;
             if off + 3 <= b.len() {
                 let n = b[off] as usize;
-                off += 3; // n, then dropped:u16, which the agent also counts for itself
+                dropped = u16::from_be_bytes([b[off + 1], b[off + 2]]);
+                off += 3;
                 for _ in 0..n {
                     if off + 2 > b.len() {
                         return Err(Error::Truncated);
@@ -366,6 +376,7 @@ pub fn parse(app: &[u8]) -> Result<Response, Error> {
                 rid,
                 regions,
                 events,
+                dropped,
             })
         }
         MSG_POKE_ACK => {
@@ -460,6 +471,29 @@ mod tests {
         assert_eq!(encode_watch(1, &[]).unwrap(), b"M64P\x05\x00\x01\x00");
     }
 
+    /// The agent refuses a filter byte outside its slot; saying so here names the slot.
+    #[test]
+    fn a_filter_outside_its_slot_is_refused_before_it_is_sent() {
+        let outside = Slot {
+            addr: 0,
+            len: 4,
+            at: 4,
+            values: vec![1],
+        };
+        assert!(encode_watch(1, &[outside]).is_err());
+        // With no values there is no filter byte to be outside anything.
+        assert!(encode_watch(
+            1,
+            &[Slot {
+                addr: 0,
+                len: 4,
+                at: 4,
+                values: vec![]
+            }]
+        )
+        .is_ok());
+    }
+
     #[test]
     fn a_watch_the_wire_cannot_carry_is_refused_before_it_is_sent() {
         let too_long = Slot {
@@ -505,8 +539,10 @@ mod tests {
                 rid,
                 regions,
                 events,
+                dropped,
             } => {
                 assert_eq!(rid, 5);
+                assert_eq!(dropped, 3, "what the agent's own queue lost");
                 assert_eq!(regions, vec![vec![0xAA, 0xBB]]);
                 assert_eq!(
                     events,
@@ -586,10 +622,12 @@ mod tests {
                 rid,
                 regions,
                 events,
+                dropped,
             } => {
                 assert_eq!(rid, 0xBEEF);
                 assert_eq!(regions, vec![vec![1, 2, 3], vec![9, 8]]);
                 assert!(events.is_empty(), "no watch was set, so no trailer");
+                assert_eq!(dropped, 0);
             }
             other => panic!("wrong variant: {other:?}"),
         }

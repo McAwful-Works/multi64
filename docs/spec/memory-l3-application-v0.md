@@ -109,12 +109,22 @@ nothing else says it happened until much later. A host polling over USB reads su
 once per exchange at best, so events between its reads are gone before it looks. The
 agent runs every frame, which is where the game writes them.
 
-`WATCH` gives the agent a list of slots to follow. Each is an RDRAM `addr`, a `len` of at
-most **8** bytes, and a filter: byte `at` within the slot must equal one of `nvalues`
-listed bytes, with `nvalues = 0` meaning every change is kept. `n = 0` clears every watch,
-which is also the state after `HELLO`. `n` above `watch_slots` is `E_TOO_MANY`; a `len`
-above 8, or `nvalues` above **8**, is `E_TOO_LARGE`; `addr + len` outside RDRAM is
-`E_RANGE`. `WATCH_ACK` reports how many slots are watched, which on success is `n`.
+`WATCH` gives the agent a list of slots to follow. Each is an RDRAM `addr`, a `len` of **1 to
+8** bytes, and a filter: byte `at` within the slot must equal one of `nvalues` listed bytes, with
+`nvalues = 0` meaning every change is kept and `at` ignored. `n = 0` clears every watch, which is
+also the state after `HELLO`. `WATCH_ACK` reports how many slots are watched, which on success
+is `n`.
+
+A request is refused whole, leaving the slots the host set last time untouched:
+
+| Condition | Error |
+|-----------|-------|
+| `n` above `watch_slots` | `E_TOO_MANY` |
+| `len` of 0, `len` above 8, or `nvalues` above 8 | `E_TOO_LARGE` |
+| `addr + len` outside RDRAM, or `at` not less than `len` while `nvalues` is non-zero | `E_RANGE` |
+
+A `len` of 0 names no bytes to compare, and an `at` outside the slot could never match, so both
+are refused rather than watched and never reported.
 
 What the agent does with them, once per frame, from the same hook as §4.1:
 
@@ -155,8 +165,8 @@ cannot tell a slow sampler from a quiet game.
 |------|------|---------|
 | `0x01` | `E_MALFORMED` | Body shorter than the declared regions require |
 | `0x02` | `E_TOO_MANY` | `n` exceeds 32, or the watched slots the agent has room for (§4.3) |
-| `0x03` | `E_TOO_LARGE` | Region or total exceeds the §4 limits, or a watch's `len` or `nvalues` exceeds §4.3's 8 |
-| `0x04` | `E_RANGE` | `addr + len` outside RDRAM |
+| `0x03` | `E_TOO_LARGE` | Region or total exceeds the §4 limits, or a watch's `len` is 0 or its `len` or `nvalues` exceeds §4.3's 8 |
+| `0x04` | `E_RANGE` | `addr + len` outside RDRAM, or a watch's filter byte `at` is outside its slot (§4.3) |
 | `0x05` | `E_READONLY` | `POKEV` on an agent that does not accept writes |
 | `0x06` | `E_UNSUPPORTED` | `PEEKROM` on an agent that does not read the cart ROM (`flags` bit `1` clear), or `WATCH` on one that does not watch slots (bit `2` clear) |
 | `0x07` | `E_BUSY` | `PEEKROM` could not get the PI bus within the agent's bound; nothing was read. Retry |
