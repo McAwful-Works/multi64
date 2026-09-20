@@ -21,11 +21,13 @@
 #define M64P_MSG_PEEKV 0x02U
 #define M64P_MSG_POKEV 0x03U
 #define M64P_MSG_PEEKROM 0x04U
+#define M64P_MSG_WATCH 0x05U
 
 #define M64P_MSG_HELLO_ACK 0x81U
 #define M64P_MSG_PEEKV_RESP 0x82U
 #define M64P_MSG_POKE_ACK 0x83U
 #define M64P_MSG_PEEKROM_RESP 0x84U
+#define M64P_MSG_WATCH_ACK 0x85U
 #define M64P_MSG_ERR 0xE0U
 
 #define M64P_ERR_MALFORMED 0x01U
@@ -42,6 +44,8 @@
 #define M64P_FLAG_WRITABLE 0x01U
 /** `HELLO_ACK` flags bit 1: this agent answers `PEEKROM`, and `rom_bytes` follows the flags. */
 #define M64P_FLAG_CART_ROM 0x02U
+/** `HELLO_ACK` flags bit 2: this agent watches slots, and `watch_slots` follows rom_bytes. */
+#define M64P_FLAG_WATCH 0x04U
 
 /** Spec §4 limits. Exceeding any of them is an error, never a truncation. */
 #define M64P_MAX_REGIONS 32
@@ -50,6 +54,18 @@
    PEEKV response): 8 + 6n + total. At n = 32 that leaves 7992 under an 8192-byte
    L3 payload, so one usb_write still carries the whole frame. */
 #define M64P_MAX_TOTAL_BYTES 7936
+
+/*
+ * Spec §4.3 limits. A slot is small by construction: this exists for the one place a game
+ * records an event, not for watching data structures.
+ *
+ * The cost is all per frame and all static: M64P_WATCH_SLOTS slots are read and compared
+ * every frame, and the queue is the only memory an event ever occupies.
+ */
+#define M64P_WATCH_SLOTS 4
+#define M64P_WATCH_MAX_LEN 8
+#define M64P_WATCH_MAX_VALUES 8
+#define M64P_WATCH_QUEUE 16
 
 /** Largest M64P application payload this module will build (magic + msg + body). */
 #define M64P_APP_CAP (5 + 3 + (M64P_MAX_REGIONS * 2) + M64P_MAX_TOTAL_BYTES)
@@ -115,6 +131,24 @@ int m64p_cart_rom_read(uint32_t off, uint8_t *dst, uint32_t len);
  * was an M64P message (handled or answered with `ERR`), 0 if it was not ours.
  */
 int m64p_handle(const uint8_t *p, size_t plen);
+
+/**
+ * Read every watched slot and queue what changed (spec §4.3).
+ *
+ * **Call this once per frame, from the same hook as m64p_handle(), whether or not a
+ * request arrived.** That is the whole feature: a host cannot read a slot often enough to
+ * see a value the next frame overwrites, and this can. A host that sets a watch is
+ * promised a per-frame sample, so a program that cannot make this call every frame must
+ * report no watch support (leave M64P_FLAG_WATCH clear) rather than call it less often --
+ * a host cannot tell a slow sampler from a quiet game.
+ *
+ * Costs nothing worth measuring while no slot is watched, which is the state after HELLO.
+ */
+void m64p_watch_tick(void);
+
+/** Slots watched now, and events dropped by a full queue since the last WATCH. */
+uint8_t m64p_get_watching(void);
+uint16_t m64p_get_watch_dropped(void);
 
 /** Requests served since reset — HELLO, PEEKV, POKEV and PEEKROM all count. */
 uint32_t m64p_get_requests(void);

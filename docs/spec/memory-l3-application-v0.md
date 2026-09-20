@@ -34,6 +34,7 @@ Every request carries a **`rid`** (`uint16`), echoed in its response. A host may
 | `0x02` | `PEEKV` | `rid:uint16`, `n:uint8`, then `n` × (`addr:uint32`, `len:uint16`) |
 | `0x03` | `POKEV` | `rid:uint16`, `n:uint8`, then `n` × (`addr:uint32`, `len:uint16`, `len` bytes) |
 | `0x04` | `PEEKROM` | As `PEEKV`; addresses are cartridge ROM offsets (§4.2) |
+| `0x05` | `WATCH` | `rid:uint16`, `n:uint8`, then `n` × (`addr:uint32`, `len:uint8`, `at:uint8`, `nvalues:uint8`, `nvalues` bytes) — §4.3 |
 
 `HELLO` has no `rid`; `HELLO_ACK` carries none either.
 
@@ -47,11 +48,14 @@ Every request carries a **`rid`** (`uint16`), echoed in its response. A host may
 | `0x82` | `PEEKV_RESP` | `rid:uint16`, `n:uint8`, then `n` × (`len:uint16`, `len` bytes) — same order as the request |
 | `0x83` | `POKE_ACK` | `rid:uint16`, `applied:uint8` — count of regions written |
 | `0x84` | `PEEKROM_RESP` | As `PEEKV_RESP` |
+| `0x85` | `WATCH_ACK` | `rid:uint16`, `watching:uint8` — slots now watched |
 | `0xE0` | `ERR` | `rid:uint16`, `code:uint8` (§5) |
 
 `proto` is **0** for this revision. `flags` bit `0` set means writes are accepted; a read-only agent clears it and answers `POKEV` with `ERR`/`E_READONLY`.
 
-`flags` bit `1` set means the agent answers `PEEKROM`, and `HELLO_ACK` then carries one more field after `flags`: `rom_bytes:uint32`, the size of the ROM window `PEEKROM` may address (§4.2). An agent without it clears bit `1`, sends no `rom_bytes`, and answers `PEEKROM` with `ERR`/`E_UNSUPPORTED`. The field is appended, so every earlier field stays where a host that predates it reads it, and such a host can ignore both the bit and the extra four bytes. Other `flags` bits are reserved and sent as `0`.
+`flags` bit `1` set means the agent answers `PEEKROM`, and `HELLO_ACK` then carries one more field after `flags`: `rom_bytes:uint32`, the size of the ROM window `PEEKROM` may address (§4.2). An agent without it clears bit `1`, sends no `rom_bytes`, and answers `PEEKROM` with `ERR`/`E_UNSUPPORTED`. The field is appended, so every earlier field stays where a host that predates it reads it, and such a host can ignore both the bit and the extra four bytes.
+
+`flags` bit `2` set means the agent watches slots (§4.3), and `HELLO_ACK` carries `watch_slots:uint8` — how many it can watch at once — after `rom_bytes` if that is present, else straight after `flags`. **Appended fields appear in bit order, each present only if its bit is set**, so a host reads them in that order and an agent with neither sends neither. An agent with bit `2` clear answers `WATCH` with `ERR`/`E_UNSUPPORTED`. Other `flags` bits are reserved and sent as `0`.
 
 ---
 
@@ -98,6 +102,51 @@ Hosts need the ROM as well as RAM: tools read it to recognise the game and to fi
 - **The agent reads the ROM over the PI bus, between the game's own transfers,** under the same rules as its cart driver: it never writes the PI control registers, it checks the PI is idle and masks interrupts around each short burst of loads, and every wait is bounded. If the PI stays busy past that bound, the whole request is answered with `ERR`/`E_BUSY` and nothing else. The host may simply retry.
 - **No consistency question arises:** the ROM does not change while the console runs. A host may therefore cache what it has read, but must drop that cache whenever the console may have been reset or another image loaded. The M64P link going silent and a new `HELLO` is the signal it has.
 
+### 4.3 Watched slots (`WATCH`)
+
+Some games record "this just happened" in one place that the next event overwrites, and
+nothing else says it happened until much later. A host polling over USB reads such a slot
+once per exchange at best, so events between its reads are gone before it looks. The
+agent runs every frame, which is where the game writes them.
+
+`WATCH` gives the agent a list of slots to follow. Each is an RDRAM `addr`, a `len` of at
+most **8** bytes, and a filter: byte `at` within the slot must equal one of `nvalues`
+listed bytes, with `nvalues = 0` meaning every change is kept. `n = 0` clears every watch,
+which is also the state after `HELLO`. `n` above `watch_slots` is `E_TOO_MANY`; a `len`
+above 8, or `nvalues` above **8**, is `E_TOO_LARGE`; `addr + len` outside RDRAM is
+`E_RANGE`. `WATCH_ACK` reports how many slots are watched, which on success is `n`.
+
+What the agent does with them, once per frame, from the same hook as §4.1:
+
+- It reads each slot and compares it with what it read last frame. The first read after a
+  `WATCH` is a baseline and is never an event.
+- A change **to all zero bytes** is not an event: a slot being cleared is the game
+  finishing with it, not something happening.
+- Any other change whose filter admits it is appended to one queue, shared by all slots.
+  The queue holds **16** events; a seventeenth drops the oldest and counts as dropped.
+
+The queue is returned to the host on responses it was already sending. **While any slot is
+watched, `PEEKV_RESP` carries a trailer** after its last region:
+
+| Offset | Size | Description |
+|--------|------|-------------|
+| `0` | 1 | `n` — events in this response |
+| `1` | 2 | `dropped:uint16` — events lost to a full queue since `WATCH`, saturating |
+| `3`– | * | `n` × (`slot:uint8`, `len:uint8`, `len` bytes), oldest first |
+
+An event is removed from the queue when it is put in a trailer. The agent sends as many as
+the response has room for under §4's total, and the rest follow on later responses. A host
+that has set no watch never sees a trailer, so this changes nothing for one that does not
+use the feature, and a response with no room for the trailer's three bytes carries none.
+
+**What a queued event is, and is not.** It is a value the slot really held, at a frame
+boundary, in the order it held them. It is not a claim about the slot now: by the time a
+host reads one, the game has usually moved on, which is the whole point. Nor is it every
+value the slot ever held — a game that writes it twice between two frames leaves only the
+second, exactly as a host reading the slot every frame would see. An agent that cannot
+sample once per frame must leave bit `2` clear rather than sample less often, since a host
+cannot tell a slow sampler from a quiet game.
+
 ---
 
 ## 5. Error codes
@@ -105,11 +154,11 @@ Hosts need the ROM as well as RAM: tools read it to recognise the game and to fi
 | Code | Name | Meaning |
 |------|------|---------|
 | `0x01` | `E_MALFORMED` | Body shorter than the declared regions require |
-| `0x02` | `E_TOO_MANY` | `n` exceeds 32 |
-| `0x03` | `E_TOO_LARGE` | Region or total exceeds the §4 limits |
+| `0x02` | `E_TOO_MANY` | `n` exceeds 32, or the watched slots the agent has room for (§4.3) |
+| `0x03` | `E_TOO_LARGE` | Region or total exceeds the §4 limits, or a watch's `len` or `nvalues` exceeds §4.3's 8 |
 | `0x04` | `E_RANGE` | `addr + len` outside RDRAM |
 | `0x05` | `E_READONLY` | `POKEV` on an agent that does not accept writes |
-| `0x06` | `E_UNSUPPORTED` | `PEEKROM` on an agent that does not read the cart ROM (`flags` bit `1` clear) |
+| `0x06` | `E_UNSUPPORTED` | `PEEKROM` on an agent that does not read the cart ROM (`flags` bit `1` clear), or `WATCH` on one that does not watch slots (bit `2` clear) |
 | `0x07` | `E_BUSY` | `PEEKROM` could not get the PI bus within the agent's bound; nothing was read. Retry |
 
 An agent that predates a request type answers it with `E_MALFORMED`, as any unknown `msg`.
@@ -121,3 +170,4 @@ An agent that predates a request type answers it with `E_MALFORMED`, as any unkn
 |---------------|--------|
 | **1** | M64P v0: `HELLO`, `PEEKV`, `POKEV`. No change to the L3 byte contract — this is an APPLICATION payload, so **Protocol-Major/Minor are unaffected**. Per-request byte cap set to 7936 (§4) after hardware measurement showed latency is per-exchange, not per-byte. |
 | *unassigned* | `PEEKROM` / `PEEKROM_RESP` (§4.2), `HELLO_ACK` `flags` bit `1` and `rom_bytes`, `E_UNSUPPORTED`, `E_BUSY`. Additive: `proto` stays **0**, every earlier field keeps its offset, and an agent without `PEEKROM` still conforms. L3 **Protocol-Major/Minor are unaffected**. The Spec-Revision number is the maintainer's to assign. |
+| *unassigned* | `WATCH` / `WATCH_ACK` and the `PEEKV_RESP` trailer (§4.3), `HELLO_ACK` `flags` bit `2` and `watch_slots`. Additive: `proto` stays **0**, the trailer appears only for a host that asked for it, and an agent that does not watch still conforms. L3 **Protocol-Major/Minor are unaffected**. The Spec-Revision number is the maintainer's to assign. |

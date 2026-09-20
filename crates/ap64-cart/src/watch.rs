@@ -108,6 +108,35 @@ impl Watch {
         (self.addr, self.len)
     }
 
+    pub fn filter(&self) -> Option<&Filter> {
+        self.filter.as_ref()
+    }
+
+    /// Queue a value an agent watching this slot reported (spec 4.3).
+    ///
+    /// Unlike [`Watch::observe`] this is not a sample to compare: the agent saw the change
+    /// at a frame boundary and applied the same rules there, so the only thing left to do
+    /// with it is queue it. `last` is left alone -- nothing here sampled anything, and a
+    /// later fallback sample should compare against what it last read itself.
+    pub fn push_event(&mut self, bytes: &[u8]) {
+        if bytes.len() != self.len {
+            return;
+        }
+        self.stats.events += 1;
+        if self.queue.len() == QUEUE_CAP {
+            self.queue.pop_front();
+            self.stats.dropped += 1;
+        }
+        self.queue.push_back(bytes.to_vec());
+        self.stats.queued += 1;
+    }
+
+    /// Count events an agent dropped before it could report them, so the total the
+    /// session reports is every event known to have been lost, wherever it was lost.
+    pub fn add_dropped(&mut self, n: u32) {
+        self.stats.dropped = self.stats.dropped.saturating_add(n);
+    }
+
     /// Record the slot as it was just read.
     pub fn observe(&mut self, bytes: &[u8]) {
         if bytes.len() != self.len {
@@ -249,6 +278,24 @@ mod tests {
         let s = w.stats();
         assert_eq!((s.dropped, s.waiting), (2, QUEUE_CAP));
         assert_eq!(w.take(), Some(chest(2)));
+    }
+
+    /// An agent that watches has already decided what is an event; the host only queues it.
+    #[test]
+    fn an_agents_event_is_queued_as_it_arrives() {
+        let mut w = oot();
+        w.push_event(&chest(9));
+        assert_eq!(w.take(), Some(chest(9)));
+        let s = w.stats();
+        assert_eq!((s.events, s.queued, s.replayed), (1, 1, 1));
+    }
+
+    #[test]
+    fn an_agents_event_of_the_wrong_length_is_ignored() {
+        let mut w = oot();
+        w.push_event(&[0x60, 0x01]);
+        assert_eq!(w.take(), None);
+        assert_eq!(w.stats().events, 0);
     }
 
     #[test]

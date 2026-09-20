@@ -359,6 +359,14 @@ void agent_tick(void)
         }
     }
 
+    /*
+     * Every frame, before anything that can return early: a watched slot is one the game
+     * overwrites between the host's reads, so what a host cannot sample often enough this
+     * samples here (memory-l3-application-v0.md 4.3). It touches RDRAM only -- no cart,
+     * no PI -- and does nothing at all while the host has set no watch.
+     */
+    m64p_watch_tick();
+
 #ifdef AGENT_STREAM_CART
     size = stream_frame();
     if (size == 0u) {

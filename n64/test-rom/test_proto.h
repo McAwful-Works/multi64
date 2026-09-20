@@ -95,7 +95,7 @@
  */
 #define TEST_M64P_SCRATCH_BYTES 256
 
-#define TEST_ROM_VERSION_STR "multi64-test-rom 1.13"
+#define TEST_ROM_VERSION_STR "multi64-test-rom 1.14"
 
 /**
  * Counters the ROM shell owns rather than test_proto.c, gathered for `M64T_MSG_REQ_DIAG`.

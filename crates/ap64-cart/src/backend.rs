@@ -217,6 +217,14 @@ pub struct Multi64 {
     generation: u32,
     /// A slot read alongside every batch of reads, if a connector asked for one.
     watch: Option<Watch>,
+    /// True once the agent has been asked to watch the slot itself (spec 4.3).
+    ///
+    /// The agent looks every frame, which is what the host cannot do at any poll rate, so
+    /// while this holds nothing here samples: the events ride back on responses.
+    watch_on_cart: bool,
+    /// The link generation the watch was last set up for, so a cart that restarted is
+    /// asked again before anything relies on it.
+    watch_armed_at: Option<u32>,
 }
 
 impl Multi64 {
@@ -232,6 +240,8 @@ impl Multi64 {
             rom_pages: HashMap::new(),
             generation: 0,
             watch: None,
+            watch_on_cart: false,
+            watch_armed_at: None,
         })
     }
 
@@ -305,6 +315,9 @@ impl Multi64 {
                     // another image. Nothing read from the old one can be trusted.
                     self.rom_pages.clear();
                     self.generation += 1;
+                    // A new HELLO: the agent has forgotten what it was watching, and this
+                    // may not even be the same agent. Ask again before anything reads.
+                    self.watch_on_cart = false;
                     (self.log)(format!(
                         "cart reconnected (reconnect #{})",
                         self.stats.reconnects
@@ -321,6 +334,55 @@ impl Multi64 {
 }
 
 impl Multi64 {
+    /// Ask the agent to watch the slot itself, if it can (spec 4.3).
+    ///
+    /// The host's own sampling catches what it happens to look at; an agent looks every
+    /// frame, so this is the difference between narrowing the window and closing it. An
+    /// agent that predates `WATCH` leaves `watch_slots` unset and the host keeps sampling.
+    fn arm_watch(&mut self) -> io::Result<()> {
+        let Some(w) = self.watch.as_ref() else {
+            return Ok(());
+        };
+        if self.t.watch_slots.unwrap_or(0) == 0 {
+            // An agent from before WATCH: the host samples, as it always did.
+            self.watch_armed_at = Some(self.generation);
+            return Ok(());
+        }
+        let (addr, len) = w.region();
+        let (at, values) = match w.filter() {
+            Some(f) => (f.at as u8, f.values.clone()),
+            None => (0, Vec::new()),
+        };
+        let slot = m64p::Slot {
+            addr,
+            len: len as u8,
+            at,
+            values,
+        };
+        let watching = self.with_retry("watch", |t| t.watch(std::slice::from_ref(&slot)))?;
+        self.watch_on_cart = watching > 0;
+        self.watch_armed_at = Some(self.generation);
+        if self.watch_on_cart {
+            (self.log)(format!(
+                "the cart is watching 0x{addr:X}+{len} itself, every frame"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Move whatever the last responses brought back into the watch's queue.
+    fn collect_events(&mut self) {
+        if !self.watch_on_cart {
+            return;
+        }
+        let events = self.t.take_events();
+        if let Some(w) = self.watch.as_mut() {
+            for e in events {
+                w.push_event(&e.bytes);
+            }
+        }
+    }
+
     /// Fetch the ROM pages in `pages` that are not cached, as few requests as the limits
     /// allow.
     fn fill_rom_pages(&mut self, pages: &[u32]) -> io::Result<()> {
@@ -407,15 +469,22 @@ impl Backend for Multi64 {
     }
 
     fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        if self.watch.is_some() && self.watch_armed_at != Some(self.generation) {
+            // First reads of this link, or the first since it restarted.
+            let _ = self.arm_watch();
+        }
         let (chunks, counts) = split(regions, self.rdram_size())?;
         let mut flat = Vec::with_capacity(chunks.len());
         for mut batch in batches(&chunks) {
             // The probe rides a request that was going out anyway, so it costs no
             // exchange and cannot slow the poll rate it exists to compensate for. A batch
             // already at a wire limit goes without it rather than becoming two requests.
+            // An agent watching the slot itself needs no probe: it reports what it saw on
+            // this very response, which is strictly more than a probe could catch.
             let probe = self
                 .watch
                 .as_ref()
+                .filter(|_| !self.watch_on_cart)
                 .map(|w| w.region())
                 .filter(|&(_, len)| fits(&batch, len));
             if let Some((addr, len)) = probe {
@@ -432,6 +501,7 @@ impl Backend for Multi64 {
                     w.observe(&bytes);
                 }
             }
+            self.collect_events();
             flat.extend(done);
         }
         stitch(flat, &counts)
@@ -439,6 +509,16 @@ impl Backend for Multi64 {
 
     fn set_watch(&mut self, watch: Watch) {
         self.watch = Some(watch);
+        self.watch_on_cart = false;
+        self.watch_armed_at = None;
+        if let Err(e) = self.arm_watch() {
+            // Not fatal: the host can still sample the slot itself, which is what it did
+            // before agents could watch. Worth a line, since the two differ in what they
+            // catch.
+            (self.log)(format!(
+                "cart watch refused ({e}); sampling from here instead"
+            ));
+        }
     }
 
     fn take_watched(&mut self) -> Option<Vec<u8>> {
@@ -446,6 +526,11 @@ impl Backend for Multi64 {
     }
 
     fn sample_watch(&mut self) -> io::Result<()> {
+        if self.watch_on_cart {
+            // The agent is looking every frame; a read from here would cost an exchange
+            // and see less than it already has.
+            return Ok(());
+        }
         let Some((addr, len)) = self.watch.as_ref().map(|w| w.region()) else {
             return Ok(());
         };

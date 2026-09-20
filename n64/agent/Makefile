@@ -111,6 +111,10 @@ HOST_TEST_SOURCES = tests/reassembly_test.c agent.c $(PROTO)/mem_proto.c
 # known ROM image. It checks PEEKROM's protocol handling and cart_rom.c's byte extraction at every
 # alignment, not that a cart answers.
 #
+# tests/watch_test.c: the real mem_proto.c over a buffer standing in for RDRAM. It checks that a
+# value written and overwritten between two of the host's reads still reaches it, in order, because
+# the agent looked every frame -- and the rules around that (spec 4.3). No console, no cart.
+#
 # tests/ed64_test.c: the real ed64.c linked against fake pi_io_* functions in place of pi_io.c,
 # modelling the X7's USBCFG register and USB window. It checks that a received message is delivered
 # in order and whole, or reported lost, and that every wait is bounded, not that the model matches
@@ -127,6 +131,8 @@ host-test:
 	build/host/ed64
 	$(HOSTCC) $(HOST_CFLAGS) -I. -I$(PROTO) tests/cart_rom_test.c cart_rom.c $(PROTO)/mem_proto.c -o build/host/cart_rom
 	build/host/cart_rom
+	$(HOSTCC) $(HOST_CFLAGS) -I. -I$(PROTO) tests/watch_test.c $(PROTO)/mem_proto.c -o build/host/watch
+	build/host/watch
 
 clean:
 	rm -rf build

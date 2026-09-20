@@ -122,12 +122,14 @@ static void hello_advertises_the_rom_window(void)
     const uint8_t hello[5] = {'M', '6', '4', 'P', M64P_MSG_HELLO};
     s_sends = 0;
     assert(m64p_handle(hello, sizeof hello) == 1 && s_sends == 1);
-    assert(s_last_len == 5 + 12 && s_last[4] == M64P_MSG_HELLO_ACK);
+    /* rom_bytes, then watch_slots: the appended fields in the order of their flag bits. */
+    assert(s_last_len == 5 + 13 && s_last[4] == M64P_MSG_HELLO_ACK);
     /* The first eight body bytes are where a host that predates PEEKROM reads them. */
     assert(s_last[5] == M64P_PROTO_VERSION);
     assert(s_last[8] == 0 && s_last[9] == 0 && s_last[10] == 0 && s_last[11] == 64);
-    assert(s_last[12] == (M64P_FLAG_WRITABLE | M64P_FLAG_CART_ROM));
+    assert(s_last[12] == (M64P_FLAG_WRITABLE | M64P_FLAG_CART_ROM | M64P_FLAG_WATCH));
     assert(s_last[13] == 0x04 && s_last[14] == 0 && s_last[15] == 0 && s_last[16] == 0);
+    assert(s_last[17] == M64P_WATCH_SLOTS);
 }
 
 static void every_alignment_reads_the_right_bytes(void)

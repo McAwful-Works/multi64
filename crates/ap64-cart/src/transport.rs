@@ -44,6 +44,10 @@ pub struct Multi64Transport {
     pub writable: bool,
     /// The cart ROM window, when the agent answers `PEEKROM`.
     pub rom_bytes: Option<u32>,
+    /// Slots the agent will watch at once, when it watches at all (spec 4.3).
+    pub watch_slots: Option<u8>,
+    /// What watched slots held between our reads, as responses brought it back.
+    events: Vec<m64p::Event>,
 }
 
 fn other(msg: impl Into<String>) -> io::Error {
@@ -107,6 +111,8 @@ impl Multi64Transport {
             rdram_bytes: 0,
             writable: false,
             rom_bytes: None,
+            watch_slots: None,
+            events: Vec::new(),
         };
 
         t.send_app(&m64p::encode_hello())?;
@@ -116,6 +122,7 @@ impl Multi64Transport {
                 rdram_bytes,
                 flags,
                 rom_bytes,
+                watch_slots,
                 ..
             } => {
                 if proto != 0 {
@@ -126,6 +133,7 @@ impl Multi64Transport {
                 t.rdram_bytes = rdram_bytes;
                 t.writable = flags & m64p::FLAG_WRITABLE != 0;
                 t.rom_bytes = rom_bytes;
+                t.watch_slots = watch_slots;
                 Ok(t)
             }
             other_msg => Err(other(format!("expected HELLO_ACK, got {other_msg:?}"))),
@@ -259,7 +267,11 @@ impl Multi64Transport {
         let app = m64p::encode_peekv(rid, regions).map_err(|e| other(e.to_string()))?;
         self.send_app(&app)?;
         match self.await_response(Some(rid))? {
-            m64p::Response::PeekV { regions: got, .. } => {
+            m64p::Response::PeekV {
+                regions: got,
+                events,
+                ..
+            } => {
                 if got.len() != regions.len() {
                     return Err(other(format!(
                         "asked for {} regions, cart returned {}",
@@ -267,10 +279,39 @@ impl Multi64Transport {
                         got.len()
                     )));
                 }
+                // Only ever non-empty once this host has set a watch, and it rides the
+                // response it was already waiting for. See take_events.
+                self.events.extend(events);
                 Ok(got)
             }
             other_msg => Err(other(format!("expected PEEKV_RESP, got {other_msg:?}"))),
         }
+    }
+
+    /// Ask the cart to watch `slots` from now on, replacing what it watched before.
+    ///
+    /// An empty list stops it watching. Fails if the agent does not watch slots at all,
+    /// which a caller should check through `watch_slots` first.
+    pub fn watch(&mut self, slots: &[m64p::Slot]) -> io::Result<u8> {
+        let rid = self.rid();
+        let app = m64p::encode_watch(rid, slots).map_err(|e| other(e.to_string()))?;
+        self.send_app(&app)?;
+        match self.await_response(Some(rid))? {
+            m64p::Response::WatchAck { watching, .. } => {
+                self.events.clear();
+                Ok(watching)
+            }
+            m64p::Response::Err { code, .. } => Err(other(format!(
+                "the cart refused to watch {} slot(s): M64P error 0x{code:02X}",
+                slots.len()
+            ))),
+            other_msg => Err(other(format!("expected WATCH_ACK, got {other_msg:?}"))),
+        }
+    }
+
+    /// Everything the watched slots held since this was last called, oldest first.
+    pub fn take_events(&mut self) -> Vec<m64p::Event> {
+        std::mem::take(&mut self.events)
     }
 
     /// One vectored read of the cartridge ROM (`PEEKROM`).

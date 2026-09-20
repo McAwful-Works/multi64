@@ -512,6 +512,9 @@ int main(void)
         case MODE_MEM_AGENT:
             /* Same RX path: drain_stream dispatches M64T and M64P on payload magic. */
             run_m64t_usb_rx();
+            /* Once a frame, request or no request: what a watch promises a host
+               (memory-l3-application-v0.md 4.3). */
+            m64p_watch_tick();
             break;
         default:
             break;

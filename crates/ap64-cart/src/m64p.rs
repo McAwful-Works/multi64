@@ -13,11 +13,13 @@ pub const MSG_HELLO: u8 = 0x01;
 pub const MSG_PEEKV: u8 = 0x02;
 pub const MSG_POKEV: u8 = 0x03;
 pub const MSG_PEEKROM: u8 = 0x04;
+pub const MSG_WATCH: u8 = 0x05;
 
 pub const MSG_HELLO_ACK: u8 = 0x81;
 pub const MSG_PEEKV_RESP: u8 = 0x82;
 pub const MSG_POKE_ACK: u8 = 0x83;
 pub const MSG_PEEKROM_RESP: u8 = 0x84;
+pub const MSG_WATCH_ACK: u8 = 0x85;
 pub const MSG_ERR: u8 = 0xE0;
 
 /// Spec §4. Enforced here as well as on the cart, so an over-large request fails
@@ -30,6 +32,8 @@ pub const MAX_TOTAL_BYTES: usize = 7936;
 pub const FLAG_WRITABLE: u8 = 0x01;
 /// `HELLO_ACK` flags bit 1: the agent answers `PEEKROM`, and `rom_bytes` follows the flags.
 pub const FLAG_CART_ROM: u8 = 0x02;
+/// `HELLO_ACK` flags bit 2: the agent watches slots, and `watch_slots` follows `rom_bytes`.
+pub const FLAG_WATCH: u8 = 0x04;
 
 /// `ERR` code for a `PEEKROM` that could not get the PI bus: nothing was read, retry.
 pub const E_BUSY: u8 = 0x07;
@@ -40,6 +44,29 @@ pub struct Region {
     pub len: u16,
 }
 
+/// One slot to watch: where it is, and which changes are worth queueing (spec 4.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Slot {
+    pub addr: u32,
+    pub len: u8,
+    /// The byte in the slot the filter tests; ignored when `values` is empty.
+    pub at: u8,
+    /// Values that byte may take, or empty to keep every change.
+    pub values: Vec<u8>,
+}
+
+/// A value a watched slot held, as the agent saw it at a frame boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Event {
+    /// Index into the slot list the host sent.
+    pub slot: u8,
+    pub bytes: Vec<u8>,
+}
+
+/// Spec 4.3 limits, which an agent reports through `watch_slots`.
+pub const WATCH_MAX_LEN: usize = 8;
+pub const WATCH_MAX_VALUES: usize = 8;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Response {
     HelloAck {
@@ -49,10 +76,15 @@ pub enum Response {
         flags: u8,
         /// The cart ROM window `PEEKROM` may address, when `flags` has `FLAG_CART_ROM`.
         rom_bytes: Option<u32>,
+        /// Slots the agent can watch at once, when `flags` has `FLAG_WATCH`.
+        watch_slots: Option<u8>,
     },
     PeekV {
         rid: u16,
         regions: Vec<Vec<u8>>,
+        /// What the agent's watched slots held between this host's reads (spec 4.3).
+        /// Always empty unless this host set a watch.
+        events: Vec<Event>,
     },
     PeekRom {
         rid: u16,
@@ -61,6 +93,10 @@ pub enum Response {
     PokeAck {
         rid: u16,
         applied: u8,
+    },
+    WatchAck {
+        rid: u16,
+        watching: u8,
     },
     Err {
         rid: u16,
@@ -76,6 +112,7 @@ impl Response {
             Response::PeekV { rid, .. }
             | Response::PeekRom { rid, .. }
             | Response::PokeAck { rid, .. }
+            | Response::WatchAck { rid, .. }
             | Response::Err { rid, .. } => Some(*rid),
         }
     }
@@ -205,6 +242,34 @@ pub fn encode_pokev(rid: u16, writes: &[(u32, &[u8])]) -> Result<Vec<u8>, Error>
     Ok(v)
 }
 
+/// `WATCH`: the slots to follow, replacing whatever was being watched. Empty stops.
+pub fn encode_watch(rid: u16, slots: &[Slot]) -> Result<Vec<u8>, Error> {
+    if slots.len() > u8::MAX as usize {
+        return Err(Error::TooManyRegions(slots.len()));
+    }
+    for s in slots {
+        if s.len as usize > WATCH_MAX_LEN || s.len == 0 {
+            return Err(Error::RegionTooLarge(s.len as usize));
+        }
+        if s.values.len() > WATCH_MAX_VALUES {
+            return Err(Error::RegionTooLarge(s.values.len()));
+        }
+    }
+    let mut v = Vec::with_capacity(8 + slots.len() * 12);
+    v.extend_from_slice(&MAGIC);
+    v.push(MSG_WATCH);
+    v.extend_from_slice(&rid.to_be_bytes());
+    v.push(slots.len() as u8);
+    for s in slots {
+        v.extend_from_slice(&s.addr.to_be_bytes());
+        v.push(s.len);
+        v.push(s.at);
+        v.push(s.values.len() as u8);
+        v.extend_from_slice(&s.values);
+    }
+    Ok(v)
+}
+
 /// Parse one APPLICATION payload. Returns `NotM64p` for anything else on the
 /// channel (M64T shares it), which callers should treat as "not mine", not an error.
 pub fn parse(app: &[u8]) -> Result<Response, Error> {
@@ -230,12 +295,26 @@ pub fn parse(app: &[u8]) -> Result<Response, Error> {
             } else {
                 None
             };
+            // Appended fields come in bit order, each present only if its bit is set, so
+            // watch_slots sits after rom_bytes when there is one and after flags when not.
+            let mut off = if rom_bytes.is_some() { 12 } else { 8 };
+            let watch_slots = if flags & FLAG_WATCH != 0 {
+                if b.len() < off + 1 {
+                    return Err(Error::Truncated);
+                }
+                off += 1;
+                Some(b[off - 1])
+            } else {
+                None
+            };
+            let _ = off;
             Ok(Response::HelloAck {
                 proto: b[0],
                 agent_ver: be16(1),
                 rdram_bytes: u32::from_be_bytes([b[3], b[4], b[5], b[6]]),
                 flags,
                 rom_bytes,
+                watch_slots,
             })
         }
         MSG_PEEKV_RESP | MSG_PEEKROM_RESP => {
@@ -258,10 +337,35 @@ pub fn parse(app: &[u8]) -> Result<Response, Error> {
                 regions.push(b[off..off + len].to_vec());
                 off += len;
             }
-            Ok(if msg == MSG_PEEKV_RESP {
-                Response::PeekV { rid, regions }
-            } else {
-                Response::PeekRom { rid, regions }
+            if msg == MSG_PEEKROM_RESP {
+                return Ok(Response::PeekRom { rid, regions });
+            }
+            // The trailer is there only for a host that set a watch, so its absence is
+            // the normal case and never an error.
+            let mut events = Vec::new();
+            if off + 3 <= b.len() {
+                let n = b[off] as usize;
+                off += 3; // n, then dropped:u16, which the agent also counts for itself
+                for _ in 0..n {
+                    if off + 2 > b.len() {
+                        return Err(Error::Truncated);
+                    }
+                    let (slot, len) = (b[off], b[off + 1] as usize);
+                    off += 2;
+                    if off + len > b.len() {
+                        return Err(Error::Truncated);
+                    }
+                    events.push(Event {
+                        slot,
+                        bytes: b[off..off + len].to_vec(),
+                    });
+                    off += len;
+                }
+            }
+            Ok(Response::PeekV {
+                rid,
+                regions,
+                events,
             })
         }
         MSG_POKE_ACK => {
@@ -271,6 +375,15 @@ pub fn parse(app: &[u8]) -> Result<Response, Error> {
             Ok(Response::PokeAck {
                 rid: be16(0),
                 applied: b[2],
+            })
+        }
+        MSG_WATCH_ACK => {
+            if b.len() < 3 {
+                return Err(Error::Truncated);
+            }
+            Ok(Response::WatchAck {
+                rid: be16(0),
+                watching: b[2],
             })
         }
         MSG_ERR => {
@@ -284,7 +397,9 @@ pub fn parse(app: &[u8]) -> Result<Response, Error> {
         }
         // Request ids are host-to-cart only, so receiving one means we read back
         // our own bytes rather than a reply.
-        MSG_HELLO | MSG_PEEKV | MSG_POKEV | MSG_PEEKROM => Err(Error::EchoedRequest(msg)),
+        MSG_HELLO | MSG_PEEKV | MSG_POKEV | MSG_PEEKROM | MSG_WATCH => {
+            Err(Error::EchoedRequest(msg))
+        }
         other => Err(Error::UnknownMsg(other)),
     }
 }
@@ -292,6 +407,134 @@ pub fn parse(app: &[u8]) -> Result<Response, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An agent that watches appends watch_slots after rom_bytes, in flag-bit order.
+    #[test]
+    fn hello_ack_with_a_watching_agent() {
+        let mut app = b"M64P\x81".to_vec();
+        app.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 0x80, 0x00, 0x00, 0x07]);
+        app.extend_from_slice(&[0x04, 0x00, 0x00, 0x00]);
+        app.push(4);
+        assert_eq!(
+            parse(&app).unwrap(),
+            Response::HelloAck {
+                proto: 0,
+                agent_ver: 0x0100,
+                rdram_bytes: 0x800000,
+                flags: 7,
+                rom_bytes: Some(0x0400_0000),
+                watch_slots: Some(4),
+            }
+        );
+    }
+
+    /// Without PEEKROM there is no rom_bytes to skip, so watch_slots follows the flags.
+    #[test]
+    fn hello_ack_that_watches_but_does_not_read_the_rom() {
+        let mut app = b"M64P\x81".to_vec();
+        app.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 0x80, 0x00, 0x00, 0x05]);
+        app.push(2);
+        match parse(&app).unwrap() {
+            Response::HelloAck {
+                rom_bytes,
+                watch_slots,
+                ..
+            } => assert_eq!((rom_bytes, watch_slots), (None, Some(2))),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_watch_names_each_slot_and_its_filter() {
+        let slots = [Slot {
+            addr: 0x0040_002C,
+            len: 4,
+            at: 1,
+            values: vec![0x01, 0x02],
+        }];
+        assert_eq!(
+            encode_watch(0x0102, &slots).unwrap(),
+            b"M64P\x05\x01\x02\x01\x00\x40\x00\x2c\x04\x01\x02\x01\x02"
+        );
+        // No slots is how a host stops watching, and is not an error.
+        assert_eq!(encode_watch(1, &[]).unwrap(), b"M64P\x05\x00\x01\x00");
+    }
+
+    #[test]
+    fn a_watch_the_wire_cannot_carry_is_refused_before_it_is_sent() {
+        let too_long = Slot {
+            addr: 0,
+            len: (WATCH_MAX_LEN + 1) as u8,
+            at: 0,
+            values: vec![],
+        };
+        assert!(encode_watch(1, &[too_long]).is_err());
+        let too_many_values = Slot {
+            addr: 0,
+            len: 4,
+            at: 0,
+            values: vec![0; WATCH_MAX_VALUES + 1],
+        };
+        assert!(encode_watch(1, &[too_many_values]).is_err());
+    }
+
+    #[test]
+    fn watch_ack_parses() {
+        let mut app = b"M64P\x85".to_vec();
+        app.extend_from_slice(&[0x00, 0x09, 1]);
+        assert_eq!(
+            parse(&app).unwrap(),
+            Response::WatchAck {
+                rid: 9,
+                watching: 1
+            }
+        );
+    }
+
+    /// What a watched slot held rides the response the host was already waiting for.
+    #[test]
+    fn a_peekv_response_carries_what_the_slot_held() {
+        let mut app = b"M64P\x82".to_vec();
+        app.extend_from_slice(&[0x00, 0x05, 1]);
+        app.extend_from_slice(&[0x00, 0x02, 0xAA, 0xBB]);
+        app.extend_from_slice(&[2, 0x00, 0x03]); // two events, three dropped
+        app.extend_from_slice(&[0, 4, 0x60, 0x01, 0x00, 0x11]);
+        app.extend_from_slice(&[1, 2, 0x77, 0x88]);
+        match parse(&app).unwrap() {
+            Response::PeekV {
+                rid,
+                regions,
+                events,
+            } => {
+                assert_eq!(rid, 5);
+                assert_eq!(regions, vec![vec![0xAA, 0xBB]]);
+                assert_eq!(
+                    events,
+                    vec![
+                        Event {
+                            slot: 0,
+                            bytes: vec![0x60, 0x01, 0x00, 0x11]
+                        },
+                        Event {
+                            slot: 1,
+                            bytes: vec![0x77, 0x88]
+                        },
+                    ]
+                );
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// A trailer cut off mid-event is a broken response, not an empty one.
+    #[test]
+    fn a_truncated_trailer_is_an_error() {
+        let mut app = b"M64P\x82".to_vec();
+        app.extend_from_slice(&[0x00, 0x05, 0]);
+        app.extend_from_slice(&[1, 0x00, 0x00]);
+        app.extend_from_slice(&[0, 4, 0x60]); // says four bytes, sends one
+        assert_eq!(parse(&app), Err(Error::Truncated));
+    }
 
     #[test]
     fn hello_is_just_magic_and_msg() {
@@ -339,9 +582,14 @@ mod tests {
         app.extend_from_slice(&[0x00, 0x03, 1, 2, 3]);
         app.extend_from_slice(&[0x00, 0x02, 9, 8]);
         match parse(&app).unwrap() {
-            Response::PeekV { rid, regions } => {
+            Response::PeekV {
+                rid,
+                regions,
+                events,
+            } => {
                 assert_eq!(rid, 0xBEEF);
                 assert_eq!(regions, vec![vec![1, 2, 3], vec![9, 8]]);
+                assert!(events.is_empty(), "no watch was set, so no trailer");
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -359,6 +607,7 @@ mod tests {
                 rdram_bytes: 0x800000,
                 flags: 1,
                 rom_bytes: None,
+                watch_slots: None,
             }
         );
     }
@@ -378,6 +627,7 @@ mod tests {
                 rdram_bytes: 0x800000,
                 flags: 3,
                 rom_bytes: Some(0x0400_0000),
+                watch_slots: None,
             }
         );
         // The flag without the field is a truncated message, not a zero-sized window.
@@ -444,11 +694,11 @@ mod tests {
     /// swallowed by the echo path.
     #[test]
     fn an_unrecognised_reply_is_still_an_error() {
-        let app = [b'M', b'6', b'4', b'P', 0x85];
+        let app = [b'M', b'6', b'4', b'P', 0x8F];
         assert_eq!(
             parse(&app).unwrap_err(),
-            Error::UnknownMsg(0x85),
-            "0x85 is in the reply range and means something is wrong"
+            Error::UnknownMsg(0x8F),
+            "0x8F is in the reply range and means something is wrong"
         );
     }
 
