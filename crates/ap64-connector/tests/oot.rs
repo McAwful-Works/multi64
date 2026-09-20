@@ -2,12 +2,15 @@
 //! tools/make-synthetic-dump.py builds): context pointers, normal gameplay, a ROM name.
 //! Driven with lines shaped like OoT Client's, through `Connector::handle`.
 
+mod common;
+
 use std::cell::{Cell, RefCell};
 use std::io;
 use std::rc::Rc;
 
 use ap64_cart::backend::{Backend, RamImage};
 use ap64_connector::{Connector, OOT};
+use common::on_a_free_port;
 
 const RANDO_CTX: u32 = 0x40_0000;
 const COOP_CTX: u32 = 0x40_0100;
@@ -269,46 +272,68 @@ fn a_quiet_client_is_never_dropped() {
 
     use ap64_connector::server::{serve, Event};
 
-    let (c, _, _) = setup();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let done = Arc::new(AtomicBool::new(false));
-    let client = {
-        let done = done.clone();
-        std::thread::spawn(move || {
-            let mut s = loop {
-                match TcpStream::connect(("127.0.0.1", port)) {
-                    Ok(s) => break s,
-                    Err(_) => std::thread::sleep(Duration::from_millis(20)),
+    on_a_free_port(|port| {
+        let (c, _, _) = setup();
+        let done = Arc::new(AtomicBool::new(false));
+        let client = {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                let mut connected = None;
+                for _ in 0..500 {
+                    match TcpStream::connect(("127.0.0.1", port)) {
+                        Ok(s) => {
+                            connected = Some(s);
+                            break;
+                        }
+                        // The test sets `done` once it knows there is nothing to
+                        // connect to, because `serve` could not bind the port.
+                        Err(_) if done.load(Ordering::Relaxed) => break,
+                        Err(_) => std::thread::sleep(Duration::from_millis(20)),
+                    }
                 }
-            };
-            let mut r = BufReader::new(s.try_clone().unwrap());
-            let mut replies = Vec::new();
-            for pause in [0, 6] {
-                std::thread::sleep(Duration::from_secs(pause));
-                writeln!(s, "{}", block(&[])).unwrap();
-                let mut line = String::new();
-                r.read_line(&mut line).unwrap();
-                replies.push(line);
-            }
+                let Some(mut s) = connected else {
+                    done.store(true, Ordering::Relaxed);
+                    return Vec::new();
+                };
+                // Whatever holds a port a lost race gave away is itself a listener, so
+                // this may have connected to it rather than to the connector: never
+                // wait on it for good.
+                s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut replies = Vec::new();
+                for pause in [0, 6] {
+                    std::thread::sleep(Duration::from_secs(pause));
+                    writeln!(s, "{}", block(&[])).unwrap();
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    replies.push(line);
+                }
+                done.store(true, Ordering::Relaxed);
+                replies
+            })
+        };
+        let mut events = Vec::new();
+        // A bind failure here is the port having been taken between the pick and this
+        // call; stop the client so the attempt can be run again on another port.
+        if let Err(e) = serve(&c, &[port], &done, &mut |e| events.push(e)) {
             done.store(true, Ordering::Relaxed);
-            replies
-        })
-    };
-    let mut events = Vec::new();
-    serve(&c, &[port], &done, &mut |e| events.push(e)).unwrap();
-    let replies = client.join().unwrap();
-    assert!(
-        replies.iter().all(|r| r.contains("\"playerName\"")),
-        "{replies:?}"
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, Event::ClientDisconnected(_))),
-        "{events:?}"
-    );
+            let _ = client.join();
+            return Err(e);
+        }
+        let replies = client.join().unwrap();
+        assert_eq!(replies.len(), 2, "both polls were answered: {replies:?}");
+        assert!(
+            replies.iter().all(|r| r.contains("\"playerName\"")),
+            "{replies:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::ClientDisconnected(_))),
+            "{events:?}"
+        );
+        Ok(())
+    });
 }
