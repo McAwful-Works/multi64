@@ -75,6 +75,12 @@ Expansion Pak RAM survives a soft reset. Give the image a known word
 and copy only when it is absent. That also tells a loaded agent apart from whatever else was in
 that RAM.
 
+Read it every frame, before calling the agent, **including when there is nothing to copy** because
+the game's own loader brought the image in at boot. That it arrived once does not say it is still
+there, and nothing reserves that RAM from the game: a frame that calls into RAM now holding
+something else hard locks the console, where a marker that no longer reads back only makes the
+agent go quiet.
+
 ## 3. Find a per-frame call site
 
 ### 3.1 What the site must be

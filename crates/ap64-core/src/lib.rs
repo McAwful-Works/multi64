@@ -129,6 +129,85 @@ mod tests {
         }
     }
 
+    /// Instructions of `stub.bin`, big-endian words in order.
+    fn stub_words(bundle: &Bundle) -> Vec<u32> {
+        let file = bundle
+            .profile
+            .write
+            .iter()
+            .find_map(|w| match w {
+                profile::Write::Blob { file, .. } => Some(file),
+                _ => None,
+            })
+            .expect("the profile writes a stub");
+        bundle.blobs[file]
+            .chunks_exact(4)
+            .map(|c| u32::from_be_bytes(c.try_into().unwrap()))
+            .collect()
+    }
+
+    /// 1 if some `lui`/`lw` pair in `w` reads the word at `addr`, as %hi/%lo of it.
+    fn loads_word_at(w: &[u32], addr: u32) -> bool {
+        w.iter().enumerate().any(|(i, &lui)| {
+            if lui >> 26 != 0x0F {
+                return false;
+            }
+            let (reg, hi) = ((lui >> 16) & 0x1F, (lui & 0xFFFF) << 16);
+            w[i + 1..].iter().any(|&lw| {
+                lw >> 26 == 0x23
+                    && (lw >> 21) & 0x1F == reg
+                    && hi.wrapping_add((lw & 0xFFFF) as i16 as u32) == addr
+            })
+        })
+    }
+
+    /// 1 if some `lui`/`ori` pair in `w` builds `value` in one register.
+    fn builds_word(w: &[u32], value: u32) -> bool {
+        w.windows(2).any(|p| {
+            p[0] >> 26 == 0x0F
+                && p[0] & 0xFFFF == value >> 16
+                && p[1] >> 26 == 0x0D
+                && (p[1] >> 21) & 0x1F == (p[0] >> 16) & 0x1F
+                && (p[1] >> 16) & 0x1F == (p[0] >> 16) & 0x1F
+                && p[1] & 0xFFFF == value & 0xFFFF
+        })
+    }
+
+    /// A stub must not run the agent without first seeing that the agent is there.
+    ///
+    /// Every integration keeps the agent in RAM the game is not expected to use, and
+    /// nothing reserves it: if the game ever writes over that RAM, the retargeted jal runs
+    /// whatever is there now, and the console is gone with no way back. The marker
+    /// `gAgentSegmentMagic` is what says the image is intact
+    /// (`n64/agent/templates/segment_magic.c`), so a stub reads it and compares it with
+    /// 'M64P' before jumping in -- whether it loaded the agent itself or, as OoT's does,
+    /// relies on the game's own loader to have done it at boot.
+    ///
+    /// This reads the linked instructions, so it holds for the blob AP64 actually writes.
+    #[test]
+    fn every_stub_reads_the_load_marker_before_running_the_agent() {
+        const M64P: u32 = 0x4D36_3450;
+        let bundles = builtin().unwrap();
+        let layouts = [
+            include_str!("../profiles/cv64/layout.env"),
+            include_str!("../profiles/pmr/layout.env"),
+            include_str!("../profiles/oot/layout.env"),
+        ];
+        for (b, env) in bundles.iter().zip(layouts) {
+            let id = &b.profile.id;
+            let w = stub_words(b);
+            let magic = layout(env, "AGENT_MAGIC_ADDR");
+            assert!(
+                loads_word_at(&w, magic),
+                "{id}: the stub never reads the marker at 0x{magic:X}"
+            );
+            assert!(
+                builds_word(&w, M64P),
+                "{id}: the stub never builds 'M64P' to compare the marker with"
+            );
+        }
+    }
+
     /// The profile must describe the blobs it carries: the numbers in profile.toml are
     /// typed by hand, layout.env is written by the build that linked the blobs.
     #[test]
