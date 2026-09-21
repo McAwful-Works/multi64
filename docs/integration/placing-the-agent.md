@@ -93,6 +93,14 @@ agent go quiet.
 - **Untouched by the patch**, now and — because patches change — checked again by the splicer
   every time.
 
+**Measure the rate; do not read it off the code.** [`tools/count-calls.lua`](../../n64/agent/tools/count-calls.lua)
+puts an execution hook on each candidate and counts it against the frame counter. One
+integration hooked a loop whose every case branched back to its head — 39 of them — and it
+ran *once in three thousand frames*, because each case called into an overlay that ran its
+own frame loop. The agent loaded, its image stayed intact, and it ticked twice. Count the
+**call site**, not the function: two of that game's three callers of the right function
+never ran at all, so a function-level count would have been just as misleading.
+
 Good sites have been a graphics retrace callback's call into the game's step function, and a main
 loop's call into its object or game-state update. A game-state manager's per-state function list
 is also tempting; check how it dispatches before using it — one masked function pointers so that
@@ -119,6 +127,13 @@ Before writing over a function:
   splicer accepts;
 - say what you could not scan. Compressed overlays cannot be searched as bytes; if the evidence
   is "no references in the uncompressed segments", write that, not "unused".
+
+For a few hundred bytes of padding inside a busy segment, the page-level map from
+`ram-usage.lua` cannot help: the 4 KB page around them is in use whatever they do.
+[`tools/watch-ranges.lua`](../../n64/agent/tools/watch-ranges.lua) watches the exact bytes
+and reports the first frame any of them changes, and where — a difference at the very start
+means something claims the run outright, one partway in suggests a neighbouring array
+reaching into it.
 
 With a decomp, a function that exists but is called from nowhere (for example a case no dispatcher
 reaches) is the cleanest host: replace it and pad the replacement back to the function's **exact**
