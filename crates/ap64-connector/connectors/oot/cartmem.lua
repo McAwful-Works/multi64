@@ -126,6 +126,51 @@ function M.refresh(regions)
     end
 end
 
+--- Every change to the watched slot that the connector has not been shown, oldest first,
+--- with the slot's live bytes last. Each is a 0-indexed table of TEMP_CONTEXT_LEN bytes,
+--- shaped as connector.lua's check_temp_context expects.
+---
+--- A scan is shown all of them, not one: the queue fills at the rate the game sets flags,
+--- which in a dungeon is far faster than a cart poll, and one per scan let a real check be
+--- pushed out of the queue before any scan saw it. That is "the chest only registered when
+--- I left the room". Draining it empties the queue every poll instead, and the scan can
+--- recognise several checks at once, which is what an emulator reading every frame does.
+---
+--- A cleared slot is dropped here too. Neither the agent nor the host's own sampling
+--- queues one, so this only guards the day something else does: all zeros is never a
+--- check, and it matches any call site whose expected values happen to be all zero.
+function M.temp_events()
+    local out = {}
+    while true do
+        local queued = ap64.take_watched()
+        if not queued then
+            break
+        end
+        -- Taking an event consumes it, so anything but the bytes the watch promises has
+        -- already lost one. Carrying on would hide that.
+        if #queued ~= TEMP_CONTEXT_LEN then
+            error(("ap64.take_watched returned %d bytes, want %d")
+                :format(#queued, TEMP_CONTEXT_LEN))
+        end
+        local event, cleared = {}, true
+        for i = 0, TEMP_CONTEXT_LEN - 1 do
+            event[i] = string.byte(queued, i + 1)
+            if event[i] ~= 0 then
+                cleared = false
+            end
+        end
+        if not cleared then
+            out[#out + 1] = event
+        end
+    end
+    local live = {}
+    for i = 0, TEMP_CONTEXT_LEN - 1 do
+        live[i] = byte_at(TEMP_CONTEXT + i)
+    end
+    out[#out + 1] = live
+    return out
+end
+
 --- Send this poll's writes, in one call.
 function M.flush()
     if #pending > 0 then
@@ -146,22 +191,6 @@ function mainmemory.read_u32_be(a) return read_be(a, 4) end
 -- it (`for i=0,#(bytes)`). Do not make it 1-indexed.
 function mainmemory.readbyterange(a, len)
     local t = {}
-    if a == TEMP_CONTEXT and len == TEMP_CONTEXT_LEN then
-        local queued = ap64.take_watched()
-        if queued then
-            -- Taking an event consumes it, so anything but the four bytes the watch
-            -- promises has already lost one. Falling through to live bytes would hide
-            -- that.
-            if #queued ~= TEMP_CONTEXT_LEN then
-                error(("ap64.take_watched returned %d bytes, want %d")
-                    :format(#queued, TEMP_CONTEXT_LEN))
-            end
-            for i = 0, TEMP_CONTEXT_LEN - 1 do
-                t[i] = string.byte(queued, i + 1)
-            end
-            return t
-        end
-    end
     for i = 0, len - 1 do
         t[i] = byte_at(a + i)
     end
