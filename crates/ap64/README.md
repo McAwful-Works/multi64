@@ -38,6 +38,19 @@ switch in the corner, is for what only someone working on AP64 reads: the connec
 round-trip counters, the bridge address, and the addresses behind a failed status. It is off
 until turned on, and remembered after that.
 
+## Starting and stopping
+
+**Start** means keep at it until you say otherwise. A console reset, a ROM swapped, the wrong
+game loaded, Multi64 restarted — none of those end a session. It goes back to waiting for the
+cart, says which link is down, and picks up where it left off when the console returns. Only
+**Stop** ends a session, because only you know whether you are done playing.
+
+Each time the link goes, the Archipelago client's connection is reset rather than closed
+politely. That is deliberate: these clients read a line and hand it to `json.loads`, and a clean
+close gives them an empty string whose decode error their socket task does not catch — it dies
+without a word and the client goes on showing itself connected. A reset is the one ending they
+recover from on their own, so the client reconnects by itself once the console is back.
+
 ## Patching a seed
 
 Generate and patch your seed with Archipelago as usual, then either drop the `.z64` onto

@@ -336,7 +336,6 @@ const STATE_TEXT = {
   "waiting-client": "Ready to play",
   playing: "Playing",
   stopped: "Stopped",
-  failed: "Stopped with an error",
 };
 
 function readUrl(fallback) {
@@ -419,16 +418,18 @@ function renderStatus(s) {
   lastStatus = s;
   renderLinks(s);
   const state = s.state || "idle";
-  playRunning = ["connecting", "waiting-client", "playing"].includes(state);
+  // What the backend says, not what the wording implies. A session waiting for a console to
+  // come back is still a session, and Start and Stop belong to whoever pressed them.
+  playRunning = !!s.running;
   const el = $("play-status");
   el.dataset.state = state;
   // detail says what happened; detailDev says which address or value it was read from, which
   // is an answer to a question only someone working on AP64 asks.
   const dev = devDetails && s.detailDev ? ` (${s.detailDev})` : "";
-  // A failure's own sentence, without "Stopped with an error" in front of it: the row is
-  // already red, and the two together took four lines of reserved space to say one thing.
+  // When the detail is already a whole sentence about the console, it is the whole line:
+  // "Waiting for the console — waiting for the ROM on the console" says one thing twice.
   el.textContent =
-    state === "failed" && s.detail
+    state === "waiting-console" && s.detail
       ? s.detail.charAt(0).toUpperCase() + s.detail.slice(1) + dev
       : STATE_TEXT[state] + (s.detail ? ` — ${s.detail}${dev}` : "");
   $("play-counters").textContent =

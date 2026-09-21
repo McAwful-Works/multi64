@@ -346,7 +346,3 @@ body {
 #play-status[data-state="connecting"] {
   color: var(--warning-text);
 }
-
-#play-status[data-state="failed"] {
-  color: var(--danger-text);
-}

@@ -228,7 +228,10 @@ const setDev = async (p, on) => {
   const starts = await callsOf(p, "play_start");
   check("Start sends the game and the daemon URL, no ROM", starts.length === 1 && starts[0].args.game === "g1" && !("romPath" in starts[0].args) && starts[0].args.url === "ws://127.0.0.1:38766/ws", JSON.stringify(starts));
   const emit = (name, payload) => p.evaluate(([n, pl]) => window.__TAURI_LISTENERS__[n]({ payload: pl }), [name, payload]);
-  await emit("play://status", { state: "waiting-client", detail: "open BizHawk Client from the Archipelago Launcher", port: 43055, requests: 0, reconnects: 0, stalls: 0, handled: 0, bridge: "ok", console: "ok", client: "waiting" });
+  // Every status from a live session carries running: true, and Start and Stop follow that
+  // and nothing else: whether a session exists is not something to read off its wording.
+  const live = { running: true, port: 43055, requests: 0, reconnects: 0, stalls: 0, handled: 0 };
+  await emit("play://status", { ...live, state: "waiting-client", detail: "open BizHawk Client from the Archipelago Launcher", bridge: "ok", console: "ok", client: "waiting" });
   check("waiting shows what to do next", (await text(p, "play-status")).includes("open BizHawk Client"));
   // Each link is tracked on its own: one line can say what is happening, but not which part is.
   const links = () => p.evaluate(() => ["link-bridge", "link-console", "link-client"].map((i) => {
@@ -237,30 +240,39 @@ const setDev = async (p, on) => {
   }));
   check("waiting has the cart up and the client not", (await links()).join(" | ") === "ok: Connected | ok: Running | waiting: Open BizHawk Client to connect", (await links()).join(" | "));
   check("a link that is up says so in one word", (await links()).filter((l) => l.startsWith("ok:")).every((l) => l.split(": ")[1].split(" ").length === 1), (await links()).join(" | "));
+  const buttons = () => p.evaluate(() => ({
+    start: document.getElementById("btn-play-start").disabled,
+    stop: document.getElementById("btn-play-stop").disabled,
+    game: document.getElementById("play-game-select").disabled,
+    url: document.getElementById("play-url").disabled,
+  }));
   check("running disables Start and enables Stop", await p.evaluate(() => document.getElementById("btn-play-start").disabled && !document.getElementById("btn-play-stop").disabled));
-  check("running locks the game", await p.evaluate(() => document.getElementById("play-game-select").disabled));
-  check("running locks the URL", await p.evaluate(() => document.getElementById("play-url").disabled));
-  await emit("play://status", { state: "playing", detail: "BizHawk Client connected", port: 43055, requests: 120, reconnects: 1, stalls: 2, handled: 40, bridge: "ok", console: "ok", client: "ok" });
+  check("running locks the game", (await buttons()).game);
+  check("running locks the URL", (await buttons()).url);
+  await emit("play://status", { ...live, state: "playing", detail: "BizHawk Client connected", requests: 120, reconnects: 1, stalls: 2, handled: 40, bridge: "ok", console: "ok", client: "ok" });
   check("playing shows the counters", (await text(p, "play-counters")).includes("120 cart round trips") && (await text(p, "play-counters")).includes("1 reconnects"));
   check("playing has all three up", (await links()).every((l) => l.startsWith("ok:")), (await links()).join(" | "));
-  // A console reset while a session runs: the cart stops answering and the row must say so.
-  await emit("play://status", { state: "waiting-console", detail: "the ROM stopped answering; load it again on the console", port: 43055, requests: 120, reconnects: 1, stalls: 2, handled: 40, bridge: "ok", console: "failed", client: "ok" });
+  // A console reset while a session runs. The session stays up and keeps trying: the person
+  // who pressed Start is the only one who decides it is over.
+  await emit("play://status", { ...live, state: "waiting-console", detail: "the ROM stopped answering; load it again on the console", requests: 120, reconnects: 1, stalls: 2, handled: 40, bridge: "ok", console: "failed", client: "idle" });
   check("a ROM that stopped is reported, with Multi64 still up", (await links())[1] === "failed: Not answering" && (await links())[0] === "ok: Connected", (await links()).join(" | "));
-  check("and the status says what to do", (await text(p, "play-status")).includes("Waiting for the console"));
-  await emit("play://status", { state: "playing", detail: "BizHawk Client connected", port: 43055, requests: 140, reconnects: 1, stalls: 2, handled: 41, bridge: "ok", console: "ok", client: "ok" });
+  // Its own sentence: "Waiting for the console -- the ROM stopped answering" says it twice.
+  check("and the status says so once, not twice", (await text(p, "play-status")).startsWith("The ROM stopped answering"), await text(p, "play-status"));
+  check("a lost console keeps Stop and withholds Start", (await buttons()).start && !(await buttons()).stop, JSON.stringify(await buttons()));
+  check("and leaves the game and URL locked", (await buttons()).game && (await buttons()).url);
+  // The wrong game on the console is the same kind of thing: someone is about to fix it.
+  await emit("play://status", { ...live, state: "waiting-console", detail: "the cart is running ZELDA [CZLE v0], not Game One US 1.0 [NG1E v0]", bridge: "ok", console: "failed", client: "idle" });
+  check("a wrong game names the link that is down, not just the session", (await links())[1].startsWith("failed:") && (await links())[0].startsWith("ok:"), (await links()).join(" | "));
+  check("and it is a session still waiting, not one that ended", (await buttons()).start && !(await buttons()).stop);
+  await emit("play://status", { ...live, state: "playing", detail: "BizHawk Client connected", requests: 140, reconnects: 1, stalls: 2, handled: 41, bridge: "ok", console: "ok", client: "ok" });
   check("and it goes back up on its own when the ROM returns", (await links())[1] === "ok: Running", (await links()).join(" | "));
   await p.click("#btn-play-stop");
   await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_stop"));
   check("Stop asks the backend to stop", (await callsOf(p, "play_stop")).length === 1);
-  await emit("play://status", { state: "failed", detail: "the cart is running ZELDA [CZLE v0], not Game One US 1.0 [NG1E v0]", port: null, requests: 3, reconnects: 0, stalls: 0, handled: 0, bridge: "ok", console: "failed", client: "idle" });
-  check("a failure names the link that is down, not just the session", (await links())[1].startsWith("failed:") && (await links())[0].startsWith("ok:"), (await links()).join(" | "));
-  // A failure is its own sentence, capitalised, with no "Stopped with an error" in front of it:
-  // the row is already red, and the two together needed a third line of reserved space.
-  check("a cart running another game is reported, and Start comes back", (await text(p, "play-status")).startsWith("The cart is running ZELDA") && !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
-  // A cart that stays away ends the session, so the client sees a closed socket and recovers.
-  await emit("play://status", { state: "failed", detail: "the cart stopped answering; load the ROM again and press Start", detailDev: "cart read: gave up after 8s trying to reach ws://127.0.0.1:38765/ws", port: null, requests: 140, reconnects: 2, stalls: 2, handled: 41, bridge: "ok", console: "failed", client: "idle" });
-  check("a session that gave up says what to do next", (await text(p, "play-status")).startsWith("The cart stopped answering; load the ROM again and press Start"));
-  check("and Start is offered again", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
+  // Only the backend reporting the session over gives Start back.
+  await emit("play://status", { running: false, state: "stopped", detail: "", port: null, requests: 140, reconnects: 2, stalls: 2, handled: 41, bridge: "idle", console: "idle", client: "idle" });
+  check("stopping hands Start back and takes Stop away", !(await buttons()).start && (await buttons()).stop, JSON.stringify(await buttons()));
+  check("and unlocks the game and the URL", !(await buttons()).game && !(await buttons()).url);
   await p.close();
 }
 
@@ -284,7 +296,7 @@ const setDev = async (p, on) => {
     check(`${id} appears with developer details`, await onScreen(p, id));
   }
   const emit = (name, payload) => p.evaluate(([n, pl]) => window.__TAURI_LISTENERS__[n]({ payload: pl }), [name, payload]);
-  const failure = { state: "failed", detail: "the cart is running Game One without AP64's agent", detailDev: "the hook at 0x1601C is 0x00000000", port: null, requests: 0, reconnects: 0, stalls: 0, handled: 0 };
+  const failure = { running: true, state: "waiting-console", detail: "the cart is running Game One without AP64's agent", detailDev: "the hook at 0x1601C is 0x00000000", port: null, requests: 0, reconnects: 0, stalls: 0, handled: 0 };
   await emit("play://status", failure);
   check("a failure shows its addresses with developer details", (await text(p, "play-status")).includes("0x1601C"));
   await setDev(p, false);
