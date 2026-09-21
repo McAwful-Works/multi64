@@ -802,8 +802,14 @@ mod tests {
         let me = me.expect("this process is running");
         let exe = std::env::current_exe().expect("this process has a path");
         let file_name = exe.file_name().unwrap().to_string_lossy().to_string();
+        // A prefix, not the whole string: Linux reports `comm`, which the kernel caps at 15
+        // characters, and a test binary's name (`ap64_app_lib-<hash>`) is longer than that.
+        // Windows reports the whole file name, extension and all, which is what pins the form
+        // the constant is written in.
         assert!(
-            me.eq_ignore_ascii_case(&file_name),
+            file_name
+                .to_ascii_lowercase()
+                .starts_with(&me.to_ascii_lowercase()),
             "sysinfo reports {me:?}, the executable is {file_name:?}"
         );
         assert_eq!(
