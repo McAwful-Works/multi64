@@ -152,10 +152,11 @@ async function openScenario(scenario) {
 const drop = (p, paths) =>
   p.evaluate((ps) => window.__TAURI_LISTENERS__["tauri://drag-drop"]({ payload: { paths: ps, position: { x: 10, y: 10 } } }), paths);
 
-const visible = (p, id) => p.evaluate((i) => !document.getElementById(i).hidden, id);
+const visible = (p, id) => p.evaluate((i) => document.getElementById(i)?.hidden === false, id);
 const text = (p, id) => p.evaluate((i) => document.getElementById(i).textContent, id);
 /** Shown to whoever is looking: `dev-only` rows are display:none until the switch is on. */
-const onScreen = (p, id) => p.evaluate((i) => document.getElementById(i).offsetParent !== null, id);
+const onScreen = (p, id) =>
+  p.evaluate((i) => document.getElementById(i)?.offsetParent != null, id);
 const cardHeights = (p) =>
   p.evaluate(() => [...document.querySelectorAll(".card")].map((c) => Math.round(c.getBoundingClientRect().height)));
 const setDev = async (p, on) => {
@@ -185,6 +186,30 @@ const setDev = async (p, on) => {
   await setDev(p, false);
   await p.click("#btn-games-close");
   check("the window closes", !(await visible(p, "games-dialog")));
+  // Each card says the one thing to do; the rest is behind its info button, so the cards do
+  // not carry a paragraph each and a player has somewhere to go when one line is not enough.
+  for (const [card, btn, panel, want] of [
+    ["patch", "btn-help-patch", "help-patch-dialog", "Generate and patch your seed with Archipelago"],
+    ["play", "btn-help-play", "help-play-dialog", "Open the game's client from the Archipelago Launcher"],
+  ]) {
+    const there = await onScreen(p, btn);
+    check(`the ${card} card has an info button`, there);
+    check(`and its instructions are not on the card`, !(await visible(p, panel)));
+    // Without it there is nothing to click, and a click that waits 30s for an element that
+    // will never appear reports nothing about the checks after it.
+    if (!there) continue;
+    await p.click(`#${btn}`);
+    await until(p, (id) => !document.getElementById(id).hidden, panel);
+    const body = await p.evaluate((id) => document.getElementById(id)?.innerText ?? "", panel);
+    check(`the ${card} info window opens with the steps`, body.includes(want), want);
+    await p.click(`#${btn}-close`);
+    check(`the ${card} info window closes`, !(await visible(p, panel)));
+  }
+  // A player reads these, so they are not behind the developer switch.
+  check("the info buttons are for everyone", await p.evaluate(() => {
+    const b = document.getElementById("btn-help-play");
+    return b != null && b.closest(".dev-only") === null;
+  }));
   const idle = await cardHeights(p);
   await drop(p, ["C:\\seeds\\seed.z64", "C:\\other.z64"]);
   await until(p, () => !document.getElementById("patch-dialog").hidden);

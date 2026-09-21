@@ -27,7 +27,17 @@
          or a log would move everything below it as it filled, and the window with it. Those live
          in dialogs, opened from here, where they can be as long as they need to be. -->
     <section class="card" aria-labelledby="patch-title">
-      <h2 id="patch-title">Add the agent</h2>
+      <div class="card-head">
+        <h2 id="patch-title">Add the agent</h2>
+        <button type="button" class="btn btn-icon" id="btn-help-patch" aria-label="How this works" title="How this works" aria-haspopup="dialog" aria-controls="help-patch-dialog">
+          <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 16v-4" />
+            <path d="M12 8h.01" />
+          </svg>
+        </button>
+      </div>
+      <p class="hint">Adds AP64's cart agent to the seed Archipelago patched for you.</p>
       <div id="drop-zone" class="drop-zone" data-state="idle">
         <span class="drop-zone-text">Drop a patched seed here, or</span>
         <button type="button" id="btn-browse" class="btn">Browse…</button>
@@ -49,12 +59,17 @@
     </section>
 
     <section class="card" aria-labelledby="play-title">
-      <h2 id="play-title">Play</h2>
-      <p class="hint">
-        Load the ROM with the agent on the console, with the Multi64 app running and the cart
-        plugged in. Start here, then open the game's client from the Archipelago Launcher. The ROM
-        is read from the cart, so there is no file to choose.
-      </p>
+      <div class="card-head">
+        <h2 id="play-title">Play</h2>
+        <button type="button" class="btn btn-icon" id="btn-help-play" aria-label="How this works" title="How this works" aria-haspopup="dialog" aria-controls="help-play-dialog">
+          <svg class="btn-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 16v-4" />
+            <path d="M12 8h.01" />
+          </svg>
+        </button>
+      </div>
+      <p class="hint">Load the ROM with the agent on the console, then press Start.</p>
       <label class="field">
         <span>Game</span>
         <select id="play-game-select" class="input">
@@ -157,6 +172,67 @@
           <button type="button" id="btn-output" class="btn">Save as…</button>
           <button type="button" id="btn-patch" class="btn primary">Add agent</button>
           <button type="button" id="btn-result-reveal" class="btn primary" hidden>Show in folder</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="dialog-backdrop" id="help-patch-backdrop" hidden></div>
+    <div class="dialog" id="help-patch-dialog" role="dialog" aria-modal="true" aria-labelledby="help-patch-title" hidden>
+      <div class="dialog-panel">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="help-patch-title">Adding the agent</h2>
+        </div>
+        <div class="dialog-body">
+          <p class="hint">
+            Archipelago patches a seed for your game. That seed knows how to play your slot, but
+            not how to reach a real console — the agent is the piece that does, and AP64 writes it
+            into a copy of the seed.
+          </p>
+          <ol class="steps">
+            <li>Generate and patch your seed with Archipelago as usual.</li>
+            <li>Drop the <code>.z64</code> here, or use <strong>Browse…</strong>.</li>
+            <li>AP64 checks the seed is one it knows, then <strong>Add agent…</strong> writes a new
+              file beside it ending <code>-agent.z64</code>. Your original seed is left alone.</li>
+            <li>Load that new file on the console, then come back to <strong>Play</strong>.</li>
+          </ol>
+          <p class="hint">
+            If a seed is refused, the checks in the patch window say which one failed. The usual
+            cause is a game or a release AP64 has no profile for.
+          </p>
+        </div>
+        <div class="dialog-footer">
+          <button type="button" id="btn-help-patch-close" class="btn">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="dialog-backdrop" id="help-play-backdrop" hidden></div>
+    <div class="dialog" id="help-play-dialog" role="dialog" aria-modal="true" aria-labelledby="help-play-title" hidden>
+      <div class="dialog-panel">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="help-play-title">Playing</h2>
+        </div>
+        <div class="dialog-body">
+          <ol class="steps">
+            <li>Plug the cart in and start the <strong>Multi64</strong> app. AP64 starts it for you
+              if it is not already running.</li>
+            <li>Load the ROM with the agent on the console and let it run. AP64 reads it from the
+              cart, so there is no file to choose here.</li>
+            <li>Press <strong>Start</strong>.</li>
+            <li>Open the game's client from the Archipelago Launcher and connect it to your room.</li>
+          </ol>
+          <p class="hint">
+            The three rows say which part is up: <strong>Multi64</strong> is the bridge to the cart,
+            <strong>Console</strong> is the ROM answering, and <strong>Client</strong> is the
+            Archipelago client connected to AP64.
+          </p>
+          <p class="hint">
+            Start keeps trying until you press Stop. Resetting the console, swapping the ROM or
+            restarting Multi64 will not end a session — it waits, and picks up where it left off.
+          </p>
+        </div>
+        <div class="dialog-footer">
+          <button type="button" id="btn-help-play-close" class="btn">Close</button>
         </div>
       </div>
     </div>
