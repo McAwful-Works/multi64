@@ -27,6 +27,8 @@ const DIALOGS = {
   patch: { panel: "patch-dialog", backdrop: "patch-backdrop", focus: "btn-open-patch" },
   advanced: { panel: "advanced-dialog", backdrop: "advanced-backdrop", focus: "btn-advanced" },
   games: { panel: "games-dialog", backdrop: "games-backdrop", focus: "btn-games" },
+  helpPatch: { panel: "help-patch-dialog", backdrop: "help-patch-backdrop", focus: "btn-help-patch" },
+  helpPlay: { panel: "help-play-dialog", backdrop: "help-play-backdrop", focus: "btn-help-play" },
 };
 let openDialogName = null;
 let dialogReturnFocus = null;
@@ -546,6 +548,15 @@ async function init() {
     if (e.key === "Escape") closeDialog();
     else if (e.key === "Tab") trapTab(e);
   });
+  // One info button per card: the card says the one thing to do, the window says the rest.
+  for (const [name, btn] of [
+    ["helpPatch", "btn-help-patch"],
+    ["helpPlay", "btn-help-play"],
+  ]) {
+    $(btn).addEventListener("click", () => openDialog(name));
+    $(`${btn}-close`).addEventListener("click", closeDialog);
+    $(DIALOGS[name].backdrop).addEventListener("click", closeDialog);
+  }
   $("btn-games").addEventListener("click", () => openDialog("games"));
   $("btn-games-close").addEventListener("click", closeDialog);
   $("games-backdrop").addEventListener("click", closeDialog);
