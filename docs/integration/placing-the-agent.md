@@ -57,6 +57,27 @@ in two.
 4. **Rare events.** Save buffers, cutscenes, the ending, a debug mode. If you cannot rule these
    out, prefer another region.
 
+**Look for the bounds, not for pointers into the region.** A pointer scan asks "does anything
+address these bytes", and a heap answers no right up until it grows. A heap is defined by the
+addresses on *either side* of it, and neither of them is an address in the region.
+[`tools/ram-bounds.py`](../../n64/agent/tools/ram-bounds.py) reports every RAM address the ROM
+builds with `lui`+`addiu`/`ori` near the agent and flags the pairs that bracket it:
+
+```sh
+python n64/agent/tools/ram-bounds.py seed.z64 0x80480000 0x80482400 --code 0x1000:0xC0000
+```
+
+Give `--code` for each ROM range that really holds instructions, and treat every hit as a
+thing to go and disassemble rather than a verdict. Of the four games integrated so far only
+Legacy of Darkness comes back bracketed; Castlevania 64, Paper Mario and Kirby 64 are clean.
+
+Castlevania: Legacy of Darkness is why this exists. Its main heap ends at `0x80400000` normally
+and `0x80634000` in the game's high quality mode, chosen by two instructions at `0x80000680`.
+The agent sat at `0x80480000`, inside the second. It measured untouched and nothing pointed at
+it, and both facts were true and useless. **Check every mode the player can choose**: a quality
+setting, a language, a debug menu, and an expansion-pak-aware allocator are all reasons for a
+game to size its heap differently on a run you did not measure.
+
 ### 2.3 Prefer the Expansion Pak, guarded
 
 In all three integrations so far the Expansion Pak was the answer: where the patch left it
