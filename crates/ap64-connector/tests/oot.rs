@@ -17,9 +17,13 @@ const COOP_CTX: u32 = 0x40_0100;
 const COUNT: u32 = 0x11A5D0 + 0x90;
 const MAILBOX_PLAYER: u32 = COOP_CTX + 6;
 const MAILBOX_ITEM: u32 = COOP_CTX + 8;
-/// The slot OoTR writes the most recent flag-set event to, and the only sign in-scene
-/// that a check was collected. connector.lua reads it once per scan.
+/// The slot OoTR writes the most recent flag-set event to. connector.lua reads it each scan.
 const TEMP_CONTEXT: u32 = 0x40_002C;
+/// The play context: the scene Link is in, and the flags it keeps for that scene until a
+/// scene change or a save commits them to the save context.
+const PLAY_SCENE_NUM: u32 = 0x1C_8544;
+const LIVE_CHESTS: u32 = 0x1C_A1D8;
+const LIVE_COLLECT: u32 = 0x1C_A1E4;
 
 fn ram() -> Vec<u8> {
     let mut ram = vec![0u8; 0x80_0000];
@@ -295,6 +299,59 @@ fn several_checks_between_two_polls_all_reach_the_client() {
         next.contains("\"DMT Chest\":false") && next.contains("\"DMT Freestanding PoH\":false"),
         "the queue drained: {}",
         &next[..300.min(next.len())]
+    );
+}
+
+/// Standing in a dungeon, the save context still reads zero for everything just collected
+/// there: the game commits it on the way out. Read on a console in the Bottom of the Well
+/// with every chest open and the save context all zeros, while eight of those chests had
+/// never reached the client. The scan reads the flags the game is actually keeping.
+#[test]
+fn a_chest_opened_in_this_scene_is_reported_before_it_is_committed() {
+    let (c, ram, _) = setup();
+    let scene = |ram: &Rc<RefCell<RamImage>>, n: u16| {
+        ram.borrow_mut()
+            .write_many(&[(PLAY_SCENE_NUM, &n.to_be_bytes())])
+            .unwrap()
+    };
+    let flags = |ram: &Rc<RefCell<RamImage>>, a: u32, v: u32| {
+        ram.borrow_mut()
+            .write_many(&[(a, &v.to_be_bytes())])
+            .unwrap()
+    };
+
+    scene(&ram, 0x08); // Bottom of the Well
+    assert!(
+        c.handle(&block(&[]))
+            .unwrap()
+            .contains("\"Bottom of the Well Map Chest\":false"),
+        "nothing collected yet"
+    );
+
+    // Map Chest is bit 0x07, the Freestanding Key collectible bit 0x01. No transient event:
+    // this is the state after one was missed.
+    flags(&ram, LIVE_CHESTS, 1 << 0x07);
+    flags(&ram, LIVE_COLLECT, 1 << 0x01);
+    let reply = c.handle(&block(&[])).unwrap();
+    for want in [
+        "\"Bottom of the Well Map Chest\":true",
+        "\"Bottom of the Well Freestanding Key\":true",
+    ] {
+        assert!(
+            reply.contains(want),
+            "{want} missing from {}",
+            &reply[..300.min(reply.len())]
+        );
+    }
+
+    // The play context holds one scene's flags. Standing elsewhere, they say nothing about
+    // the well, whose own flags the save context has yet to receive.
+    scene(&ram, 0x60);
+    let elsewhere = c.handle(&block(&[])).unwrap();
+    assert!(
+        elsewhere.contains("\"Bottom of the Well Map Chest\":false"),
+        "another scene's live flags must not be read as this one's: {}",
+        &elsewhere[..300.min(elsewhere.len())]
     );
 }
 
