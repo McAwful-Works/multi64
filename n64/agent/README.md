@@ -28,6 +28,9 @@ those come from is the whole of an integration — see
 | `templates/hook_stub.S`, `templates/link-flat.sh` | A per-frame hook stub and the script that builds image + stub, for a ROM with no buildable source |
 | `tools/n64crc.py` | Check or fix the header CRC (CIC-6102, CIC-6103) after changing code in the first MiB |
 | `tools/ram-usage.lua` | BizHawk: map which of all 8 MB of RDRAM a game touches |
+| `tools/watch-ranges.lua` | BizHawk: watch named RAM ranges byte for byte, for candidates too small for a page map |
+| `tools/count-calls.lua` | BizHawk: how often each candidate hook site really runs, per frame |
+| `tools/ram-bounds.py` | Find the RAM addresses a ROM computes, and flag any pair that brackets the agent |
 | `tools/agent-probe.lua` | BizHawk: agent loaded, code intact, ticking, dormant or ready, errors |
 
 ## Build
