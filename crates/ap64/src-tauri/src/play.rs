@@ -77,7 +77,13 @@ impl std::fmt::Display for Issue {
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
-    /// idle | connecting | waiting-client | playing | stopped | failed
+    /// Whether a session is up, which is the only thing Start and Stop follow.
+    ///
+    /// Not inferred from `state`: a session that is waiting for a console to come back is
+    /// as running as one mid-game, and reading that off the wording meant a reset console
+    /// silently handed Start back to someone who had not asked to stop.
+    pub running: bool,
+    /// idle | connecting | waiting-client | playing | stopped
     pub state: String,
     pub detail: String,
     /// The part of `detail` only a developer needs; empty when there is none.
@@ -323,6 +329,7 @@ impl Play {
         let stop = Arc::new(AtomicBool::new(false));
         let status = self.status.clone();
         *status.lock().unwrap() = Status {
+            running: true,
             state: "connecting".into(),
             detail: format!("{} {} · {}", game.profile.name, game.profile.release, url),
             ..Status::default()
@@ -498,287 +505,318 @@ fn run(
         start_multi64(&log);
     }
 
-    // Wait for the cart: the console may not be on yet, or the daemon not started.
-    let cart = loop {
-        if stop.load(Ordering::Relaxed) {
-            set(&|s| {
-                s.state = "stopped".into();
-                s.detail = String::new();
-                s.detail_dev = String::new();
-                s.bridge = IDLE.into();
-                s.console = IDLE.into();
-                s.client = IDLE.into();
-            });
-            return;
-        }
-        match Multi64::connect(&url, log.clone()) {
-            Ok(c) => break c,
-            Err(e) => {
-                let msg = e.to_string();
-                // A failed connect on its own says nothing about which end is at fault: the
-                // HELLO it waits for needs the daemon, the serial link and an agent, and any
-                // of the three being absent looks the same from here. The daemon answers a
-                // plain HTTP GET whether or not a cart is attached, so ask it.
-                let daemon = ap64_cart::transport::serial_active(&url);
-                // Only when the bridge is silent is the app's own state worth the look.
-                let app = daemon.is_none() && multi64_app_running();
-                set(&|s| {
-                    s.state = "connecting".into();
-                    s.detail_dev = msg.clone();
-                    match daemon {
-                        None if app => {
-                            s.detail = format!("Multi64 is running, but nothing answers at {url}");
-                            s.bridge = NO_BRIDGE.into();
-                            s.console = WAITING.into();
-                        }
-                        None => {
-                            s.detail = "start the Multi64 app, with the cart plugged in".into();
-                            s.bridge = WAITING.into();
-                            s.console = WAITING.into();
-                        }
-                        Some(false) => {
-                            s.detail = "Multi64 is running but has no cart connected".into();
-                            s.bridge = NO_CART.into();
-                            s.console = WAITING.into();
-                        }
-                        Some(true) => {
-                            // Multi64 has the cart; it is the ROM that has not answered.
-                            s.detail = "waiting for the ROM on the console".into();
-                            s.bridge = OK.into();
-                            s.console = WAITING.into();
-                        }
-                    }
-                });
-                let until = Instant::now() + CART_RETRY;
-                while Instant::now() < until && !stop.load(Ordering::Relaxed) {
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-            }
-        }
-    };
-    // The daemon answered and an agent is on the other end of it.
-    set(&|s| s.bridge = OK.into());
-    log(format!(
-        "cart agent answered: {} MiB RDRAM, {}",
-        cart.rdram_size() >> 20,
-        if cart.writable() {
-            "writable"
-        } else {
-            "read-only"
-        }
-    ));
-
-    let mut cart = cart;
-    match verify_cart(&game, &mut cart) {
-        Ok(name) => {
-            log(format!(
-                "the cart is running {} ({}) with the agent",
-                game.profile.name,
-                if name.is_empty() {
-                    "no internal name"
-                } else {
-                    &name
-                }
-            ));
-            set(&|s| s.console = OK.into());
-        }
-        Err(e) => {
-            log(e.to_string());
-            set(&|s| {
-                s.state = "failed".into();
-                s.detail = e.message.clone();
-                s.detail_dev = e.technical.clone();
-                s.console = FAILED.into();
-            });
-            return;
-        }
-    }
-
-    // What the session believes about the console and the client, so a cart that goes quiet and
-    // comes back is reported both ways round rather than only on the way down. `client_here` is
-    // shared with the health callback below, which runs on this same thread from inside a cart
-    // call and has to word the status the way the event loop would.
-    let console_up = Rc::new(Cell::new(true));
-    let client_here = Rc::new(Cell::new(false));
-    let mut last_answer = Instant::now();
-
-    // What the backend says about the cart, while it says it.
-    //
-    // A request that fails is retried and then reconnected for as long as the backend's own
-    // deadline, and nothing comes back to this loop in the meantime -- so without this, a
-    // console that was reset went on being reported as running until that deadline expired.
-    // The client notices immediately, because its own reads are what fail; this is how AP64
-    // learns it at the same time.
-    {
-        let stop = stop.clone();
-        cart.set_cancelled(Rc::new(move || stop.load(Ordering::Relaxed)));
-    }
-    cart.set_reconnect_deadline(CART_GRACE);
-    {
-        let status = status.clone();
-        let app = app.clone();
-        let client_here = client_here.clone();
-        let console_up = console_up.clone();
-        let client = script.client;
-        let log = log.clone();
-        cart.set_health(Rc::new(move |answering: bool| {
-            if console_up.replace(answering) == answering {
-                return;
-            }
-            log(if answering {
-                "the cart is answering again".into()
-            } else {
-                "the cart stopped answering".into()
-            });
-            let mut s = status.lock().unwrap();
-            s.console = if answering { OK } else { FAILED }.into();
-            if answering {
-                s.state = if client_here.get() {
-                    "playing"
-                } else {
-                    "waiting-client"
-                }
-                .into();
-                s.detail = if client_here.get() {
-                    format!("{client} connected")
-                } else {
-                    format!("open {client} from the Archipelago Launcher")
-                };
-            } else {
-                s.state = "waiting-console".into();
-                s.detail = "the ROM stopped answering; load it again on the console".into();
-            }
-            s.detail_dev = String::new();
-            let _ = app.emit("play://status", s.clone());
-        }));
-    }
-
-    let cart = Rc::new(RefCell::new(cart));
-    let connector = match Connector::new(&script, Box::new(SharedCart(cart.clone())), log.clone()) {
-        Ok(c) => c,
-        Err(e) => {
-            set(&|s| {
-                s.state = "failed".into();
-                s.detail = e.clone();
-                s.detail_dev = String::new();
-            });
-            return;
-        }
-    };
-
-    let ports = script.ports;
-    let mut last_stats = Instant::now();
+    // Requests answered across the whole session, not just this link: a console that was
+    // reset should not make the count start again.
     let mut handled = 0u64;
-    // A check the game showed only between two polls, handed to the client by the watch
-    // rather than waiting for the scene to change. Worth a line: it is the only place a
-    // session says the queue is doing anything.
-    let mut last_watch = ap64_cart::watch::WatchStats::default();
-    let push_stats = |stats: Stats, handled: u64| {
-        set(&|s| {
-            s.requests = stats.requests;
-            s.reconnects = stats.reconnects;
-            s.stalls = stats.stalls;
-            s.handled = handled;
-        })
+
+    // Start means "keep at it until I say stop". A console reset, a ROM swapped, a daemon
+    // restarted, the wrong game loaded -- none of those end a session, they put it back to
+    // waiting for the cart, because every one of them is something the person playing is
+    // about to undo. Deciding for them that a session was over meant a reset console handed
+    // Start back to someone who had not asked to stop, and took Stop away from them.
+    // Between attempts, and interruptible so Stop is still felt inside one.
+    //
+    // Every failure below comes back to the top of this loop, and two of them -- the wrong
+    // game on the console, a script that will not load against it -- leave a cart that
+    // answers straight away. Without a pause those would spin on the cart as fast as USB
+    // allows and bury the log, so the wait belongs here, once, rather than at each failure.
+    let pause = || {
+        let until = Instant::now() + CART_RETRY;
+        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
     };
-    let result = server::serve(&connector, ports, &stop, &mut |e| match e {
-        Event::Listening(port) => {
-            log(format!(
-                "listening on localhost:{port}; open {} from the Archipelago Launcher",
-                script.client
-            ));
-            set(&|s| {
-                s.state = "waiting-client".into();
-                s.port = Some(port);
-                s.detail = format!("open {} from the Archipelago Launcher", script.client);
-                s.detail_dev = format!("listening on 127.0.0.1:{port}");
-                s.client = WAITING.into();
-            });
+
+    let mut first_try = true;
+    'session: while !stop.load(Ordering::Relaxed) {
+        if !std::mem::take(&mut first_try) {
+            pause();
         }
-        Event::ClientConnected(addr) => {
-            client_here.set(true);
-            log(format!("{} connected from {addr}", script.client));
-            set(&|s| {
-                s.state = "playing".into();
-                s.detail = format!("{} connected", script.client);
-                s.detail_dev = format!("from {addr}");
-                s.client = OK.into();
-            });
-        }
-        Event::ClientDisconnected(why) => {
-            client_here.set(false);
-            log(format!("{} disconnected: {why}", script.client));
-            set(&|s| {
-                s.state = "waiting-client".into();
-                s.detail = format!("{} disconnected; waiting for it", script.client);
-                s.detail_dev = why.clone();
-                s.client = WAITING.into();
-            });
-        }
-        // Nothing is being asked of the cart, so ask it something: a console that was reset
-        // or a ROM that was swapped answers nothing, and a session with no client attached would
-        // otherwise go on reporting whatever was true when the last request was answered.
-        Event::Idle => {
-            // A client that is polling proves the cart for free; this is for the quiet spells,
-            // including a session with no client attached at all. `alive` reports through the
-            // same health callback, so the wording lives in one place.
-            if last_answer.elapsed() >= CART_QUIET {
-                let _ = cart.borrow_mut().alive();
+        // Wait for the cart: the console may not be on yet, or the daemon not started.
+        let cart = loop {
+            if stop.load(Ordering::Relaxed) {
+                break 'session;
             }
-        }
-        Event::Handled => {
-            handled += 1;
-            last_answer = Instant::now();
-            // Deliberately not touched here: an answered line says the client asked something
-            // and the connector replied, which a script that catches its own errors will do
-            // with a cart that is not there at all. What the cart is doing is the backend's to
-            // report (set_health above) and the probe below's to check.
-            if let Some(w) = connector.watch_stats() {
-                if w.replayed > last_watch.replayed || w.dropped > last_watch.dropped {
-                    log(format!(
-                        "in-scene events: {} seen, {} given to the client{}",
-                        w.events,
-                        w.replayed,
-                        if w.dropped > 0 {
-                            format!(", {} dropped by a full queue", w.dropped)
-                        } else {
-                            String::new()
+            match Multi64::connect(&url, log.clone()) {
+                Ok(c) => break c,
+                Err(e) => {
+                    let msg = e.to_string();
+                    // A failed connect on its own says nothing about which end is at fault: the
+                    // HELLO it waits for needs the daemon, the serial link and an agent, and any
+                    // of the three being absent looks the same from here. The daemon answers a
+                    // plain HTTP GET whether or not a cart is attached, so ask it.
+                    let daemon = ap64_cart::transport::serial_active(&url);
+                    // Only when the bridge is silent is the app's own state worth the look.
+                    let app = daemon.is_none() && multi64_app_running();
+                    set(&|s| {
+                        s.state = "connecting".into();
+                        s.detail_dev = msg.clone();
+                        match daemon {
+                            None if app => {
+                                s.detail =
+                                    format!("Multi64 is running, but nothing answers at {url}");
+                                s.bridge = NO_BRIDGE.into();
+                                s.console = WAITING.into();
+                            }
+                            None => {
+                                s.detail = "start the Multi64 app, with the cart plugged in".into();
+                                s.bridge = WAITING.into();
+                                s.console = WAITING.into();
+                            }
+                            Some(false) => {
+                                s.detail = "Multi64 is running but has no cart connected".into();
+                                s.bridge = NO_CART.into();
+                                s.console = WAITING.into();
+                            }
+                            Some(true) => {
+                                // Multi64 has the cart; it is the ROM that has not answered.
+                                // Say so rather than "starting": this is also where a session waits
+                                // after a console was reset, and it is not starting then.
+                                s.state = "waiting-console".into();
+                                s.detail = "waiting for the ROM on the console".into();
+                                s.bridge = OK.into();
+                                s.console = WAITING.into();
+                            }
                         }
-                    ));
+                    });
+                    pause();
                 }
-                last_watch = w;
             }
-            if last_stats.elapsed() >= STATS_EVERY {
-                last_stats = Instant::now();
-                push_stats(cart.borrow().stats(), handled);
+        };
+        // The daemon answered and an agent is on the other end of it.
+        set(&|s| s.bridge = OK.into());
+        log(format!(
+            "cart agent answered: {} MiB RDRAM, {}",
+            cart.rdram_size() >> 20,
+            if cart.writable() {
+                "writable"
+            } else {
+                "read-only"
+            }
+        ));
+
+        let mut cart = cart;
+        match verify_cart(&game, &mut cart) {
+            Ok(name) => {
+                log(format!(
+                    "the cart is running {} ({}) with the agent",
+                    game.profile.name,
+                    if name.is_empty() {
+                        "no internal name"
+                    } else {
+                        &name
+                    }
+                ));
+                set(&|s| s.console = OK.into());
+            }
+            Err(e) => {
+                log(e.to_string());
+                set(&|s| {
+                    s.state = "waiting-console".into();
+                    s.detail = e.message.clone();
+                    s.detail_dev = e.technical.clone();
+                    s.console = FAILED.into();
+                });
+                continue 'session;
             }
         }
-    });
-    push_stats(cart.borrow().stats(), handled);
-    match result {
-        Ok(()) => {
-            log("stopped".into());
-            set(&|s| {
-                s.state = "stopped".into();
-                s.detail = String::new();
-                s.bridge = IDLE.into();
-                s.console = IDLE.into();
-                s.client = IDLE.into();
-            });
+
+        // What the session believes about the console and the client, so a cart that goes quiet and
+        // comes back is reported both ways round rather than only on the way down. `client_here` is
+        // shared with the health callback below, which runs on this same thread from inside a cart
+        // call and has to word the status the way the event loop would.
+        let console_up = Rc::new(Cell::new(true));
+        let client_here = Rc::new(Cell::new(false));
+        let mut last_answer = Instant::now();
+
+        // What the backend says about the cart, while it says it.
+        //
+        // A request that fails is retried and then reconnected for as long as the backend's own
+        // deadline, and nothing comes back to this loop in the meantime -- so without this, a
+        // console that was reset went on being reported as running until that deadline expired.
+        // The client notices immediately, because its own reads are what fail; this is how AP64
+        // learns it at the same time.
+        {
+            let stop = stop.clone();
+            cart.set_cancelled(Rc::new(move || stop.load(Ordering::Relaxed)));
         }
-        Err(e) => {
-            log(format!("session ended: {e}"));
+        cart.set_reconnect_deadline(CART_GRACE);
+        {
+            let status = status.clone();
+            let app = app.clone();
+            let client_here = client_here.clone();
+            let console_up = console_up.clone();
+            let client = script.client;
+            let log = log.clone();
+            cart.set_health(Rc::new(move |answering: bool| {
+                if console_up.replace(answering) == answering {
+                    return;
+                }
+                log(if answering {
+                    "the cart is answering again".into()
+                } else {
+                    "the cart stopped answering".into()
+                });
+                let mut s = status.lock().unwrap();
+                s.console = if answering { OK } else { FAILED }.into();
+                if answering {
+                    s.state = if client_here.get() {
+                        "playing"
+                    } else {
+                        "waiting-client"
+                    }
+                    .into();
+                    s.detail = if client_here.get() {
+                        format!("{client} connected")
+                    } else {
+                        format!("open {client} from the Archipelago Launcher")
+                    };
+                } else {
+                    s.state = "waiting-console".into();
+                    s.detail = "the ROM stopped answering; load it again on the console".into();
+                }
+                s.detail_dev = String::new();
+                let _ = app.emit("play://status", s.clone());
+            }));
+        }
+
+        let cart = Rc::new(RefCell::new(cart));
+        let connector = match Connector::new(
+            &script,
+            Box::new(SharedCart(cart.clone())),
+            log.clone(),
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                log(format!("the connector script would not load: {e}"));
+                set(&|s| {
+                    s.state = "waiting-console".into();
+                    s.detail = "the connector could not read the game;                             check the ROM on the console"
+                    .into();
+                    s.detail_dev = e.clone();
+                    s.console = FAILED.into();
+                });
+                continue 'session;
+            }
+        };
+
+        let ports = script.ports;
+        let mut last_stats = Instant::now();
+        // A check the game showed only between two polls, handed to the client by the watch
+        // rather than waiting for the scene to change. Worth a line: it is the only place a
+        // session says the queue is doing anything.
+        let mut last_watch = ap64_cart::watch::WatchStats::default();
+        let push_stats = |stats: Stats, handled: u64| {
             set(&|s| {
-                s.state = "failed".into();
-                // Which link gave way is on its own row; this says what to do about it. The
-                // error itself names addresses and URLs, which is the developer's half.
-                s.detail = "the cart stopped answering; load the ROM again and press Start".into();
-                s.detail_dev = e.clone();
-                s.console = FAILED.into();
-                s.client = IDLE.into();
-            });
+                s.requests = stats.requests;
+                s.reconnects = stats.reconnects;
+                s.stalls = stats.stalls;
+                s.handled = handled;
+            })
+        };
+        let result = server::serve(&connector, ports, &stop, &mut |e| match e {
+            Event::Listening(port) => {
+                log(format!(
+                    "listening on localhost:{port}; open {} from the Archipelago Launcher",
+                    script.client
+                ));
+                set(&|s| {
+                    s.state = "waiting-client".into();
+                    s.port = Some(port);
+                    s.detail = format!("open {} from the Archipelago Launcher", script.client);
+                    s.detail_dev = format!("listening on 127.0.0.1:{port}");
+                    s.client = WAITING.into();
+                });
+            }
+            Event::ClientConnected(addr) => {
+                client_here.set(true);
+                log(format!("{} connected from {addr}", script.client));
+                set(&|s| {
+                    s.state = "playing".into();
+                    s.detail = format!("{} connected", script.client);
+                    s.detail_dev = format!("from {addr}");
+                    s.client = OK.into();
+                });
+            }
+            Event::ClientDisconnected(why) => {
+                client_here.set(false);
+                log(format!("{} disconnected: {why}", script.client));
+                set(&|s| {
+                    s.state = "waiting-client".into();
+                    s.detail = format!("{} disconnected; waiting for it", script.client);
+                    s.detail_dev = why.clone();
+                    s.client = WAITING.into();
+                });
+            }
+            // Nothing is being asked of the cart, so ask it something: a console that was reset
+            // or a ROM that was swapped answers nothing, and a session with no client attached would
+            // otherwise go on reporting whatever was true when the last request was answered.
+            Event::Idle => {
+                // A client that is polling proves the cart for free; this is for the quiet spells,
+                // including a session with no client attached at all. `alive` reports through the
+                // same health callback, so the wording lives in one place.
+                if last_answer.elapsed() >= CART_QUIET {
+                    let _ = cart.borrow_mut().alive();
+                }
+            }
+            Event::Handled => {
+                handled += 1;
+                last_answer = Instant::now();
+                // Deliberately not touched here: an answered line says the client asked something
+                // and the connector replied, which a script that catches its own errors will do
+                // with a cart that is not there at all. What the cart is doing is the backend's to
+                // report (set_health above) and the probe below's to check.
+                if let Some(w) = connector.watch_stats() {
+                    if w.replayed > last_watch.replayed || w.dropped > last_watch.dropped {
+                        log(format!(
+                            "in-scene events: {} seen, {} given to the client{}",
+                            w.events,
+                            w.replayed,
+                            if w.dropped > 0 {
+                                format!(", {} dropped by a full queue", w.dropped)
+                            } else {
+                                String::new()
+                            }
+                        ));
+                    }
+                    last_watch = w;
+                }
+                if last_stats.elapsed() >= STATS_EVERY {
+                    last_stats = Instant::now();
+                    push_stats(cart.borrow().stats(), handled);
+                }
+            }
+        });
+        push_stats(cart.borrow().stats(), handled);
+        match result {
+            // `serve` only returns cleanly when the stop flag it was given is set.
+            Ok(()) => break 'session,
+            Err(e) => {
+                log(format!("the link gave way: {e}; still trying"));
+                set(&|s| {
+                    s.state = "waiting-console".into();
+                    // Which link gave way is on its own row; this says what to do about it, and
+                    // does not ask for Start, because the session is still here waiting. The
+                    // error itself names addresses and URLs, which is the developer's half.
+                    s.detail = "the ROM stopped answering; load it again on the console".into();
+                    s.detail_dev = e.clone();
+                    s.console = FAILED.into();
+                    s.client = IDLE.into();
+                });
+            }
         }
     }
+
+    log("stopped".into());
+    set(&|s| {
+        s.running = false;
+        s.state = "stopped".into();
+        s.detail = String::new();
+        s.detail_dev = String::new();
+        s.bridge = IDLE.into();
+        s.console = IDLE.into();
+        s.client = IDLE.into();
+    });
 }
 
 #[cfg(test)]
