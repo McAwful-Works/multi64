@@ -1,0 +1,208 @@
+---
+name: add-game
+description: Add a new game to AP64 - checking its Archipelago world is one the generic connector can drive, building a seed to work against, finding RAM and a per-frame hook site by measurement, writing the profile, and verifying it before it reaches a console. Use when asked to add, integrate, support or evaluate a game for AP64, or to build an Archipelago seed for one.
+---
+
+# Adding a game to AP64
+
+Four games are in: Castlevania 64, Paper Mario, Ocarina of Time and Kirby 64, with
+Legacy of Darkness written and held back in `ap64_core::withheld()`. Each took a day or
+two, and most of that was spent on things this file now answers.
+
+[`docs/integration/placing-the-agent.md`](../../../docs/integration/placing-the-agent.md)
+is normative for the ROM side and is not repeated here. This is the spine around it,
+including the Archipelago half, which no document covers.
+
+## 1. Can the generic connector drive it?
+
+Check before anything else. A game whose world needs its own client is a different and
+much larger job: AP64 would need a connector of its own, like `connectors/oot/`.
+
+Open the apworld and look for a client that subclasses Archipelago's BizHawk client:
+
+```sh
+python -c "
+import zipfile; z = zipfile.ZipFile(r'C:\ProgramData\Archipelago\custom_worlds\GAME.apworld')
+print([n for n in z.namelist() if n.endswith('client.py')])
+print([l for l in z.read('GAME/client.py').decode('utf8','replace').split(chr(10))[:40] if 'import' in l])
+"
+```
+
+`from worlds._bizhawk.client import BizHawkClient` means **generic**: stock Archipelago's
+BizHawk Client runs the world's own logic, and AP64 needs no connector work. Paper Mario,
+CV64, CVLoD and Kirby 64 all look like this.
+
+No such import, or a world that ships its own launcher (Ocarina of Time uses
+`ArchipelagoOoTClient.exe`), means a **forked** connector. Say so and stop; that is a
+separate piece of work, not a profile.
+
+Diddy Kong Racing was dropped at exactly this step, after it was assumed from the game
+rather than checked in the apworld.
+
+## 2. Build a seed to work against
+
+Everything downstream needs a real patched ROM, not the retail one: the randomizer's own
+payload is usually the agent's nearest neighbour in RAM.
+
+Generate without disturbing the user's own YAMLs, by pointing the generator at a scratch
+directory:
+
+```sh
+"C:/ProgramData/Archipelago/ArchipelagoGenerate.exe" \
+  --player_files_path <scratch>/players --outputpath <scratch>/out --seed 1
+```
+
+The output `.zip` holds a `.apXX` patch. Its `archipelago.json` names the procedure that
+turns it into a ROM:
+
+```sh
+python -c "
+import zipfile,json; z=zipfile.ZipFile(r'<patch>.apXX')
+print(z.namelist()); print(json.dumps(json.loads(z.read('archipelago.json')),indent=2))
+"
+```
+
+`apply_bsdiff4` + `apply_tokens` is a shape you can apply yourself (BSDIFF40 is three bzip2
+blocks after a 32-byte header, and Python has `bz2`). Custom procedures like CV64's
+`apply_patches`/`patch_ap_graphics` live in the apworld's Python — do not reimplement
+those, run `ArchipelagoLauncher.exe <patch>` and let it write the `.z64`.
+
+Fix the header CRC with [`n64/agent/tools/n64crc.py`](../../../n64/agent/tools/n64crc.py)
+rather than your own; only CIC-6102 and 6103 are implemented, and it refuses rather than
+guessing.
+
+**Two static reads worth taking before any emulator.** They settled Paper Mario's RAM
+margin in minutes when a play session had been the plan:
+
+- A bsdiff4 header's third field is the **exact output size**, so the mod's ROM extent is a
+  constant of the apworld version, not something a seed's options move.
+- Parsing the token binary (`u32 count`, then `type:u8, offset:u32, len:u32[, bytes]`)
+  gives every address the seed writes. Paper Mario's highest is `0x1D09ED0`, 14 MB below
+  the agent, and min-options and max-options seeds differ by 32 bytes.
+
+Generate a **maximal** seed — every check-count and hint option at its limit — when the
+question is how big the payload can get.
+
+**Check whether the ROM is seed-independent at all.** Diddy Kong Racing's generator emits
+no patch file: the output holds only `.archipelago` and a spoiler, and its `RomPatcher.py`
+applies one static bsdiff to vanilla and asserts a *fixed* output md5, with every choice
+made at runtime over the socket. One ROM serves every seed, so the profile's pins are
+measured once and can never drift per seed. The tell is a `patched_rom_md5` constant in
+the world, or a generator output with no `.apXX` in it.
+
+## 3. Find RAM, by measuring
+
+Three tools, three different questions. Use them in this order; see §2 of the guide.
+
+| tool | question |
+|---|---|
+| [`ram-usage.lua`](../../../n64/agent/tools/ram-usage.lua) | which 4 KB pages does the game touch? |
+| [`watch-ranges.lua`](../../../n64/agent/tools/watch-ranges.lua) | do *these exact bytes* ever change? |
+| [`ram-bounds.py`](../../../n64/agent/tools/ram-bounds.py) | what addresses **bracket** the region? |
+
+`ram-bounds.py` exists because untouched-and-unpointed-at is not enough. Legacy of
+Darkness passed both and froze anyway: its heap ends at `0x80400000` normally and
+`0x80634000` in high quality mode, and the agent sat inside the second. A heap is defined
+by its bounds, and neither bound is an address inside it.
+
+**Give every watcher a control range that must change**, in the game's own base RAM. A
+quiet result from a script that was never running looks identical to a clean region. The
+first control tried for Paper Mario was the mod's static code, which proved nothing.
+
+## 4. Find a per-frame hook site, by measuring
+
+**Look for a decomp first.** Diddy Kong Racing went from "no symbol source" to a complete
+set of profile inputs in one sitting because
+[DavidSM64/Diddy-Kong-Racing](https://github.com/DavidSM64/Diddy-Kong-Racing) targets the
+exact ROM: its splat config pins a sha1, and that sha1 was the vanilla ROM to hand. Check
+`ver/splat/*.yaml` for the sha1 and for `symbol_addrs_path`, and take the vram↔rom mapping
+from the code segment's `start` and `vram` — DKR's main segment is rom `0x1000` at vram
+`0x80000400`, so vram = rom + `0x7FFFF400`. Kirby 64 and Paper Mario had decomps too. It is
+worth ten minutes to look before disassembling anything.
+
+**Then diff the patched ROM against vanilla at every address you plan to use.** A decomp
+describes the retail game; you are hooking a randomizer's output. DKR's patch modifies
+vanilla only up to `0xd36eb` and appends the rest — but `thread3_main` is inside that, and
+*is* modified, because the randomizer hooks the game thread itself. Hooking there would
+have collided with it. `main_game_loop` was untouched across all 1240 bytes, and that is
+where the hook went.
+
+When you write that diff, **assert the slice lengths**. A wrong vram→rom constant puts
+every offset past the end of the file, and two empty slices compare equal, so every region
+cheerfully reports "unchanged". That happened here and was caught only because an
+unrelated hex dump printed empty.
+
+Run [`count-calls.lua`](../../../n64/agent/tools/count-calls.lua) on every candidate and
+read the rate. A loop is not automatically the frame loop. Kirby 64's first site — an
+overlay loop head with 39 branches returning to it — fired **twice in three thousand
+frames**. DKR's `main_game_loop` is the opposite trap: it looks per-frame and reads like
+it, but runs at ~0.44 per video frame (~26 Hz). That is fine for an agent — OoT's cart poll
+is ~300 ms — but write the measured rate in the profile, not "once per frame".
+
+Hook **call sites, not functions**. Kirby's `gtlScheduleGfxEnd` has three callers and two
+never run; a `jal` retarget changes one caller, so a per-frame function reached from a
+site that never executes is worth nothing.
+
+**Give `count-calls` a control that must fire**, for the same reason watchers need one. It
+is what turns "these candidates read zero" into evidence rather than a possibly-detached
+hook. It also settles which sites are unconditional: in DKR every site in the loop matched
+the control's 37,194 calls exactly, except one that came up 12 short and was therefore
+conditional.
+
+**Proving the stub's space is dead is the same measurement.** A name is not evidence:
+DKR's `debug_text_print` is called by `main_game_loop` on *every* iteration, so a stub
+written over it would have landed on live code. Put the candidates and a known-live
+control in `count-calls.lua` and play the parts that would plausibly wake them — a race for
+a checkpoint renderer, character select for a character helper. Zeros against a climbing
+control are the proof.
+
+## 5. Write it
+
+`agent/<game>/game.env` and `stub.S`, then `agent/build.sh <game>` (needs the
+mips64-ultra-elf toolchain in WSL), then `profiles/<game>/profile.toml` by hand, then
+register it in `ap64-core::builtin()`. Comment `game.env` with *why* each address is safe
+— that comment is the evidence for a decision nobody will remember.
+
+Pin generously in `[[require]]`: the hook site word, a sha1 of the space the stub goes in,
+and of every function the stub calls. A pin is what turns "this seed is not the one this
+profile was measured against" into a refusal instead of a crash.
+
+## 6. Verify before hardware
+
+```sh
+cargo run -p ap64-cli --release -- <seed.z64> --check   # or target/release/ap64-patch
+```
+
+**`--check` already reports every pin and the room left for the agent.** Do not write a
+script to do this; it has been written twice by mistake.
+
+Then `agent-probe.lua` in BizHawk on the patched ROM: it reads `layout.env`, so it needs
+`GAME` set at its top. `magic=0x4D363450` and `text=intact` with ticks climbing once per
+frame means the agent is loaded, unclobbered and running on the game's thread.
+
+Only then the cart. The console must be powered off for PC-side SD writes.
+
+## When it misbehaves
+
+**Ask what is talking to the cart before theorising about why.** An agent error counter
+climbing at a fixed rate was chased through four hypotheses about `osMemSize`, WATCH
+filters, `PEEKROM` paging and probe contention. It was a `watch_agent.sh` left running
+from earlier in the session, polling `mem-peek --addr 0x80482468` — a KSEG0 address, where
+`mem-peek` takes a **physical** one, so the agent answered `E_RANGE` every six seconds
+forever. Two copies running, 2/6 s = 0.33/s, which is what the counter did.
+
+```sh
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "watch|mem-peek" }
+```
+
+The tells were all in the data: a rate that did not move when the client, the game or AP64
+changed; one error code and never a neighbouring one; and a request id that was always
+`0001`, meaning a fresh process each poll.
+
+**Identify an unknown counter by causing a known event**, not by trusting an offset.
+Triggering an `E_TOO_LARGE` moved one word, naming `s_last_error`; the next word went +1
+and was `s_errors`.
+
+**`0x04` is `E_RANGE`, not "outside RDRAM".** `validate_regions` is shared by `PEEKV`,
+`POKEV` and `PEEKROM`, each with a different address space, and `WATCH` raises it for a
+filter byte outside its slot. The code alone does not say which.
