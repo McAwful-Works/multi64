@@ -36,6 +36,7 @@ pub fn builtin() -> Result<Vec<Bundle>, String> {
         builtin!("cv64", ["agent.bin", "stub.bin"]),
         builtin!("pmr", ["agent.bin", "stub.bin"]),
         builtin!("oot", ["agent.bin", "stub.bin"]),
+        builtin!("k64", ["agent.bin", "stub.bin"]),
     ])
 }
 
@@ -206,6 +207,7 @@ mod tests {
             include_str!("../profiles/cv64/layout.env"),
             include_str!("../profiles/pmr/layout.env"),
             include_str!("../profiles/oot/layout.env"),
+            include_str!("../profiles/k64/layout.env"),
             include_str!("../profiles/cvlod/layout.env"),
         ];
         for (b, env) in bundles.iter().zip(layouts) {
@@ -233,6 +235,7 @@ mod tests {
             ("cv64", include_str!("../profiles/cv64/layout.env")),
             ("pmr", include_str!("../profiles/pmr/layout.env")),
             ("oot", include_str!("../profiles/oot/layout.env")),
+            ("k64", include_str!("../profiles/k64/layout.env")),
             ("cvlod", include_str!("../profiles/cvlod/layout.env")),
         ];
         assert_eq!(bundles.len(), layouts.len());

@@ -11,7 +11,7 @@ Play Archipelago N64 seeds on a real console. AP64 does two jobs:
    so there is no file to choose: pick the game, press Start, open the client.
 
 Supported today, each patched and played on a SummerCart64 with checks sent and items
-received (2026-09-18):
+received (the first three on 2026-09-18, Kirby 64 on 2026-09-21):
 
 - **Castlevania 64 (US 1.0)**, through Archipelago's BizHawk Client.
 - **Paper Mario (US 1.0)** with the Paper Mario Randomizer, through BizHawk Client.
@@ -25,6 +25,15 @@ received (2026-09-18):
   back on requests that were already going out, so a check does not wait for the scene to
   change. A ROM patched before this falls back to AP64 sampling the slot from the host,
   which narrows the gap rather than closing it.
+- **Kirby 64: The Crystal Shards (US)**, Archipelago's k64 world, through BizHawk Client.
+  The hook is `jal gtlScheduleGfxEnd` at `0x800059C0`, and both it and the stub are in the
+  `main` segment, which is resident for the whole run. The stub goes in 1088 bytes of zeros
+  in that segment's data, watched byte for byte through attract mode and a play session
+  without one of them changing, and identical with every option off and at maximum. The
+  agent's RAM was measured across 67,000 frames with the Expansion Pak untouched throughout,
+  and the one instruction in the 32 MiB that forms `0x80400000` is a dead store nothing
+  reads back. In BizHawk the agent loads, its image stays identical to the ROM's, and it
+  ticks once per frame.
 
 Written and working, but **not offered in the app**, because the game cannot be played
 through for a reason outside AP64. Kept in the tree and checked by the same tests as the

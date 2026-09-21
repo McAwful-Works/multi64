@@ -1,0 +1,71 @@
+# Kirby 64: The Crystal Shards (US) with Archipelago's k64 world. Blobs: agent/build.sh k64
+# (see BUILD_REV). Addresses from the decomp's splat map (Kirby64Ret/kirby64, kirby64.yaml),
+# each checked against the ROM here.
+#
+# Both the hook site and the stub are in `main`, resident for the whole run. The site was
+# chosen by measurement (tools/count-calls.lua): 897 calls in 1140 frames.
+#
+# Archipelago's patch here is small (0xA8B bytes) and leaves IPL3 alone with a correct header
+# checksum, so there is nothing to restore; only the checksum to recompute.
+
+id = "k64"
+name = "Kirby 64 - The Crystal Shards"
+release = "US"
+game_code = "NK4E"
+version = 0
+cic = "6103"
+randomizer = "Archipelago's Kirby 64 - The Crystal Shards world"
+connector = "generic"     # Archipelago's BizHawk Client
+
+[agent]
+image = "agent.bin"
+rom = 0x2000000         # past the 32 MiB image; the patch's data ends at 0x1FFF268
+vram = 0x80480000       # Expansion Pak, measured untouched across attract mode and play
+min_ram = 0x800000      # the stub skips the agent without an Expansion Pak
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0x65C0             # jal gtlScheduleGfxEnd at 0x800059C0, the frame's last graphics call
+equals = 0x0C001644
+hint = "The randomizer changed the frame path, so the hook has nowhere to go."
+
+# 1088 bytes of zeros in main's data. Nothing in the 32 MiB points into it, and
+# tools/watch-ranges.lua watched these exact bytes through attract mode and a play session
+# without one of them changing. The hash is what stops a later apworld growing into it.
+[[require]]
+kind = "sha1"
+label = "Space for the hook stub"
+at = 0x3C90C            # 0x8003BD0C
+len = 0x440
+sha1 = "448fb16a35514e241a245f192382bf7ab65f619e"
+hint = "Something now occupies the space the hook stub goes in."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0x6510             # gtlScheduleGfxEnd, 0x80005910
+len = 0x80
+sha1 = "ebdd826e3551c569c16f6cec6c84059cfd5fe305"
+hint = "The randomizer changed the call the hook passes each frame through to."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine"
+at = 0x3A48             # dma_read, 0x80002E48, in the always-resident main segment
+len = 0x80
+sha1 = "a0d3f9a539603959ce2a1823322f971caa2f69f7"
+hint = "The randomizer changed the routine the stub loads the agent with."
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0x3C90C
+file = "stub.bin"
+max_len = 0x440
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0x65C0
+target = 0x8003BD0C
