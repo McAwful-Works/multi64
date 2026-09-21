@@ -514,7 +514,24 @@ fn run(
     // waiting for the cart, because every one of them is something the person playing is
     // about to undo. Deciding for them that a session was over meant a reset console handed
     // Start back to someone who had not asked to stop, and took Stop away from them.
+    // Between attempts, and interruptible so Stop is still felt inside one.
+    //
+    // Every failure below comes back to the top of this loop, and two of them -- the wrong
+    // game on the console, a script that will not load against it -- leave a cart that
+    // answers straight away. Without a pause those would spin on the cart as fast as USB
+    // allows and bury the log, so the wait belongs here, once, rather than at each failure.
+    let pause = || {
+        let until = Instant::now() + CART_RETRY;
+        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+
+    let mut first_try = true;
     'session: while !stop.load(Ordering::Relaxed) {
+        if !std::mem::take(&mut first_try) {
+            pause();
+        }
         // Wait for the cart: the console may not be on yet, or the daemon not started.
         let cart = loop {
             if stop.load(Ordering::Relaxed) {
@@ -562,10 +579,7 @@ fn run(
                             }
                         }
                     });
-                    let until = Instant::now() + CART_RETRY;
-                    while Instant::now() < until && !stop.load(Ordering::Relaxed) {
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
+                    pause();
                 }
             }
         };
