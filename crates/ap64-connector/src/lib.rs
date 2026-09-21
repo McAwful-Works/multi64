@@ -74,9 +74,10 @@ pub const OOT: Script = Script {
     source: include_str!("../connectors/oot/connector.lua"),
     ports: &[28921],
     modules: &[("cartmem", include_str!("../connectors/oot/cartmem.lua"))],
-    // Upstream's script never drops OoT Client, and OoT Client does not survive being
-    // dropped: reading the closed socket raises, its N64 task ends without a word, and
-    // it goes on showing itself connected.
+    // Upstream's script never drops OoT Client, so neither do we. It would survive it
+    // now -- every connection this server lets go of is reset rather than closed, which
+    // is the one ending its socket task catches (see `server::Client`) -- but there is
+    // still nothing to gain by dropping a client upstream would have kept.
     client_timeout: None,
 };
 

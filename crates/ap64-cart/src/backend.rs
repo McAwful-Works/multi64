@@ -339,6 +339,13 @@ impl Multi64 {
             if last.kind() != io::ErrorKind::TimedOut {
                 break;
             }
+            // Each of these costs a whole reply timeout, and they run before the reconnect
+            // loop below is ever reached -- so without this, a stop asked for while the
+            // cart was silent could not be felt for several seconds, which is precisely
+            // when someone is most likely to ask for one.
+            if self.give_up() {
+                return Err(cancelled_err(what, &self.url));
+            }
             match op(&mut self.t) {
                 Ok(v) => {
                     self.stats.stalls += 1;
@@ -375,10 +382,7 @@ impl Multi64 {
         let mut wait = Duration::from_millis(250);
         loop {
             if self.give_up() {
-                return Err(io::Error::other(format!(
-                    "cart {what}: stopped while reconnecting to {}",
-                    self.url
-                )));
+                return Err(cancelled_err(what, &self.url));
             }
             if Instant::now() >= deadline {
                 return Err(io::Error::other(format!(
@@ -398,6 +402,12 @@ impl Multi64 {
                     // another image. Nothing read from the old one can be trusted.
                     self.rom_pages.clear();
                     self.generation += 1;
+                    // Connecting is a blocking connect and a HELLO, neither of which can be
+                    // interrupted; check again on the way out rather than going on to serve
+                    // a request nobody is waiting for any more.
+                    if self.give_up() {
+                        return Err(cancelled_err(what, &self.url));
+                    }
                     // A new HELLO: the agent has forgotten what it was watching, and this
                     // may not even be the same agent. Ask again before anything reads.
                     self.watch_on_cart = false;
@@ -710,6 +720,11 @@ fn split(regions: &[(u32, usize)], size: u32) -> io::Result<(Vec<m64p::Region>, 
         counts.push(chunks.len() - before);
     }
     Ok((chunks, counts))
+}
+
+/// What a caller gets when it asked to be stopped rather than waited for.
+fn cancelled_err(what: &str, url: &str) -> io::Error {
+    io::Error::other(format!("cart {what}: stopped while reaching {url}"))
 }
 
 /// Sleep up to `total`, giving up as soon as `cancelled` says so.

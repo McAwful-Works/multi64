@@ -93,6 +93,27 @@ struct Client {
     last_heard: Instant,
 }
 
+/// Every connection this server lets go of is reset rather than closed politely.
+///
+/// Archipelago's clients read a line and hand it straight to `json.loads`. A clean close
+/// delivers the empty string, and the decode error that follows is not one their socket
+/// task catches: it dies without a word and the client goes on showing itself connected
+/// until someone restarts it. A reset arrives as `ConnectionResetError`, which they do
+/// catch, log as "Read failed due to Connection Lost, Reconnecting", and recover from on
+/// their own. `SO_LINGER` of zero is what makes the close send an RST -- an explicit
+/// `shutdown` would send a FIN whatever the linger says, which is the polite close being
+/// avoided here.
+///
+/// On the paths where the peer has already gone this changes nothing, and on the ones
+/// where it has not -- a session stopping, a client dropped for going silent -- it is the
+/// difference between a client that comes back by itself and one that has to be restarted.
+impl Drop for Client {
+    fn drop(&mut self) {
+        let sock = socket2::SockRef::from(&self.stream);
+        let _ = sock.set_linger(Some(Duration::ZERO));
+    }
+}
+
 impl Client {
     fn new(stream: TcpStream) -> io::Result<Self> {
         stream.set_nonblocking(true)?;
@@ -128,15 +149,23 @@ impl Client {
         Ok(out)
     }
 
-    /// Close the connection so the client hears about it now.
+    /// End the connection now, with a reset the client can act on.
     ///
-    /// Dropping the stream would do it eventually, but the client is blocked on a read it
-    /// expects an answer to: shutting both directions down turns that into the end-of-file it
-    /// knows how to handle ("Read failed due to Connection Lost, Reconnecting") instead of a
-    /// wait with nothing at the end of it.
-    fn close(&mut self) {
-        let _ = self.stream.shutdown(std::net::Shutdown::Both);
-    }
+    /// A *reset* specifically, not a polite close. Archipelago's clients read a line and
+    /// hand it straight to `json.loads`; a clean shutdown delivers the empty string, which
+    /// raises a decode error their socket task does not catch, so it dies silently and the
+    /// client goes on showing itself connected until it is restarted. A reset arrives as
+    /// `ConnectionResetError`, which they do catch ("Read failed due to Connection Lost,
+    /// Reconnecting"), and they reconnect by themselves once a session is running again.
+    ///
+    /// Note that an unanswered request still sitting unread in the receive buffer resets on
+    /// any close -- which is exactly why this was easy to miss, since the case that matters
+    /// is the one where the line had been read and was never going to be answered.
+    ///
+    /// The reset itself is in [`Drop`], so that no path can hand a client anything else.
+    /// Taking `self` by value is what this method is for: it ends the connection here,
+    /// rather than whenever the caller's binding happens to go out of scope.
+    fn close(self) {}
 
     fn send(&mut self, line: &str) -> Result<(), String> {
         // Blocking with a deadline for the write: replies are small, and a client
@@ -172,7 +201,7 @@ pub fn serve(
     // Whatever ends this loop -- a stop, or a cart failure raised from a request -- the client
     // is told by closing the socket under it, not left waiting for a reply.
     let result = serve_until(connector, &listeners, stop, on_event, &mut client);
-    if let Some(c) = client.as_mut() {
+    if let Some(c) = client.take() {
         c.close();
     }
     result
@@ -216,6 +245,11 @@ fn serve_until(
                 }
             };
             for line in lines {
+                // A batch can hold several lines and each one is a round trip to the cart.
+                // Once a stop has been asked for, the rest are work nobody wants.
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
                 busy = true;
                 let reply = connector.handle(&line)?;
                 if let Err(why) = c.send(&reply) {
@@ -254,4 +288,78 @@ fn serve_until(
         std::thread::sleep(IDLE);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Read whatever the client has said, giving it a moment to arrive.
+    fn drain(c: &mut Client) -> Vec<String> {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            let lines = c.lines().expect("peer still connected");
+            if !lines.is_empty() || Instant::now() >= until {
+                return lines;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Ending a session has to reset the connection, not close it politely.
+    ///
+    /// Archipelago's OoT Client reads with `readline()` and hands the result straight to
+    /// `json.loads`. A clean close gives it `b""`, and `json.loads("")` raises
+    /// `JSONDecodeError` -- which its N64 task does not catch, so the task dies without a
+    /// word and the client goes on showing itself connected, with no way back but a
+    /// restart. A reset raises `ConnectionResetError`, which it does catch, logs as
+    /// "Read failed due to Connection Lost, Reconnecting", and recovers from by itself.
+    #[test]
+    fn closing_a_client_resets_it_rather_than_ending_the_stream() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (served, _) = listener.accept().unwrap();
+        let mut client = Client::new(served).unwrap();
+
+        // The request has to be consumed first. An *unread* request resets on any close,
+        // which is what hid this: the case that matters is the one where the line was
+        // taken and never answered, which is what Stop does mid-request.
+        peer.write_all(b"poll\n").unwrap();
+        assert_eq!(drain(&mut client).len(), 1);
+
+        client.close();
+
+        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut buf = [0u8; 64];
+        match peer.read(&mut buf) {
+            Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {}
+            Ok(0) => panic!(
+                "clean end of stream: OoT Client turns this into an uncaught \
+                 JSONDecodeError and never reconnects"
+            ),
+            other => panic!("expected a reset, got {other:?}"),
+        }
+    }
+
+    /// The same has to hold for a client we let go of without calling `close`: one
+    /// replaced by a newer connection, or dropped for going silent. Those reach the peer
+    /// through `Drop` alone, and a polite close there is the same silent death.
+    #[test]
+    fn dropping_a_client_resets_it_too() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (served, _) = listener.accept().unwrap();
+        let mut client = Client::new(served).unwrap();
+        peer.write_all(b"poll\n").unwrap();
+        assert_eq!(drain(&mut client).len(), 1);
+
+        drop(client);
+
+        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut buf = [0u8; 64];
+        assert_eq!(
+            peer.read(&mut buf).map_err(|e| e.kind()),
+            Err(io::ErrorKind::ConnectionReset),
+        );
+    }
 }
