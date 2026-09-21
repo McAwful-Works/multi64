@@ -93,6 +93,7 @@ OFF_FRAMES_HANDLED=$(off s_frames_handled)
 OFF_TICKS=$(off s_ticks)
 OFF_REQUESTS=$(off s_requests)
 OFF_ERRORS=$(off s_errors)
+OFF_LAST_ERROR=$(off s_last_error)
 EOF
 
 echo "agent: $CART driver, RAM $VRAM-$BSS_END ($(( BSS_END - VRAM )) B, $(( BSS_END - BSS_START )) B of it BSS)," \

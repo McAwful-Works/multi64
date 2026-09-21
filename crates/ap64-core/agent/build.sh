@@ -57,6 +57,7 @@ ${P}objcopy -O binary --only-section=.text --only-section=.rodata --only-section
     "$B/agent.elf" "$B/agent.bin"
 
 sym() { ${P}nm "$B/agent.elf" | awk -v s="$1" '$3 == s { print "0x" $1 }'; }
+off() { printf '0x%X' $(( $(sym "$1") - VRAM )); }
 LOAD_END=$(sym agent_LOAD_END)
 BSS_START=$(sym agent_BSS_START)
 BSS_END=$(sym agent_BSS_END)
@@ -94,6 +95,14 @@ AGENT_MAGIC_ADDR=$MAGIC
 AGENT_TICK=$TICK
 STUB_VRAM=$STUB_VRAM
 STUB_SIZE=$STUB_SIZE
+OFF_MAGIC=$(off gAgentSegmentMagic)
+OFF_INIT_ATTEMPTS=$(off s_init_attempts)
+OFF_READY=$(off s_ready)
+OFF_FRAMES_HANDLED=$(off s_frames_handled)
+OFF_TICKS=$(off s_ticks)
+OFF_REQUESTS=$(off s_requests)
+OFF_ERRORS=$(off s_errors)
+OFF_LAST_ERROR=$(off s_last_error)
 EOF
 
 mkdir -p "$PROFILE"
