@@ -13,6 +13,12 @@ one out. Everything that reads the game is upstream's, unchanged. What changed, 
   that fetches what the last poll touched in one call, and writes sent before the reply.
   `bit` is BizHawk's, on Lua 5.4 operators (connectors/lib/bit.lua).
 
+* Scene flags. The scene Link is in keeps its chest, switch and collectible flags in the
+  play context until a scene change or a save commits them to the save context, so those
+  are read as well as the save context. Upstream reads only the save context and covers
+  the gap with the transient slot below, which suits an emulator reading it every frame.
+  A cart poll is ~300 ms and misses events; the flags cannot be missed.
+
 * The transient slot. BizHawk reads 0x40002C every frame; a cart poll cannot, so an event
   written and overwritten between scans used to leave the check waiting for a scene
   transition. AP64 watches that slot, and a scan matches against every change since the
@@ -63,10 +69,34 @@ local collectible_offsets = nil
 -- Offsets for scenes can be found here
 -- https://wiki.cloudmodding.com/oot/Scene_Table/NTSC_1.0
 -- Each scene is 0x1c bits long, chests at 0x0, switches at 0x4, collectibles at 0xc
+-- AP64: the scene Link is standing in keeps its flags in the play context, and commits them
+-- to the save context above only on a scene change or a save. Until then the save context
+-- reads zero for everything just done there, which is why upstream leans on the transient
+-- slot: an emulator reads that every frame and misses nothing, while a cart poll does miss
+-- some. So the live flags are read too -- the game's own record, where it keeps it now.
+-- Measured on a console standing in the Bottom of the Well with every chest open (NTSC 1.0).
+--
+-- Only the two words that were read back and matched what had been collected are used. The
+-- neighbours are presumably switches, room clear and the block the scrubs sit in, but a
+-- wrong address here would report checks nobody made, and an unsent check can be waited for
+-- while a false one cannot be taken back. Those keep the save context and the transient slot
+-- until each is confirmed the same way.
+local play_scene_num = 0x1C8544
+local live_scene_flags = {
+    [0x0] = 0x1CA1D8, -- chests
+    [0xC] = 0x1CA1E4, -- collectibles: freestanding items
+}
+local current_scene = nil
+
 local scene_check = function(scene_offset, bit_to_check, scene_data_offset)
     local local_scene_offset = scene_flags_offset + (0x1c * scene_offset) + scene_data_offset
     local nearby_memory = mainmemory.read_u32_be(local_scene_offset)
-    return bit.check(nearby_memory,bit_to_check)
+    if bit.check(nearby_memory,bit_to_check) then return true end
+    -- The live flags belong to the scene Link is in; for any other scene the save context
+    -- is the whole story.
+    local live = live_scene_flags[scene_data_offset]
+    if live == nil or scene_offset ~= current_scene then return false end
+    return bit.check(mainmemory.read_u32_be(live),bit_to_check)
 end
 
 -- Whenever a check is opened, values are written to 0x40002C.
@@ -1185,6 +1215,8 @@ local check_all_locations = function(mq_table_address)
 -- TODO: make MQ better
     local location_checks = {}
     temp_contexts = cartmem.temp_events()
+    -- AP64: which scene's flags the play context holds (see scene_check).
+    current_scene = mainmemory.read_u16_be(play_scene_num)
     for k,v in pairs(read_kokiri_forest_checks()) do location_checks[k] = v end
     for k,v in pairs(read_lost_woods_checks()) do location_checks[k] = v end
     for k,v in pairs(read_sacred_forest_meadow_checks()) do location_checks[k] = v end
