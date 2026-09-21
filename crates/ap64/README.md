@@ -26,6 +26,18 @@ received (2026-09-18):
   change. A ROM patched before this falls back to AP64 sampling the slot from the host,
   which narrows the gap rather than closing it.
 
+## What the window shows
+
+Two cards, each a fixed height: dropping a seed, patching it or a session failing changes what
+they say, never how much room they take. Anything that grows — the checklist, the list of writes,
+the session log, the bridge address — opens in a window of its own.
+
+The patch window keeps its detail behind **More details**, which anyone can open: the seed's
+header line and every check, then the SHA-1 and what was written. **Developer details**, the
+switch in the corner, is for what only someone working on AP64 reads: the connector's name, the
+round-trip counters, the bridge address, and the addresses behind a failed status. It is off
+until turned on, and remembered after that.
+
 ## Patching a seed
 
 Generate and patch your seed with Archipelago as usual, then either drop the `.z64` onto

@@ -67,7 +67,11 @@ fn other(msg: impl Into<String>) -> io::Error {
 /// A raw loopback GET rather than an HTTP client dependency. Worth the few lines:
 /// without it a released or absent link looks exactly like a ROM that is simply not
 /// in MEM_AGENT mode, because both are just a timeout.
-fn serial_active(ws_url: &str) -> Option<bool> {
+///
+/// `None` means the daemon did not answer at all, which is a different problem from either:
+/// it is the one thing that distinguishes "Multi64 is not running" from "the cart has not
+/// answered yet", and a caller reporting those separately needs it.
+pub fn serial_active(ws_url: &str) -> Option<bool> {
     let hostport = ws_url.strip_prefix("ws://")?.split('/').next()?.to_string();
     let mut s = TcpStream::connect(&hostport).ok()?;
     s.set_read_timeout(Some(Duration::from_secs(2))).ok()?;

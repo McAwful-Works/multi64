@@ -23,9 +23,9 @@
       <p class="tagline">Adds the cart agent to a patched seed, then connects Archipelago to the console.</p>
     </header>
 
-    <!-- Patch: results are kept to a few status rows. The full checklist and the list of
-         writes sit behind a toggle, in a box of fixed height, so a seed never stretches the
-         window. Only failed checks are shown open, because they are what needs acting on. -->
+    <!-- Each card holds one line per fact and nothing that grows: a checklist, a list of writes
+         or a log would move everything below it as it filled, and the window with it. Those live
+         in dialogs, opened from here, where they can be as long as they need to be. -->
     <section class="card" aria-labelledby="patch-title">
       <h2 id="patch-title">Add the agent</h2>
       <div id="drop-zone" class="drop-zone" data-state="idle">
@@ -33,52 +33,16 @@
         <button type="button" id="btn-browse" class="btn">Browse…</button>
       </div>
       <p class="hint" id="supported"></p>
-      <p class="hint hint-error card-error" id="load-error" role="alert" hidden></p>
 
-      <div id="seed" hidden>
-        <dl class="status-grid">
-          <dt>File</dt>
-          <dd id="seed-file">—</dd>
-          <dt>Header</dt>
-          <dd id="seed-header">—</dd>
-          <dt>Game</dt>
-          <dd id="seed-game">—</dd>
-          <dt>Checks</dt>
-          <dd id="seed-checks">—</dd>
-        </dl>
-        <ul id="failed-checks" class="failed-checks" aria-label="Failed checks" hidden></ul>
-        <details class="more" id="checks-more">
-          <summary>All checks</summary>
-          <ul id="checks" class="checklist scroll-box" aria-label="Checks"></ul>
-        </details>
+      <dl class="status-grid">
+        <dt>Seed</dt>
+        <dd id="seed-line" class="line-2">No seed chosen</dd>
+      </dl>
+      <p class="hint hint-error card-error line-2" id="load-error" role="alert" hidden></p>
 
-        <div id="patch-controls" hidden>
-          <label class="field">
-            <span>Save as</span>
-            <input id="output" class="input" type="text" spellcheck="false" />
-          </label>
-          <div class="row">
-            <button type="button" id="btn-patch" class="btn primary">Add agent</button>
-            <button type="button" id="btn-output" class="btn">Save as…</button>
-          </div>
-        </div>
-      </div>
-
-      <p class="hint hint-error card-error" id="patch-error" role="alert" hidden></p>
-      <div id="result" role="status" hidden>
-        <dl class="status-grid result-grid">
-          <dt>Wrote</dt>
-          <dd id="result-path">—</dd>
-          <dt>SHA-1</dt>
-          <dd id="result-sha1">—</dd>
-        </dl>
-        <details class="more">
-          <summary>What was written</summary>
-          <ul id="result-summary" class="summary scroll-box"></ul>
-        </details>
-        <div class="row">
-          <button type="button" id="btn-reveal" class="btn">Show in folder</button>
-        </div>
+      <div class="row">
+        <button type="button" id="btn-open-patch" class="btn primary" disabled>Add agent…</button>
+        <button type="button" id="btn-reveal" class="btn" disabled>Show in folder</button>
       </div>
     </section>
 
@@ -95,34 +59,124 @@
           <option value="">Choose a game…</option>
         </select>
       </label>
-      <p class="hint hint-error card-error" id="play-error" role="alert" hidden></p>
+      <p class="hint hint-error card-error line-2" id="play-error" role="alert" hidden></p>
 
-      <dl class="status-grid" id="play-facts" hidden>
-        <dt>Connector</dt>
-        <dd id="play-connector">—</dd>
+      <!-- The three things that have to be up. One status line can only say what is
+           happening now; these say which part is not working, which is the question. Always in
+           the layout, so nothing appears or vanishes as a session runs. -->
+      <dl class="status-grid" id="play-facts">
+        <dt class="dev-only">Connector</dt>
+        <dd class="dev-only" id="play-connector">—</dd>
+        <dt>Multi64</dt>
+        <dd id="link-bridge" class="link" data-state="idle">Not running</dd>
+        <dt>Console</dt>
+        <dd id="link-console" class="link" data-state="idle">Not running</dd>
         <dt>Client</dt>
-        <dd id="play-client">—</dd>
+        <dd id="link-client" class="link" data-state="idle">Not running</dd>
       </dl>
       <dl class="status-grid">
         <dt>Status</dt>
-        <dd id="play-status" data-state="idle" role="status">Not running</dd>
-        <dt>Activity</dt>
-        <dd id="play-counters">—</dd>
+        <dd id="play-status" class="line-2" data-state="idle" role="status">Not running</dd>
+        <dt class="dev-only">Activity</dt>
+        <dd class="dev-only line-2" id="play-counters">—</dd>
       </dl>
-
-      <details class="more" id="play-advanced">
-        <summary>Advanced</summary>
-        <label class="field">
-          <span>Multi64 bridge (WebSocket)</span>
-          <input id="play-url" class="input" type="text" spellcheck="false" />
-        </label>
-      </details>
 
       <div class="row">
         <button type="button" id="btn-play-start" class="btn primary" disabled>Start</button>
         <button type="button" id="btn-play-stop" class="btn" disabled>Stop</button>
+        <button type="button" id="btn-advanced" class="btn dev-only btn-quiet">Advanced…</button>
+        <button type="button" id="btn-log" class="btn">Session log…</button>
       </div>
-      <pre id="play-log" class="log" aria-label="Connector log" hidden></pre>
     </section>
-  </body>
+
+    <!-- Off by default, and the page is built that way round on purpose: a player never sees
+         developer rows appear and vanish, while someone who turned them on can wait a frame. -->
+    <footer class="footer">
+      <label class="switch">
+        <input type="checkbox" id="dev-mode" />
+        <span>Developer details</span>
+      </label>
+    </footer>
+
+    <div class="dialog-backdrop" id="patch-backdrop" hidden></div>
+    <div class="dialog" id="patch-dialog" role="dialog" aria-modal="true" aria-labelledby="patch-dialog-title" hidden>
+      <div class="dialog-panel dialog-panel--wide">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="patch-dialog-title">Add the agent</h2>
+        </div>
+        <div class="dialog-body">
+          <div id="pane-seed">
+            <dl class="status-grid">
+              <dt>File</dt>
+              <dd id="seed-file">—</dd>
+              <dt>Game</dt>
+              <dd id="seed-game">—</dd>
+              <dt>Checks</dt>
+              <dd id="seed-checks">—</dd>
+            </dl>
+            <ul id="failed-checks" class="failed-checks" aria-label="Failed checks" hidden></ul>
+            <!-- Open to anyone who wants it: this is a window that can afford to grow, so what
+                 is behind the arrow costs nothing until it is asked for. -->
+            <details class="more" id="checks-more">
+              <summary>More details</summary>
+              <dl class="status-grid">
+                <dt>Header</dt>
+                <dd id="seed-header">—</dd>
+              </dl>
+              <ul id="checks" class="checklist scroll-box" aria-label="Checks"></ul>
+            </details>
+            <div id="patch-controls" hidden>
+              <label class="field">
+                <span>Save as</span>
+                <input id="output" class="input" type="text" spellcheck="false" />
+              </label>
+            </div>
+            <p class="hint hint-error card-error" id="patch-error" role="alert" hidden></p>
+          </div>
+
+          <div id="pane-result" role="status" hidden>
+            <dl class="status-grid result-grid">
+              <dt>Wrote</dt>
+              <dd id="result-path">—</dd>
+            </dl>
+            <details class="more">
+              <summary>More details</summary>
+              <dl class="status-grid">
+                <dt>SHA-1</dt>
+                <dd id="result-sha1">—</dd>
+              </dl>
+              <ul id="result-summary" class="summary scroll-box"></ul>
+            </details>
+            <p class="hint">Load this ROM on the console, then come back to Play.</p>
+          </div>
+        </div>
+        <div class="dialog-footer">
+          <button type="button" id="btn-patch-close" class="btn">Cancel</button>
+          <button type="button" id="btn-output" class="btn">Save as…</button>
+          <button type="button" id="btn-patch" class="btn primary">Add agent</button>
+          <button type="button" id="btn-result-reveal" class="btn primary" hidden>Show in folder</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="dialog-backdrop" id="advanced-backdrop" hidden></div>
+    <div class="dialog" id="advanced-dialog" role="dialog" aria-modal="true" aria-labelledby="advanced-dialog-title" hidden>
+      <div class="dialog-panel">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="advanced-dialog-title">Advanced</h2>
+        </div>
+        <div class="dialog-body">
+          <label class="field">
+            <span>Multi64 bridge (WebSocket)</span>
+            <input id="play-url" class="input" type="text" spellcheck="false" />
+          </label>
+          <p class="hint">Where the Multi64 app is listening. Remembered between runs.</p>
+        </div>
+        <div class="dialog-footer">
+          <button type="button" id="btn-advanced-close" class="btn">Close</button>
+        </div>
+      </div>
+    </div>
+
+</body>
 </html>

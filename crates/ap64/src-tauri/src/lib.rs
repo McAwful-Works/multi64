@@ -197,6 +197,73 @@ fn reveal(path: String) -> Result<(), String> {
     tauri_plugin_opener::reveal_item_in_dir(path).map_err(|e| e.to_string())
 }
 
+/// The session's log, for the log window to show what it missed (`play://log` carries the rest).
+///
+/// Through `AppState` like every other command here: asking for `State<Play>` compiles, since
+/// the type is right, and then fails at runtime because that is not what was managed -- which
+/// looked exactly like a log that only records while its window is open.
+#[tauri::command]
+fn play_log(state: State<'_, AppState>) -> Vec<String> {
+    state.play.log_lines()
+}
+
+/// Show the session log in a window of its own, or bring it forward if it is already up.
+///
+/// Its own window rather than a panel in the main one: a log is the one thing here worth
+/// resizing, keeping open beside the game, or dragging to another screen, and the main window is
+/// sized to its content and cannot be resized at all.
+///
+/// **`async` on purpose.** A synchronous command runs on the main thread, and building a window
+/// there while the event loop is running deadlocks it on Windows: the new window appears, and
+/// then nothing responds -- it cannot be closed, and the main window's buttons do nothing.
+/// Declaring the command async puts it on the async runtime instead, which is Tauri's documented
+/// way round it. Nothing here awaits; the point is only which thread it runs on.
+#[tauri::command]
+async fn open_log_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager as _;
+    if let Some(w) = app.get_webview_window("log") {
+        w.show()
+            .and_then(|_| w.set_focus())
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(&app, "log", tauri::WebviewUrl::App("log.html".into()))
+        .title("AP64 — Session log")
+        .inner_size(620.0, 420.0)
+        .min_inner_size(360.0, 200.0)
+        .resizable(true)
+        .build()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Bounds on [`fit_window_height`], in logical pixels: a page that measured nothing, or a runaway
+/// one, must not leave the window unusable.
+const WINDOW_MIN_HEIGHT: f64 = 320.0;
+const WINDOW_MAX_HEIGHT: f64 = 1600.0;
+
+/// Size the window's content area to `height` logical pixels, keeping its width.
+///
+/// The window is not resizable, so it is the page's job to ask for the room it needs: it calls
+/// this whenever what it shows changes height -- developer details, a dialog opening, a longer
+/// status. Nothing in AP64 scrolls as a result, which is the point.
+#[tauri::command]
+fn fit_window_height(window: tauri::WebviewWindow, height: f64) -> Result<(), String> {
+    if !height.is_finite() {
+        return Err(format!("not a height: {height}"));
+    }
+    let height = height.clamp(WINDOW_MIN_HEIGHT, WINDOW_MAX_HEIGHT);
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let width = window
+        .inner_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale)
+        .width;
+    window
+        .set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|e| e.to_string())
+}
+
 pub fn run() {
     let bundles = builtin().expect("built-in profiles are valid (checked by tests)");
     tauri::Builder::default()
@@ -207,6 +274,9 @@ pub fn run() {
             play: play::Play::default(),
         })
         .invoke_handler(tauri::generate_handler![
+            fit_window_height,
+            open_log_window,
+            play_log,
             profiles,
             pick_rom,
             pick_output,

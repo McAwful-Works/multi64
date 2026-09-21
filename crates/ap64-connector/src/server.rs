@@ -26,6 +26,9 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 /// several extra looks per poll out of time that was being spent in `IDLE` sleeps.
 const SAMPLE_EVERY: Duration = Duration::from_millis(250);
 
+/// How often [`Event::Idle`] is raised while a session is quiet.
+const IDLE_EVENT_EVERY: Duration = Duration::from_secs(2);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Listening(u16),
@@ -33,6 +36,12 @@ pub enum Event {
     ClientDisconnected(String),
     /// A request line was answered.
     Handled,
+    /// Nothing has happened for a moment.
+    ///
+    /// Emitted while a session is up and quiet, so a caller can check on things that only
+    /// change when nobody is asking: a console that was reset answers nothing, and silence on
+    /// its own is indistinguishable from a client that simply has nothing to say.
+    Idle,
 }
 
 struct Listeners {
@@ -119,6 +128,16 @@ impl Client {
         Ok(out)
     }
 
+    /// Close the connection so the client hears about it now.
+    ///
+    /// Dropping the stream would do it eventually, but the client is blocked on a read it
+    /// expects an answer to: shutting both directions down turns that into the end-of-file it
+    /// knows how to handle ("Read failed due to Connection Lost, Reconnecting") instead of a
+    /// wait with nothing at the end of it.
+    fn close(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+
     fn send(&mut self, line: &str) -> Result<(), String> {
         // Blocking with a deadline for the write: replies are small, and a client
         // that stops reading is as good as gone.
@@ -149,11 +168,28 @@ pub fn serve(
         bind(ports).map_err(|e| format!("listening for the Archipelago client: {e}"))?;
     on_event(Event::Listening(listeners.port));
     let mut client: Option<Client> = None;
-    let mut sampled = Instant::now();
 
+    // Whatever ends this loop -- a stop, or a cart failure raised from a request -- the client
+    // is told by closing the socket under it, not left waiting for a reply.
+    let result = serve_until(connector, &listeners, stop, on_event, &mut client);
+    if let Some(c) = client.as_mut() {
+        c.close();
+    }
+    result
+}
+
+fn serve_until(
+    connector: &Connector,
+    listeners: &Listeners,
+    stop: &AtomicBool,
+    on_event: &mut dyn FnMut(Event),
+    client: &mut Option<Client>,
+) -> Result<(), String> {
+    let mut sampled = Instant::now();
+    let mut idled = Instant::now();
     while !stop.load(Ordering::Relaxed) {
         let mut busy = false;
-        match accept_newest(&listeners) {
+        match accept_newest(listeners) {
             Ok(Some((stream, addr))) => match Client::new(stream) {
                 Ok(c) => {
                     if client.is_some() {
@@ -161,7 +197,7 @@ pub fn serve(
                             "replaced by a newer connection".into(),
                         ));
                     }
-                    client = Some(c);
+                    *client = Some(c);
                     on_event(Event::ClientConnected(addr));
                 }
                 Err(e) => on_event(Event::ClientDisconnected(format!("accepting: {e}"))),
@@ -174,7 +210,7 @@ pub fn serve(
             let lines = match c.lines() {
                 Ok(lines) => lines,
                 Err(why) => {
-                    client = None;
+                    *client = None;
                     on_event(Event::ClientDisconnected(why));
                     continue;
                 }
@@ -183,7 +219,7 @@ pub fn serve(
                 busy = true;
                 let reply = connector.handle(&line)?;
                 if let Err(why) = c.send(&reply) {
-                    client = None;
+                    *client = None;
                     on_event(Event::ClientDisconnected(why));
                     break;
                 }
@@ -195,7 +231,7 @@ pub fn serve(
                 .zip(timeout)
                 .is_some_and(|(c, t)| c.last_heard.elapsed() > t)
             {
-                client = None;
+                *client = None;
                 on_event(Event::ClientDisconnected("client timed out".into()));
             }
         }
@@ -208,6 +244,11 @@ pub fn serve(
         if client.is_some() && sampled.elapsed() >= SAMPLE_EVERY {
             sampled = Instant::now();
             connector.sample_watch()?;
+            continue;
+        }
+        if idled.elapsed() >= IDLE_EVENT_EVERY {
+            idled = Instant::now();
+            on_event(Event::Idle);
             continue;
         }
         std::thread::sleep(IDLE);
