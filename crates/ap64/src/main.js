@@ -26,6 +26,7 @@ function show(el, on) {
 const DIALOGS = {
   patch: { panel: "patch-dialog", backdrop: "patch-backdrop", focus: "btn-open-patch" },
   advanced: { panel: "advanced-dialog", backdrop: "advanced-backdrop", focus: "btn-advanced" },
+  games: { panel: "games-dialog", backdrop: "games-backdrop", focus: "btn-games" },
 };
 let openDialogName = null;
 let dialogReturnFocus = null;
@@ -200,12 +201,12 @@ async function loadSeed(path) {
     const report = renderChecks(d);
     if (!report) {
       $("seed-game").textContent = "Not a game AP64 knows";
-      setError($("load-error"), "AP64 has no profile for this game. " + $("supported").textContent);
+      setError($("load-error"), `AP64 has no profile for this game. Supported: ${supportedNames()}.`);
     } else if (!r.chosen) {
       setError($("load-error"), "This seed cannot take the agent: see the failed checks.");
-      $("seed-game").textContent = `${report.game} (${report.release}) · ${report.randomizer}`;
+      $("seed-game").textContent = `${report.game} · ${report.randomizer}`;
     } else {
-      $("seed-game").textContent = `${report.game} (${report.release}) · ${report.randomizer}`;
+      $("seed-game").textContent = `${report.game} · ${report.randomizer}`;
     }
     const ready = Boolean(r.chosen);
     show($("patch-controls"), ready);
@@ -291,6 +292,8 @@ const URL_KEY = "ap64.daemonUrl";
 const DEV_KEY = "ap64.devDetails";
 const LOG_LINES = 500;
 let playRunning = false;
+/** The game profiles AP64 was built with, as the Supported games window lists them. */
+let profiles = [];
 let games = [];
 
 /**
@@ -379,6 +382,35 @@ function setDev(on) {
 // this page neither stores nor shows them.
 
 const selectedGame = () => games.find((g) => g.id === $("play-game-select").value) || null;
+
+/** For the one message that still has to name them inline, with no window to open. */
+const supportedNames = () => profiles.map((p) => p.name).join(", ");
+
+/**
+ * The supported games, by their own full titles.
+ *
+ * No region or version: Archipelago patched the seed before AP64 ever saw it, so the release
+ * is settled and naming it only invites the question of whether there is another to pick. It
+ * is still what the cart's header is checked against, so it stays on the developer rows.
+ */
+function renderGames() {
+  $("games-list").replaceChildren(
+    ...profiles.map((p) => {
+      const li = document.createElement("li");
+      li.textContent = p.name;
+      const sub = document.createElement("div");
+      sub.className = "game-sub dev-only";
+      sub.textContent = `${p.release} · ${p.randomizer}`;
+      li.append(sub);
+      return li;
+    }),
+  );
+  if (!profiles.length) {
+    const li = document.createElement("li");
+    li.textContent = "No game profiles are installed.";
+    $("games-list").append(li);
+  }
+}
 
 function renderPlay() {
   const game = selectedGame();
@@ -514,14 +546,16 @@ async function init() {
     if (e.key === "Escape") closeDialog();
     else if (e.key === "Tab") trapTab(e);
   });
+  $("btn-games").addEventListener("click", () => openDialog("games"));
+  $("btn-games-close").addEventListener("click", closeDialog);
+  $("games-backdrop").addEventListener("click", closeDialog);
   initPlay();
   try {
-    const profiles = await invoke("profiles");
-    $("supported").textContent =
-      "Supported: " + profiles.map((p) => `${p.name} (${p.release})`).join(", ") + ".";
-  } catch (e) {
-    $("supported").textContent = "";
+    profiles = (await invoke("profiles")) || [];
+  } catch {
+    profiles = [];
   }
+  renderGames();
 }
 
 init();

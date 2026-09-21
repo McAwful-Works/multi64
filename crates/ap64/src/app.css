@@ -80,6 +80,45 @@ body {
  * what someone holding a controller needs to read. Hidden unless the page says otherwise, so
  * the quiet view is the one that costs nothing to render and the one a player gets by default.
  */
+/* A trigger that reads as part of the sentence around it, not a third button competing
+   with Add agent and Show in folder. */
+.btn-inline {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.btn-inline:hover {
+  text-decoration: none;
+}
+
+.games {
+  margin: 0 0 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+
+.games li {
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.games li:last-child {
+  border-bottom: 0;
+}
+
+/* Deliberately sets no `display`: a rule here would outrank `.dev-only`'s `display: none`
+   and show the developer half whatever the switch said, so the element is a block by
+   nature instead and `display: revert` can hand it back. */
+.games .game-sub {
+  font-size: var(--font-sm);
+  color: var(--muted);
+}
+
 .dev-only {
   display: none;
 }

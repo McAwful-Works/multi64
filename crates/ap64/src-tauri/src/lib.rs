@@ -32,7 +32,11 @@ struct AppState {
 struct ProfileInfo {
     id: String,
     name: String,
+    /// Kept for the developer rows: a player has already been given the right ROM by
+    /// Archipelago, so which release it is is not a choice they are making here.
     release: String,
+    /// The randomizer the profile was measured against.
+    randomizer: String,
 }
 
 #[derive(Serialize)]
@@ -65,6 +69,7 @@ fn profiles(state: State<'_, AppState>) -> Vec<ProfileInfo> {
             id: b.profile.id.clone(),
             name: b.profile.name.clone(),
             release: b.profile.release.clone(),
+            randomizer: b.profile.randomizer.clone(),
         })
         .collect()
 }
