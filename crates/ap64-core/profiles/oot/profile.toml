@@ -8,7 +8,7 @@
 # boot by the game itself. The original payload file stays where it was, untouched.
 
 id = "oot"
-name = "Ocarina of Time"
+name = "The Legend of Zelda: Ocarina of Time"
 release = "NTSC 1.0"
 game_code = "CZLE"
 version = 0

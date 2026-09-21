@@ -32,7 +32,9 @@
         <span class="drop-zone-text">Drop a patched seed here, or</span>
         <button type="button" id="btn-browse" class="btn">Browse…</button>
       </div>
-      <p class="hint" id="supported"></p>
+      <p class="hint">
+        <button type="button" id="btn-games" class="btn-inline">Which games are supported?</button>
+      </p>
 
       <dl class="status-grid">
         <dt>Seed</dt>
@@ -155,6 +157,25 @@
           <button type="button" id="btn-output" class="btn">Save as…</button>
           <button type="button" id="btn-patch" class="btn primary">Add agent</button>
           <button type="button" id="btn-result-reveal" class="btn primary" hidden>Show in folder</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="dialog-backdrop" id="games-backdrop" hidden></div>
+    <div class="dialog" id="games-dialog" role="dialog" aria-modal="true" aria-labelledby="games-dialog-title" hidden>
+      <div class="dialog-panel">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="games-dialog-title">Supported games</h2>
+        </div>
+        <div class="dialog-body">
+          <ul id="games-list" class="games" aria-label="Supported games"></ul>
+          <p class="hint">
+            Patch your seed with Archipelago as usual, then bring it here. The release each
+            profile expects is the one Archipelago patches, so there is nothing to choose.
+          </p>
+        </div>
+        <div class="dialog-footer">
+          <button type="button" id="btn-games-close" class="btn">Close</button>
         </div>
       </div>
     </div>

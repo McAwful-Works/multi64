@@ -55,7 +55,10 @@ function installTauriStub(scenario) {
   window.__TAURI_LISTENERS__ = {};
   const answer = (v) => (v && v.error ? Promise.reject(v.error) : Promise.resolve(v ?? null));
   const handlers = {
-    profiles: () => answer([{ id: "g1", name: "Game One", release: "US 1.0" }]),
+    profiles: () => answer([
+      { id: "g1", name: "Game One", release: "US 1.0", randomizer: "Archipelago" },
+      { id: "g2", name: "Game Two: The Subtitle", release: "EU 1.1", randomizer: "Game Two Randomizer" },
+    ]),
     load_rom: () => answer(sc.load),
     patch_rom: () => answer(sc.patch),
     pick_rom: () => answer(sc.pick ?? null),
@@ -63,8 +66,8 @@ function installTauriStub(scenario) {
     play_default_url: () => answer("ws://127.0.0.1:38765/ws"),
     play_status: () => answer({ state: "idle", detail: "", port: null, requests: 0, reconnects: 0, stalls: 0, handled: 0 }),
     play_games: () => answer([
-      { id: "g1", name: "Game One (US 1.0)", connector: "Generic (BizHawk Client games)", client: "BizHawk Client" },
-      { id: "g2", name: "Game Two (US 1.0)", connector: "Game Two connector", client: "Game Two Client" },
+      { id: "g1", name: "Game One", connector: "Generic (BizHawk Client games)", client: "BizHawk Client" },
+      { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector", client: "Game Two Client" },
     ]),
     play_start: () => answer(sc.start ?? null),
     play_stop: () => answer(null),
@@ -140,7 +143,7 @@ async function openScenario(scenario) {
   p.on("pageerror", (e) => consoleErrors.push(`uncaught: ${e.message}`));
   await p.addInitScript(installTauriStub, scenario);
   await p.goto(`${origin}/index.html`);
-  await until(p, () => document.getElementById("supported").textContent.length > 0);
+  await until(p, () => document.querySelectorAll("#games-list li").length > 0);
   await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_status"));
   return p;
 }
@@ -165,7 +168,23 @@ const setDev = async (p, on) => {
 
 {
   const p = await openScenario({ load: loadOk, patch: { output: "C:\\seeds\\seed-agent.z64", size: 12587268, sha1: "66B5", summary: ["Frame hook: jal", "Agent: 4356 bytes"] } });
-  check("lists the supported games", (await text(p, "supported")).includes("Game One (US 1.0)"));
+  // The supported games are a window, not a sentence under the drop zone: the list grows
+  // with every profile added, and the card may not.
+  check("the games are not listed on the card", !(await visible(p, "games-dialog")));
+  await p.click("#btn-games");
+  await until(p, () => !document.getElementById("games-dialog").hidden);
+  // innerText, not textContent: the developer half of each row is in the DOM either way, and
+  // what is being checked here is what a player actually sees.
+  const gameRows = () => p.evaluate(() => [...document.querySelectorAll("#games-list li")].map((li) => li.innerText));
+  check("the window lists every supported game", (await gameRows()).length === 2, JSON.stringify(await gameRows()));
+  check("by its own full title", (await gameRows())[1].startsWith("Game Two: The Subtitle"), JSON.stringify(await gameRows()));
+  // Archipelago patched the seed, so the release was settled long before AP64 saw it.
+  check("with no release in front of a player", !(await gameRows()).join(" ").includes("US 1.0"), JSON.stringify(await gameRows()));
+  await setDev(p, true);
+  check("and the release behind developer details", (await gameRows())[0].includes("US 1.0") && (await gameRows())[0].includes("Archipelago"), JSON.stringify(await gameRows()));
+  await setDev(p, false);
+  await p.click("#btn-games-close");
+  check("the window closes", !(await visible(p, "games-dialog")));
   const idle = await cardHeights(p);
   await drop(p, ["C:\\seeds\\seed.z64", "C:\\other.z64"]);
   await until(p, () => !document.getElementById("patch-dialog").hidden);
@@ -177,7 +196,7 @@ const setDev = async (p, on) => {
   check("every check is listed", marks.join() === "true,true,true", marks.join());
   check("a passing seed offers to patch", await visible(p, "patch-controls"));
   check("the output defaults beside the seed", (await p.inputValue("#output")) === "C:\\seeds\\seed-agent.z64");
-  check("the game is named", (await text(p, "seed-game")).startsWith("Game One (US 1.0)"));
+  check("the game is named, without its release", (await text(p, "seed-game")) === "Game One · Archipelago", await text(p, "seed-game"));
   check("passing checks read as ready", (await text(p, "seed-checks")) === "Ready for the agent" && !(await visible(p, "failed-checks")));
   check("the detail starts folded", !(await p.evaluate(() => document.getElementById("checks-more").open)));
   check("the detail is there without Developer details", await p.evaluate(() => document.querySelector("#checks-more summary").offsetParent !== null));
@@ -373,7 +392,8 @@ const setDev = async (p, on) => {
   const p = await openScenario({ load: loadUnknown });
   await drop(p, ["C:\\seeds\\other.z64"]);
   await until(p, () => !document.getElementById("load-error").hidden);
-  check("an unknown game names what is supported", (await text(p, "load-error")).includes("Game One"));
+  // No window to open from inside an error, so this one still carries the names itself.
+  check("an unknown game names what is supported", (await text(p, "load-error")).includes("Game One") && (await text(p, "load-error")).includes("Game Two: The Subtitle"), await text(p, "load-error"));
   check("an unknown game does not offer to patch", !(await visible(p, "patch-controls")));
   check("and does not open the dialog", !(await visible(p, "patch-dialog")));
   await p.close();

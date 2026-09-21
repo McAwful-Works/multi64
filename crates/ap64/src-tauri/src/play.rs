@@ -147,7 +147,10 @@ pub fn games(bundles: &[Bundle]) -> Vec<Game> {
             let s = script(&b.profile.connector)?;
             Some(Game {
                 id: b.profile.id.clone(),
-                name: format!("{} ({})", b.profile.name, b.profile.release),
+                // The name alone: Archipelago patched the seed, so the release was
+                // settled long before AP64 saw it, and there is nothing here to pick
+                // between. It stays on the profile for the header check to fail on.
+                name: b.profile.name.clone(),
                 connector: s.name.to_string(),
                 client: s.client.to_string(),
             })
@@ -331,7 +334,8 @@ impl Play {
         *status.lock().unwrap() = Status {
             running: true,
             state: "connecting".into(),
-            detail: format!("{} {} · {}", game.profile.name, game.profile.release, url),
+            detail: game.profile.name.clone(),
+            detail_dev: url.clone(),
             ..Status::default()
         };
         let _ = app.emit("play://status", status.lock().unwrap().clone());
