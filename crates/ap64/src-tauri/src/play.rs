@@ -819,9 +819,15 @@ mod tests {
         );
     }
 
+    /// `MULTI64_APP` is process-wide and these tests run in one process, in parallel: without
+    /// this, one clears the variable while the other is reading it. Seen as a Windows job
+    /// failing while Linux passed, which is how a race presents itself.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Someone running Multi64 from somewhere this cannot guess sets `MULTI64_APP`.
     #[test]
     fn the_override_is_used_when_it_names_a_file() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let exe = std::env::current_exe().expect("this process has a path");
         std::env::set_var("MULTI64_APP", &exe);
         let found = multi64_exe();
@@ -832,6 +838,7 @@ mod tests {
     /// An override pointing at nothing is ignored rather than taken as the answer.
     #[test]
     fn an_override_that_is_not_there_is_not_used() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let missing = std::env::temp_dir().join("ap64-no-such-multi64.exe");
         std::env::set_var("MULTI64_APP", &missing);
         let found = multi64_exe();
