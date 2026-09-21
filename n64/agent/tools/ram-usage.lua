@@ -1,5 +1,6 @@
 -- Map which RDRAM a running game uses, all 8 MB, to find room for the agent.
 -- BizHawk: EmuHawk.exe --lua=ram-usage.lua <rom>. Writes ram-usage.txt next to itself.
+-- Lua 5.1: BizHawk's NLua core is 5.1, so no `//` and nothing else 5.3 added.
 --
 -- Every SAMPLE_EVERY frames each 4 KB page of RDRAM is hashed. A page is USED if it
 -- was non-zero on the first sample or its hash has ever changed. Reported: runs of
@@ -21,7 +22,7 @@ local NEED = 21 * 1024 -- agent code + data + bss, rounded up
 local function u32(addr) return memory.read_u32_be(addr, DOMAIN) end
 
 local top = math.min(memory.getmemorydomainsize(DOMAIN), 0x800000)
-local npages = top // PAGE
+local npages = math.floor(top / PAGE)
 local used, last_hash = {}, {}
 local samples, changes = 0, 0
 
@@ -74,7 +75,7 @@ local function report()
             for i = 1, math.min(#runs, 10) do
                 local s, n = runs[i][1], runs[i][2]
                 lines[#lines + 1] = ("  0x%08X-0x%08X  %5d KB%s"):format(0x80000000 + s * PAGE,
-                    0x80000000 + (s + n) * PAGE, n * PAGE // 1024, (n * PAGE >= NEED) and "  fits agent" or "")
+                    0x80000000 + (s + n) * PAGE, math.floor(n * PAGE / 1024), (n * PAGE >= NEED) and "  fits agent" or "")
             end
         end
     end
