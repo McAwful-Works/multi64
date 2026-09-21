@@ -26,6 +26,27 @@ received (2026-09-18):
   change. A ROM patched before this falls back to AP64 sampling the slot from the host,
   which narrows the gap rather than closing it.
 
+Written and working, but **not offered in the app**, because the game cannot be played
+through for a reason outside AP64. Kept in the tree and checked by the same tests as the
+rest (`ap64_core::withheld`), so re-offering it is a one-line change:
+
+- **Castlevania: Legacy of Darkness (US)**, Archipelago's CVLoD world, through BizHawk Client.
+  The same Konami engine as Castlevania 64, but relinked: two thirds of CV64's code is still
+  in there and almost none of it at the same address, so every address was found in LoD
+  itself. Archipelago's own patch is the map — it splices a boot stub into the front of a
+  dead debug block and loads a 32 KB payload with the game's ROM-copy routine, so AP64 puts
+  its hook stub in the tail of that same block and calls that same routine. Nothing in the
+  16 MiB references that block, and the space AP64 writes is byte-identical to retail with
+  every option off and with all 52 of them at maximum.
+
+  Patched and played on a SummerCart64 on 2026-09-21: the agent loads, AP64 reads the ROM off
+  the cart, the client connects and checks come through. **But a seed freezes**, in attract
+  mode at a fixed point and again during play. That freeze is not AP64's: the same seed with
+  no agent spliced into it freezes at the same point in BizHawk, and the retail ROM does not.
+  It is a bug in the CVLoD world (seen on v2.0.2). AP64 refuses the seed rather than patch a
+  game it knows freezes; the profile moves back into `builtin` when a seed can be played
+  through.
+
 ## What the window shows
 
 Two cards, each a fixed height: dropping a seed, patching it or a session failing changes what

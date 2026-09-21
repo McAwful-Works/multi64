@@ -1,0 +1,71 @@
+# Castlevania: Legacy of Darkness (US) with Archipelago's CVLoD world. No decomp:
+# everything is placed by address. Blobs: agent/build.sh cvlod (see BUILD_REV).
+#
+# The same Konami engine as CV64, but relinked: 67% of CV64's code appears in LoD and
+# almost none of it at the same address, so every address below was found in LoD itself.
+# The code segment maps vram = rom + 0x7FFFF400, as CV64's does.
+#
+# Unlike CV64, Archipelago's patch here leaves IPL3 alone and writes a correct header
+# checksum, so there is nothing to restore -- only the checksum to recompute.
+
+id = "cvlod"
+name = "Castlevania: Legacy of Darkness"
+release = "US"
+game_code = "ND4E"
+version = 0
+cic = "6102"
+randomizer = "Archipelago's Castlevania: Legacy of Darkness world"
+connector = "generic"     # Archipelago's BizHawk Client
+
+[agent]
+image = "agent.bin"
+rom = 0x1000000         # past the 16 MiB image; the patch's own data ends by 0xFFEA48
+vram = 0x80480000       # Expansion Pak, measured unused during play
+min_ram = 0x800000      # the stub skips the agent without an Expansion Pak
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0x18884            # the main thread's loop: jal osRecvMesg at 0x80017C84
+equals = 0x0C025B38
+hint = "The randomizer changed the main loop, so the hook has nowhere to go."
+
+# Archipelago splices its own boot stub into the front of this dead block, ending at
+# 0x8001E7E2. Ours goes at the far end, so the two can only meet if AP's grows by 0x1DC
+# bytes -- and if it ever does, this hash stops the splice rather than the console.
+[[require]]
+kind = "sha1"
+label = "Space for the hook stub"
+at = 0x1F5C0            # 0x8001E9C0, the tail of a dead debug block of 0x650 bytes
+len = 0x170
+sha1 = "c899d37fbd53c6b035f5ed330e5cbcd88808a0ac"
+hint = "Archipelago's own stub has grown into the space this one goes in."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0x978E0            # osRecvMesg, 0x80096CE0
+len = 0x80
+sha1 = "251ac9f056efb47e7a6b514a48e1de70a6768289"
+hint = "The randomizer changed the call the hook passes each message through to."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine"
+at = 0x1B02C            # 0x8001A42C, the routine AP's own boot stub loads its payload with
+len = 0x80
+sha1 = "06090e47b7f1f129628bb70851b12ecbd109e6d2"
+hint = "The randomizer changed the routine the stub loads the agent with."
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0x1F5C0
+file = "stub.bin"
+max_len = 0x170
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0x18884
+target = 0x8001E9C0

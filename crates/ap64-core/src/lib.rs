@@ -30,13 +30,26 @@ macro_rules! builtin {
     }};
 }
 
-/// The profiles compiled into this build.
+/// The profiles this build offers: what the Play card lists and the patcher will accept.
 pub fn builtin() -> Result<Vec<Bundle>, String> {
     Ok(vec![
         builtin!("cv64", ["agent.bin", "stub.bin"]),
         builtin!("pmr", ["agent.bin", "stub.bin"]),
         builtin!("oot", ["agent.bin", "stub.bin"]),
     ])
+}
+
+/// Profiles kept in the tree but not offered, because the game cannot be played through
+/// for a reason outside AP64. Held here rather than deleted so they stay compiled, parsed
+/// and checked against their blobs by the same tests as the rest; moving one into
+/// [`builtin`] is all that is needed when its reason goes away.
+///
+/// - `cvlod` — Castlevania: Legacy of Darkness. The splice and the agent work on a cart,
+///   but a seed freezes, in attract mode at a fixed point and again during play. The same
+///   seed with no agent in it freezes at the same point in an emulator and the retail ROM
+///   does not, so the fault is in Archipelago's CVLoD world (seen on v2.0.2), not here.
+pub fn withheld() -> Result<Vec<Bundle>, String> {
+    Ok(vec![builtin!("cvlod", ["agent.bin", "stub.bin"])])
 }
 
 /// A ROM file as loaded: normalised to big-endian, with what could be learned from it.
@@ -187,11 +200,13 @@ mod tests {
     #[test]
     fn every_stub_reads_the_load_marker_before_running_the_agent() {
         const M64P: u32 = 0x4D36_3450;
-        let bundles = builtin().unwrap();
+        let mut bundles = builtin().unwrap();
+        bundles.extend(withheld().unwrap());
         let layouts = [
             include_str!("../profiles/cv64/layout.env"),
             include_str!("../profiles/pmr/layout.env"),
             include_str!("../profiles/oot/layout.env"),
+            include_str!("../profiles/cvlod/layout.env"),
         ];
         for (b, env) in bundles.iter().zip(layouts) {
             let id = &b.profile.id;
@@ -212,11 +227,13 @@ mod tests {
     /// typed by hand, layout.env is written by the build that linked the blobs.
     #[test]
     fn builtin_profiles_match_the_build_that_made_their_blobs() {
-        let bundles = builtin().unwrap();
+        let mut bundles = builtin().unwrap();
+        bundles.extend(withheld().unwrap());
         let layouts = [
             ("cv64", include_str!("../profiles/cv64/layout.env")),
             ("pmr", include_str!("../profiles/pmr/layout.env")),
             ("oot", include_str!("../profiles/oot/layout.env")),
+            ("cvlod", include_str!("../profiles/cvlod/layout.env")),
         ];
         assert_eq!(bundles.len(), layouts.len());
         for (b, (id, env)) in bundles.iter().zip(layouts) {
