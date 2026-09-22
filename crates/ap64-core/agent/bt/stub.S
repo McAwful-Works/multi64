@@ -4,39 +4,43 @@
  * Everything here is in the randomizer's appended region, not the game's code: 99.6% of
  * Banjo-Tooie's ROM is compressed, so there is no instruction in it to retarget. The
  * randomizer appends 143,452 uncompressed bytes at rom 0x2000000 and its patched boot
- * segment DMAs them to 0x80400000, so vram = rom + 0x7E400000 for that region, and this
- * stub arrives in RAM on the randomizer's own loader without needing one of its own.
+ * segment DMAs 0x100001 of them to 0x80400000, so vram = rom + 0x7E400000 for that region.
  *
  * Hook site: 0x8040ED04 (rom 0x200ED04), whose jal targets 0x80413628 -- a function that
  * is `jr ra; nop`, a deliberate no-op hook point the randomizer left. The stub calls it
  * anyway, so the frame runs exactly as before and the sha1 pin on it catches the day it
  * stops being a no-op.
  *
- * Rate: measured at 0.80 per frame in the worst 300-frame window and ~7 per frame on
- * average, across 21,000 frames and several mode changes. Worth stating both, because the
- * average is not the number that matters. A control site in the same region read
- * 0.34/frame and then fired once in 1,740 frames, so it is gated and useless; this one
- * never recorded a zero window. The floor is roughly twice DKR's working average.
+ * Rate: 0.80 per frame in the worst 300-frame window and ~9 per frame on average, across
+ * 41,400 frames and every mode played. Worth stating both, because the average is not the
+ * number that matters. A control site in the same region read 0.34/frame and then fired
+ * once in 1,740 frames, so it is gated and useless; this one never recorded a zero window.
  *
- * The jal's delay slot is `addiu a0, sp, 48`, an argument setup rather than something the
- * game needs -- and the target ignores a0, and the next call site reloads a0 from the
- * stack, so this stub clobbering a0-a3 for the DMA below is harmless.
+ * NOTHING IS COPIED HERE, and that is the whole design. The obvious stub -- call the
+ * game's ROM copy routine at 0x80001A40 the way CV64 and DKR do -- was written, built,
+ * and black-screened a console. A bisect said so precisely: the stub bytes alone booted,
+ * the hook with a pass-through stub booted, and the same stub with the copy in it did not.
+ * That routine fires exactly once in a 1,200-frame measurement, at boot: it is boot-time
+ * code, and starting a raw PI transfer from a frame hook while the game has its own in
+ * flight does not survive.
  *
- * The copy uses the routine at 0x80001A40 in the uncompressed boot segment, which is
- * dma(a0 = direction, a1 = rom offset, a2 = dram address, a3 = length): a2 goes through
- * osVirtualToPhysical into PI_DRAM_ADDR, a1 is OR'd with the cart base held at 0x80000308
- * into PI_CART_ADDR, and a3 - 1 goes to PI_WR_LEN for a read (a0 = 0) or PI_RD_LEN for a
- * write. It polls PI_STATUS until the bus is idle before starting, so it will not tread on
- * a transfer already in flight -- which matters more here than usual, because this is the
- * only ROM copy Banjo-Tooie exposes in code the ROM actually contains.
+ * So the agent rides the randomizer's boot DMA instead. AGENT_ROM sits inside that DMA's
+ * source range, so the agent is in RAM before the first frame, exactly as profiles/oot
+ * relies on the game's own payload loader. The profile pins that DMA's instructions,
+ * because if its length or target moves the agent is not loaded at all.
  *
- * Symbols from the build (see build.sh): AGENT_VRAM, AGENT_ROM, AGENT_LOAD_SIZE,
- * agent_BSS_START, agent_BSS_END, AGENT_MAGIC_ADDR, agent_tick, and AGENT_MIN_RAM.
+ * What the boot DMA cannot do is zero BSS: it copies ROM, so BSS arrives holding whatever
+ * the ROM holds past the agent image. The stub has to zero it once per boot, and cannot
+ * use the load marker to decide when -- the DMA restores that too, so it reads 'M64P' from
+ * the first frame. Every other candidate flag lives in the BSS being zeroed.
  *
- * The copy is never assumed to be synchronous -- that routine starts the DMA and returns
- * without waiting -- so after it returns the magic word is checked again, and the agent's
- * BSS is zeroed and the agent run only once it reads back. Until then the stub returns and
- * tries again next pass.
+ * s_bss_zeroed below is the answer: a word inside the stub's own blob, so it is part of
+ * the same DMA and is restored to 0 at every boot, including a reset. Zero means BSS still
+ * holds ROM bytes; the stub clears BSS, sets it, and ticks from then on.
+ *
+ * Symbols from the build (see build.sh): AGENT_VRAM, AGENT_LOAD_SIZE, agent_BSS_START,
+ * agent_BSS_END, AGENT_MAGIC_ADDR, agent_tick, and AGENT_MIN_RAM. AGENT_ROM is not used
+ * here, because nothing in this stub copies.
  *
  * Every call goes through jalr $t9 rather than jal: the agent's symbols arrive via
  * --just-symbols sign-extended to 64 bits, and an R_MIPS_26 against them does not fit.
@@ -65,42 +69,35 @@ agent_hook_stub:
         bnez    $t0, done
         nop
 
+        /* Run the agent only while its image is intact. The boot DMA put it there; that
+           says it arrived, not that it is still there, and nothing reserves that RAM. */
         lui     $t1, 0x4D36
         ori     $t1, $t1, 0x3450        /* 'M64P' */
         lui     $t0, %hi(AGENT_MAGIC_ADDR)
         lw      $t0, %lo(AGENT_MAGIC_ADDR)($t0)
-        beq     $t0, $t1, tick
+        bne     $t0, $t1, done
         nop
 
-        /* Not loaded: dma(OS_READ, rom_offset, dst, size). */
-        move    $a0, $zero              /* direction 0 = cart -> RDRAM */
-        lui     $a1, %hi(AGENT_ROM)
-        addiu   $a1, $a1, %lo(AGENT_ROM)
-        lui     $a2, %hi(AGENT_VRAM)
-        addiu   $a2, $a2, %lo(AGENT_VRAM)
-        lui     $a3, %hi(AGENT_LOAD_SIZE)
-        addiu   $a3, $a3, %lo(AGENT_LOAD_SIZE)
-        CALL    0x80001A40
+        /* Zeroed already this boot? The flag is in this blob, so a reset clears it. */
+        lui     $t0, %hi(s_bss_zeroed)
+        lw      $t0, %lo(s_bss_zeroed)($t0)
+        bnez    $t0, tick
         nop
 
-        lui     $t1, 0x4D36
-        ori     $t1, $t1, 0x3450
-        lui     $t0, %hi(AGENT_MAGIC_ADDR)
-        lw      $t0, %lo(AGENT_MAGIC_ADDR)($t0)
-        bne     $t0, $t1, done          /* copy not visible yet: next pass */
-        nop
-
-        /* Loaded just now: zero BSS once. */
         lui     $t0, %hi(agent_BSS_START)
         addiu   $t0, $t0, %lo(agent_BSS_START)
         lui     $t1, %hi(agent_BSS_END)
         addiu   $t1, $t1, %lo(agent_BSS_END)
 zero:
-        beq     $t0, $t1, tick
+        beq     $t0, $t1, zeroed
         nop
         sw      $zero, 0($t0)
         b       zero
         addiu   $t0, $t0, 4
+zeroed:
+        lui     $t0, %hi(s_bss_zeroed)
+        addiu   $t1, $zero, 1
+        sw      $t1, %lo(s_bss_zeroed)($t0)
 
 tick:
         CALL    agent_tick
@@ -109,3 +106,9 @@ done:
         lw      $ra, 20($sp)
         jr      $ra
         addiu   $sp, $sp, 24
+
+/* In .text so objcopy keeps it in the blob, and so the boot DMA restores it to 0 every
+   time it reloads the region. Not in the agent's BSS, which is the thing it guards. */
+        .globl  s_bss_zeroed
+s_bss_zeroed:
+        .word   0

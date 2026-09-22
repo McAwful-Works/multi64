@@ -23,10 +23,16 @@ cic = "6105"
 randomizer = "jjjj12212's Banjo-Tooie world"
 connector = "bt"          # its own client; AP64 forks the connector Lua
 
+# The agent rides the randomizer's boot DMA rather than being copied by the stub. The
+# first design did it the usual way -- the stub calls the game's ROM copy routine -- and
+# black-screened a console; a bisect on hardware showed the copy was the only step that
+# did. That routine runs once, at boot, and a raw PI transfer started from a frame hook
+# does not survive the game's own traffic. So AGENT_ROM sits inside the DMA's source range
+# and the agent is in RAM before the first frame, as profiles/oot also relies on.
 [agent]
 image = "agent.bin"
-rom = 0x2110000         # past the AP image (ends 0x202305C) and past the boot DMA's source
-vram = 0x80600000       # above the boot DMA's target (0x80400000..0x80500001), measured clear
+rom = 0x2080000         # inside rom 0x2000000..0x2100001, which boot DMAs to 0x80400000
+vram = 0x80480000       # = rom + 0x7E400000; 350 KB clear of the BTHACK's end at 0x8042305C
 min_ram = 0x800000      # the retail game requires an Expansion Pak anyway
 
 [[require]]
@@ -52,24 +58,20 @@ len = 0x80
 sha1 = "5a3dfdeb755a27e9ce9148761f6551072816402a"
 hint = "The randomizer gave this hook point a body; the stub would no longer be transparent."
 
+# Both the stub and the agent reach RAM only because the randomizer's boot patch DMAs
+# rom 0x2000000..0x2100001 to 0x80400000. This is the most load-bearing pin in the file:
+# if that DMA's length or target moves, the stub is not where the hook jumps and the agent
+# is not loaded at all, and nothing else here would notice.
+#
+# The game's own ROM copy routine at 0x80001A40 was pinned here while the stub called it.
+# It no longer does -- see [agent] -- so pinning it would say nothing.
 [[require]]
 kind = "sha1"
-label = "ROM copy routine"
-at = 0x2640             # 0x80001A40 in the boot segment: dma(dir, rom, dram, len)
-len = 0x80
-sha1 = "6a0cfd0f5a6f4a22d1d7c9140798e2a00a24258d"
-hint = "The routine the stub loads the agent with changed."
-
-# The stub lives in the appended region, so it reaches RAM only because the randomizer's
-# own boot patch DMAs that region to 0x80400000. Pin that DMA: if its length or target
-# moves, the stub is either not loaded or not where the hook jumps.
-[[require]]
-kind = "sha1"
-label = "Boot DMA that loads the stub"
+label = "Boot DMA that loads the stub and the agent"
 at = 0x1050             # 0x80000450: PI_DRAM 0x400000, PI_CART 0x12000000, PI_WR_LEN 0x100000
 len = 0x40
 sha1 = "0002c35e21c503cea5b61f993d566fb22b2f9972"
-hint = "The randomizer's boot loader changed; the stub may not be loaded where the hook expects."
+hint = "The randomizer's boot loader changed; the stub and agent may not be loaded."
 
 # No IPL3 restores: this patcher leaves the retail CIC-6105 boot code alone and writes a
 # correct header checksum itself, so there are no NOPed checksum branches to put back.

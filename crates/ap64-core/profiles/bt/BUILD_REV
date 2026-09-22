@@ -1,4 +1,4 @@
-n64/agent from 639be67-dirty
+n64/agent from ceb366a-dirty
 built by crates/ap64-core/agent/build.sh bt (mips64-ultra-elf-gcc (GCC) 15.2.0)
-agent.bin sha1 ffe947fd92b56fbaf5f02b2ec23262dd7a9508b1
-stub.bin  sha1 9f645620fa02829b0ac75026cf94851c57062c68
+agent.bin sha1 9f1b9915716f5aa8b5a50c12079fc8047e9d86b9
+stub.bin  sha1 87a62f3be08401317c0828ba74f1232d00d7ad0a
