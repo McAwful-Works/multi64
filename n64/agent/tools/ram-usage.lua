@@ -17,7 +17,10 @@ local out = here .. "ram-usage.txt"
 local DOMAIN = "RDRAM"
 local PAGE = 0x1000
 local SAMPLE_EVERY = 60
-local NEED = 21 * 1024 -- agent code + data + bss, rounded up
+-- What the agent actually occupies: AGENT_BSS_END - AGENT_VRAM from any profile's
+-- layout.env, which is 25,968 B for every current build (code + data + bss). This was
+-- 21 KB, from an older and smaller agent, so it marked runs the agent does not fit in.
+local NEED = 26 * 1024
 
 local function u32(addr) return memory.read_u32_be(addr, DOMAIN) end
 
