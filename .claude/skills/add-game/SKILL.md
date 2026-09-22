@@ -48,7 +48,8 @@ Both are the same failure: work the connector performs on a frame callback never
 the wire, so an AP64 stand-in replaying the client's requests never performs it. That is
 what left Banjo-Tooie's ROM uninitialised for a week, presenting as a freeze.
 
-[`tools/connector-trace.lua`](../../../n64/agent/tools/connector-trace.lua) measures it.
+[`ap64-connector/tools/connector-trace.lua`](../../../crates/ap64-connector/tools/connector-trace.lua)
+measures it.
 Load it in BizHawk with `CONNECTOR_TRACE_TARGET` set to the world's lua, play, and read the
 report: accesses tagged `client` are replayable and free, and every other row is work a
 stand-in would have to reimplement, priced in coalesced regions -- one region is one round
