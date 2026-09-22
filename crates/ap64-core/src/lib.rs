@@ -30,15 +30,37 @@ macro_rules! builtin {
     }};
 }
 
+/// Sort key for a list of games: library order, which files a title under its first
+/// *significant* word. "The Legend of Zelda: Ocarina of Time" belongs under L, where
+/// someone looking for it will look, not under T with every other title that opens "The".
+///
+/// Only a leading article, and only a whole word: "Theme Park" files under "theme", not
+/// under "me".
+fn library_key(name: &str) -> String {
+    let lower = name.to_lowercase();
+    for article in ["the ", "an ", "a "] {
+        if let Some(rest) = lower.strip_prefix(article) {
+            return rest.to_string();
+        }
+    }
+    lower
+}
+
 /// The profiles this build offers: what the Play card lists and the patcher will accept.
+///
+/// Sorted here rather than by each caller, so the Patch card, the Play card and the CLI
+/// agree without any of them knowing about it, and so a game added below lands in the
+/// right place whatever order it is written in.
 pub fn builtin() -> Result<Vec<Bundle>, String> {
-    Ok(vec![
+    let mut bundles = vec![
         builtin!("cv64", ["agent.bin", "stub.bin"]),
         builtin!("pmr", ["agent.bin", "stub.bin"]),
         builtin!("oot", ["agent.bin", "stub.bin"]),
         builtin!("k64", ["agent.bin", "stub.bin"]),
         builtin!("bt", ["agent.bin", "stub.bin"]),
-    ])
+    ];
+    bundles.sort_by_key(|b| library_key(&b.profile.name));
+    Ok(bundles)
 }
 
 /// Profiles kept in the tree but not offered, because the game cannot be played through
@@ -241,6 +263,43 @@ mod tests {
 
     /// The profile must describe the blobs it carries: the numbers in profile.toml are
     /// typed by hand, layout.env is written by the build that linked the blobs.
+    /// The games list is in library order: a leading article files under the next word.
+    ///
+    /// Pinned as a whole list rather than as a property, because the point is what a player
+    /// sees. "The Legend of Zelda: Ocarina of Time" belongs between Kirby and Paper Mario,
+    /// where someone scanning for "Legend" or "Zelda" will look.
+    #[test]
+    fn the_games_list_is_in_library_order() {
+        let bundles = builtin().unwrap();
+        let names: Vec<&str> = bundles.iter().map(|b| b.profile.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Banjo-Tooie",
+                "Castlevania 64",
+                "Kirby 64 - The Crystal Shards",
+                "The Legend of Zelda: Ocarina of Time",
+                "Paper Mario",
+            ]
+        );
+    }
+
+    /// Only a LEADING article, and only a whole word.
+    #[test]
+    fn an_article_is_only_dropped_when_it_is_one() {
+        assert_eq!(library_key("The Legend of Zelda"), "legend of zelda");
+        assert_eq!(library_key("A Link to the Past"), "link to the past");
+        assert_eq!(library_key("An Untitled Game"), "untitled game");
+        // Not an article: the word merely starts with one.
+        assert_eq!(library_key("Theme Park"), "theme park");
+        assert_eq!(library_key("Antarctica"), "antarctica");
+        // Not leading: an article anywhere else stays put.
+        assert_eq!(
+            library_key("Kirby 64 - The Crystal Shards"),
+            "kirby 64 - the crystal shards"
+        );
+    }
+
     #[test]
     fn builtin_profiles_match_the_build_that_made_their_blobs() {
         let mut bundles = builtin().unwrap();
