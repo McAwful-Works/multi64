@@ -139,7 +139,7 @@ static void int_restore(uint32_t sr)
  * Spin until the PI is idle, or give up.
  *
  * This once spun without a bound, and the second call in `io_read` / `io_write`
- * runs with interrupts masked -- so a PI that stayed busy hung the console with no
+ * ran with interrupts masked -- so a PI that stayed busy hung the console with no
  * way back. That is not hypothetical: it hard locked a game at room loads, where the
  * game's own DMA holds the bus longest.
  *
@@ -147,6 +147,10 @@ static void int_restore(uint32_t sr)
  * DMA of a whole room is far shorter than this. Anything longer is a fault, and
  * returning a failure that the caller reports as "no cart" is always better than
  * freezing the machine.
+ *
+ * Every call left is OUTSIDE a masked span, which is what makes the bound enough. The
+ * masked spans use pi_idle_now() and never wait at all -- see there for why bounding this
+ * spin did not save Banjo-Tooie.
  */
 #define PI_WAIT_SPINS 100000u
 
@@ -166,6 +170,30 @@ static int pi_wait_idle(void)
     return pi_wait_clear(PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY);
 }
 
+/**
+ * One look at the PI. No spin, for use inside a masked span.
+ *
+ * Rule 2 above says to mask interrupts having first checked the PI is idle, and a game DMA
+ * can still begin in the window between that check and the mask. Confirming it inside the
+ * mask is right; WAITING there is not, and that is a different bug from the unbounded spin
+ * PI_WAIT_SPINS bounded. The wait before int_mask() is harmless -- interrupts are on and the
+ * game runs. A wait after it holds VI, AI and SI off for as long as the game's own transfer
+ * takes, every frame, until the threads blocked on those interrupts stop.
+ *
+ * Bounding that spin was never enough: 100,000 spins with interrupts masked is already far
+ * past a frame. It froze Banjo-Tooie seconds into its opening cutscene, music still playing
+ * from a buffer already queued. Banjo-Tooie found it because 99.6% of its ROM is compressed,
+ * so it streams from ROM almost continuously and holds the bus far more of the time than a
+ * game that loads in bursts.
+ *
+ * So: look once, and give up if the bus is the game's. A lost poll costs one frame and the
+ * next tick retries it; a masked wait costs the console.
+ */
+static int pi_idle_now(void)
+{
+    return (PI_LOAD(PI_STATUS) & (PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY)) == 0u;
+}
+
 /*
  * One register access with the PI idle and interrupts masked. Both return 0 if the PI stayed busy,
  * having touched nothing. This once reported nothing: a store that never happened looked like one
@@ -178,7 +206,7 @@ static int io_read(uint32_t addr, uint32_t *value)
         return 0;
     }
     sr = int_mask();
-    if (!pi_wait_idle()) {
+    if (!pi_idle_now()) {
         int_restore(sr);
         return 0;
     }
@@ -194,7 +222,7 @@ static int io_write(uint32_t addr, uint32_t value)
         return 0;
     }
     sr = int_mask();
-    if (!pi_wait_idle()) {
+    if (!pi_idle_now()) {
         int_restore(sr);
         return 0;
     }
@@ -233,7 +261,7 @@ static int pi_copy(void *ram, uint32_t cart_addr, uint32_t len, int to_cart)
             return 0;
         }
         sr = int_mask();
-        if (!pi_wait_idle()) {
+        if (!pi_idle_now()) {
             int_restore(sr);
             return 0;
         }
