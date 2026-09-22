@@ -13,6 +13,9 @@ two, and most of that was spent on things this file now answers.
 is normative for the ROM side and is not repeated here. This is the spine around it,
 including the Archipelago half, which no document covers.
 
+Work the sections in order. §1 and §3 are both gates that end the job early when they
+fail, and they are cheap on purpose: everything expensive is behind them.
+
 ## 1. Can the generic connector drive it?
 
 Check before anything else. A game whose world needs its own client is a different and
@@ -90,7 +93,60 @@ made at runtime over the socket. One ROM serves every seed, so the profile's pin
 measured once and can never drift per seed. The tell is a `patched_rom_md5` constant in
 the world, or a generator output with no `.apXX` in it.
 
-## 3. Find RAM, by measuring
+## 3. Boot the unmodified seed on the console, before measuring anything
+
+**This gate exists because Diddy Kong Racing cost a day without it.** Its profile was
+measured to completion -- RAM placement with Archipelago live, a hook site matched to a
+control, 764 bytes of stub space proven dead by counting -- and its connector was forked
+and tested. Then the seed turned out not to boot on a console at all. Vanilla DKR boots
+from the same card and the same menu; every Archipelago ROM black-screens.
+
+So before §4, put the seed on the cart and turn the console on. Nothing here is AP64's
+code, and that is the point: what is being tested is whether the randomizer's own output
+runs on real hardware.
+
+```sh
+cargo build -p sc64-sd-e2e --release
+MSYS_NO_PATHCONV=1 target/release/sc64-sd-e2e --port COM4 --upload <seed>.z64 --to /
+MSYS_NO_PATHCONV=1 target/release/sc64-sd-e2e --port COM4 --verify /<seed>.z64 --against <seed>.z64
+```
+
+The console must be powered off for that write. `--verify` reads the bytes back off the
+card, so a bad upload cannot be mistaken for a bad ROM.
+
+**If it does not boot, carry the retail ROM up as a control before concluding anything.**
+It separates "this randomizer does not run on hardware" from "this cart, card or console
+is unwell today", and they look identical from the sofa. Then work down this list, which
+is the order they were eliminated for DKR:
+
+| suspect | how to rule it out |
+|---|---|
+| header checksum | `n64/agent/tools/n64crc.py <rom>` -- a separate implementation from the patcher's |
+| ROM size | Paper Mario's agent sits at 45 MB and OoT's at 56 MB on this cart, so size alone is not it |
+| length alignment | pad the image to a 512-byte boundary past `0x101000` and retry; the CRC is unaffected |
+| boot chip | compare the IPL3 sha1 against the retail ROM's -- if a patch left it alone, the CIC is the retail one |
+| **Expansion Pak** | the usual answer. Boot something that requires it, or a seed whose agent needs 8 MB |
+
+DKR's cause was never pinned down, because the game was dropped once it was clear the
+seed would not run -- which is the right call, and worth saying plainly so nobody reads
+the last row as settled. The Expansion Pak was the leading suspect on the evidence: the
+randomizer puts its data block at `0x80400000`, the first 24 KB of the Pak's region, and
+upstream's connector dereferences a pointer at `0x400000` to find it, so without a Pak the
+first frame writes into nothing. That fits what was seen exactly, and it was never
+confirmed. An emulator always has 8 MB, which is why this whole class of problem is
+invisible until a console sees it.
+
+**A randomizer that needs the Expansion Pak for the game is a different proposition from
+one where only the agent does.** `AGENT_MIN_RAM` makes the agent skip itself below 8 MB
+and the seed still plays. When the seed itself needs the Pak, that is a hardware
+requirement for the game, and it belongs in the issue and the profile comment as the
+headline rather than a remark about the agent.
+
+Record the result on the game's issue either way. A "boots on a console" line is worth
+more than anything else on it, and a game that does not boot comes off the candidate list
+rather than waiting to be rediscovered.
+
+## 4. Find RAM, by measuring
 
 Three tools, three different questions. Use them in this order; see §2 of the guide.
 
@@ -109,7 +165,7 @@ by its bounds, and neither bound is an address inside it.
 quiet result from a script that was never running looks identical to a clean region. The
 first control tried for Paper Mario was the mod's static code, which proved nothing.
 
-## 4. Find a per-frame hook site, by measuring
+## 5. Find a per-frame hook site, by measuring
 
 **Look for a decomp first.** Diddy Kong Racing went from "no symbol source" to a complete
 set of profile inputs in one sitting because
@@ -156,7 +212,7 @@ control in `count-calls.lua` and play the parts that would plausibly wake them �
 a checkpoint renderer, character select for a character helper. Zeros against a climbing
 control are the proof.
 
-## 5. Write it
+## 6. Write it
 
 `agent/<game>/game.env` and `stub.S`, then `agent/build.sh <game>` (needs the
 mips64-ultra-elf toolchain in WSL), then `profiles/<game>/profile.toml` by hand, then
@@ -167,7 +223,7 @@ Pin generously in `[[require]]`: the hook site word, a sha1 of the space the stu
 and of every function the stub calls. A pin is what turns "this seed is not the one this
 profile was measured against" into a refusal instead of a crash.
 
-## 6. Verify before hardware
+## 7. Verify before hardware
 
 ```sh
 cargo run -p ap64-cli --release -- <seed.z64> --check   # or target/release/ap64-patch
