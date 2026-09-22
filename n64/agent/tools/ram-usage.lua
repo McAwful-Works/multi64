@@ -18,8 +18,12 @@ local DOMAIN = "RDRAM"
 local PAGE = 0x1000
 local SAMPLE_EVERY = 60
 -- What the agent actually occupies: AGENT_BSS_END - AGENT_VRAM from any profile's
--- layout.env, which is 25,968 B for every current build (code + data + bss). This was
+-- layout.env, which is 25,888 B for every current build (code + data + bss). This was
 -- 21 KB, from an older and smaller agent, so it marked runs the agent does not fit in.
+--
+-- Rounded up rather than exact on purpose: the agent's size moves with the driver -- it
+-- was 25,968 B until the PI fix dropped a spin loop and took 80 bytes with it -- and a
+-- candidate region that only just fits is not one to report as free anyway.
 local NEED = 26 * 1024
 
 local function u32(addr) return memory.read_u32_be(addr, DOMAIN) end
