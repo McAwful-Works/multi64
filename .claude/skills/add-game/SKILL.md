@@ -125,16 +125,20 @@ is the order they were eliminated for DKR:
 | ROM size | Paper Mario's agent sits at 45 MB and OoT's at 56 MB on this cart, so size alone is not it |
 | length alignment | pad the image to a 512-byte boundary past `0x101000` and retry; the CRC is unaffected |
 | boot chip | compare the IPL3 sha1 against the retail ROM's -- if a patch left it alone, the CIC is the retail one |
-| **Expansion Pak** | the usual answer. Boot something that requires it, or a seed whose agent needs 8 MB |
+| Expansion Pak | boot a **retail** game that requires one -- Banjo-Tooie, Donkey Kong 64, Majora's Mask. Takes a minute and answers it outright |
 
-DKR's cause was never pinned down, because the game was dropped once it was clear the
-seed would not run -- which is the right call, and worth saying plainly so nobody reads
-the last row as settled. The Expansion Pak was the leading suspect on the evidence: the
-randomizer puts its data block at `0x80400000`, the first 24 KB of the Pak's region, and
-upstream's connector dereferences a pointer at `0x400000` to find it, so without a Pak the
-first frame writes into nothing. That fits what was seen exactly, and it was never
-confirmed. An emulator always has 8 MB, which is why this whole class of problem is
-invisible until a console sees it.
+**DKR's cause is open, and the Expansion Pak is not it.** It was the leading suspect on
+good evidence: the randomizer puts its data block at `0x80400000`, the first 24 KB of the
+Pak's region, and upstream's connector dereferences a pointer at `0x400000` to reach it,
+so without a Pak the first frame would write into nothing. It fit every observation. Then
+retail Banjo-Tooie, which requires the Pak, ran on the same console from the same card --
+so the Pak works, and the theory is dead. Whatever stops DKR is still unidentified.
+
+Two things worth taking from that. Booting a Pak-requiring retail ROM is the cheapest
+possible test of the whole question and should come before any reasoning about RAM; and a
+hypothesis that fits every observation is still only a hypothesis, which is why the row
+above no longer calls it the usual answer. An emulator always has 8 MB, so the class of
+problem is real and invisible until a console sees it -- it just was not this.
 
 **A randomizer that needs the Expansion Pak for the game is a different proposition from
 one where only the agent does.** `AGENT_MIN_RAM` makes the agent skip itself below 8 MB
@@ -145,6 +149,21 @@ headline rather than a remark about the agent.
 Record the result on the game's issue either way. A "boots on a console" line is worth
 more than anything else on it, and a game that does not boot comes off the candidate list
 rather than waiting to be rediscovered.
+
+**Batch the gate.** Five candidates were taken from nothing to a boot verdict in one
+sitting, because the expensive parts amortise: one download pass, one `ArchipelagoGenerate`
+per world with Archipelago's own option templates, one SD write session, one boot session.
+Four passed -- three Bombermans, Mario Kart 64 and Banjo-Tooie all boot and play on a
+console -- and every base ROM matched the md5 its world demanded, which is the other thing
+worth checking before generating anything. DKR wanted a ROM revision nobody had for two
+sessions; that comparison costs seconds.
+
+One useful shortcut fell out of it. `apply_bsdiff4` and `apply_tokens` are procedures
+Archipelago's own launcher will run for you -- `ArchipelagoLauncher.exe <patch>` writes the
+`.z64` and then fails to find an emulator, which is fine, because the ROM is already
+written. A world that ships a static patch and no generator output (Banjo-Tooie, DKR) needs
+bspatch applied by hand instead, and those worlds state a fixed output md5, so the result
+checks itself.
 
 ## 4. Find RAM, by measuring
 
