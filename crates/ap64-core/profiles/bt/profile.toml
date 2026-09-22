@@ -1,0 +1,88 @@
+# Banjo-Tooie (US). Every address here is in the randomizer's appended region or the
+# game's boot segment, never in the game's own code: 99.6% of Banjo-Tooie's ROM is
+# compressed, so there is no instruction in it to retarget and no dead game code to host a
+# stub. The randomizer appends 143,452 uncompressed bytes at rom 0x2000000 and DMAs them
+# to 0x80400000, so vram = rom + 0x7E400000 there, and vram = rom + 0x7FFFF400 in boot.
+#
+# The consequence to know: these pins are on the apworld's code, so an apworld release
+# moves them even though the game has not changed. The ROM is seed-independent (the client
+# applies one static bsdiff and asserts md5 1876534db1ec87691faf474f461619d8), so a pin
+# failing means the world was updated, not that this seed is unusual. Measured in #280.
+#
+# Blobs: crates/ap64-core/agent/build.sh bt (see BUILD_REV).
+
+id = "bt"
+name = "Banjo-Tooie"
+release = "US"
+game_code = "NEDE"        # the randomizer changes it from retail's NB7E
+# 0x30, which is ASCII '0' rather than a revision number -- the randomizer writes its own
+# marker into the version byte, where retail Banjo-Tooie has 0x00. So this identifies an
+# AP ROM, and a retail one can never match this profile.
+version = 48
+cic = "6105"
+randomizer = "jjjj12212's Banjo-Tooie world"
+connector = "bt"          # its own client; AP64 forks the connector Lua
+
+[agent]
+image = "agent.bin"
+rom = 0x2110000         # past the AP image (ends 0x202305C) and past the boot DMA's source
+vram = 0x80600000       # above the boot DMA's target (0x80400000..0x80500001), measured clear
+min_ram = 0x800000      # the retail game requires an Expansion Pak anyway
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0x200ED04          # 0x8040ED04 in the BTHACK: jal 0x80413628
+equals = 0x0C104D8A
+hint = "The apworld was updated and its hook site moved. Regenerate against this AP64 build."
+
+[[require]]
+kind = "sha1"
+label = "Space for the hook stub"
+at = 0x201CD64          # 0x8041CD64, 4 KB of the BTHACK's padding, measured unused
+len = 0x1000
+sha1 = "1ceaf73df40e531df3bfb26b4fb7cd95fb7bff1d"
+hint = "The BTHACK grew into the padding the stub goes in."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0x2013628          # 0x80413628, `jr ra; nop` -- a no-op hook point the randomizer left
+len = 0x80
+sha1 = "5a3dfdeb755a27e9ce9148761f6551072816402a"
+hint = "The randomizer gave this hook point a body; the stub would no longer be transparent."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine"
+at = 0x2640             # 0x80001A40 in the boot segment: dma(dir, rom, dram, len)
+len = 0x80
+sha1 = "6a0cfd0f5a6f4a22d1d7c9140798e2a00a24258d"
+hint = "The routine the stub loads the agent with changed."
+
+# The stub lives in the appended region, so it reaches RAM only because the randomizer's
+# own boot patch DMAs that region to 0x80400000. Pin that DMA: if its length or target
+# moves, the stub is either not loaded or not where the hook jumps.
+[[require]]
+kind = "sha1"
+label = "Boot DMA that loads the stub"
+at = 0x1050             # 0x80000450: PI_DRAM 0x400000, PI_CART 0x12000000, PI_WR_LEN 0x100000
+len = 0x40
+sha1 = "0002c35e21c503cea5b61f993d566fb22b2f9972"
+hint = "The randomizer's boot loader changed; the stub may not be loaded where the hook expects."
+
+# No IPL3 restores: this patcher leaves the retail CIC-6105 boot code alone and writes a
+# correct header checksum itself, so there are no NOPed checksum branches to put back.
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0x201CD64
+file = "stub.bin"
+max_len = 0x1000
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0x200ED04
+target = 0x8041CD64
