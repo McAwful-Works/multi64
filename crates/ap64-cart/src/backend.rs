@@ -189,7 +189,12 @@ const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(2);
 /// Timeouts retried on the same transport before rebuilding it. A silent agent
 /// (scene load, reset) answers again once its frame hook runs; a rebuild would redo
 /// HELLO for nothing.
-const SOFT_RETRIES: u32 = 2;
+///
+/// This plus one is how many times a single request can spend a whole
+/// [`transport::REPLY_TIMEOUT`], and that product is a budget shared with the Archipelago
+/// client, which drops the connection after 5 s of its own. See REPLY_TIMEOUT: the two are
+/// only safe together, and `retry_budget_fits_the_clients_deadline` pins the pair.
+pub(crate) const SOFT_RETRIES: u32 = 2;
 
 /// Cached ROM is kept in pages of this size, fetched several to a request.
 const ROM_PAGE: u32 = 1024;
@@ -899,6 +904,30 @@ mod tests {
         assert_eq!(
             ram.read_many(&[(4, 2), (0, 1)]).unwrap(),
             vec![vec![9, 8], vec![0]]
+        );
+    }
+
+    /// The whole retry budget must stay inside the deadline the client enforces.
+    ///
+    /// AP64 does not own this number on its own. Archipelago's BizHawk Client puts a 5 s
+    /// deadline on every request (worlds/_bizhawk/__init__.py, `_send_message`), fires it
+    /// silently, and reconnects -- so a request that AP64 is still patiently retrying past
+    /// 5 s has no one left to answer. REPLY_TIMEOUT was 3 s and SOFT_RETRIES is 2, which is
+    /// 9 s worst case: any hiccup needing two retries lost the client by arithmetic.
+    ///
+    /// Pinned as a pair because neither constant is wrong alone, and a later change to
+    /// either one can quietly put the product back over the line.
+    #[test]
+    fn retry_budget_fits_the_clients_deadline() {
+        /// worlds/_bizhawk/__init__.py, `_send_message`.
+        const CLIENT_DEADLINE: Duration = Duration::from_secs(5);
+
+        let attempts = SOFT_RETRIES + 1;
+        let budget = crate::transport::REPLY_TIMEOUT * attempts;
+        assert!(
+            budget < CLIENT_DEADLINE,
+            "a request can take {budget:?} ({attempts} x {:?}) before the reconnect loop is even reached, but the Archipelago client gives up at {CLIENT_DEADLINE:?} and silently reconnects",
+            crate::transport::REPLY_TIMEOUT,
         );
     }
 }
