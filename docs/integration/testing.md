@@ -66,11 +66,24 @@ With the host side running against the cart:
 - the stand-in reports no stalls or reconnects during normal play, and recovers from each when you
   cause one deliberately: restart the daemon, reset the console, disconnect the tool.
 
+**If the tool keeps disconnecting, do not start guessing at causes.** Neither log can tell you
+what you need: the tool logs nothing at all when it abandons a request — it just reconnects — and
+the stand-in only ever sees its own side. [`tools/link-tap.py`](../../n64/agent/tools/link-tap.py)
+sits between them and records which end hung up, whether every request was answered, and how long
+each round trip took. Start it *before* the stand-in, which binds the first free port in its range
+and so lands on the tap's upstream one.
+
 ## 6. Soak
 
 Hours, not minutes. The failure modes that remain after the steps above — PI contention during rare
 long loads, a missed transient, a leak in the host — only show up with time. Keep the stand-in's
 heartbeat log.
+
+Leave [`tools/link-tap.py`](../../n64/agent/tools/link-tap.py) running for this too, and read its
+distribution rather than its dropout count. A missed reply costs a flat reply timeout, so the tail
+is **quantized**: slow round trips land on exact multiples of that constant with nothing in
+between, and where the cluster sits names the constant to go and look at. A tail that spreads
+smoothly instead means something genuinely slow, which is a different problem.
 
 ---
 
@@ -88,3 +101,5 @@ heartbeat log.
 | The wrong serial port | A daemon started on a different USB-serial adapter and still reported itself healthy | Check `GET /` on `multi64d` names the cart's port before a session |
 | Line endings | Build files copied from a Windows checkout into a Linux build tree carried CRLF | Normalise to LF when copying between checkouts |
 | A stalled reply looks like a dead link | The game stops calling the agent during loads, longer than the reply timeout | Distinguish stalls from transport failures ([host-connector.md §7](host-connector.md#7-survive-everything-the-connector-does-not-expect)) |
+| The tool's own deadline | Every Archipelago client abandons a request after a timeout of its own and reconnects without logging it — 5 s for the BizHawk Client. A reply timeout times its retries can exceed that, and then a hiccup loses the tool by arithmetic, not bad luck | Keep reply timeout x attempts inside the tool's deadline, and pin the two together so a later change to either cannot drift back over it |
+| Counting dropouts instead of timing round trips | A session dropped every few minutes. Four causes were argued from plausible mechanisms — video memory, agent latency, server-side eviction — and three were wrong. Rare events over an hour could not tell them apart | Measure the distribution ([`tools/link-tap.py`](../../n64/agent/tools/link-tap.py)). It gave the answer in minutes: the client hung up, every request had been answered, and the tail was quantized |
