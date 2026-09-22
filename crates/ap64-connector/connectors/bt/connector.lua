@@ -60,7 +60,24 @@ local cartmem = require('cartmem')
 local mainmemory = cartmem.mainmemory
 
 local SCRIPT_VERSION = 5
-local BT_VERSION = "4.11.6"
+-- AP64: upstream's value here is "4.11.6", because this Lua was last touched in the PR fork
+-- at that release. The apworld has moved on without it -- the v4.13.1 release ships no
+-- connector Lua at all, only BT_companion.lua -- so nothing upstream was ever going to
+-- update this string.
+--
+-- It is not cosmetic. process_slot() compares it to the client's slot_version and, on a
+-- mismatch, latches VERROR and answers every later poll with a bare keep-alive forever. A
+-- 4.13.1 client therefore handshakes, receives exactly one good reply, and then hangs at
+-- "will be sent when Banjo-Tooie is loaded" -- which is precisely how a console session
+-- behaved for a whole evening.
+--
+-- Checked against a dump of real game memory: the ROM's own getRomVersion() reports 4.13.1,
+-- and the client reports 4.13.1, so this is the value both ends already agree on.
+--
+-- The real hazard is that this is a STRING EQUALITY against whatever apworld built the
+-- seed, so the next release breaks it again. SCRIPT_VERSION is the one upstream maintains
+-- for its EverDrive connector and it still matches; this one has no maintainer but us.
+local BT_VERSION = "4.13.1"
 local PLAYER = ""
 local SEED = 0
 

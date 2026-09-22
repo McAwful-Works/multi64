@@ -82,9 +82,14 @@ fn ram() -> Vec<u8> {
 
     // The ROM version, read as u16 major / u8 minor / u8 patch. "0" means the randomizer
     // has not populated its block, which the fork treats as not ready.
+    // 4.13.1: the version a real Banjo-Tooie AP ROM reports, not the one the forked Lua
+    // happened to carry. These two -- and slot()'s slot_version -- are what force
+    // connector.lua's BT_VERSION to stay equal to the apworld it is used with. When they
+    // agreed with the fork instead of with reality, every test here passed while a console
+    // session latched VERROR on the slot and answered keep-alives forever.
     ram[VERSION as usize..VERSION as usize + 2].copy_from_slice(&4u16.to_be_bytes());
-    ram[(VERSION + 2) as usize] = 11;
-    ram[(VERSION + 3) as usize] = 6;
+    ram[(VERSION + 2) as usize] = 13;
+    ram[(VERSION + 3) as usize] = 1;
 
     ram[N64_CURRENT_MAP as usize..N64_CURRENT_MAP as usize + 2]
         .copy_from_slice(&0x0142u16.to_be_bytes());
@@ -183,7 +188,7 @@ impl Harness {
 /// connector reads are here; it tolerates the rest being absent.
 fn slot() -> &'static str {
     concat!(
-        r#"{"slot_player":"Banjo","slot_seed":12345,"slot_version":"4.11.6","#,
+        r#"{"slot_player":"Banjo","slot_seed":12345,"slot_version":"4.13.1","#,
         r#""slot_deathlink":0,"slot_taglink":0,"slot_worlds":{},"#,
         r#""slot_open_hag1":0,"slot_skip_puzzles":0,"slot_dialog_character":110,"#,
         r#""slot_victory_condition":0,"slot_minigame_hunt":0,"slot_boss_hunt":0,"#,
@@ -362,5 +367,49 @@ fn an_idle_poll_still_costs_one_write_request() {
         h.writes.get(),
         1,
         "an idle poll should be exactly one batched write request"
+    );
+}
+
+/// A session has to keep working after the slot, not just answer the slot.
+///
+/// This is the shape of the bug that cost an evening on a console. connector.lua's
+/// BT_VERSION was the fork's "4.11.6" while the client and the ROM both said "4.13.1", so
+/// process_slot() latched VERROR and every poll from the third onward returned a bare
+/// keep-alive. The client showed nothing but "will be sent when Banjo-Tooie is loaded",
+/// the link stayed up, and nothing anywhere said why.
+///
+/// Every other test here stops at the first real reply, which is exactly one poll too
+/// early to see it. This one keeps polling.
+#[test]
+fn polls_after_the_slot_keep_carrying_game_data() {
+    let h = Harness::new();
+    h.connect();
+
+    for poll in 1..=4 {
+        let reply = h.handle(&payload(&[]));
+        assert!(
+            reply.contains("jiggies"),
+            "poll {poll} after the slot returned a keep-alive, not game data: {reply}.\n\
+             A latched VERROR does this -- check connector.lua's BT_VERSION against the \
+             version the ROM and the client report."
+        );
+    }
+}
+
+/// The version the fork claims must be the version the tests model, which is the version a
+/// real ROM reports. Pinned on its own so a drift names itself instead of surfacing as four
+/// unrelated assertion failures.
+#[test]
+fn the_connector_claims_the_version_the_rom_reports() {
+    let lua = include_str!("../connectors/bt/connector.lua");
+    let claimed = lua
+        .lines()
+        .find_map(|l| l.strip_prefix("local BT_VERSION = "))
+        .map(|v| v.trim().trim_matches('"'))
+        .expect("connector.lua declares BT_VERSION");
+    assert_eq!(
+        claimed, "4.13.1",
+        "connector.lua's BT_VERSION drifted from the apworld the profile targets; \
+         a mismatch is silent at runtime -- it latches VERROR and answers keep-alives"
     );
 }

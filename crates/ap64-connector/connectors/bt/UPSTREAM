@@ -33,11 +33,52 @@ connector, not for this Lua, so the Lua can drift from the client in a way conne
 and connectors/dkr cannot. If SCRIPT_VERSION stops matching the client's script_version,
 the client refuses the connection and says so, which is at least a loud failure.
 
+AP64 delta: BT_VERSION, "4.11.6" upstream, is "4.13.1" here.
+
+That drift is the SILENT one, and it is the reason to watch this file. SCRIPT_VERSION is
+checked by the client, which says so; BT_VERSION is checked by the CONNECTOR, in
+process_slot(), against the client's slot_version -- and a mismatch latches VERROR and
+answers every later poll with a bare keep-alive, forever. The client shows nothing but
+"will be sent when Banjo-Tooie is loaded", the socket stays up, no check is ever sent and
+no item is ever delivered. It cost an evening on a console before a dump of real game
+memory reproduced it offline in three polls.
+
+The value came from that dump: the ROM's own getRomVersion() reports 4.13.1 and the client
+reports 4.13.1, so 4.13.1 is what both ends already agree on. Verified compatible: every
+one of the 1,106 location IDs this Lua can report is defined by the 4.13.1 apworld, so it
+can never send an unknown check. The 32 IDs 4.13.1 defines that this Lua never reports
+(1230960-1230991) are Mumbo Token goal locations that BTClient.py derives for itself in
+mumbo_tokens_loc(), from locations this Lua does report -- not a gap.
+
+Since the released apworld ships no connector Lua at all, no upstream release will ever
+update this string. tests/bt.rs pins it, and models 4.13.1 on both sides so a drift fails
+there rather than on a console.
+
 Their EverDrive connector is a separate prebuilt binary (banjo_tooie_everdrive_connector.exe,
 4.4 MB) whose source is in neither repository, and it supports the EverDrive 3.0 and X7 --
 their own setup guide says the EverDrive-64 PRO may not be compatible, and it does not
 mention the SummerCart64. So AP64's contribution here is SC64 support, not hardware support
 in general.
+
+process_slot() is an INITIALISATION channel, not just a protocol handshake.
+
+This is the thing about this world that is not visible from the protocol, and it is what
+made the BT_VERSION mismatch above cost a day instead of a minute. Banjo-Tooie's randomizer
+does not ship its settings inside the ROM. The client sends them, and process_slot() writes
+them into the BTHACK's settings block with 39 setSetting* calls. The client's own help text
+is blunt about the dependency: "the ROM refuses to boot until settings are populated".
+
+Every one of those calls is AFTER the version check, so a mismatch returns early and writes
+none of them. The result is not a quiet connector -- it is a ROM that has never been fully
+built, running on settings-shaped memory the boot DMA happened to leave behind. Egg
+Behaviour is one of those settings, which is why cycling eggs with R froze a console.
+
+The lesson for any connector added here: if a world's connector initialises the game, then
+a connector that answers politely while initialising nothing is WORSE than one that refuses
+outright, because the game keeps running and misbehaves somewhere unrelated. Look for an
+early return between a validation failure and the game-state writes -- and prefer failing
+loudly over answering a keep-alive forever. None of this leaves a trace in RAM maps, hook
+rates or bus traffic, so measuring those first is measuring the wrong thing.
 
 cartmem.lua is AP64's own. Archipelago's licence follows, as the script descends from it.
 
