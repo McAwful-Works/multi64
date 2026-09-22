@@ -1,43 +1,47 @@
 --[[
-NOT YET PORTED. Everything below this comment is connector_banjo_tooie_bizhawk.lua as
-taken from upstream -- this header is the only edit, so UPSTREAM's sha256 is of the file
-without it -- kept as the base the fork will be written against, so its diff reads as the
-change it is. It still expects BizHawk and still owns its own socket, so it cannot run
-under AP64: no Script in ap64_connector::SCRIPTS points at it, and `connector = "bt"`,
-which profiles/bt/profile.toml already asks for, is not yet something AP64 can provide.
+AP64's fork of connector_banjo_tooie_bizhawk.lua (see UPSTREAM), for a real N64 running the
+M64P cart agent instead of BizHawk. Archipelago is MIT licensed; its notice is in UPSTREAM.
 
-What the fork has to do, following connectors/oot and connectors/dkr:
+Banjo-Tooie Client talks to this exactly as it would to BizHawk: port 21221, one JSON line
+in and one out. The 562 locations, the ADDRESS_MAP, every *_check() and the whole BTHACK
+accessor layer are upstream's, unchanged. What changed, and why:
 
-* Delete the socket, the accept loop and the frame loop. AP64 owns port 21221 and calls
-  handle(line) with each JSON line, sending back what it returns. print goes to AP64's log.
+* No emulator. The socket, the accept loop, the frame loop, the connection state machine
+  and the BizHawk version check are gone. AP64 owns the TCP port and calls handle() with
+  each line, sending back what it returns. print goes to AP64's log.
 
-* The protocol is DKR's shape, not OoT's: both ends write and then read, and the client
-  writes first (BTClient.n64_sync_task writes, drains, then readline()s with a 10 s
-  timeout). So handle() answers the client's line with what SendToBTClient would have
-  sent. The handshake is getSlot, exactly as DKR's is, and the client takes playerName for
-  ctx.auth and treats a reply with no "jiggies" key as a keep-alive. SCRIPT_VERSION must
-  stay 5 or the client refuses the connection outright.
+* Memory. `mainmemory` is rebound to cartmem.lua with one local, so not one of the 64 call
+  sites changes. That file is why this is feasible at all: every BTHACK accessor resolves
+  its own pointer first and each getter is a double dereference, so an uncached poll is
+  about 1,700 round trips. Cached, the 562 locations share 90 byte offsets inside 156
+  bytes and the whole thing is a handful of regions. `bit` is BizHawk's, on Lua 5.4
+  operators (connectors/lib/bit.lua).
 
-* Point mainmemory at cartmem.lua. It is the whole reason this is feasible: every BTHACK
-  accessor resolves its own pointer with two u32 reads first, so an uncached poll is about
-  1,700 round trips. See cartmem.lua.
+* The protocol is DKR's shape, not OoT's. Both ends write and then read, and the client
+  writes first (BTClient.n64_sync_task writes, drains, then readline()s), so handle()
+  answers the client's line with what SendToBTClient would have sent. getSlotData and
+  SendToBTClient now return their tables instead of sending them, and receive() -- which
+  was the send/receive/dispatch middle -- is gone, because handle() is that middle.
 
-* Delete the BizHawk version check and common.lua. `bit` comes from connectors/lib.
+* Frame waits had to be bounded, and this is the part that would have hung a session
+  rather than failed it. Three loops spun on emu.frameadvance() waiting for game state:
+  main() waiting for the BTHACK pointer, process_slot() waiting for a non-zero ROM
+  version, and setWorldEntrance()'s retry. Under AP64 no frames pass inside handle(), so
+  each would spin forever. They are now bounded and retried on the next poll instead,
+  which is the same intent -- keep trying until the game is ready -- at the one rate AP64
+  actually has.
 
-* client.saveram() becomes a no-op; the cart owns its save. Note upstream's own
-  BT_companion.lua exists only to call it on a map change, so there is nothing to port
-  from that file either.
+* client.saveram() is gone; the cart owns its save. Upstream's own BT_companion.lua exists
+  only to call it on a map change, so there was nothing to port from that file either.
 
-* joypad and gui go. The agent cannot read controllers and AP64 draws nothing on the
-  game's screen, so anything on-screen or D-pad triggered cannot follow to a console --
-  say so rather than fail quietly.
+* joypad is gone, with the D-pad "SNEAK" feature it drove. The agent cannot read
+  controllers, so that cannot follow to a console; the startup banner says so rather than
+  leaving it silently dead.
 
-* The 562 locations, the 90 flag offsets and the whole ADDRESS_MAP stay exactly as they
-  are. They are the part that would be expensive to get wrong and cost nothing to keep.
-
-The profile this pairs with is measured and written: profiles/bt, with the hook at
-0x8040ED04 and the stub in the BTHACK's own padding. Both live in the randomizer's
-appended region, because Banjo-Tooie's own code is compressed in the ROM. See issue #280.
+Provided by AP64 (crates/ap64-connector): the global `ap64`, and json, bit and cartmem via
+require. The profile this pairs with is profiles/bt, measured in issue #280: the hook and
+the stub both live in the randomizer's appended region, because Banjo-Tooie's own code is
+compressed in the ROM and there is no instruction in it to retarget.
 ]]
 -- Banjo Tooie Connector Lua
 -- Created by Mike Jackson (jjjj12212)
@@ -47,29 +51,23 @@ appended region, because Banjo-Tooie's own code is compressed in the ROM. See is
 -- local RDRAMBase = 0x80000000;
 -- local RDRAMSize = 0x800000;
 
-local socket_loaded, socket = pcall(require, "socket")
-if not socket_loaded then
-  print("Please place this file in the 'Archipelago/data/lua' directory. Use the Archipelago Launcher's 'Browse Files' button to find the Archipelago directory.")
-  return
-end
+-- AP64 supplies these; common.lua, socket and BizHawk's globals are not here.
 local json = require('json')
 local math = require('math')
-require('common')
+local bit = require('bit')
+local cartmem = require('cartmem')
+-- Rebound rather than rewritten: every mainmemory.* call site below is upstream's.
+local mainmemory = cartmem.mainmemory
 
 local SCRIPT_VERSION = 5
 local BT_VERSION = "4.11.6"
 local PLAYER = ""
 local SEED = 0
 
-local BT_SOCK = nil
-
-local STATE_OK = "Ok"
-local STATE_TENTATIVELY_CONNECTED = "Tentatively Connected"
-local STATE_INITIAL_CONNECTION_MADE = "Initial Connection Made"
-local STATE_UNINITIALIZED = "Uninitialized"
-local PREV_STATE = ""
-local CUR_STATE =  STATE_UNINITIALIZED
-local FRAME = 0
+-- AP64: BT_SOCK, the STATE_* machine, PREV_STATE, CUR_STATE and FRAME were all the
+-- socket's and the frame loop's. AP64 owns the connection and calls handle() per line.
+-- BTHACK_READY replaces main()'s wait for the randomizer's pointer table to exist.
+local BTHACK_READY = false
 local VERROR = false
 local CLIENT_VERSION = false
 local GOAL_PRINTED = false
@@ -7844,14 +7842,21 @@ function zoneWarp(zone_table)
                 new_map = world_id
             end
        end
-       while success == false do
+       -- AP64: upstream spun on emu.frameadvance() until the write took. No frames pass
+       -- inside handle(), so this is bounded and the caller is left to try again on the
+       -- next poll -- same intent, at the rate AP64 has.
+       local tries = 0
+       while success == false and tries < 8 do
+            tries = tries + 1
             BTH:setWorldEntrance(orig_map, new_map, orig_table['entranceId'], orig_table['exitMap'], new_table['entranceId'], new_table['access'])
             success = BTH:setWorldEntrance(new_table['exitMap'], orig_table['exitMap'], new_table['exitId'], new_map, orig_table['exitId'], orig_table['reverse_access'])
             if orig_map == 0xC7 -- Glitter Gulch Mine
             then
                 BTH:setWorldEntrance(orig_map, new_map, 16, orig_table['exitMap'], new_table['entranceId'], new_table['access'])
             end
-            emu.frameadvance()
+       end
+       if success == false then
+            return false
        end
     end
 end
@@ -8637,67 +8642,23 @@ function SendToBTClient()
         print("Send Data")
     end
 
-    local msg = json.encode(retTable).."\n"
-    local ret, error = BT_SOCK:send(msg)
-    if ret == nil then
-        print(error)
-    elseif CUR_STATE == STATE_INITIAL_CONNECTION_MADE then
-        CUR_STATE = STATE_TENTATIVELY_CONNECTED
-    elseif CUR_STATE == STATE_TENTATIVELY_CONNECTED then
-        print("Connected!")
-        PRINT_GOAL = true;
-        CUR_STATE = STATE_OK
-    end
     if DETECT_DEATH == true
     then
         DETECT_DEATH = false
     end
+
+    -- AP64: returned rather than sent, and the connection states it also drove were the
+    -- socket's. handle() sends what this returns. The reset above still runs first --
+    -- upstream did it after the send, and the next poll depends on it.
+    return retTable
 end
 
-function receive()
-    if PLAYER == "" and SEED == 0
-    then
-        getSlotData()
-    else
-        -- Send the message
-        SendToBTClient()
+-- AP64: receive() was the send/receive/dispatch middle of the frame loop. handle() is
+-- that middle now, and it is at the bottom of this file with main().
 
-        l, e = BT_SOCK:receive()
-        -- Handle incoming message
-        if e == 'closed' then
-            if CUR_STATE == STATE_OK then
-                table.insert(MESSAGE_TABLE, {"Archipelago Connection Closed", 86});
-                print("Connection closed")
-            end
-            CUR_STATE = STATE_UNINITIALIZED
-            return
-        elseif e == 'timeout' then
-            AP_TIMEOUT_COUNTER = AP_TIMEOUT_COUNTER + 1
-            if AP_TIMEOUT_COUNTER == 5
-            then
-                table.insert(MESSAGE_TABLE, {"Archipelago Timeout", 86});
-                AP_TIMEOUT_COUNTER = 0
-            end
-            print("timeout")
-            return
-        elseif e ~= nil then
-            print(e)
-            CUR_STATE = STATE_UNINITIALIZED
-            return
-        end
-        if DEBUGLVL3 == true
-        then
-            print("Processing Block");
-        end
-        AP_TIMEOUT_COUNTER = 0
-        process_block(json.decode(l))
-        if DEBUGLVL3 == true
-        then
-            print("Finish");
-        end
-    end
-end
-
+-- AP64: asks the client for its slot data. Upstream sent this and then blocked on a
+-- reply; here the reply arrives as the next handle() call, and the client sends its slot
+-- payload on the write after it reads a getSlot.
 function getSlotData()
     local retTable = {}
     retTable["getSlot"] = true;
@@ -8705,37 +8666,7 @@ function getSlotData()
     then
         print("Encoding getSlot");
     end
-    local msg = json.encode(retTable).."\n"
-    local ret, error = BT_SOCK:send(msg)
-    l, e = BT_SOCK:receive()
-    -- Handle incoming message
-    if e == 'closed' then
-        if CUR_STATE == STATE_OK then
-            table.insert(MESSAGE_TABLE, {"Archipelago Connection Closed", 86});
-            print("Connection closed")
-        end
-        CUR_STATE = STATE_UNINITIALIZED
-        return
-    elseif e == 'timeout' then
-        AP_TIMEOUT_COUNTER = AP_TIMEOUT_COUNTER + 1
-        if AP_TIMEOUT_COUNTER == 10
-        then
-            table.insert(MESSAGE_TABLE, {"Archipelago Timeout", 86});
-            AP_TIMEOUT_COUNTER = 0
-        end
-        print("timeout")
-        return
-    elseif e ~= nil then
-        print(e)
-        CUR_STATE = STATE_UNINITIALIZED
-        return
-    end
-    if DEBUGLVL2 == true
-    then
-        print("Processing Slot Data");
-    end
-    AP_TIMEOUT_COUNTER = 0
-    process_slot(json.decode(l))
+    return retTable
 end
 
 function process_slot(block)
@@ -9027,20 +8958,18 @@ function process_slot(block)
             VERROR = true
             return false
         end
-        local checked = false
-        while(checked == false)
-        do
-            local ROMversion = BTH:getRomVersion()
-            if ROMversion ~= "0"
-            then
-                if ROMversion ~= CLIENT_VERSION
-                then
-                    VERROR = true
-                    return false
-                end
-                checked = true
-            end
-            emu.frameadvance()
+        -- AP64: upstream waited frame by frame for the ROM to report a version. Read it
+        -- once; "0" means the randomizer has not populated its block yet, so leave the
+        -- slot unprocessed and let the next poll try.
+        local ROMversion = BTH:getRomVersion()
+        if ROMversion == "0"
+        then
+            return false
+        end
+        if ROMversion ~= CLIENT_VERSION
+        then
+            VERROR = true
+            return false
         end
     end
     if block['slot_open_hag1'] ~= nil and block['slot_open_hag1'] ~= 0
@@ -9125,105 +9054,111 @@ function messageQueue()
     end
 end
 
----------------------- MAIN LUA LOOP -------------------------
+---------------------- AP64 ENTRY POINTS -------------------------
 
+-- AP64: what is left of main() once the BizHawk version check, the socket, the accept
+-- loop and the frame loop are AP64's problem. It runs at load, from the bottom of the
+-- file, and cannot wait for the game the way upstream did -- see ready() below.
 function main()
-    local bizhawk_version = client.getversion()
-    local bizhawk_major, bizhawk_minor, bizhawk_patch = bizhawk_version:match("(%d+)%.(%d+)%.?(%d*)")
-    bizhawk_major = tonumber(bizhawk_major)
-    bizhawk_minor = tonumber(bizhawk_minor)
-    if bizhawk_major == 2 and bizhawk_minor <= 9
-    then
-        print("We only support Bizhawk Version 2.10 and newer. Please download Bizhawk version 2.10")
-        return
-    end
     print("Banjo-Tooie Archipelago Version " .. BT_VERSION)
+    print("ROM: " .. ap64.rom_hash() .. " (first 4 KiB; the profile's pins are the gate)")
+    print("(the D-PAD UP sneak control needs an emulator and is not available here)")
+    print("----------------")
     BTH = BTHACK:new(nil)
-    local check = 0
-    while BTHACK:getSettingPointer() == nil
-    do
-        check = check + 1
-        if(check == 75 and BTH:getRomVersion() == "0")
+end
+
+--- Is the randomizer's pointer table there yet?
+---
+--- Upstream spun on emu.frameadvance() until getSettingPointer() answered, and printed a
+--- warning if the ROM still looked vanilla after 75 frames. Nothing can spin inside
+--- handle(), so this is asked once per poll instead. The profile's pins already refuse a
+--- vanilla ROM long before this, so the answer here is only "not booted far enough yet".
+local function ready()
+    if BTHACK_READY then
+        return true
+    end
+    if BTHACK:getSettingPointer() == nil then
+        return false
+    end
+    BTHACK_READY = true
+    print("Randomizer data block found")
+    return true
+end
+
+--- AP64: the frame loop's work, once per poll rather than every 30 frames.
+---
+--- Upstream also read the controller here for its sneak control and called
+--- client.saveram() on a map change; neither can follow to a console.
+local function tick()
+    CURRENT_MAP = BTH:getMap()
+    messageQueue();
+    mumbo_announce()
+
+    if (CURRENT_MAP ~= 0x158 and CURRENT_MAP ~= 0x18B and CURRENT_MAP ~= 0x0) and GOAL_PRINTED == true
+    then
+        GOAL_PRINTED = false
+    end
+    if CURRENT_MAP == 0x158 and GOAL_PRINTED == false
+    then
+        printGoalInfo()
+    end
+    if CURRENT_MAP == 0xAF and SEND_SILO_MSG == true
+    then
+        if DIALOG_CHARACTER == 110
         then
-            print("This is the vanilla rom. Please use the patched version of Banjo-Tooie.")
-            return
+            table.insert(MESSAGE_TABLE, {SILO_MESSAGE, 17});
+        else
+            table.insert(MESSAGE_TABLE, {SILO_MESSAGE, DIALOG_CHARACTER});
         end
-        emu.frameadvance()
+        SEND_SILO_MSG = false
+    elseif CURRENT_MAP == 0x142 and SEND_SILO_MSG == true
+    then
+        SEND_SILO_MSG = false
     end
-    server, error = socket.bind('localhost', 21221)
-    local changed_map = 0x0
-    while true do
-        FRAME = FRAME + 1
-        if not (CUR_STATE == PREV_STATE) then
-            PREV_STATE = CUR_STATE
+end
+
+--- One line from Banjo-Tooie Client in, one line back out.
+---
+--- This is upstream's receive() with the reads and the writes the other way round: the
+--- client writes first, so its line is what starts the poll, and the reply is what
+--- SendToBTClient would have sent. A reply with no "jiggies" key is a keep-alive to the
+--- client, which is what it gets until the randomizer's block exists and the slot loads.
+function handle(line)
+    cartmem.begin_poll()
+
+    local message = json.decode(line)
+    local reply
+
+    if not ready() then
+        reply = { scriptVersion = SCRIPT_VERSION }
+    elseif PLAYER == "" and SEED == 0 then
+        -- The client sends its slot payload on the write after it reads a getSlot.
+        if message and message["slot_player"] ~= nil then
+            process_slot(message)
         end
-        if (CUR_STATE == STATE_OK) or (CUR_STATE == STATE_INITIAL_CONNECTION_MADE) or (CUR_STATE == STATE_TENTATIVELY_CONNECTED) then
-            if (FRAME % 30 == 1) then
-                CURRENT_MAP = BTH:getMap()
-                receive();
-                messageQueue();
-                mumbo_announce()
-                if VERROR == true
-                then
-                    print("ERROR: version mismatch. Please obtain the same version for everything")
-                    print("The versions that you are currently using are:")
-                    print("Connector Version: " .. BT_VERSION)
-                    print("Client Version: " .. CLIENT_VERSION)
-                    print("ROM Version: " .. BTH:getRomVersion())
-                    return
-                end
-                if (CURRENT_MAP ~= 0x158 and CURRENT_MAP ~= 0x18B and CURRENT_MAP ~= 0x0) and GOAL_PRINTED == true
-                then
-                    GOAL_PRINTED = false
-                end
-                if CURRENT_MAP == 0x158 and GOAL_PRINTED == false
-                then
-                    printGoalInfo()
-                end
-                if CURRENT_MAP == 0xAF and SEND_SILO_MSG == true
-                then
-                    if DIALOG_CHARACTER == 110
-                    then
-                        table.insert(MESSAGE_TABLE, {SILO_MESSAGE, 17});
-                    else
-                        table.insert(MESSAGE_TABLE, {SILO_MESSAGE, DIALOG_CHARACTER});
-                    end
-                    SEND_SILO_MSG = false
-                elseif CURRENT_MAP == 0x142 and SEND_SILO_MSG == true
-                then
-                    SEND_SILO_MSG = false
-                end
-                if changed_map ~= CURRENT_MAP
-                then
-                    client.saveram()
-                    changed_map = CURRENT_MAP
-                end
-                local check_controls = joypad.get()
-                -- SNEAK
-                if check_controls ~= nil and check_controls['P1 DPad U'] == true and SNEAK == false
-                then
-                    joypad.setanalog({['P1 Y Axis'] = 18 })
-                    SNEAK = true
-                elseif check_controls ~= nil and check_controls['P1 DPad U'] == false and SNEAK == true
-                then
-                    joypad.setanalog({['P1 Y Axis'] = '' })
-                    SNEAK = false
-                end
-            end
-        elseif (CUR_STATE == STATE_UNINITIALIZED) then
-            if  (FRAME % 60 == 1) then
-                server:settimeout(0)
-                local client, timeout = server:accept()
-                if timeout == nil then
-                    print('Initial Connection Made')
-                    CUR_STATE = STATE_INITIAL_CONNECTION_MADE
-                    BT_SOCK = client
-                    BT_SOCK:settimeout(0)
-                end
-            end
+        if PLAYER == "" and SEED == 0 then
+            reply = getSlotData()
+        else
+            tick()
+            reply = SendToBTClient()
         end
-        emu.frameadvance()
+    elseif VERROR == true then
+        print("ERROR: version mismatch. Please obtain the same version for everything")
+        print("Connector Version: " .. BT_VERSION)
+        print("Client Version: " .. tostring(CLIENT_VERSION))
+        print("ROM Version: " .. BTH:getRomVersion())
+        reply = { scriptVersion = SCRIPT_VERSION }
+    else
+        tick()
+        -- Built before the client's line is applied, because that is the state upstream's
+        -- send carried: it wrote, and only then read and applied what came back.
+        reply = SendToBTClient()
+        process_block(message)
     end
+
+    -- Writes land before the client hears about this poll.
+    cartmem.flush()
+    return json.encode(reply)
 end
 
 main()

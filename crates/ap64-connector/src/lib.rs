@@ -81,7 +81,21 @@ pub const OOT: Script = Script {
     client_timeout: None,
 };
 
-pub const SCRIPTS: &[Script] = &[GENERIC, OOT];
+/// Banjo-Tooie, for the randomizer's own client.
+pub const BT: Script = Script {
+    id: "bt",
+    name: "Banjo-Tooie",
+    client: "Banjo-Tooie Client",
+    source: include_str!("../connectors/bt/connector.lua"),
+    ports: &[21221],
+    modules: &[("cartmem", include_str!("../connectors/bt/cartmem.lua"))],
+    // Upstream never drops the client: its receive is non-blocking and silence is a
+    // `timeout` it counts and carries on from. The client is the end that gives up, with a
+    // 10 s read timeout, and it reconnects itself.
+    client_timeout: None,
+};
+
+pub const SCRIPTS: &[Script] = &[GENERIC, OOT, BT];
 
 const LIBS: &[(&str, &str)] = &[
     ("json", include_str!("../connectors/lib/json.lua")),
