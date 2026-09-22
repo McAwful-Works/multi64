@@ -37,6 +37,7 @@ pub fn builtin() -> Result<Vec<Bundle>, String> {
         builtin!("pmr", ["agent.bin", "stub.bin"]),
         builtin!("oot", ["agent.bin", "stub.bin"]),
         builtin!("k64", ["agent.bin", "stub.bin"]),
+        builtin!("bt", ["agent.bin", "stub.bin"]),
     ])
 }
 
@@ -131,6 +132,26 @@ pub fn default_output(input: &std::path::Path) -> std::path::PathBuf {
 mod tests {
     use super::*;
 
+    /// Every profile's layout.env, by id. `layout_for` is how a test reaches one, so a
+    /// profile added to `builtin` or `withheld` without a row here fails by name rather
+    /// than by being silently paired with the next profile's numbers.
+    const LAYOUTS: &[(&str, &str)] = &[
+        ("cv64", include_str!("../profiles/cv64/layout.env")),
+        ("pmr", include_str!("../profiles/pmr/layout.env")),
+        ("oot", include_str!("../profiles/oot/layout.env")),
+        ("k64", include_str!("../profiles/k64/layout.env")),
+        ("bt", include_str!("../profiles/bt/layout.env")),
+        ("cvlod", include_str!("../profiles/cvlod/layout.env")),
+    ];
+
+    fn layout_for(id: &str) -> &'static str {
+        LAYOUTS
+            .iter()
+            .find(|(name, _)| *name == id)
+            .map(|(_, env)| *env)
+            .unwrap_or_else(|| panic!("profiles/{id} has no row in LAYOUTS"))
+    }
+
     fn layout(text: &str, key: &str) -> u32 {
         let line = text
             .lines()
@@ -203,17 +224,10 @@ mod tests {
         const M64P: u32 = 0x4D36_3450;
         let mut bundles = builtin().unwrap();
         bundles.extend(withheld().unwrap());
-        let layouts = [
-            include_str!("../profiles/cv64/layout.env"),
-            include_str!("../profiles/pmr/layout.env"),
-            include_str!("../profiles/oot/layout.env"),
-            include_str!("../profiles/k64/layout.env"),
-            include_str!("../profiles/cvlod/layout.env"),
-        ];
-        for (b, env) in bundles.iter().zip(layouts) {
+        for b in bundles.iter() {
             let id = &b.profile.id;
             let w = stub_words(b);
-            let magic = layout(env, "AGENT_MAGIC_ADDR");
+            let magic = layout(layout_for(id), "AGENT_MAGIC_ADDR");
             assert!(
                 loads_word_at(&w, magic),
                 "{id}: the stub never reads the marker at 0x{magic:X}"
@@ -231,17 +245,15 @@ mod tests {
     fn builtin_profiles_match_the_build_that_made_their_blobs() {
         let mut bundles = builtin().unwrap();
         bundles.extend(withheld().unwrap());
-        let layouts = [
-            ("cv64", include_str!("../profiles/cv64/layout.env")),
-            ("pmr", include_str!("../profiles/pmr/layout.env")),
-            ("oot", include_str!("../profiles/oot/layout.env")),
-            ("k64", include_str!("../profiles/k64/layout.env")),
-            ("cvlod", include_str!("../profiles/cvlod/layout.env")),
-        ];
-        assert_eq!(bundles.len(), layouts.len());
-        for (b, (id, env)) in bundles.iter().zip(layouts) {
+        assert_eq!(
+            bundles.len(),
+            LAYOUTS.len(),
+            "LAYOUTS has a row per profile, and one of them is missing or spare"
+        );
+        for b in bundles.iter() {
             let p = &b.profile;
-            assert_eq!(p.id, id);
+            let id = p.id.as_str();
+            let env = layout_for(id);
             assert_eq!(p.agent.rom, layout(env, "AGENT_ROM"), "{id} AGENT_ROM");
             assert_eq!(p.agent.vram, layout(env, "AGENT_VRAM"), "{id} AGENT_VRAM");
             assert_eq!(

@@ -1,4 +1,4 @@
-n64/agent from 9f2a0dc
+n64/agent from fb7e380
 built by crates/ap64-core/agent/build.sh oot (mips64-ultra-elf-gcc (GCC) 15.2.0)
-agent.bin sha1 4d3f14b7dd6e5ff0282cda9224d13a4178849156
-stub.bin  sha1 7a08411586d0fddc137860cde1d7f7051e1fc774
+agent.bin sha1 04f0075c443fcde61c4bc7012bd9d0fdb1338742
+stub.bin  sha1 68ecac509f007d2454df6236eaab3829443b6fe8

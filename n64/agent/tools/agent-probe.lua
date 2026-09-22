@@ -12,7 +12,7 @@
 --
 -- Set GAME to read a profile's layout.env, or LAYOUT to point anywhere else.
 
-local GAME = "cv64"   -- profiles/<GAME>/layout.env, relative to this file in the repo
+local GAME = "bt"     -- profiles/<GAME>/layout.env, relative to this file in the repo
 local LAYOUT = nil    -- or an explicit path, which wins over GAME
 
 local here = debug.getinfo(1, "S").source:match("^@(.*[/\\])") or ""

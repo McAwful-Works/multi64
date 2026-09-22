@@ -1,4 +1,4 @@
-n64/agent from 9f2a0dc
+n64/agent from fb7e380
 built by crates/ap64-core/agent/build.sh pmr (mips64-ultra-elf-gcc (GCC) 15.2.0)
-agent.bin sha1 41dca1f293e07095f49099bc7715f90ebe2b799e
-stub.bin  sha1 6f7d4f58ce335d864508667500bfe96a34e29518
+agent.bin sha1 9f1b9915716f5aa8b5a50c12079fc8047e9d86b9
+stub.bin  sha1 fcf51e6dc760038798ee167fa04511b98bdf1532

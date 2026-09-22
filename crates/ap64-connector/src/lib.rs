@@ -62,8 +62,21 @@ pub const GENERIC: Script = Script {
     source: include_str!("../connectors/generic/connector.lua"),
     ports: &[43055, 43056, 43057, 43058, 43059, 43060],
     modules: &[],
-    // BizHawk Client pings well inside it.
-    client_timeout: Some(Duration::from_secs(5)),
+    // Was Some(5s), on the reasoning that "BizHawk Client pings well inside it". True of a
+    // client attached to an emulator, where a read returns in microseconds. False over a
+    // cart: BizHawk Client is request/response, so while it waits for OUR reply it sends
+    // nothing, and `last_heard` ages by however long the round trip took.
+    //
+    // The check in server::serve_until runs AFTER handle() returns, so a reply that took
+    // longer than the timeout was answered and then the client evicted for the silence we
+    // ourselves caused. Observed on a console: Castlevania 64 dropped the client roughly
+    // every few minutes, always recovering about a second later, never losing a check --
+    // the signature of eviction rather than a fault.
+    //
+    // Nothing needed this. A timeout's job is to free the slot for a new client, and
+    // accept_newest() already replaces the old one the moment a new connection arrives.
+    // oot and bt have always been None and neither shows the behaviour.
+    client_timeout: None,
 };
 
 /// Ocarina of Time, for Archipelago's OoT Client.
@@ -81,7 +94,21 @@ pub const OOT: Script = Script {
     client_timeout: None,
 };
 
-pub const SCRIPTS: &[Script] = &[GENERIC, OOT];
+/// Banjo-Tooie, for the randomizer's own client.
+pub const BT: Script = Script {
+    id: "bt",
+    name: "Banjo-Tooie",
+    client: "Banjo-Tooie Client",
+    source: include_str!("../connectors/bt/connector.lua"),
+    ports: &[21221],
+    modules: &[("cartmem", include_str!("../connectors/bt/cartmem.lua"))],
+    // Upstream never drops the client: its receive is non-blocking and silence is a
+    // `timeout` it counts and carries on from. The client is the end that gives up, with a
+    // 10 s read timeout, and it reconnects itself.
+    client_timeout: None,
+};
+
+pub const SCRIPTS: &[Script] = &[GENERIC, OOT, BT];
 
 const LIBS: &[(&str, &str)] = &[
     ("json", include_str!("../connectors/lib/json.lua")),

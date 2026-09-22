@@ -19,11 +19,30 @@ use crate::{m64p, Log};
 
 /// How long to wait for the cart to answer one request.
 ///
-/// Generous because the cart services M64P from its per-frame hook: a reply cannot
-/// arrive faster than the ROM's next frame, and a ROM that stalls (loading, paused)
-/// will simply be late. The Archipelago connector polls at 2 Hz, so seconds of
-/// headroom cost nothing.
-const REPLY_TIMEOUT: Duration = Duration::from_secs(3);
+/// This was 3 s, on the reasoning that "the Archipelago connector polls at 2 Hz, so
+/// seconds of headroom cost nothing". Both halves are wrong for the clients AP64 actually
+/// serves, and the pair of them cost the connection.
+///
+/// Archipelago's BizHawk Client polls far harder than 2 Hz -- measured over one session,
+/// 16,437 requests in 1,492 s, about 11/s -- and it puts its OWN 5 s deadline on each one
+/// (worlds/_bizhawk/__init__.py, `_send_message`). It logs nothing when that fires; it just
+/// drops the socket and reconnects.
+///
+/// So this timeout is not free headroom, it is a budget shared with the client, and
+/// [`super::backend::SOFT_RETRIES`] spends it up to three times before the reconnect loop is
+/// even reached. At 3 s that is 9 s worst case against a 5 s deadline: any hiccup needing
+/// two retries lost the client, by arithmetic rather than bad luck.
+///
+/// The penalty is quantized, which is what makes a smaller value safe. A tap between client
+/// and AP64 timed 336 round trips: p50 10 ms, p90 84 ms, and NOTHING between 250 ms and
+/// 3 s -- the slow ones sat at 3,078/3,086 ms and 6,053/6,082 ms, exactly one and two of
+/// these timeouts. A reply is either serviced within a few frames or missed outright; there
+/// is no slow-but-arriving regime for a longer wait to rescue.
+///
+/// 1.2 s is therefore ~5x the slowest reply ever actually observed to arrive, while
+/// 3 x 1.2 = 3.6 s keeps the whole retry budget inside the client's 5 s. The reconnect loop
+/// below is untouched: that is the real "cart is gone" path and should stay patient.
+pub(crate) const REPLY_TIMEOUT: Duration = Duration::from_millis(1200);
 
 pub struct Multi64Transport {
     ws: WebSocket<MaybeTlsStream<TcpStream>>,

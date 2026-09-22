@@ -51,8 +51,18 @@ static int begin(uint32_t *sr)
         return 0;
     }
     *sr = int_mask();
-    /* A DMA may have started between the check and the mask. */
-    if (!wait_bits(PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY)) {
+    /*
+     * A DMA may have started between the check and the mask -- so look, and give up if one
+     * has. Do NOT wait for it here. The wait above is harmless because interrupts are on
+     * and the game keeps running; waiting in this masked span instead holds VI, AI and SI
+     * off for the length of the game's own transfer, every frame, until the threads blocked
+     * on those interrupts stop. See pi_idle_now() in sc64.c, where that froze Banjo-Tooie
+     * seconds into its opening cutscene with the music still playing.
+     *
+     * Untested on hardware: no X7 or PRO here. It is the same defect the SC64 driver had,
+     * in the same shape, and less masked time cannot be worse.
+     */
+    if ((*io(PI_STATUS) & (PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY)) != 0u) {
         int_restore(*sr);
         return 0;
     }

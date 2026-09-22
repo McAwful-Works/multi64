@@ -86,6 +86,13 @@ static struct {
     int masked;
     /* Cart loads and stores made while PI_STATUS said the bus was busy. */
     int access_while_busy;
+    /* PI_STATUS reads inside the current masked span, and the worst any span has made. A
+       masked span must look at the bus once and give up, never wait a game's DMA out. */
+    int status_reads_this_span;
+    int max_status_reads_masked;
+    /* A game DMA that starts exactly when interrupts go off: the window between the
+       unmasked wait and int_mask(), which is the only one that can still surprise us. */
+    uint32_t busy_on_mask;
 } f;
 
 static void arm(enum trigger on, uint32_t addr, uint32_t value, uint32_t bits, uint32_t reads)
@@ -188,6 +195,9 @@ uint32_t sc64_test_pi_load(uint32_t addr)
     uint32_t v;
 
     if (a == F_PI_STATUS) {
+        if (f.masked > 0) {
+            f.status_reads_this_span++;
+        }
         if (f.busy_reads == 0u) {
             return 0u;
         }
@@ -228,12 +238,21 @@ uint32_t sc64_test_pi_load(uint32_t addr)
 uint32_t sc64_test_int_mask(void)
 {
     f.masked++;
+    f.status_reads_this_span = 0;
+    /* The game's OS got the bus in the instant before interrupts went off. */
+    if (f.busy_on_mask != 0u) {
+        f.busy_bits = F_DMA_BUSY;
+        f.busy_reads = f.busy_on_mask;
+    }
     return 0x5A5A0001u;
 }
 
 void sc64_test_int_restore(uint32_t sr)
 {
     assert(sr == 0x5A5A0001u && f.masked > 0);
+    if (f.status_reads_this_span > f.max_status_reads_masked) {
+        f.max_status_reads_masked = f.status_reads_this_span;
+    }
     f.masked--;
 }
 
@@ -280,6 +299,43 @@ static void a_request_and_its_reply_round_trip(void)
     assert(sc64_write(1u, msg, 24u) == 1);
     assert(f.usb_writes == 1 && f.sent_len == 24u && memcmp(f.sent_words, msg, 24u) == 0);
     assert(f.rom_write == 0u && f.masked == 0 && f.access_while_busy == 0);
+}
+
+/*
+ * The freeze this driver must never cause again.
+ *
+ * A game DMA can begin in the window between the unmasked pi_wait_idle() and int_mask().
+ * Waiting it out there is the one wait that is not safe: interrupts are off, so VI, AI and
+ * SI are held off for as long as the game's own transfer takes, every frame, until the
+ * threads blocked on them stop. That froze Banjo-Tooie seconds into its opening cutscene
+ * with the music still playing -- 99.6% of its ROM is compressed, so it streams from ROM
+ * almost continuously and the window is open far more of the time than in other games.
+ *
+ * Bounding the spin is not the fix and was never enough: PI_WAIT_SPINS stops the console
+ * hanging forever, but 100,000 spins with interrupts masked is already far past a frame.
+ * Inside the mask the driver must look once and give up.
+ */
+static void a_dma_starting_at_the_mask_is_not_waited_for(void)
+{
+    uint8_t dt = 0u;
+
+    fresh_cart();
+    fill(msg, 6u, 0x4D363442u);
+    host_sends(1u, msg, 24u);
+
+    /* The bus goes busy the instant interrupts go off, and stays that way. */
+    f.busy_on_mask = FOREVER;
+    assert(sc64_poll(&dt) == 0u && "a bus the game holds means no packet this frame");
+    assert(f.masked == 0 && "interrupts were put back");
+    assert(f.max_status_reads_masked <= 1
+           && "a masked span must look at PI_STATUS once, never spin on it");
+    assert(f.access_while_busy == 0);
+
+    /* And nothing is lost: the packet is still waiting once the game's DMA ends. */
+    f.busy_on_mask = 0u;
+    bus_recovers();
+    assert(sc64_poll(&dt) == 24u && f.usb_reads == 1);
+    assert(sc64_read(got, 0u, 24u) == 1 && memcmp(got, msg, 24u) == 0);
 }
 
 /*
@@ -476,6 +532,7 @@ int main(void)
 {
     signal(SIGALRM, on_alarm);
     RUN(a_request_and_its_reply_round_trip);
+    RUN(a_dma_starting_at_the_mask_is_not_waited_for);
     RUN(a_dropped_usb_read_is_not_reported_as_a_packet);
     RUN(a_failed_restore_of_write_enable_is_retried);
     RUN(a_write_enable_that_never_reached_the_cart_changes_nothing);

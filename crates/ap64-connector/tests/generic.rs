@@ -327,3 +327,32 @@ fn an_agent_without_peekrom_is_refused_up_front() {
     .unwrap();
     assert!(err.contains("PEEKROM"), "{err}");
 }
+
+/// No script may evict a client for being slow to speak.
+///
+/// Every Archipelago client AP64 serves is request/response: it writes a line, then blocks
+/// reading the reply. While it blocks it sends nothing, so `Client::last_heard` ages by
+/// exactly however long the cart took to answer -- and server::serve_until checks the
+/// timeout AFTER handle() returns. A reply slower than the timeout is therefore delivered
+/// and the client dropped for silence the server itself caused.
+///
+/// `generic` carried Some(5s) for exactly this reason and it showed on a console:
+/// Castlevania 64 lost its client every few minutes, each time reconnecting about a second
+/// later with no check lost, which is eviction rather than a fault. A cart round trip has
+/// no upper bound worth betting a disconnect on -- the game owns the bus and the agent
+/// waits its turn.
+///
+/// Nothing is given up by dropping it: a timeout exists to free the slot for a new client,
+/// and accept_newest() already replaces the old one when a new connection arrives.
+#[test]
+fn no_script_drops_a_client_for_being_slow() {
+    for script in ap64_connector::SCRIPTS {
+        assert!(
+            script.client_timeout.is_none(),
+            "script {:?} sets client_timeout = {:?}; a request/response client cannot ping \
+             while it waits for the cart, so this evicts healthy clients on a slow round trip",
+            script.id,
+            script.client_timeout,
+        );
+    }
+}
