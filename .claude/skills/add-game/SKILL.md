@@ -42,6 +42,23 @@ separate piece of work, not a profile.
 Diddy Kong Racing was dropped at exactly this step, after it was assumed from the game
 rather than checked in the apworld.
 
+The import tells you *whether* a connector is forked, not what forking it would cost, and
+it misses a world that imports the generic client but ships a lua doing work of its own.
+Both are the same failure: work the connector performs on a frame callback never reaches
+the wire, so an AP64 stand-in replaying the client's requests never performs it. That is
+what left Banjo-Tooie's ROM uninitialised for a week, presenting as a freeze.
+
+[`ap64-connector/tools/connector-trace.lua`](../../../crates/ap64-connector/tools/connector-trace.lua)
+measures it.
+Load it in BizHawk with `CONNECTOR_TRACE_TARGET` set to the world's lua, play, and read the
+report: accesses tagged `client` are replayable and free, and every other row is work a
+stand-in would have to reimplement, priced in coalesced regions -- one region is one round
+trip, about 67 ms. Compare that against a 16.7 ms frame before agreeing to a fork.
+
+GoldenEye 007 was parked at this step. Its lua is a fork of the generic connector that also
+walks an inventory linked list and rewrites objects on `onframestart`, and its ROM patch
+removes the native paths that did that work, so none of it is optional.
+
 ## 2. Build a seed to work against
 
 Everything downstream needs a real patched ROM, not the retail one: the randomizer's own
