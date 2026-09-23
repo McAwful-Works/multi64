@@ -63,8 +63,8 @@ make
 **SummerCart64** reference — serial L2 on the USB port (not `multi64d` WebSocket):
 
 ```sh
-cargo run -p sc64-l3-framing-e2e --release -- --port COM3
-cargo run -p sc64-echo-test -- --port COM3
+cargo run -p sc64-l3-framing-e2e --release -- --port COM3   # whole L3 frames
+cargo run -p sc64-echo-test -- --port COM3                  # raw L3 bytes echoed back
 ```
 
 **EverDrive X7:** same ROM — the committed binary boots on an EverDrive and shows an on-screen **UNVALIDATED** warning; use `ed64-l3-framing-e2e` / `ed64-echo-test`. [`multi64-ed64-l2`](../crates/ed64-l2/README.md) implements `Ed64L2Pipe`, but the mapping is **not yet validated**: it has run on one X7 (see the [hardware record](#hardware-record)), and these tools, or the test app, are how the rest of §4.5 gets answered. Start with `ed64-smoke` to confirm the port, then see [`l3-over-everdrive-x7.md`](../docs/spec/l3-over-everdrive-x7.md) §4.5.
@@ -76,8 +76,8 @@ cargo run -p sc64-echo-test -- --port COM3
 With the ROM in **M64T_PROTO** or **BENCH** and `multi64d` running, use `multi64-test-connector` ([`docs/connectors/test-rom.md`](../docs/connectors/test-rom.md)):
 
 ```sh
-cargo run -p multi64-test-connector -- ping
-cargo run -p multi64-test-connector -- listen
+cargo run -p multi64-test-connector -- ping     # one round trip
+cargo run -p multi64-test-connector -- listen   # print what the ROM sends
 ```
 
 ### Hardware record

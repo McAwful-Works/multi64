@@ -5,9 +5,9 @@ description: Add a new game to AP64 - checking its Archipelago world is one the 
 
 # Adding a game to AP64
 
-Four games are in: Castlevania 64, Paper Mario, Ocarina of Time and Kirby 64, with
-Legacy of Darkness written and held back in `ap64_core::withheld()`. Each took a day or
-two, and most of that was spent on things this file now answers.
+Six games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie and
+Mario Kart 64, with Legacy of Darkness written and held back in `ap64_core::withheld()`.
+Each took a day or two, and most of that was spent on things this file now answers.
 
 [`docs/integration/placing-the-agent.md`](../../../docs/integration/placing-the-agent.md)
 is normative for the ROM side and is not repeated here. This is the spine around it,
@@ -19,7 +19,8 @@ fail, and they are cheap on purpose: everything expensive is behind them.
 ## 1. Can the generic connector drive it?
 
 Check before anything else. A game whose world needs its own client is a different and
-much larger job: AP64 would need a connector of its own, like `connectors/oot/`.
+much larger job: AP64 would need a connector of its own, like `connectors/oot/` or
+`connectors/bt/`.
 
 Open the apworld and look for a client that subclasses Archipelago's BizHawk client:
 
@@ -33,10 +34,10 @@ print([l for l in z.read('GAME/client.py').decode('utf8','replace').split(chr(10
 
 `from worlds._bizhawk.client import BizHawkClient` means **generic**: stock Archipelago's
 BizHawk Client runs the world's own logic, and AP64 needs no connector work. Paper Mario,
-CV64, CVLoD and Kirby 64 all look like this.
+CV64, CVLoD, Kirby 64 and Mario Kart 64 all look like this.
 
-No such import, or a world that ships its own launcher (Ocarina of Time uses
-`ArchipelagoOoTClient.exe`), means a **forked** connector. Say so and stop; that is a
+No such import, or a world that ships its own client (Ocarina of Time's OoT Client,
+Banjo-Tooie's Banjo-Tooie Client), means a **forked** connector. Say so and stop; that is a
 separate piece of work, not a profile.
 
 Diddy Kong Racing was dropped at exactly this step, after it was assumed from the game

@@ -77,7 +77,7 @@ Targeted testing:
 ```sh
 cargo test -p multi64-sc64-sd                  # one crate
 cargo test -p multi64-l3 stream_decoder_resync  # one test by substring
-cargo test -p multi64-sc64-sd -- --exact partition::tests::detect_partition_legacy_mbr_first_lba
+cargo test -p multi64-sc64-sd -- --exact partition::tests::detect_partition_legacy_mbr_first_lba   # one test by path
 ```
 
 Tests live in `crates/{l3,sc64-link,sc64-l2,ed64-l2,ed64pro-link,ed64pro-l2,cart-probe,multi64-sc64-sd,multi64-ed64-link,ed64-smoke,xfer64,multi64d,multi64,sc64-sd-e2e,ap64-core,ap64-cart,ap64-connector}` — note `multi64d` has an HTTP integration suite in `tests/http.rs` (origin guard, faulted `serialActive`, resume), and `crates/multi64/src-tauri` unit-tests the settings and tray-menu label logic. Everything in CI is host-only — the SD/FAT logic is covered by RAM-disk tests, and no test touches hardware.

@@ -148,17 +148,17 @@ latest hardware run is recorded in [`n64/README.md`](../../n64/README.md#hardwar
 ## Examples
 
 ```sh
-cargo run -p multi64-test-connector -- ping
-cargo run -p multi64-test-connector -- echo --text hello
-cargo run -p multi64-test-connector -- version
-cargo run -p multi64-test-connector -- req-controller
-cargo run -p multi64-test-connector -- session-open
-cargo run -p multi64-test-connector -- eeprom-info
-cargo run -p multi64-test-connector -- eeprom-read --offset 0 --len 16
-cargo run -p multi64-test-connector -- sram-info
-cargo run -p multi64-test-connector -- rumble --port 0 --frames 60
-cargo run -p multi64-test-connector -- display-text --text "hello from host"
-cargo run -p multi64-test-connector -- listen
+cargo run -p multi64-test-connector -- ping                                    # one round trip
+cargo run -p multi64-test-connector -- echo --text hello                       # echoed back
+cargo run -p multi64-test-connector -- version                                 # the ROM's version string
+cargo run -p multi64-test-connector -- req-controller                          # one controller snapshot
+cargo run -p multi64-test-connector -- session-open                            # open a session; save writes need one
+cargo run -p multi64-test-connector -- eeprom-info                             # what EEPROM the ROM has
+cargo run -p multi64-test-connector -- eeprom-read --offset 0 --len 16         # first 16 bytes of EEPROM
+cargo run -p multi64-test-connector -- sram-info                               # what SRAM the ROM has
+cargo run -p multi64-test-connector -- rumble --port 0 --frames 60             # rumble port 0 for 60 frames
+cargo run -p multi64-test-connector -- display-text --text "hello from host"   # text on the ROM's screen
+cargo run -p multi64-test-connector -- listen                                  # print what the ROM sends
 ```
 
 Press **B** on the ROM for **STRESS_LARGE**, and in **BENCH** mode wait for **BENCH_TICK** lines. A **CONTROLLER** snapshot is host-driven — send `req-controller`; there is no button for it. Non-**APPLICATION** L3 (e.g. **C-up** / **Start** on the ROM) may appear as non-**M64T** payloads depending on host decoding.

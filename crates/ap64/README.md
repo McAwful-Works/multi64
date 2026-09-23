@@ -17,7 +17,8 @@ Play Archipelago N64 seeds on a real console, from Windows. AP64 does two jobs:
    so there is no file to choose: pick the game, press Start, open the client.
 
 Supported today, each patched and played on a SummerCart64 with checks sent and items
-received (the first three on 2026-09-18, Kirby 64 on 2026-09-21):
+received (the first three on 2026-09-18, Kirby 64 on 2026-09-21, Banjo-Tooie and Mario Kart 64
+on 2026-09-22):
 
 - **Castlevania 64 (US 1.0)**, through Archipelago's BizHawk Client.
 - **Paper Mario (US 1.0)** with the Paper Mario Randomizer, through BizHawk Client.
@@ -40,6 +41,19 @@ received (the first three on 2026-09-18, Kirby 64 on 2026-09-21):
   and the one instruction in the 32 MiB that forms `0x80400000` is a dead store nothing
   reads back. In BizHawk the agent loads, its image stays identical to the ROM's, and it
   ticks once per frame.
+- **Banjo-Tooie (US)**, jjjj12212's Banjo-Tooie world, through its Banjo-Tooie Client. Needs
+  an Expansion Pak, as the retail game does. The world's released version ships no connector
+  script, so AP64 forks the one that speaks the client's socket protocol;
+  `connectors/bt/UPSTREAM` says where it came from and which version string to watch. Almost
+  all of the game is compressed, so the hook, the stub and the agent all go in the block the
+  randomizer appends, and the agent is in RAM before the first frame because it sits inside
+  the part of that block the randomizer's boot code already copies there. Played with a
+  1,077-location seed.
+- **Mario Kart 64 (US)**, Archipelago's Mario Kart 64 world, through BizHawk Client. The agent
+  lives in the Expansion Pak and stays out of the way without one. Whether the world itself
+  runs without a Pak is not yet known: its own code sits where the Pak is, and no console has
+  been tried with the Pak removed. Played for 21 checks across three courses, with every item
+  landing exactly once.
 
 Written and working, but **not offered in the app**, because the game cannot be played
 through for a reason outside AP64. Kept in the tree and checked by the same tests as the
