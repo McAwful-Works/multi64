@@ -1,7 +1,7 @@
 /* ===========================================================================
    Multi64 Test-only rules. The palette, size tokens, buttons, fields, hints and the app header
    brand come from styles.css (the shared base, byte-identical across the apps); this file only
-   lays out what this window has and the others do not. No colour literals here -- use the tokens,
+   lays out what this window has and the others do not. No color literals here -- use the tokens,
    or they survive unchanged into Light and High contrast.
    =========================================================================== */
 

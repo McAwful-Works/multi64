@@ -205,7 +205,7 @@ impl Multi64Transport {
     ///
     /// Replies for other rids are dropped rather than queued: every caller here is
     /// synchronous and one-request-at-a-time, so an unmatched rid means a reply to a
-    /// request we already gave up on, and keeping it would only desynchronise us
+    /// request we already gave up on, and keeping it would only desynchronize us
     /// further.
     fn await_response(&mut self, want_rid: Option<u16>) -> io::Result<m64p::Response> {
         let deadline = Instant::now() + REPLY_TIMEOUT;

@@ -158,7 +158,7 @@ function installTauriStub(scenario = {}) {
   window.__TAURI__ = {
     core: {
       invoke: async (cmd, args) => {
-        // The Channel passed to start_drag is not JSON; record a marker instead of serialising it.
+        // The Channel passed to start_drag is not JSON; record a marker instead of serializing it.
         calls.push({ cmd, args: JSON.parse(JSON.stringify(args ?? {}, (k, v) => (k === "onEvent" ? "<channel>" : v))) });
         // A check can slow one command down to watch what the UI does while it runs.
         const delay = window.__TAURI_DELAYS__?.[cmd];

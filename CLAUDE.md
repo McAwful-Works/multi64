@@ -19,7 +19,7 @@ The `multi64d` builds are not optional and are not a packaging step — anything
 
 Clippy runs with `-D warnings`, so an unused import or a stray `mut` fails CI the same as a type error.
 
-CI runs four more jobs, all on Ubuntu only. The first is the Xfer64 frontend checks, which nothing above covers:
+CI runs five more jobs, all on Ubuntu only. The first is the Xfer64 frontend checks, which nothing above covers:
 
 ```sh
 cd crates/xfer64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
@@ -45,6 +45,17 @@ AP64's frontend checks are a third job of the same kind, for its Patch and Play 
 ```sh
 cd crates/ap64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
 ```
+
+The documentation check is the fourth. It needs nothing but `sh`, `git` and `grep`:
+
+```sh
+sh .claude/skills/check-docs/check-docs.sh
+```
+
+It validates markdown links and heading anchors, catches backtick-wrapped links that render as
+code rather than a link, checks `docs/spec/` paths cited from Rust or JS, and enforces American
+English across Markdown and source. It takes about a minute. See
+[`.claude/skills/check-docs/SKILL.md`](.claude/skills/check-docs/SKILL.md).
 
 And the last — the cart agent's host tests, the only CI job that compiles N64 code
 (for the PC, not the console). It needs a host `gcc` or `clang` and `make`, nothing from the N64 toolchain:
@@ -75,7 +86,7 @@ Tests live in `crates/{l3,sc64-link,sc64-l2,ed64-l2,ed64pro-link,ed64pro-l2,cart
 
 `npm install` inside `crates/<app>/` first — it supplies the Tauri CLI. `npm run build` maps to `tauri build`. `frontendDist` points at `../src`, so the frontend is plain JS served as-is; there is no bundler output step to run.
 
-Styling is tokenised: `:root` in each app's `styles.css` holds the palette and **no rule outside it may contain a colour literal**, or the change survives unchanged into the Light and High-contrast themes. `appearance.js` is duplicated verbatim in every app carrying the shared base — Multi64, Xfer64, Multi64 Test and AP64 — must stay Tauri-free, and must load non-deferred in `<head>`. `styles.css` is duplicated verbatim too: it is the shared base (palette, size tokens, buttons, fields, dialogs), app-only rules go in the app's own sheet, and a test fails if any copy differs. `multi64-test-connector-gui` is deliberately outside all of this. See [`docs/frontend-appearance.md`](docs/frontend-appearance.md) before editing any CSS or frontend JS.
+Styling is tokenized: `:root` in each app's `styles.css` holds the palette and **no rule outside it may contain a color literal**, or the change survives unchanged into the Light and High-contrast themes. `appearance.js` is duplicated verbatim in every app carrying the shared base — Multi64, Xfer64, Multi64 Test and AP64 — must stay Tauri-free, and must load non-deferred in `<head>`. `styles.css` is duplicated verbatim too: it is the shared base (palette, size tokens, buttons, fields, dialogs), app-only rules go in the app's own sheet, and a test fails if any copy differs. `multi64-test-connector-gui` is deliberately outside all of this. See [`docs/frontend-appearance.md`](docs/frontend-appearance.md) before editing any CSS or frontend JS.
 
 Build `multi64d` **before** anything that compiles the Multi64 Tauri crate, and with the **same** profile. `crates/multi64/src-tauri/build.rs` copies the daemon into `resources/`, and `tauri.conf.json` declares `resources/multi64d.exe` under `bundle.resources`. A declared resource that is missing is a **hard error** in `tauri-build`: the `cargo:warning` from `build.rs` is not the whole story — the build then fails anyway. The copied `resources/multi64d.exe` is gitignored, so this bites a clean checkout running `cargo clippy --workspace` or `cargo build --workspace`, not just packaging.
 
@@ -119,6 +130,17 @@ The **EverDrive-64 PRO** has its own pipe, `Ed64ProL2Pipe` (`multi64-ed64pro-l2`
 - **`main` and `release` are the only long-lived branches.** Everything else is a topic branch — delete it, local and remote, as soon as its PR merges. Dependabot deletes its own.
 - **`docs/spec/` is normative.** Wire behavior changes must land with the spec edit in the same change. Bump L3 **Protocol-Major**/**Protocol-Minor** only when the byte contract changes (`l3-bridge-protocol-v1.md` §12); **Spec-Revision** is maintainer-controlled — do not bump it on your own.
 - `docs/README.md` is the spec map and states the intended reading order for implementors.
+- **Documentation describes the repo as it is.** A change that makes an existing sentence false
+  corrects it in the same change, and one that adds behavior nothing describes adds the
+  description — in whichever place already owns that subject (a README, a module `//!`, a
+  `docs/` page), or a new one when none does. Stale documentation is a defect, not debt: a
+  reader cannot tell a sentence that was never true from one that stopped being true, so one
+  wrong line costs the whole page its authority. The `docs-reviewer` subagent reviews a diff
+  for exactly this.
+- **American English**, in prose and in the names that get read as prose — test names, error
+  messages, log lines. `/check-docs` enforces it from
+  `.claude/skills/check-docs/british-spellings.txt`; add to that list rather than loosening how
+  it matches. `aria-labelledby` is an ARIA attribute, not a word, and is exempt.
 - `hadris-fat` is pinned to a git rev in the workspace `[patch.crates-io]` because the 1.1.0 release fails to build with `--features exfat`. Do not unpin it to resolve a dependency conflict.
 - MSRV is 1.80 and edition 2021, set once in `[workspace.package]`.
 - Licensing is `MIT OR Apache-2.0`; new crates should inherit `license.workspace = true`.
@@ -127,8 +149,9 @@ The **EverDrive-64 PRO** has its own pipe, `Ed64ProL2Pipe` (`multi64-ed64pro-l2`
 
 Committed under `.claude/`, so they apply for anyone working on this repo:
 
-- **`/preflight`** — runs the six steps of CI's Rust job in order and reports the first failure. It does not run CI's four Ubuntu-only jobs (the three frontend suites and the agent host test). Not every machine holding this repo has a Rust toolchain; when `cargo` is absent, say the change is unverified rather than implying otherwise.
-- **`/check-docs`** — validates markdown links, heading anchors, backtick-wrapped links, and `docs/spec/` paths cited from Rust/JS. Run after any spec rename or file move; nothing in CI covers this.
+- **`/preflight`** — runs the six steps of CI's Rust job in order and reports the first failure. It does not run CI's five Ubuntu-only jobs (the three frontend suites, the agent host test and the documentation check). Not every machine holding this repo has a Rust toolchain; when `cargo` is absent, say the change is unverified rather than implying otherwise.
+- **`/check-docs`** — validates markdown links, heading anchors, backtick-wrapped links, `docs/spec/` paths cited from Rust/JS, and American English across Markdown and source. CI runs it too, so a failure here is a failure there. Run it after any spec rename or file move, and after writing prose anywhere. It takes about a minute.
 - **`/implement-ed64-l2`** — the ED64 L2 backend walkthrough. The blocker is `l3-over-everdrive-x7.md` §4, not the code.
 - **`/add-game`** — adding a game to AP64: checking its Archipelago world is one the generic connector can drive, building a seed, finding RAM and a hook site by measurement, and verifying a profile before it reaches a console. The ROM side stays normative in `docs/integration/placing-the-agent.md`; the skill is the spine around it, including the Archipelago half.
+- **`docs-reviewer`** subagent — reviews a diff for documentation that the change has made wrong, or behavior it added that nothing describes. Worth running on any change that alters behavior a reader was told about.
 - **`spec-reviewer`** subagent — reviews a diff against `docs/spec/` as normative. Worth running on changes to `crates/l3`, any `*-l2` or `*-link` crate, `multi64d`'s WebSocket path, or the specs themselves.

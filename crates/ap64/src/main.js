@@ -48,7 +48,7 @@ function fitWindow() {
   let height = page;
   if (openDialogName) {
     const panel = $(DIALOGS[openDialogName].panel).querySelector(".dialog-panel");
-    // The dialog is centred with a margin above and below it; give it both.
+    // The dialog is centerd with a margin above and below it; give it both.
     height = Math.max(page, Math.ceil(panel.getBoundingClientRect().height) + 48);
   }
   if (height === fittedHeight) return;
@@ -425,7 +425,7 @@ function renderPlay() {
   $("play-url").disabled = playRunning;
 }
 
-/** One row per link: the state drives both the words and the dot's colour (app.css). */
+/** One row per link: the state drives both the words and the dot's color (app.css). */
 function renderLinks(s) {
   for (const [key, id] of [
     ["bridge", "link-bridge"],

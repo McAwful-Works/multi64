@@ -142,7 +142,7 @@ pub enum ConnectorCommand {
         #[serde(default)]
         text: String,
     },
-    /// Put the ROM into a mode (`0` RAW_ECHO … `4` MEM_AGENT). Honoured in every mode, RAW_ECHO
+    /// Put the ROM into a mode (`0` RAW_ECHO … `4` MEM_AGENT). Honored in every mode, RAW_ECHO
     /// included, which is what makes an unattended run possible at all.
     SetMode {
         mode: u8,
@@ -740,7 +740,7 @@ impl DiagSnapshot {
         })
     }
 
-    /// True when nothing desynchronised: a reply arriving proves the round trip, these prove the
+    /// True when nothing desynchronized: a reply arriving proves the round trip, these prove the
     /// stream underneath it stayed in step.
     pub fn is_clean(&self) -> bool {
         self.rx_overflow == 0 && self.rx_resync_bytes == 0 && self.bad_header_drops == 0
@@ -1888,7 +1888,7 @@ mod hex_tests {
     }
 
     /// The counters are the whole point of DIAG: a reply proves the round trip, these prove the
-    /// stream underneath it never desynchronised. Any one of them is enough to fail a run.
+    /// stream underneath it never desynchronized. Any one of them is enough to fail a run.
     #[test]
     fn any_stream_health_counter_makes_a_snapshot_unclean() {
         for at in [8usize, 12, 16] {

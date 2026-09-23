@@ -14,13 +14,13 @@
 #define CART_LINK_L3 0x01
 
 enum cart_link_kind {
-    /** No cart that libdragon or ed64pro.c recognises. */
+    /** No cart that libdragon or ed64pro.c recognizes. */
     CART_LINK_NONE = 0,
     CART_LINK_SC64,
     /** X-series (X7, 3.0), through libdragon. */
     CART_LINK_EVERDRIVE,
     CART_LINK_ED64PRO,
-    /** Recognised by libdragon, but not a cart this ROM supports (64drive). */
+    /** Recognized by libdragon, but not a cart this ROM supports (64drive). */
     CART_LINK_OTHER,
 };
 

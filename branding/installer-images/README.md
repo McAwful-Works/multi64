@@ -15,7 +15,7 @@ Regenerates the Windows installer bitmaps for Multi64, Xfer64 and AP64 from the 
 
 Neither ImageMagick, Inkscape, rsvg nor a Python SVG library is available on the machine this was
 built on, and adding a native image dependency for four static files is not worth it. So the
-browser rasterises: `gen.html` draws each SVG onto a canvas at the target size over the backdrop,
+browser rasterizes: `gen.html` draws each SVG onto a canvas at the target size over the backdrop,
 and POSTs the raw RGBA to `bmpgen.js`, which writes a 24-bit uncompressed BMP. No image library on
 either side — BMP is simple enough to emit directly.
 
@@ -34,6 +34,6 @@ placements can be checked before anything is copied in.
 The backdrop is `#14161c`, matching the apps' dark UI so the installer and the app read as
 continuous. BMPs cannot carry transparency, which is why a backdrop is needed at all.
 
-The mark is right-aligned on the two wide strips and centred on the sidebar. On `wix-dialog` it
+The mark is right-aligned on the two wide strips and centerd on the sidebar. On `wix-dialog` it
 sits in the **left ~164px band**: WixUI draws the welcome text over the right of that bitmap, so
-anything centred there would end up behind the text.
+anything centerd there would end up behind the text.

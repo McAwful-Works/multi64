@@ -80,7 +80,7 @@ M64P makes each request atomic against the running game
 
 ## 5. The ROM comes from the cart
 
-Clients read the ROM too: to recognise the game, to find seed data and a login key, to detect a ROM
+Clients read the ROM too: to recognize the game, to find seed data and a login key, to detect a ROM
 swap by its hash. An agent whose `HELLO_ACK` sets `flags` bit 1 reads it from the cart with `PEEKROM`
 ([spec §4.2](../spec/memory-l3-application-v0.md#42-cartridge-rom-peekrom)), so the ROM the host
 serves is the one the console is running, and the player has no file to choose.

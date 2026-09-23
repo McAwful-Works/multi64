@@ -75,7 +75,7 @@ pub const GENERIC: Script = Script {
     //
     // Nothing needed this. A timeout's job is to free the slot for a new client, and
     // accept_newest() already replaces the old one the moment a new connection arrives.
-    // oot and bt have always been None and neither shows the behaviour.
+    // oot and bt have always been None and neither shows the behavior.
     client_timeout: None,
 };
 

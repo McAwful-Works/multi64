@@ -263,7 +263,7 @@ mod tests {
         card.read(&mut cache, 10, 4);
         let data = &mut card.data;
         let err = cache.write_through(10, &[0xEE; S], |lba, b| {
-            // The card took the bytes, then the acknowledgement was lost.
+            // The card took the bytes, then the acknowledgment was lost.
             let at = (lba * SECTOR_BYTES) as usize;
             data[at..at + b.len()].copy_from_slice(b);
             Err(io::Error::other("lost CMP"))

@@ -21,7 +21,7 @@ Until someone runs this against an X7:
 
 1. **`ed64-smoke` against the cart.** Confirms the port, driver and baud before any L2 work. If this fails, nothing downstream is meaningful — try another `--baud`, `--flush`, and confirm the EverDrive OS has USB active.
 2. **Alignment.** §4.5 records both halves as resolved from libdragon and UNFLoader source: the value (`USBPROTOCOL_VERSION 2`, 2-byte alignment, `WIRE_ALIGN`) and which direction pads where (#134). Confirm the cart's firmware agrees. A wrong value mis-frames *every* message, so it looks like total failure; the wrong padding direction mis-frames only odd-length messages, which looks like intermittent corruption instead.
-3. **VCP vs D2XX.** UNFLoader uses FTDI D2XX and purges its queues directly; this crate uses `serialport` (VCP). Whether `clear_serial_buffers` gives equivalent behaviour under load is unverified, and is the most likely source of *intermittent* rather than total failure.
+3. **VCP vs D2XX.** UNFLoader uses FTDI D2XX and purges its queues directly; this crate uses `serialport` (VCP). Whether `clear_serial_buffers` gives equivalent behavior under load is unverified, and is the most likely source of *intermittent* rather than total failure.
 4. **Chunk size.** `DEFAULT_ED64_CHUNK` is 512 — one `REG_USB_DATA` window, deliberately conservative. The ROM's own cap is `TEST_USB_WRITE_MAX` (8192). Raise via `write_l3_stream_with_max` only after the link is proven.
 
 ## The N64 side

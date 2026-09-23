@@ -848,7 +848,7 @@ pub async fn run_suite<F: FnMut(CheckResult)>(
         let reason = if acked.is_ok() {
             "acted, and acknowledged — but the host cannot see the effect"
         } else {
-            "no acknowledgement (the effect is not host-observable either way)"
+            "no acknowledgment (the effect is not host-observable either way)"
         };
         r.skip(name, reason);
     }
@@ -1016,7 +1016,7 @@ pub async fn run_suite<F: FnMut(CheckResult)>(
     // --- stream health -----------------------------------------------------------
     r.phase = PHASES[6].into();
     // Counters reset on the last mode change, so this covers everything since then. Each check
-    // above proves its own round trip; only this proves nothing desynchronised underneath.
+    // above proves its own round trip; only this proves nothing desynchronized underneath.
     r.check_noting(
         "no overflow, resync or bad headers since the last mode change",
         ConnectorCommand::Diag { expect_clean: true },

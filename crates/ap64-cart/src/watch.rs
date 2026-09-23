@@ -30,7 +30,7 @@
 //!
 //! What it does not fix: a value written and overwritten between two samples was never
 //! seen and cannot be replayed. That still falls back to whatever the game commits later,
-//! which is the behaviour without any of this. Closing it outright means the cart holding
+//! which is the behavior without any of this. Closing it outright means the cart holding
 //! the events rather than the host sampling for them.
 //!
 //! Nothing here knows which game is running: the address, the length and the filter come

@@ -21,7 +21,7 @@ fn main() {
                     "SummerCart64, by its USB IDs".to_string()
                 }
                 SerialPortType::UsbPort(usb) => format!(
-                    "USB {:04x}:{:04x}, not recognised by its USB IDs",
+                    "USB {:04x}:{:04x}, not recognized by its USB IDs",
                     usb.vid, usb.pid
                 ),
                 _ => "not a USB device".to_string(),

@@ -18,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import n64style as n  # noqa: E402
 
-# Archipelago's own colours, sampled from upstream data/icon.png.
+# Archipelago's own colors, sampled from upstream data/icon.png.
 RED = "#C97682"
 YELLOW = "#EEE391"
 GREEN = "#75C275"
@@ -26,8 +26,8 @@ BLUE = "#767EBD"
 PINK = "#CA94C2"
 ORANGE = "#D9A07D"
 
-# Circle centres in units of the circle radius (99 px in the 512 px upstream
-# icon), relative to the ring's centre, logo-up positive; and the stacking
+# Circle centers in units of the circle radius (99 px in the 512 px upstream
+# icon), relative to the ring's center, logo-up positive; and the stacking
 # level each one sits at (the upstream icon's overlap order: orange covers
 # blue and pink, which cover yellow and green, which cover red).
 RING = [
@@ -52,8 +52,8 @@ def light_dir(u=-0.45, v=0.55, z=1.0):
 
 
 def flat_shader(ambient=0.62, diffuse=0.48, levels=None, light=None):
-    """One colour per face from its normal: the N64's flat-shaded look. A face
-    pointing straight at the viewer keeps the base colour."""
+    """One color per face from its normal: the N64's flat-shaded look. A face
+    pointing straight at the viewer keeps the base color."""
     L = light or light_dir()
     top = ambient + diffuse * n.dot((0.0, 0.0, 1.0), L)
 
@@ -96,7 +96,7 @@ TILT = 25
 
 def scene_ap(step=0.12, sides=12, bands=6, twist=0.0, color_fn=None, spread=1.0, upright=True):
     """step: rise per stacking level, in circle radii. spread scales the ring
-    out from its centre; at 1.0 the spheres overlap as the upstream circles
+    out from its center; at 1.0 the spheres overlap as the upstream circles
     do, and intersect where they meet."""
     cf = color_fn or flat_shader(ambient=0.45, diffuse=0.75)
     polys = []

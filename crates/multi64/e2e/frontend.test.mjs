@@ -69,7 +69,7 @@ function installTauriStub(scenario = {}) {
     multi64dLogPreset: "default", cart: "auto",
     ...(sc.settings || {}),
   };
-  // `SerialPortOptions`, with no SummerCart64 recognised by its USB IDs.
+  // `SerialPortOptions`, with no SummerCart64 recognized by its USB IDs.
   const portOptions = () => ({
     ports: [...(window.__TAURI_PORTS__ ?? sc.ports ?? ["COM3", "COM4"])],
     auto: null,

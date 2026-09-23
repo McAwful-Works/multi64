@@ -46,7 +46,7 @@ The import tells you *whether* a connector is forked, not what forking it would 
 it misses a world that imports the generic client but ships a lua doing work of its own.
 Both are the same failure: work the connector performs on a frame callback never reaches
 the wire, so an AP64 stand-in replaying the client's requests never performs it. That is
-what left Banjo-Tooie's ROM uninitialised for a week, presenting as a freeze.
+what left Banjo-Tooie's ROM uninitialized for a week, presenting as a freeze.
 
 [`ap64-connector/tools/connector-trace.lua`](../../../crates/ap64-connector/tools/connector-trace.lua)
 measures it.
@@ -62,7 +62,7 @@ removes the native paths that did that work, so none of it is optional.
 ## 2. Build a seed to work against
 
 Everything downstream needs a real patched ROM, not the retail one: the randomizer's own
-payload is usually the agent's nearest neighbour in RAM.
+payload is usually the agent's nearest neighbor in RAM.
 
 Generate without disturbing the user's own YAMLs, by pointing the generator at a scratch
 directory:
@@ -288,7 +288,7 @@ Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "watch|mem-
 ```
 
 The tells were all in the data: a rate that did not move when the client, the game or AP64
-changed; one error code and never a neighbouring one; and a request id that was always
+changed; one error code and never a neighboring one; and a request id that was always
 `0001`, meaning a fresh process each poll.
 
 **Identify an unknown counter by causing a known event**, not by trusting an offset.

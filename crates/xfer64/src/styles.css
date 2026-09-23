@@ -23,7 +23,7 @@
   --control-primary-bg-hover: #4a5f8a;
   --control-primary-border: #5f7ab8;
   --control-primary-text: #e8eaed;
-  /* Black as a triple so overlays and shadows can vary alpha without repeating the colour. */
+  /* Black as a triple so overlays and shadows can vary alpha without repeating the color. */
   --shadow-rgb: 0, 0, 0;
   --accent-rgb: 138, 180, 248;
   --danger: #f28b82;
@@ -218,7 +218,7 @@ html {
 }
 
 /* ---------------------------------------------------------------------------
-   Reduced motion. Honours the OS setting, and an explicit in-app override for
+   Reduced motion. Honors the OS setting, and an explicit in-app override for
    users whose OS does not expose one. Animation is not removed outright --
    collapsing to 1ms keeps animation/transition end events firing, which some
    UI code relies on to advance state.
@@ -303,8 +303,8 @@ code {
   background: var(--control-primary-bg-hover);
 }
 
-/* Disabled controls must look inert. `.btn` sets its own colours, which override the browser's
-   greyed-out look, so without this a disabled button keeps full colour, hover and pointer. */
+/* Disabled controls must look inert. `.btn` sets its own colors, which override the browser's
+   grayed-out look, so without this a disabled button keeps full color, hover and pointer. */
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;

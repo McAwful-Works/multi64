@@ -114,3 +114,15 @@ jobs:
       # pieces are reassembled. It proves the byte-stream logic, not either driver on a cart.
       - name: make host-test
         run: make -C n64/agent host-test
+
+  docs:
+    name: Documentation (links, anchors, American English)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Needs nothing but sh, git and grep. Cross-references break silently -- a wrong ../ depth
+      # 404s only on GitHub, and a backtick-wrapped link renders as code -- and prose drifts back
+      # to British spellings the same way. Both are cheap to catch and invisible to every other
+      # job here.
+      - name: check-docs
+        run: sh .claude/skills/check-docs/check-docs.sh

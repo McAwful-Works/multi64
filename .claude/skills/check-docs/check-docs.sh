@@ -86,12 +86,40 @@ grep -rn -o 'docs/spec/[A-Za-z0-9._-]*\.md' --include='*.rs' --include='*.js' . 
       [ -e "$path" ] || { echo "  MISSING  $loc  ->  $path"; echo x >> "$TMPFAIL"; }
     done
 
+# 5. American English, in prose and in the names that read as prose.
+#
+# Searched across source as well as Markdown: a doc comment or a test name is read as often as
+# a README. One pass per file with every stem in one alternation -- a pass per word would be
+# ninety greps per file and take minutes. `aria-labelledby` is the one place a British-looking
+# spelling is correct (it is an ARIA attribute, not a word), so it is masked first rather than
+# left to trip every dialog in the repo.
+echo "== 5. American English =="
+LIST="$(dirname "$0")/british-spellings.txt"
+if [ ! -f "$LIST" ]; then
+  echo "  MISSING WORD LIST  $LIST"
+  echo x >> "$TMPFAIL"
+else
+  ALT=$(tr -d '' < "$LIST" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$'         | cut -d' ' -f1 | paste -sd'|' -)
+  for f in $(git ls-files '*.md' '*.rs' '*.js' '*.mjs' '*.css' '*.html' '*.lua' '*.py' '*.c' '*.h' '*.toml' '*.sh'); do
+    [ -f "$f" ] || continue
+    # A file whose subject is the spelling list has to quote the spellings it rejects. Such a
+    # file says so in itself, where the exemption is visible to anyone reading or reviewing it,
+    # rather than being hidden in a list of paths here.
+    grep -q 'check-docs: skip-spelling' "$f" && continue
+    sed 's/aria-labelledby/aria-ARIAATTR/g' "$f"       | grep -n -i -o -E "$ALT" 2>/dev/null       | while IFS=: read -r ln got; do
+          amer=$(tr -d '' < "$LIST" | grep -i "^$got " | head -1 | cut -d' ' -f2)
+          echo "  BRITISH  $f:$ln  $got  ->  ${amer:-see $LIST}"
+          echo x >> "$TMPFAIL"
+        done
+  done
+fi
+
 if [ -s "$TMPFAIL" ]; then
   echo
   echo "FAILED: $(wc -l < "$TMPFAIL" | tr -d ' ') problem(s) found."
   status=1
 else
   echo
-  echo "OK: all documentation cross-references resolve."
+  echo "OK: documentation cross-references resolve and read as American English."
 fi
 exit $status

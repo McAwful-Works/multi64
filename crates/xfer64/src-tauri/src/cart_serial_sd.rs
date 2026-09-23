@@ -117,7 +117,7 @@ pub struct ExplorerCartSerialState {
     /// Held for the length of any cart port access — a wire probe or an open SD session.
     ///
     /// The cart exposes one serial device, so two overlapping operations would fight over it.
-    /// Sync commands used to be serialised for free by running on the main thread; now that they
+    /// Sync commands used to be serialized for free by running on the main thread; now that they
     /// run on the blocking pool (so the window stays responsive), this is what keeps them apart.
     /// It guards no data, so a poisoned lock is recovered rather than propagated.
     pub port_lock: Arc<Mutex<()>>,
@@ -392,7 +392,7 @@ fn detect_best_auto_port(
                 let prod = u.product.as_deref().unwrap_or("").to_ascii_lowercase();
                 let man = u.manufacturer.as_deref().unwrap_or("").to_ascii_lowercase();
                 // Windows reports an SC64 as "USB Serial Port" by FTDI; only its `SC64…` serial
-                // number identifies it. A descriptor match goes first, and is then recognised
+                // number identifies it. A descriptor match goes first, and is then recognized
                 // without opening the port (see `cart_probe`), so it works while multi64d holds it.
                 if multi64_cart_probe::usb_is_sc64(u) {
                     score += 100;

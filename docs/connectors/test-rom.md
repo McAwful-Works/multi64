@@ -127,7 +127,7 @@ what collapses the handover to one file.
    and after, must not have moved. It is the only direct evidence of a failed write — the host
    otherwise sees just a malformed message — and it is **skipped** on a ROM older than 1.11.
 7. **Stream health** — the `DIAG` counters. Every check above proves its own round trip; only this
-   proves the stream underneath them never desynchronised.
+   proves the stream underneath them never desynchronized.
 
 Two things it deliberately does **not** do. It does not stop at the first failure — every check
 runs, because one broken check hiding the twenty after it is not a useful report. And it does not

@@ -1,4 +1,4 @@
-//! A game profile: how to recognise a seed of one game, what must still hold in it, and
+//! A game profile: how to recognize a seed of one game, what must still hold in it, and
 //! what to write. Profiles are TOML beside the blobs they reference (`profiles/<id>/`).
 //!
 //! Profiles carry no retail bytes beyond single instruction words: regions are checked by

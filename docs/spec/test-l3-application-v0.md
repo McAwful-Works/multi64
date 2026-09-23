@@ -38,7 +38,7 @@ Experimental payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATIO
 | `0x0C` | `REQ_SRAM_WRITE` | `uint32` BE offset, `uint16` BE length, then **length** bytes — **requires active session**; same alignment rules as read |
 | `0x0D` | `REQ_RUMBLE` | `uint8` port `0`–`3`, `uint8` duration in VI frames (**`0`** = default **60**; cart clamps to **600** frames) |
 | `0x0E` | `REQ_DISPLAY_TEXT` | UTF-8 text for the cart HUD, at most **120** bytes (`TEST_HOST_DISPLAY_MAX`); a longer body is rejected in `DISPLAY_TEXT_ACK`. An empty body clears the text |
-| `0x0F` | `REQ_SET_MODE` | `uint8` mode (`0` RAW_ECHO, `1` M64T_PROTO, `2` BENCH, `3` CTRL_POLL, `4` MEM_AGENT). Out of range, or an empty body, changes nothing and is reported in `SET_MODE_ACK`. **Also honoured in RAW_ECHO** — see §10 |
+| `0x0F` | `REQ_SET_MODE` | `uint8` mode (`0` RAW_ECHO, `1` M64T_PROTO, `2` BENCH, `3` CTRL_POLL, `4` MEM_AGENT). Out of range, or an empty body, changes nothing and is reported in `SET_MODE_ACK`. **Also honored in RAW_ECHO** — see §10 |
 | `0x10` | `REQ_DIAG` | empty body |
 
 ---
@@ -168,7 +168,7 @@ The test ROM may also emit **non-APPLICATION** L3 frames (e.g. `HEARTBEAT` on Co
 
 **Version 1** is the same layout without `tx_failures`: 36 bytes, ending at offset 35. Its offsets are unchanged in version 2, but the version byte, not the length, says which fields a body has.
 
-The three counters at offsets 8–19 are the point of this message: they are the only way a host can tell a clean run from one that silently desynchronised and recovered. They were previously **screen-only**, so an automated run could assert that a reply arrived but never that the stream underneath it was intact.
+The three counters at offsets 8–19 are the point of this message: they are the only way a host can tell a clean run from one that silently desynchronized and recovered. They were previously **screen-only**, so an automated run could assert that a reply arrived but never that the stream underneath it was intact.
 
 Counters are reset by a mode change (`REQ_SET_MODE`, or the menu), so a host should read `DIAG` once after settling into a mode and again at the end, and compare.
 

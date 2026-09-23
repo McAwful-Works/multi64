@@ -1,14 +1,14 @@
 # Frontend appearance: themes, tokens and preferences
 
 How Multi64 and Xfer64 style themselves, and the constraints that are easy to break. User-facing
-behaviour is in each app's README; this is the maintainer view.
+behavior is in each app's README; this is the maintainer view.
 
 ---
 
-## 1. Every colour is a token
+## 1. Every color is a token
 
 `:root` in each app's `styles.css` holds the whole palette — about 30 custom properties. **No rule
-outside `:root` may contain a colour literal.** A hardcoded hex or `rgba()` is invisible to the
+outside `:root` may contain a color literal.** A hardcoded hex or `rgba()` is invisible to the
 theme switch, so it survives into Light and High contrast unchanged and usually becomes
 unreadable there.
 
@@ -26,15 +26,15 @@ a hairline that lightens a dark surface must darken a light one.
 The rule is checked by a test, so it holds whether or not anyone remembers it:
 
 ```sh
-cargo test -p multi64 no_colour_literals_outside_the_palette
+cargo test -p multi64 no_color_literals_outside_the_palette
 ```
 
 It reads every `.css` file under the `src/` of each app in `SHARED_BASE_APPS` — Multi64, Xfer64,
 Multi64 Test (`crates/multi64-test-app`) and AP64 (`crates/ap64`) — and fails on any
-declaration outside a `:root` palette block whose value names a colour: a hex literal, a colour
+declaration outside a `:root` palette block whose value names a color: a hex literal, a color
 function called with numbers rather than a token (`rgba(138, 180, 248, 0.12)` is reported,
-`rgba(var(--accent-rgb), 0.12)` is not), or one of the CSS named colours. `transparent` and
-`currentColor` take their colour from the surface, so they are allowed. Each hit is reported with
+`rgba(var(--accent-rgb), 0.12)` is not), or one of the CSS named colors. `transparent` and
+`currentColor` take their color from the surface, so they are allowed. Each hit is reported with
 its file, line and rule. The test sits beside the two that keep the shared files identical (§3, §5).
 
 `crates/multi64-test-connector-gui/src/styles.css` is deliberately outside all of this: that window
@@ -90,10 +90,10 @@ Neither CI nor `check-docs` covers any of this — the §1 test reads the CSS bu
 job runs `tauri build`, and the CSS, HTML and JS are served as-is. Two browser checks carry the
 weight, both run by serving `crates/<app>/src` over plain HTTP and driving it:
 
-- **Computed-style diff.** Walk the DOM recording each element's resolved colour properties, before
+- **Computed-style diff.** Walk the DOM recording each element's resolved color properties, before
   and after. A refactor that is meant to change no rendering must produce a byte-identical
-  snapshot; this is how the tokenisation of ~99 literals was shown faithful across 426 elements.
-- **Contrast audit.** For every visible text node, compare its computed colour against the nearest
+  snapshot; this is how the tokenization of ~99 literals was shown faithful across 426 elements.
+- **Contrast audit.** For every visible text node, compare its computed color against the nearest
   opaque ancestor background and require 4.5:1 (3:1 for large text). Run it against **each** theme.
   This found six real AA failures in the first light palette that reading the CSS did not.
 

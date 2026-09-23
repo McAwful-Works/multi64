@@ -4,7 +4,7 @@
 //! The image is the randomizer's own data block: a pointer at `0x400000` to a struct of
 //! pointers, which is what every BTHACK accessor dereferences twice before it reads
 //! anything. That chain is the reason `cartmem` exists, so these check the cost as well as
-//! the behaviour.
+//! the behavior.
 
 use std::cell::{Cell, RefCell};
 use std::io;
