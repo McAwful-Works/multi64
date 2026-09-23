@@ -17,7 +17,7 @@
  * once in 1,740 frames, so it is gated and useless; this one never recorded a zero window.
  *
  * NOTHING IS COPIED HERE, and that is the whole design. The obvious stub -- call the
- * game's ROM copy routine at 0x80001A40 the way CV64 and DKR do -- was written, built,
+ * game's ROM copy routine at 0x80001A40 the way CV64's stub does -- was written, built,
  * and black-screened a console. A bisect said so precisely: the stub bytes alone booted,
  * the hook with a pass-through stub booted, and the same stub with the copy in it did not.
  * That routine fires exactly once in a 1,200-frame measurement, at boot: it is boot-time

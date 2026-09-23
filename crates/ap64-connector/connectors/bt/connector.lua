@@ -17,7 +17,7 @@ accessor layer are upstream's, unchanged. What changed, and why:
   bytes and the whole thing is a handful of regions. `bit` is BizHawk's, on Lua 5.4
   operators (connectors/lib/bit.lua).
 
-* The protocol is DKR's shape, not OoT's. Both ends write and then read, and the client
+* The protocol is not OoT's shape. Both ends write and then read, and the client
   writes first (BTClient.n64_sync_task writes, drains, then readline()s), so handle()
   answers the client's line with what SendToBTClient would have sent. getSlotData and
   SendToBTClient now return their tables instead of sending them, and receive() -- which

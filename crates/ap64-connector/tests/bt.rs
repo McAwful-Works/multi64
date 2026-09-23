@@ -354,9 +354,8 @@ fn writes_are_visible_to_reads_later_in_the_same_poll() {
 fn an_idle_poll_still_costs_one_write_request() {
     // Not what you would guess, and worth pinning because it sets the steady-state cost.
     // Upstream's messageQueue() re-asserts the dialog character every pass the queue is
-    // empty, so there is no such thing as a read-only Banjo-Tooie poll -- unlike DKR's,
-    // which writes nothing when nothing happened. One write request, not forty: the
-    // writes are queued and flushed together.
+    // empty, so there is no such thing as a read-only Banjo-Tooie poll. One write
+    // request, not forty: the writes are queued and flushed together.
     let h = Harness::new();
     h.connect();
     h.handle(&payload(&[]));
