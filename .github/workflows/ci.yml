@@ -104,17 +104,6 @@ jobs:
         working-directory: crates/ap64/e2e
         run: npm test
 
-  agent-host-test:
-    name: Cart agent reassembly (host)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      # CI builds no N64 code. This compiles n64/agent/agent.c for the PC, once per EverDrive
-      # build, against a fake driver under ASan and UBSan, and checks that L3 frames arriving in
-      # pieces are reassembled. It proves the byte-stream logic, not either driver on a cart.
-      - name: make host-test
-        run: make -C n64/agent host-test
-
   docs:
     name: Documentation (links, anchors, American English)
     runs-on: ubuntu-latest
@@ -126,3 +115,14 @@ jobs:
       # job here.
       - name: check-docs
         run: sh .claude/skills/check-docs/check-docs.sh
+
+  agent-host-test:
+    name: Cart agent reassembly (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # CI builds no N64 code. This compiles n64/agent/agent.c for the PC, once per EverDrive
+      # build, against a fake driver under ASan and UBSan, and checks that L3 frames arriving in
+      # pieces are reassembled. It proves the byte-stream logic, not either driver on a cart.
+      - name: make host-test
+        run: make -C n64/agent host-test

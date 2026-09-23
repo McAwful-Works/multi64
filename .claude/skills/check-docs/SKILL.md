@@ -16,7 +16,7 @@ This repo carries heavy interlinked docs: `docs/spec/` is normative and is cited
 sh .claude/skills/check-docs/check-docs.sh
 ```
 
-Optionally pass specific markdown files to limit checks 1-3; check 4 always sweeps the whole repo. Exit code is 1 when anything fails, so it composes into a shell chain.
+Optionally pass specific markdown files to limit checks 1-3; checks 4 and 5 always sweep the whole repo. Exit code is 1 when anything fails, so it composes into a shell chain.
 
 ## What it catches
 
