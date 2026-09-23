@@ -1,11 +1,13 @@
+<img src="../../branding/multi64.svg" alt="" width="72" align="left" />
+
 # Multi64 Test
+
+**Test ROM end-to-end checks** · a Multi64 product
+
+<br clear="left" />
 
 A window with a **Run tests** button that exercises the whole L3 bridge against a real cart and
 reports **PASS**/**FAIL** per check.
-
-```sh
-cargo build --release -p multi64-test-app     # target/release/multi64-test-app.exe
-```
 
 ## What a tester needs
 
@@ -59,3 +61,9 @@ baked in at compile time, and so only works on a machine that has built the repo
 - [`docs/connectors/test-rom.md`](../../docs/connectors/test-rom.md) — what the run covers, and the
   command-line equivalent.
 - [`n64/README.md`](../../n64/README.md#hardware-record) — the hardware runs.
+
+## Building from source
+
+```sh
+cargo build --release -p multi64-test-app     # target/release/multi64-test-app.exe
+```

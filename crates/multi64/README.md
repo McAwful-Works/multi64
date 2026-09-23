@@ -1,52 +1,18 @@
-# Multi64 (Windows)
+<img src="../../branding/multi64.svg" alt="" width="72" align="left" />
 
-Desktop app for **`multi64d`**, which the UI calls the **bridge**: serial port (with Auto-detect), start and stop the bridge, health, optional tray. Any **L3** client can use the same WebSocket as the app — see [`daemon-api-v1.md`](../../docs/spec/daemon-api-v1.md).
+# Multi64
 
-Multi64, **Xfer64** (SD over USB file manager — [`../xfer64/README.md`](../xfer64/README.md)) and **AP64** ([`../ap64/README.md`](../ap64/README.md)) are separate apps, each installed with its own installer. Multi64's installer contains only Multi64 and `multi64d`.
+**N64 flash cart bridge** · Windows
 
-## Prerequisites
+<br clear="left" />
 
-Rust + Cargo, Node + npm, **WebView2** (current Windows 10/11). Build **`multi64d`** before the GUI so `multi64d.exe` is found next to the app (`cargo build -p multi64d`).
+Multi64 runs the **bridge**: the link between a flash cart on USB and the tools on this PC.
+Pick a serial port, press **Start**, and leave it in the tray. [Xfer64](../xfer64/README.md)
+and [AP64](../ap64/README.md) talk to a cart through it, and each is installed on its own —
+Multi64's installer carries only Multi64 and `multi64d`.
 
-## Develop
-
-```sh
-cargo build -p multi64d
-cd crates/multi64
-npm install
-npm run dev
-```
-
-## Release (Windows)
-
-```sh
-cargo build -p multi64d --release
-cd crates/multi64 && npm install && npm run build
-```
-
-**Both installers stop `multi64d` before touching files**, on install and uninstall — NSIS via `NSIS_HOOK_PREINSTALL` / `PREUNINSTALL`, MSI via a custom action sequenced before `InstallValidate`. Without it the daemon holds `resources\multi64d.exe` open and the install fails on a locked file, which is not rare: the installer terminates the GUI, so the GUI's own `kill_daemon` never runs and the daemon is orphaned. Both match by **image name**, so a `multi64d` you are running from `cargo run` is killed too.
-
-Installer graphics come from `windows/*.bmp`, regenerated from the brand masters by [`branding/installer-images`](../../branding/installer-images/README.md).
-
-Artifacts under `target/release/bundle/`: an NSIS `*-setup.exe` and an MSI. **`src-tauri/build.rs`** copies `multi64d.exe` into `src-tauri/resources/`, and [Tauri `bundle.resources`](https://v2.tauri.app/reference/config/#bundle) declares it; that is the only resource. Build `multi64d` with the same profile first — a declared resource that is missing is a hard error in `tauri-build`.
-
-## Appearance
-
-Settings → **Appearance**, in both apps. Changes apply immediately; there is no Save step for them.
-
-| Option | Values |
-|--------|--------|
-| **Theme** | Dark · Light · **Match system** (default) · High contrast |
-| **Text size** | 90% · 100% · 115% · 130% |
-| **Motion** | **Match system** (default) · Reduce animation |
-
-**Match system** follows the OS via `prefers-color-scheme`. **High contrast** is a darker, higher-contrast variant with solid borders; all four themes meet WCAG AA for text contrast.
-
-**Text size** scales the whole UI, not just the glyphs — every dimension in these sheets is in `rem`, and the setting drives the root font size. At 130% Multi64's window (fixed at 560×640, see `tauri.conf.json`) needs about 220px of scrolling to reach the bottom; nothing is clipped.
-
-**Motion** honors the OS reduced-motion setting by default; **Reduce animation** forces it for systems that do not expose one. Animation collapses to 1ms rather than being removed, so `animationend` / `transitionend` still fire.
-
-These preferences live in **`localStorage`**, *not* in the settings file — they must be readable synchronously before the first paint to avoid a flash of the wrong theme, and they are per-machine display choices rather than device configuration. Do not look for them in `gui-settings.json` or `xfer64-settings.json`.
+Any L3 client can use the same WebSocket the app does; the daemon it runs is specified in
+[`daemon-api-v1.md`](../../docs/spec/daemon-api-v1.md).
 
 ## Settings & tray
 
@@ -72,3 +38,48 @@ The menu tracks state live: starting or stopping the bridge from the window upda
 **Left-click does not open the menu.** It cannot — the first click of a double-click would pop it, making the double-click unusable. This matches Windows convention, where left-click activates and right-click menus.
 
 Toggling the tray option off and on needs an **app restart** (the icon is created at startup only).
+
+## Appearance
+
+Settings → **Appearance**. Changes apply immediately; there is no Save step for them. Xfer64,
+AP64 and Multi64 Test carry the same sheet and the same three options.
+
+| Option | Values |
+|--------|--------|
+| **Theme** | Dark · Light · **Match system** (default) · High contrast |
+| **Text size** | 90% · 100% · 115% · 130% |
+| **Motion** | **Match system** (default) · Reduce animation |
+
+**Match system** follows the OS via `prefers-color-scheme`. **High contrast** is a darker, higher-contrast variant with solid borders; all four themes meet WCAG AA for text contrast.
+
+**Text size** scales the whole UI, not just the glyphs — every dimension in these sheets is in `rem`, and the setting drives the root font size. At 130% Multi64's window (fixed at 560×640, see `tauri.conf.json`) needs about 220px of scrolling to reach the bottom; nothing is clipped.
+
+**Motion** honors the OS reduced-motion setting by default; **Reduce animation** forces it for systems that do not expose one. Animation collapses to 1ms rather than being removed, so `animationend` / `transitionend` still fire.
+
+These preferences live in **`localStorage`**, *not* in the settings file — they must be readable synchronously before the first paint to avoid a flash of the wrong theme, and they are per-machine display choices rather than device configuration. Do not look for them in `gui-settings.json` or `xfer64-settings.json`.
+
+## Building from source
+
+Rust + Cargo, Node + npm, **WebView2** (current Windows 10/11). Build **`multi64d`** before the GUI so `multi64d.exe` is found next to the app (`cargo build -p multi64d`).
+
+### Develop
+
+```sh
+cargo build -p multi64d
+cd crates/multi64
+npm install
+npm run dev
+```
+
+### Release (Windows)
+
+```sh
+cargo build -p multi64d --release
+cd crates/multi64 && npm install && npm run build
+```
+
+**Both installers stop `multi64d` before touching files**, on install and uninstall — NSIS via `NSIS_HOOK_PREINSTALL` / `PREUNINSTALL`, MSI via a custom action sequenced before `InstallValidate`. Without it the daemon holds `resources\multi64d.exe` open and the install fails on a locked file, which is not rare: the installer terminates the GUI, so the GUI's own `kill_daemon` never runs and the daemon is orphaned. Both match by **image name**, so a `multi64d` you are running from `cargo run` is killed too.
+
+Installer graphics come from `windows/*.bmp`, regenerated from the brand masters by [`branding/installer-images`](../../branding/installer-images/README.md).
+
+Artifacts under `target/release/bundle/`: an NSIS `*-setup.exe` and an MSI. **`src-tauri/build.rs`** copies `multi64d.exe` into `src-tauri/resources/`, and [Tauri `bundle.resources`](https://v2.tauri.app/reference/config/#bundle) declares it; that is the only resource. Build `multi64d` with the same profile first — a declared resource that is missing is a hard error in `tauri-build`.

@@ -52,9 +52,9 @@ The documentation check is the fourth. It needs nothing but `sh`, `git` and `gre
 sh .claude/skills/check-docs/check-docs.sh
 ```
 
-It validates markdown links and heading anchors, catches backtick-wrapped links that render as
-code rather than a link, checks `docs/spec/` paths cited from Rust or JS, and enforces American
-English across Markdown and source. It takes about a minute. See
+It validates markdown links, `<img>` targets and heading anchors, catches backtick-wrapped links
+that render as code rather than a link, checks `docs/spec/` paths cited from Rust or JS, and
+enforces American English across Markdown and source. It takes about a minute. See
 [`.claude/skills/check-docs/SKILL.md`](.claude/skills/check-docs/SKILL.md).
 
 And the last — the cart agent's host tests, the only CI job that compiles N64 code
@@ -150,7 +150,7 @@ The **EverDrive-64 PRO** has its own pipe, `Ed64ProL2Pipe` (`multi64-ed64pro-l2`
 Committed under `.claude/`, so they apply for anyone working on this repo:
 
 - **`/preflight`** — runs the six steps of CI's Rust job in order and reports the first failure. It does not run CI's five Ubuntu-only jobs (the three frontend suites, the agent host test and the documentation check). Not every machine holding this repo has a Rust toolchain; when `cargo` is absent, say the change is unverified rather than implying otherwise.
-- **`/check-docs`** — validates markdown links, heading anchors, backtick-wrapped links, `docs/spec/` paths cited from Rust/JS, and American English across Markdown and source. CI runs it too, so a failure here is a failure there. Run it after any spec rename or file move, and after writing prose anywhere. It takes about a minute.
+- **`/check-docs`** — validates markdown links, `<img>` targets, heading anchors, backtick-wrapped links, `docs/spec/` paths cited from Rust/JS, and American English across Markdown and source. CI runs it too, so a failure here is a failure there. Run it after any spec rename or file move, and after writing prose anywhere. It takes about a minute.
 - **`/implement-ed64-l2`** — the ED64 L2 backend walkthrough. The blocker is `l3-over-everdrive-x7.md` §4, not the code.
 - **`/add-game`** — adding a game to AP64: checking its Archipelago world is one the generic connector can drive, building a seed, finding RAM and a hook site by measurement, and verifying a profile before it reaches a console. The ROM side stays normative in `docs/integration/placing-the-agent.md`; the skill is the spine around it, including the Archipelago half.
 - **`docs-reviewer`** subagent — reviews a diff for documentation that the change has made wrong, or behavior it added that nothing describes. Worth running on any change that alters behavior a reader was told about.
