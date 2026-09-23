@@ -1,0 +1,81 @@
+# Mario Kart 64 (US). Addresses from n64decomp/mk64, whose mk64.us.sha1 is this retail
+# ROM, so vram = rom + 0x7FFFF400 and the names below are the decomp's.
+# Blobs: crates/ap64-core/agent/build.sh mk64 (see BUILD_REV).
+
+id = "mk64"
+name = "Mario Kart 64"
+release = "US"
+game_code = "NKTE"
+version = 0
+cic = "6102"
+randomizer = "Archipelago's Mario Kart 64 world"
+connector = "generic"     # Archipelago's BizHawk Client
+
+[agent]
+image = "agent.bin"
+rom = 0x1000000         # past the 16 MiB image the AP basepatch produces
+vram = 0x80750000       # Expansion Pak, above the 0x80500000..0x80744000 pair
+min_ram = 0x800000      # the stub skips the agent without an Expansion Pak
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0x34B4             # thread5_game_loop: jal display_and_vsync (0x80000F34)
+equals = 0x0C0003CD
+hint = "The randomizer changed thread5_game_loop, so the hook has nowhere to go. Note it already replaces the loop's back-edge at 0x800028BC with a jump into its own block; that is expected, this pin is about the call four words earlier."
+
+[[require]]
+kind = "sha1"
+label = "Space for the hook stub"
+at = 0x3E850            # 0x8003DC50: two adjacent functions nothing references
+len = 0x3F8
+sha1 = "f8038659705b19bdd1f754f2f1c29c357cb69981"
+hint = "Something now occupies the dead code the stub goes in. Re-run the dead-space measurement before moving it."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0x1B34             # display_and_vsync, 0x80000F34
+len = 0x128
+sha1 = "7bc58b26f084c752cbb3a77f9faa1139cf4a73c0"
+hint = "The randomizer changed the code the hook passes each frame through to."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine"
+at = 0x1D58             # dma_copy, 0x80001158 -- (dest, romAddr, size)
+len = 0x10C
+sha1 = "068667a5a3c1d5437704b0290d22ed77fea00f6d"
+hint = "The randomizer changed the routine the stub loads the agent with."
+
+[[require]]
+kind = "sha1"
+label = "I-cache invalidate"
+at = 0xCE700            # osInvalICache, 0x800CDB00
+len = 0x80
+sha1 = "7a08747cbcfbb94a18ecc13357d1762825f73f8b"
+hint = "dma_copy invalidates the data cache only, so the stub must invalidate I-cache itself or run stale lines. Emulators do not model this; a console does."
+
+[[require]]
+kind = "sha1"
+label = "D-cache invalidate"
+at = 0xCE780            # osInvalDCache, 0x800CDB80
+len = 0x80
+sha1 = "24fe4f0d4e1277bd3249e87ee2733bb7c8b55b68"
+hint = "The randomizer changed the routine the stub invalidates the agent's data cache with."
+
+# No IPL3 restore here. Unlike Castlevania 64, MK64's Archipelago basepatch leaves
+# 0x40..0x1000 byte-identical to the retail ROM, so the boot checksum check is intact.
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0x3E850
+file = "stub.bin"
+max_len = 0x3F8
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0x34B4
+target = 0x8003DC50
