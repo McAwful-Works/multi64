@@ -21,7 +21,7 @@ The **reference implementation** is **`sc64deployer`** (`sw/deployer/src/sc64/ty
 | Byte swap on  | `[0, 4]`               |
 | Byte swap off | `[0, 5]`               |
 
-**Important:** The markdown table in the upstream file **`docs/03_usb_interface.md`** (“Available SD card operations”) lists **Init** as operation **`0`** and **Deinit** as **`1`**. That **does not** match the **`arg1`** values **`sc64deployer`** sends. Host code **MUST** use the **`[arg0, arg1]`** mapping above (same as deployer), not the markdown row index as `arg1`.
+**Important:** the markdown table in the upstream file `docs/03_usb_interface.md` (“Available SD card operations”) lists Init as operation `0` and Deinit as `1`. That does not match the `arg1` values `sc64deployer` sends. Host code **MUST** use the `[arg0, arg1]` mapping above (same as deployer), not the markdown row index as `arg1`.
 
 ---
 

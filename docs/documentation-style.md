@@ -37,6 +37,13 @@ Dual-pane file manager for N64 flash-cart SD contents over USB serial (FAT/exFAT
 
 The second is not wrong. It is a specification sentence at the top of a user's page.
 
+**One exception, and it is [§6](#6-say-what-is-not-proven)'s.** A component that has never run
+on the hardware it exists for leads with that, before saying what it does.
+`crates/ed64pro-l2/README.md` opens "Experimental — never run against a cart", and should: the
+reader it protects is a developer deciding whether to trust it, and the sentence that stops them
+is worth more than the one that introduces it. This covers a component's own page — a crate, a
+driver, a mapping — not a product's, where the caveat goes after the first sentence as above.
+
 ## 3. Titles are the product's name
 
 `# Multi64`, `# Xfer64`, `# AP64`. No platform suffix, no parenthetical — "(Windows)" is a

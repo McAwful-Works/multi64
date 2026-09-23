@@ -1,8 +1,8 @@
 # Multi64 frontend checks (headless)
 
 Multi64's window is plain JS in [`../src/main.js`](../src/main.js), and no Rust test reaches it. These
-checks cover the part that is the frontend's own: **what the window shows for what the backend
-answers, and what it sends back**.
+checks cover the part that is the frontend's own: what the window shows for what the backend
+answers, and what it sends back.
 
 `../src/index.html` is served as-is to headless Chromium with `window.__TAURI__` replaced by a stub
 that records every `invoke` and answers from a small table. No bridge, no serial port, no Tauri.

@@ -20,7 +20,7 @@ hands the port back afterward.
 - **EverDrive 64 X-series**: Krikzz **usb64**-style serial (different opcodes than SC64). An **experimental** SD mode issues `RomRead` at `ed64RomLinearBase + LBA·512` (set in developer settings / `xfer64-settings.json`), but `RomRead` reads cart ROM memory rather than the SD card, so it is not expected to list the card and has never done so on hardware. See [`docs/spec/ed64-sd-usb-host.md`](../../docs/spec/ed64-sd-usb-host.md#why-romread-is-not-sd-access).
 - **EverDrive-64 PRO** (experimental): file-level SD access over Krikzz's edlink Gen3 protocol, where the cart itself serves the file system ([`docs/spec/ed64-pro-usb-host.md`](../../docs/spec/ed64-pro-usb-host.md)). Browse, copy both ways, create folders, delete and rename. The PRO's link has no rename command, so a rename **copies the item and then deletes the original**: it takes as long as copying it off the cart and back, and cannot change only the letter case of a name. It has never been tested on a real cart, so Xfer64 asks before the first write each run, and `xfer64 upload` needs `--experimental-ed64pro-writes`.
 
-**Auto-detect** (the default **Cart**) looks at each candidate serial port in two tiers ([`multi64-cart-probe`](../cart-probe/README.md)). First the port's **USB descriptors**, which recognize a SummerCart64 without writing anything — so it is found even while `multi64d` holds the port. Only if that does not match does it probe on the wire, in order: SC64 `IDENTIFIER_GET`, then the EverDrive-64 PRO handshake, then the X-series EverDrive test (`cmd` + `t`). The first positive cart signature wins; non-cart serial devices are ignored when no signature matches. Override with **SummerCart64**, **EverDrive-64 PRO (beta)** or **EverDrive-64 X7 (beta)** from the **Cart** menu in the app bar, which applies at once, or in Settings → **Cart**, which applies on **Save settings**.
+**Auto-detect** (the default **Cart**) looks at each candidate serial port in two tiers ([`multi64-cart-probe`](../cart-probe/README.md)). First the port's USB descriptors, which recognize a SummerCart64 without writing anything — so it is found even while `multi64d` holds the port. Only if that does not match does it probe on the wire, in order: SC64 `IDENTIFIER_GET`, then the EverDrive-64 PRO handshake, then the X-series EverDrive test (`cmd` + `t`). The first positive cart signature wins; non-cart serial devices are ignored when no signature matches. Override with **SummerCart64**, **EverDrive-64 PRO (beta)** or **EverDrive-64 X7 (beta)** from the **Cart** menu in the app bar, which applies at once, or in Settings → **Cart**, which applies on **Save settings**.
 **Serial port** sits beside Cart in the app bar and in Settings → **Cart**. Its **Auto-detect** is only as good as the cart choice: with Cart on Auto-detect it probes every port as above, but with a cart chosen it does not probe — it takes the port whose USB name matches that cart, or the only USB serial port — so Settings warns under Serial port when that finds none. Serial port applies at once from the app bar, or on **Save settings** from Settings. Both app-bar menus are disabled while a cart operation runs.
 
 **Maintainer map:** [`docs/spec/xfer64-cart-serial.md`](../../docs/spec/xfer64-cart-serial.md).
@@ -75,13 +75,13 @@ and Multi64 Test carry the same sheet and the same options, described in
 
 - **SummerCart64** — typically enumerates as a **CDC serial** device (`usbser.sys`). No vendor installer is required for COM‑based tools. Optional **WinUSB** (e.g. via [Zadig](https://zadig.akeo.ie/)) is mentioned in SC64 docs for **alternative** tooling / throughput experiments; replacing the default driver can **break** standard COM access, so do not use it unless you know you need it.
 
-- **EverDrive 64 X‑series** — usually exposes **USB serial** for `usb64`‑style PC tools. If Windows shows an unknown USB device and no COM port appears, install Krikzz’s **`usb64`** driver package from their support files (see [EverDrive 64 X‑series dev/support](https://krikzz.com/pub/support/everdrive-64/x-series/dev/)), then replug the cart.
+- **EverDrive 64 X‑series** — usually exposes **USB serial** for `usb64`‑style PC tools. If Windows shows an unknown USB device and no COM port appears, install Krikzz’s `usb64` driver package from their support files (see [EverDrive 64 X‑series dev/support](https://krikzz.com/pub/support/everdrive-64/x-series/dev/)), then replug the cart.
 
 Bundling Krikzz or SC64 driver binaries inside Multi64/Xfer64 installers would require **explicit redistribution permission** from the vendors and ongoing updates whenever they ship new INF/USB IDs—we document manual install instead.
 
 ## Building from source
 
-Build from the repository root (Cargo package **`xfer64`**):
+Build from the repository root (Cargo package `xfer64`):
 
 ```sh
 cargo build -p xfer64 --release
