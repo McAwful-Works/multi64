@@ -92,7 +92,8 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 
 ### Tauri apps
 
-Both need **Node + npm** for `tauri dev` / `tauri build`.
+Every Tauri app here needs **Node + npm** for `tauri dev` / `tauri build`. Two are listed below;
+**AP64**, **Multi64 Test** and the developer-only connector GUI are in the crate table above.
 
 | Path | Contents |
 | --- | --- |
@@ -105,7 +106,9 @@ For **Start bridge** in Multi64, build **`multi64d`** first (`cargo build -p mul
 
 ## Documentation
 
-- **Human docs:** [docs/README.md](docs/README.md) is the map to all Markdown.
+- **Human docs:** [docs/README.md](docs/README.md) is the map to all Markdown, and
+  [docs/documentation-style.md](docs/documentation-style.md) is how it is written — who each file
+  serves, and how it should read for them.
 - **Rust API:** run `cargo doc --workspace --no-deps --open` for `//!` comments on public items.
 - **Wire formats:** edit [docs/spec](docs/spec). **Spec-Revision** remains **1** until announced otherwise; bump L3 **Protocol-Major** / **Protocol-Minor** when the **binary** L3 contract changes ([l3-bridge-protocol-v1.md](docs/spec/l3-bridge-protocol-v1.md) §12).
 - **Documentation describes the repo as it is.** A change that makes an existing sentence false

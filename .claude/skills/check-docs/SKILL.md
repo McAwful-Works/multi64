@@ -16,21 +16,29 @@ This repo carries heavy interlinked docs: `docs/spec/` is normative and is cited
 sh .claude/skills/check-docs/check-docs.sh
 ```
 
-Optionally pass specific markdown files to limit checks 1-3; checks 4 and 5 always sweep the whole repo. Exit code is 1 when anything fails, so it composes into a shell chain.
+Optionally pass specific markdown files to limit checks 1-4; checks 5 and 6 always sweep the
+whole repo.
+
+It reads `git ls-files`, so a **new page is not checked until it is staged**. Adding one and
+running this is not enough to say it passes — `git add` it first. A wrong `../` depth in a
+brand-new doc is exactly the mistake this catches, and exactly the one it cannot see yet. Exit code is 1 when anything fails, so it composes into a shell chain.
 
 ## What it catches
 
 1. **Relative link targets that do not exist.** Most often a wrong `../` depth. `crates/xfer64/README.md` is two levels down, so workspace docs are `../../docs/spec/...`; a single `../` silently resolves to `crates/docs/spec/...` and 404s on GitHub.
-2. **Anchors with no matching heading**, using GitHub's slug rules (lowercase, punctuation stripped, spaces to hyphens). Catches `docs/README.md#flash-carts-l2-backends` drifting when a heading is reworded.
-3. **Links wrapped in backticks**, which render as literal code rather than a link:
+2. **`<img src="…">` targets that do not exist.** Markdown's own image syntax is covered by
+   check 1; these are the HTML tags a README needs when it wants a width or a float, which is
+   how every product mark in this repo is placed.
+3. **Anchors with no matching heading**, using GitHub's slug rules (lowercase, punctuation stripped, spaces to hyphens). Catches `docs/README.md#flash-carts-l2-backends` drifting when a heading is reworded.
+4. **Links wrapped in backticks**, which render as literal code rather than a link:
 
    ```
    `[text](url)`
    ```
 
    Easy to introduce when converting a table cell to code style, and invisible unless you look at the rendered page. Examples inside fenced code blocks are masked before checking, so a doc may show the pattern without tripping the check.
-4. **`docs/spec/*.md` paths cited from `.rs` or `.js`** that no longer exist, e.g. a module doc pointing at a spec that was renamed.
-5. **British spellings**, in Markdown and in source. Comments, doc comments, test names and
+5. **`docs/spec/*.md` paths cited from `.rs` or `.js`** that no longer exist, e.g. a module doc pointing at a spec that was renamed.
+6. **British spellings**, in Markdown and in source. Comments, doc comments, test names and
    error messages get read as often as a README, so they are searched too. The pairs live in
    [`british-spellings.txt`](british-spellings.txt), matched case-insensitively as substrings,
    so one stem covers a whole family (`recognis` catches recognise, recognised, unrecognised).

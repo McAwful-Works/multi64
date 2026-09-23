@@ -1,4 +1,10 @@
+<img src="../../branding/ap64.svg" alt="" width="72" align="left" />
+
 # AP64
+
+**Archipelago on a real N64** · a Multi64 product
+
+<br clear="left" />
 
 Play Archipelago N64 seeds on a real console. AP64 does two jobs:
 

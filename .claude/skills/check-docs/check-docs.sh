@@ -39,6 +39,26 @@ for f in $(md_files "$@"); do
   done
 done
 
+# 1b. <img src="..."> targets must exist too.
+# Markdown's own image syntax is caught by check 1; these are the HTML tags a README needs when
+# it wants a width or a float, which is how every product mark in this repo is placed.
+echo "== 1b. image targets =="
+for f in $(md_files "$@"); do
+  d=$(dirname "$f")
+  # Inline code spans are stripped as well as fences: a page documenting an <img> tag writes one
+  # in backticks, and that is prose about markup rather than markup.
+  mask_fences "$f" | sed 's/`[^`]*`//g' | grep -n -o '<img[^>]*src="[^"]*"' | while IFS= read -r hit; do
+    ln=${hit%%:*}
+    src=$(printf '%s
+' "$hit" | sed 's/.*src="//;s/"$//')
+    case "$src" in http*|data:*|'') continue ;; esac
+    if [ ! -e "$d/$src" ]; then
+      echo "  BROKEN  $f:$ln  ->  $src"
+      echo x >> "$TMPFAIL"
+    fi
+  done
+done
+
 # 2. Anchors into markdown files must match a heading.
 echo "== 2. link anchors =="
 for f in $(md_files "$@"); do
