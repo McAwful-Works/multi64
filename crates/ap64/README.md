@@ -6,7 +6,7 @@
 
 <br clear="left" />
 
-Play Archipelago N64 seeds on a real console. AP64 does two jobs:
+Play Archipelago N64 seeds on a real console, from Windows. AP64 does two jobs:
 
 1. **Patch.** It adds the M64P cart agent to a seed that Archipelago has already
    patched. The agent is a small program that lets the PC read and write the game's

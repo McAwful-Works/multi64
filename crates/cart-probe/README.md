@@ -1,4 +1,4 @@
-# multi64-cart-probe
+# `multi64-cart-probe`
 
 Tells a **SummerCart64**, **EverDrive-64 PRO** and **EverDrive-64 X7** apart on a serial port. Multi64's and Xfer64's **Auto** cart settings both use it.
 
