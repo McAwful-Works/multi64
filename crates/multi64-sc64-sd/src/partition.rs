@@ -5971,7 +5971,7 @@ mod fs_tests {
     /// A replace that fits only if the original's space is freed first is refused, with the
     /// original intact, rather than falling back to deleting first.
     ///
-    /// This is the behaviour #200 trades for safety: the old order would have succeeded here.
+    /// This is the behavior #200 trades for safety: the old order would have succeeded here.
     #[test]
     fn exfat_replace_without_room_for_both_copies_is_refused() {
         let WithOriginal {

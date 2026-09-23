@@ -153,7 +153,7 @@ For a few hundred bytes of padding inside a busy segment, the page-level map fro
 `ram-usage.lua` cannot help: the 4 KB page around them is in use whatever they do.
 [`tools/watch-ranges.lua`](../../n64/agent/tools/watch-ranges.lua) watches the exact bytes
 and reports the first frame any of them changes, and where — a difference at the very start
-means something claims the run outright, one partway in suggests a neighbouring array
+means something claims the run outright, one partway in suggests a neighboring array
 reaching into it.
 
 With a decomp, a function that exists but is called from nowhere (for example a case no dispatcher
@@ -181,7 +181,7 @@ Two details that bit:
 - **Do not assume the copy is synchronous.** Check the marker again after the copy returns, and
   run nothing until it reads back. If it does not, return and try next frame.
 - **Zero the BSS explicitly.** Segment-copy helpers copy the loadable image; they do not clear
-  BSS. Uninitialised agent state is a first-frame crash that looks like a hardware fault.
+  BSS. Uninitialized agent state is a first-frame crash that looks like a hardware fault.
 
 Find the game's ROM-copy routine by what the game or its patch already calls to load code: its
 arguments (ROM offset? virtual ROM through a file table? file index?) decide how the loader calls

@@ -193,7 +193,7 @@ mod stream_tests {
         }
     }
 
-    /// #132: the split still resynchronises when noise precedes the partial magic.
+    /// #132: the split still resynchronizes when noise precedes the partial magic.
     #[test]
     fn decoder_magic_split_after_noise() {
         let f = handshake_client_frame(100, 0).unwrap().encode().unwrap();

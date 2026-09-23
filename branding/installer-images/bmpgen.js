@@ -1,4 +1,4 @@
-// Rasterise the brand SVGs to installer BMPs. No image deps available on this machine, so the
+// Rasterize the brand SVGs to installer BMPs. No image deps available on this machine, so the
 // browser draws the SVG onto a canvas and POSTs raw RGBA here; this writes a 24-bit BMP.
 const http = require('http'), fs = require('fs'), path = require('path');
 const ROOT = 'D:/Users/DKboy/Documents/code-workspace/multi64';

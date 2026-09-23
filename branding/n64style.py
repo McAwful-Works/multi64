@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""N64-style 3D letter logos, rendered programmatically to flat-colour SVG.
+"""N64-style 3D letter logos, rendered programmatically to flat-color SVG.
 
 Scene: four square posts on the corners of a square footprint. Each side of the
 square has a slab (one post-width deep, flush with the outer face) that holds
@@ -9,7 +9,7 @@ Camera: orthographic, azimuth 45 deg (looking across the front corner),
 elevation ELEV (measured from the official N64 logo SVG: sin(e) = 0.385).
 
 Hidden surfaces: back-face culling + BSP-tree painter's algorithm, so the SVG
-is exact (no depth-sort artefacts from interpenetrating bars).
+is exact (no depth-sort artifacts from interpenetrating bars).
 
 No third-party dependencies.
 """
@@ -122,7 +122,7 @@ def prism(profile_uz, k, a, depth, color_fn, sloped):
     return convex_solid(faces, color_fn, sloped)
 
 
-# --- colour rule ----------------------------------------------------------
+# --- color rule ----------------------------------------------------------
 def n64_colors(n, sloped):
     nx, ny, nz = n
     if abs(nz) < 1e-6:                  # vertical face
@@ -239,7 +239,7 @@ def posts(a, s, h, cf):
 
 
 def scene_n64(a=3.53, s=1.0, h=3.25, t=None, sloped=(RED, RED, BLUE, GREEN)):
-    """Replica of the Nintendo 64 mark. sloped = colour of each side's
+    """Replica of the Nintendo 64 mark. sloped = color of each side's
     diagonal's sloped faces, in side order 0..3."""
     t = h / 2 if t is None else t
     cf = n64_colors
@@ -305,16 +305,16 @@ def merge_runs(polys, elev):
 
     Two faces that are coplanar and flush -- a post's outer face and the arm
     face lying in the same plane, or two fragments the BSP cut out of one
-    face -- meet along a shared edge. Rasterised as separate shapes each one
+    face -- meet along a shared edge. Rasterized as separate shapes each one
     covers only part of the pixels along that edge, so whatever was painted
     behind them shows through as a hairline seam down the middle of what
-    should be one flat colour. The subpaths of a single <path> are rasterised
+    should be one flat color. The subpaths of a single <path> are rasterized
     into one coverage mask, so the shared edge cancels and no seam appears.
 
-    Only polygons that cannot occlude each other are grouped: same colour,
+    Only polygons that cannot occlude each other are grouped: same color,
     same plane (coplanar faces never overlap on screen), and nothing painted
     in between that could land on top of either. Returns
-    [(colour, [projected_polygon, ...]), ...] in paint order.
+    [(color, [projected_polygon, ...]), ...] in paint order.
     """
     items = []
     for p in polys:
@@ -461,20 +461,20 @@ def scene_x2(a=4.2, s=1.0, h=3.6, w=None, sloped=(RED, RED, BLUE, GREEN)):
     return polys
 
 
-# --- colour schemes -------------------------------------------------------
+# --- color schemes -------------------------------------------------------
 def shade(hexcol, f):
-    """Scale an #rrggbb colour's brightness by f."""
+    """Scale an #rrggbb color's brightness by f."""
     r, g, b = int(hexcol[1:3], 16), int(hexcol[3:5], 16), int(hexcol[5:7], 16)
     return "#%02X%02X%02X" % (min(255, int(r * f)), min(255, int(g * f)), min(255, int(b * f)))
 
 
 def recolor(polys, recessed=1.0, underside=1.0, back_sloped=1.0, recessed_color=None, tops=1.0):
-    """Post-process the N64 colouring.
+    """Post-process the N64 coloring.
     recessed:   brightness factor for vertical green/blue faces that are NOT on the
                 two outer planes the camera sees (x=0 for green, y=0 for blue).
     underside:  factor for downward-facing sloped faces (nz < 0).
-    back_sloped: factor for sloped faces coloured green/blue (i.e. on the hidden sides).
-    recessed_color: if set, recessed vertical faces take this colour instead.
+    back_sloped: factor for sloped faces colored green/blue (i.e. on the hidden sides).
+    recessed_color: if set, recessed vertical faces take this color instead.
     tops: factor for yellow tops that are recessed (not one of the four corner tops)."""
     out = []
     for p in polys:
@@ -497,9 +497,9 @@ def recolor(polys, recessed=1.0, underside=1.0, back_sloped=1.0, recessed_color=
 
 
 def remap(polys, recessed=None, underside=None, back_sloped=None):
-    """Palette-only recolouring. recessed: {GREEN: c, BLUE: c} for vertical faces
-    off the two outer planes; underside: colour for downward sloped faces;
-    back_sloped: colour for sloped faces on the hidden sides (currently green/blue)."""
+    """Palette-only recoloring. recessed: {GREEN: c, BLUE: c} for vertical faces
+    off the two outer planes; underside: color for downward sloped faces;
+    back_sloped: color for sloped faces on the hidden sides (currently green/blue)."""
     out = []
     for p in polys:
         nx, ny, nz = p.n

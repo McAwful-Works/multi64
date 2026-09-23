@@ -10,7 +10,7 @@
  * never finishes, and any window load can be made to fail, the way pi_io.c fails when the PI stays
  * busy.
  *
- * One behaviour is observed rather than transcribed: a write transfer started while the host has
+ * One behavior is observed rather than transcribed: a write transfer started while the host has
  * sent bytes the console has not read never finishes (ACT stays set), and the switch back to
  * RDNOP that ends the wait abandons it with nothing sent. An X7 running test ROM 1.11 gave up on
  * writes exactly then, and 1.12, which reads everything waiting before each write, gave up on none

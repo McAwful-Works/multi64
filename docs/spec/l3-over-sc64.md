@@ -50,7 +50,7 @@ The host **MUST** validate `datatype == 0x01` for the Multi64 L3 stream, parse t
 
 **Other `PKT` ids** (`X`, `B`, `G`, …) are **not** part of the L3 byte stream; the host **MAY** handle them in parallel (logging, UI). **`PKT` `G` (`DATA_FLUSHED`)** indicates an `USB_WRITE` from the PC was discarded because the N64 did not acknowledge in time; Multi64 implementations **SHOULD** surface this as a session/transport error toward the L3 layer, after delivering any L3 octets received before it.
 
-**Resynchronisation (host implementation note):** A host that joins the serial stream mid-packet can find a `CMP`/`ERR`/`PKT` tag inside other data. It **SHOULD** treat a length larger than any vendor packet can carry (`PKT`: 4 + `0xFFFFFF` bytes, the `U` layout above; `CMP`/`ERR`: the cart's 128 MiB `MEMORY_READ` address space) as noise, discard one byte, and resume the tag search.
+**Resynchronization (host implementation note):** A host that joins the serial stream mid-packet can find a `CMP`/`ERR`/`PKT` tag inside other data. It **SHOULD** treat a length larger than any vendor packet can carry (`PKT`: 4 + `0xFFFFFF` bytes, the `U` layout above; `CMP`/`ERR`: the cart's 128 MiB `MEMORY_READ` address space) as noise, discard one byte, and resume the tag search.
 
 ---
 

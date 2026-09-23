@@ -51,7 +51,7 @@ baked in at compile time, and so only works on a machine that has built the repo
   an empty section beside an orphaned one.
 - **The styling is the shared base**, byte-identical with Multi64 and Xfer64 and enforced by tests in
   the `multi64` crate. See [`docs/frontend-appearance.md`](../../docs/frontend-appearance.md): the
-  palette lives in `:root`, no rule outside it may name a colour, and app-only rules go in
+  palette lives in `:root`, no rule outside it may name a color, and app-only rules go in
   `app.css`.
 
 ## Related

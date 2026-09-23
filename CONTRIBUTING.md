@@ -108,12 +108,23 @@ For **Start bridge** in Multi64, build **`multi64d`** first (`cargo build -p mul
 - **Human docs:** [docs/README.md](docs/README.md) is the map to all Markdown.
 - **Rust API:** run `cargo doc --workspace --no-deps --open` for `//!` comments on public items.
 - **Wire formats:** edit [docs/spec](docs/spec). **Spec-Revision** remains **1** until announced otherwise; bump L3 **Protocol-Major** / **Protocol-Minor** when the **binary** L3 contract changes ([l3-bridge-protocol-v1.md](docs/spec/l3-bridge-protocol-v1.md) §12).
+- **Documentation describes the repo as it is.** A change that makes an existing sentence false
+  corrects it in the same change; one that adds behavior nothing describes adds the description,
+  in whichever place already owns that subject — a README, a module `//!`, a `docs/` page. Stale
+  documentation is a defect, not debt: a reader cannot tell a sentence that was never true from
+  one that stopped being true, so the whole page stops being trustworthy.
+- **American English**, in prose and in the names that get read as prose — test names, error
+  messages, log lines. `sh .claude/skills/check-docs/check-docs.sh` checks this against
+  [`.claude/skills/check-docs/british-spellings.txt`](.claude/skills/check-docs/british-spellings.txt).
+  Extend that list rather than loosening how it matches. `aria-labelledby` is an ARIA attribute,
+  not a word, and is exempt.
 
 ## Style
 
 - Match existing **rustfmt** output; do not fight the formatter.
 - Prefer **clear names** and **small functions** over heavy abstraction.
 - New protocol or connector behavior should be reflected in **`docs/spec`** or **`docs/connectors`** in the same change when possible.
+- Run **`sh .claude/skills/check-docs/check-docs.sh`** after touching Markdown, renaming a spec, moving a file, or writing prose anywhere. CI runs it too, so a failure here is a failure there.
 
 ## License
 

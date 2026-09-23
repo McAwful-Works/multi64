@@ -446,11 +446,11 @@ const setDev = async (p, on) => {
   await p.close();
 }
 
-// The shared palette rule: colours live in styles.css :root blocks, never in the app sheet.
+// The shared palette rule: colors live in styles.css :root blocks, never in the app sheet.
 {
   const css = await readFile(join(FRONTEND_DIR, "app.css"), "utf8");
   const literals = css.replace(/\/\*[\s\S]*?\*\//g, "").match(/#[0-9a-fA-F]{3,8}\b|\brgba?\(\s*\d|\bhsla?\(/g) || [];
-  check("app.css has no colour literals", literals.length === 0, literals.join(", "));
+  check("app.css has no color literals", literals.length === 0, literals.join(", "));
 }
 
 check("no console errors", consoleErrors.length === 0, consoleErrors.join("\n        "));

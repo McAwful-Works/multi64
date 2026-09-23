@@ -17,7 +17,7 @@ agent, and flags the pairs that bracket it. A bracketing pair is not proof of an
 is the thing to go and disassemble.
 
 A lui is only a lui if the word is really an instruction, and float tables read as `lui`
-beautifully: any float whose top byte is 0x3C-0x3F -- most of a normalised table between
+beautifully: any float whose top byte is 0x3C-0x3F -- most of a normalized table between
 about 0.008 and 2 -- carries the lui opcode in bits 31-26 and its mantissa in the immediate.
 Two rules cut nearly all of that. An addiu or ori only counts when its source register is
 the one the lui loaded, which a mantissa matches by chance one time in 32. And a lui
@@ -65,7 +65,7 @@ def _in_span(rom, lo, hi):
             addr = hi2 | (b & 0xFFFF)
         elif op == LUI or (i and words[i - 1] >> 26 == LUI):
             # A run of "lui"s is a float table, not code. Any float whose top byte is
-            # 0x3C-0x3F -- which is most of a normalised table between about 0.008 and 2 --
+            # 0x3C-0x3F -- which is most of a normalized table between about 0.008 and 2 --
             # has the lui opcode in bits 31-26, and its mantissa lands in the immediate.
             # Real code does not put three of them in a row; a ramp of floats always does.
             continue

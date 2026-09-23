@@ -23,7 +23,7 @@ impl fmt::Display for ByteOrder {
     }
 }
 
-/// Recognise the byte order from the first word, which is `80 37 12 40` on every retail ROM.
+/// Recognize the byte order from the first word, which is `80 37 12 40` on every retail ROM.
 pub fn byte_order(data: &[u8]) -> Option<ByteOrder> {
     match data.get(..4)? {
         [0x80, 0x37, 0x12, 0x40] => Some(ByteOrder::Z64),
@@ -89,7 +89,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_three_orders_normalise_to_the_same_bytes() {
+    fn all_three_orders_normalize_to_the_same_bytes() {
         let z64 = [0x80, 0x37, 0x12, 0x40, 1, 2, 3, 4];
         let v64 = [0x37, 0x80, 0x40, 0x12, 2, 1, 4, 3];
         let n64 = [0x40, 0x12, 0x37, 0x80, 4, 3, 2, 1];

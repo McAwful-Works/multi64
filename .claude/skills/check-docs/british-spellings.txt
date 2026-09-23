@@ -1,0 +1,96 @@
+# British spellings this repo does not use, one "british american" pair per line.
+# check-docs: skip-spelling -- this file is the list; it must name what it rejects.
+#
+# Each entry is matched as a case-insensitive SUBSTRING, so a stem covers its whole family:
+# "recognis" catches recognise, recognised, unrecognised. That only works for stems no
+# American word contains, which is why some entries look oddly truncated and why others
+# that look obvious are missing:
+#
+#   grey        a real CSS colour keyword, listed beside "gray" in multi64's palette checker
+#   cancelled   an accepted American variant, and a Rust identifier here (Cancelled, set_cancelled)
+#   analys      would hit "analysis", which is correct; the -yse verb forms are listed instead
+#   realis      would hit "realistic"; listed as the explicit verb forms
+#   programme   would hit "programmer" and "programming"
+#   labelled    would corrupt aria-labelledby, so that attribute is masked before the search
+#
+# Add to this list rather than loosening the matching.
+behaviour behavior
+colour color
+honour honor
+favour favor
+labour labor
+neighbour neighbor
+endeavour endeavor
+flavour flavor
+armour armor
+centre center
+theatre theater
+fibre fiber
+calibre caliber
+sombre somber
+lustre luster
+artefact artifact
+defence defense
+offence offense
+pretence pretense
+licence license
+practise practice
+acknowledgement acknowledgment
+judgement judgment
+catalogue catalog
+analogue analog
+manoeuvre maneuver
+sceptic skeptic
+aluminium aluminum
+sulphur sulfur
+moustache mustache
+whilst while
+amongst among
+recognis recogniz
+normalis normaliz
+initialis initializ
+serialis serializ
+tokenis tokeniz
+organis organiz
+rasteris rasteriz
+summaris summariz
+minimis minimiz
+maximis maximiz
+optimis optimiz
+synchronis synchroniz
+specialis specializ
+prioritis prioritiz
+authoris authoriz
+categoris categoriz
+customis customiz
+standardis standardiz
+utilis utiliz
+visualis visualiz
+finalis finaliz
+sanitis sanitiz
+randomis randomiz
+generalis generaliz
+parameteris parameteriz
+emphasise emphasize
+emphasised emphasized
+realise realize
+realised realized
+analyse analyze
+analysed analyzed
+analysing analyzing
+greyed grayed
+greying graying
+travelled traveled
+travelling traveling
+labelled labeled
+labelling labeling
+modelling modeling
+signalling signaling
+levelling leveling
+marvellous marvelous
+learnt learned
+spelt spelled
+dreamt dreamed
+fulfil fulfill
+skilful skillful
+wilful willful

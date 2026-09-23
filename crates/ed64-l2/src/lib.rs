@@ -15,7 +15,7 @@
 //! [UNFLoader](https://github.com/buu342/N64-UNFLoader) and libdragon's `usb.c`, both of which drive an
 //! X7 in practice. On that cart, L3 went both ways through `multi64d` with no stream errors. Over a
 //! direct serial connection, with the cart echoing messages while the host was still sending them,
-//! one arrived cut off. The parser reports that and resynchronises at the next `DMA@` (spec §4.4). Spec §4.0 and §4.5 record what
+//! one arrived cut off. The parser reports that and resynchronizes at the next `DMA@` (spec §4.4). Spec §4.0 and §4.5 record what
 //! that means and what to check first. Treat a successful [`Ed64L2Pipe::open`] as "the serial port
 //! opened", not as "EverDrive support works" — there is no identity handshake in the data path, so use
 //! `ed64-smoke` (spec §8) to confirm a port really is an EverDrive.
@@ -111,7 +111,7 @@ impl WireBuffer {
             tracing::debug!(
                 target: "multi64_ed64_l2",
                 skipped,
-                "resynchronised: discarded bytes before DMA@"
+                "resynchronized: discarded bytes before DMA@"
             );
         }
         if self.buf.len() < 8 {
@@ -221,7 +221,7 @@ impl Ed64L2Pipe {
         self.port.set_timeout(t).map_err(io::Error::other)
     }
 
-    /// Clear host serial buffers **and** internal parse state (spec §4.4 resynchronisation).
+    /// Clear host serial buffers **and** internal parse state (spec §4.4 resynchronization).
     pub fn clear_serial_buffers(&mut self) -> io::Result<()> {
         self.port
             .clear(ClearBuffer::All)
@@ -368,7 +368,7 @@ mod tests {
     }
 
     /// The alignment byte is consumed with the message it belongs to: it is not payload, and it
-    /// must not be left to be resynchronised past — a cart sends whatever was in its buffer there,
+    /// must not be left to be resynchronized past — a cart sends whatever was in its buffer there,
     /// which could be any byte at all.
     #[test]
     fn the_alignment_byte_is_consumed_and_never_reaches_l3() {
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn leading_garbage_is_resynchronised() {
+    fn leading_garbage_is_resynchronized() {
         let mut wire = b"\x00\xffnoise".to_vec();
         wire.extend(from_cart(MULTI64_L3_TYPE, b"ok"));
         let msgs = decode_all(&wire).unwrap();

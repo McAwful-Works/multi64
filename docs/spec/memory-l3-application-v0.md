@@ -94,7 +94,7 @@ Access is through **cached KSEG0**. The game manipulates its own structures with
 
 ### 4.2 Cartridge ROM (`PEEKROM`)
 
-Hosts need the ROM as well as RAM: tools read it to recognise the game and to find data the game's patch wrote there, such as a player's login key. `PEEKROM` reads it from the cart itself, so what the host sees is the image the console is running, not a file that is meant to match it.
+Hosts need the ROM as well as RAM: tools read it to recognize the game and to find data the game's patch wrote there, such as a player's login key. `PEEKROM` reads it from the cart itself, so what the host sees is the image the console is running, not a file that is meant to match it.
 
 - **Addresses are ROM offsets:** `0` is the first byte of the ROM, which the console sees on the PI bus at `0x10000000`. Any `addr` and `len` are allowed; alignment is the agent's problem, not the host's.
 - **Limits are §4's:** 32 regions, 4096 bytes per region, 7936 bytes per request. `addr + len` beyond `rom_bytes` is `E_RANGE`.

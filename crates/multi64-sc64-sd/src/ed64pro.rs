@@ -2,7 +2,7 @@
 //!
 //! **Experimental; never run against a cart.** The SC64 and X-series sessions read sectors and mount
 //! FAT on the host. The PRO's microcontroller owns the file system instead and serves file commands,
-//! so every [`crate::CartSession`] operation here maps onto those commands. Behaviour mirrors
+//! so every [`crate::CartSession`] operation here maps onto those commands. Behavior mirrors
 //! [`crate::Sc64SdSession`] — recursion, `skip_existing`, cancellation and partial-file cleanup — so
 //! Xfer64 can treat both carts the same. See workspace `docs/spec/ed64-pro-usb-host.md`.
 
@@ -27,7 +27,7 @@ pub struct Ed64ProSdSession<T: Transport = Box<dyn serialport::SerialPort>> {
 }
 
 impl Ed64ProSdSession {
-    /// Open the port, run the edlink handshake, and initialise the SD file system.
+    /// Open the port, run the edlink handshake, and initialize the SD file system.
     pub fn open(port_name: &str) -> io::Result<Self> {
         let dev = Ed64Pro::open(port_name).map_err(link_err)?;
         Self::from_device(dev)
@@ -35,7 +35,7 @@ impl Ed64ProSdSession {
 }
 
 impl<T: Transport> Ed64ProSdSession<T> {
-    /// Wrap an already-connected device and initialise its file system (`FS_SCMD_INIT`).
+    /// Wrap an already-connected device and initialize its file system (`FS_SCMD_INIT`).
     pub fn from_device(mut dev: Ed64Pro<T>) -> io::Result<Self> {
         dev.fs_init().map_err(link_err)?;
         Ok(Self {

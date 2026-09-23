@@ -194,7 +194,7 @@ function renderCartAndAuto() {
 }
 
 function applySettingsToForm(s) {
-  // Anything unrecognised reads as the proven default rather than leaving the select blank.
+  // Anything unrecognized reads as the proven default rather than leaving the select blank.
   document.getElementById("cart").value = knownCart(s.cart);
   document.getElementById("baud").value = String(s.baud ?? 115200);
   document.getElementById("listen").value = s.listen || "127.0.0.1:38765";

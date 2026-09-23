@@ -60,7 +60,7 @@ makes the ROM safe on a console without an Expansion Pak.
 
 With the host side running against the cart:
 
-- the tool connects through the stand-in and recognises the game;
+- the tool connects through the stand-in and recognizes the game;
 - a **check made in game reaches the server**;
 - an **item sent from the server arrives in game, once** — count it;
 - the stand-in reports no stalls or reconnects during normal play, and recovers from each when you
@@ -99,7 +99,7 @@ smoothly instead means something genuinely slow, which is a different problem.
 | Build-tool padding | A reserved ROM gap was accepted by the build tool and emitted nothing | Check the map output for the address you expected, every time |
 | A modified IPL3 | A patch NOPed the checksum check; emulators never notice | Restore retail IPL3 and fix the CRC ([placing-the-agent.md §6](placing-the-agent.md#6-the-boot-crc-and-ipl3)) |
 | The wrong serial port | A daemon started on a different USB-serial adapter and still reported itself healthy | Check `GET /` on `multi64d` names the cart's port before a session |
-| Line endings | Build files copied from a Windows checkout into a Linux build tree carried CRLF | Normalise to LF when copying between checkouts |
+| Line endings | Build files copied from a Windows checkout into a Linux build tree carried CRLF | Normalize to LF when copying between checkouts |
 | A stalled reply looks like a dead link | The game stops calling the agent during loads, longer than the reply timeout | Distinguish stalls from transport failures ([host-connector.md §7](host-connector.md#7-survive-everything-the-connector-does-not-expect)) |
 | The tool's own deadline | Every Archipelago client abandons a request after a timeout of its own and reconnects without logging it — 5 s for the BizHawk Client. A reply timeout times its retries can exceed that, and then a hiccup loses the tool by arithmetic, not bad luck | Keep reply timeout x attempts inside the tool's deadline, and pin the two together so a later change to either cannot drift back over it |
 | Counting dropouts instead of timing round trips | A session dropped every few minutes. Four causes were argued from plausible mechanisms — video memory, agent latency, server-side eviction — and three were wrong. Rare events over an hour could not tell them apart | Measure the distribution ([`tools/link-tap.py`](../../n64/agent/tools/link-tap.py)). It gave the answer in minutes: the client hung up, every request had been answered, and the tail was quantized |

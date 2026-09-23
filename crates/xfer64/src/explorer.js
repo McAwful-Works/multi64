@@ -180,7 +180,7 @@ const DRAG_AUTOSCROLL_EDGE_PX = 28;
 const DRAG_AUTOSCROLL_STEP_PX = 20;
 const DRAG_AUTOSCROLL_INTERVAL_MS = 50;
 
-/** `plugin:drag|start_drag` requires a drag image: a 32×32 card in the accent colour. */
+/** `plugin:drag|start_drag` requires a drag image: a 32×32 card in the accent color. */
 const OS_DRAG_IMAGE_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAbUlEQVR42mNgGAVDAXRt+fGaHDwgllLFMTBNll7Z76iBSXIEtS0n2RG0sBzZEYPbAbQKfqKjYdA4QFnD4AUt8KgDRh0w6oBRB4w6YPA7AOYIWjqAqPbAgDuAFo4gq104IJYPimb5oOiYjAJ6AQCeK5lnXii7XgAAAABJRU5ErkJggg==";
 
 /** The plugin's own callback clears the in-flight flag; this only bounds a callback that never comes. */
@@ -2533,7 +2533,7 @@ function pathsForDrag(pane, path) {
 }
 
 /**
- * Arm a pane-to-pane drag on a row press. The drag only begins once the pointer has travelled
+ * Arm a pane-to-pane drag on a row press. The drag only begins once the pointer has traveled
  * `DRAG_START_THRESHOLD_PX`, so a plain click still selects and a slow double-click still renames.
  * @param {"cart" | "pc"} pane
  * @param {HTMLTableRowElement} tr

@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_replies_are_recognised() {
+    fn identity_replies_are_recognized() {
         assert!(is_sc64_identifier(b"SCv2"));
         assert!(!is_sc64_identifier(b"S"));
         assert!(!is_sc64_identifier(b"XXv2"));

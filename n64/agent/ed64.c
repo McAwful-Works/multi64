@@ -156,7 +156,7 @@ static uint32_t usb_message(uint8_t *dst, uint32_t cap, uint32_t spill_cap)
     /* From here on a message is being consumed: any failure has lost part of the stream, and says
        so, so the agent throws away the partial frame it belonged to (#151). */
     if (b == 0 || b[0] != 'D' || b[1] != 'M' || b[2] != 'A' || b[3] != '@') {
-        /* Out of step with the host. The agent's L3 layer resynchronises on the next frame. */
+        /* Out of step with the host. The agent's L3 layer resynchronizes on the next frame. */
         return ED64_RECEIVE_LOST;
     }
     size = ((uint32_t)b[5] << 16) | ((uint32_t)b[6] << 8) | (uint32_t)b[7];
@@ -310,7 +310,7 @@ static uint8_t message_byte(const uint8_t *data, uint32_t len, uint32_t p)
         return (uint8_t)"CMPH"[p - len];
     }
     /* The alignment byte. libdragon leaves whatever its buffer held here; a zero is as valid and
-       keeps what the cart sends from depending on uninitialised memory. */
+       keeps what the cart sends from depending on uninitialized memory. */
     return 0u;
 }
 

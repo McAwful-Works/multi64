@@ -35,7 +35,7 @@ AP64 = ap.scene_ap()
 
 # The intersecting spheres leave faces cut into BSP fragments that merge_runs
 # cannot regroup (other faces paint between them), so AP64 widens the
-# same-colour stroke enough to close the hairlines along those cuts. Its ring
+# same-color stroke enough to close the hairlines along those cuts. Its ring
 # is also cropped tighter than the other marks' 6%, so it fills the icon.
 for name, polys, elev, stroke, pad in (
         ("multi64.svg", MULTI64, n.ELEV, 0.6, 0.06),

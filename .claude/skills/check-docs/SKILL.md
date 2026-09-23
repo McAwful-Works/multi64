@@ -1,9 +1,12 @@
 ---
 name: check-docs
-description: Validate documentation cross-references across the repo - relative markdown links, heading anchors, backtick-wrapped links that silently fail to render, and docs/spec/ paths cited from Rust or JS. Use before merging any change that touches .md files, renames a spec, or moves a crate, and whenever asked to check or fix documentation links.
+description: Check the repo's documentation mechanically - relative markdown links, heading anchors, backtick-wrapped links that silently fail to render, docs/spec/ paths cited from Rust or JS, and American English across Markdown and source. Use before merging any change that touches .md files or writes prose anywhere, renames a spec, or moves a crate, and whenever asked to check or fix documentation links or spelling.
 ---
 
-# Check documentation cross-references
+# Check documentation
+
+<!-- check-docs: skip-spelling -- this page quotes the spellings check 5 rejects. Any file
+     may exempt itself this way; doing so is visible in the diff, which is the point. -->
 
 This repo carries heavy interlinked docs: `docs/spec/` is normative and is cited from README files, from Rust `//!` comments, and from other specs. Renaming a spec or moving a file breaks references that nothing in CI checks.
 
@@ -13,7 +16,7 @@ This repo carries heavy interlinked docs: `docs/spec/` is normative and is cited
 sh .claude/skills/check-docs/check-docs.sh
 ```
 
-Optionally pass specific markdown files to limit checks 1-3; check 4 always sweeps the whole repo. Exit code is 1 when anything fails, so it composes into a shell chain.
+Optionally pass specific markdown files to limit checks 1-3; checks 4 and 5 always sweep the whole repo. Exit code is 1 when anything fails, so it composes into a shell chain.
 
 ## What it catches
 
@@ -27,6 +30,20 @@ Optionally pass specific markdown files to limit checks 1-3; check 4 always swee
 
    Easy to introduce when converting a table cell to code style, and invisible unless you look at the rendered page. Examples inside fenced code blocks are masked before checking, so a doc may show the pattern without tripping the check.
 4. **`docs/spec/*.md` paths cited from `.rs` or `.js`** that no longer exist, e.g. a module doc pointing at a spec that was renamed.
+5. **British spellings**, in Markdown and in source. Comments, doc comments, test names and
+   error messages get read as often as a README, so they are searched too. The pairs live in
+   [`british-spellings.txt`](british-spellings.txt), matched case-insensitively as substrings,
+   so one stem covers a whole family (`recognis` catches recognise, recognised, unrecognised).
+
+   That only works for stems no American word contains, which is why the list is fussier than
+   it looks: `analys` would hit *analysis*, `realis` would hit *realistic*, `programme` would
+   hit *programmer*. Those are listed as explicit forms instead. `grey` is absent on purpose —
+   it is a real CSS color keyword, sitting beside `gray` in Multi64's palette checker — and so
+   is `cancelled`, which is an accepted American variant and a Rust identifier here.
+   `aria-labelledby` is masked before the search: it is an ARIA attribute, not a word.
+
+   Add to the list rather than loosening the matching. A false positive here is worse than a
+   miss, because it teaches everyone to ignore the check.
 
 ## Fixing what it reports
 

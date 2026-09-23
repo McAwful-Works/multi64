@@ -70,7 +70,7 @@
    * This lives here rather than in each app's main script because those import Tauri APIs at load
    * and cannot run outside the app shell — which would make appearance untestable in a browser and
    * would need the same code written twice. This module has no Tauri dependency, so both apps get
-   * the behaviour by loading it and adding the three controls to their markup.
+   * the behavior by loading it and adding the three controls to their markup.
    */
   function bindAppearanceControls() {
     const fields = [

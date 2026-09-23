@@ -77,7 +77,7 @@ local collectible_offsets = nil
 -- Measured on a console standing in the Bottom of the Well with every chest open (NTSC 1.0).
 --
 -- Only the two words that were read back and matched what had been collected are used. The
--- neighbours are presumably switches, room clear and the block the scrubs sit in, but a
+-- neighbors are presumably switches, room clear and the block the scrubs sit in, but a
 -- wrong address here would report checks nobody made, and an unsent check can be waited for
 -- while a false one cannot be taken back. Those keep the save context and the transient slot
 -- until each is confirmed the same way.

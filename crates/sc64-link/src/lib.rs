@@ -48,7 +48,7 @@ pub const MAX_PKT_DATA_LEN: usize = 4 + 0x00FF_FFFF;
 
 /// Data length of the vendor response header at the start of `buf` (at least 8 bytes), or `None`
 /// if `buf` does not start with `CMP`/`ERR`/`PKT` or the length exceeds what that tag can carry.
-/// An impossible length means the tag was found inside other data, so callers resynchronise.
+/// An impossible length means the tag was found inside other data, so callers resynchronize.
 fn header_data_len(buf: &[u8]) -> Option<usize> {
     let cap = match &buf[0..3] {
         b"CMP" | b"ERR" => MAX_CMP_DATA_LEN,

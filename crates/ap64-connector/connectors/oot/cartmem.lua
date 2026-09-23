@@ -134,7 +134,7 @@ end
 --- which in a dungeon is far faster than a cart poll, and one per scan let a real check be
 --- pushed out of the queue before any scan saw it. That is "the chest only registered when
 --- I left the room". Draining it empties the queue every poll instead, and the scan can
---- recognise several checks at once, which is what an emulator reading every frame does.
+--- recognize several checks at once, which is what an emulator reading every frame does.
 ---
 --- A cleared slot is dropped here too. Neither the agent nor the host's own sampling
 --- queues one, so this only guards the day something else does: all zeros is never a

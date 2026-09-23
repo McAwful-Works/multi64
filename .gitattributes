@@ -22,5 +22,10 @@ Makefile text eol=lf
 toolchain.lock text eol=lf
 *.lua text eol=lf
 
+# check-docs builds one regex alternation out of this list. A CRLF checkout would put a
+# carriage return inside every branch of it, so the check would match nothing and pass
+# silently -- the worst way for a check to break.
+.claude/skills/check-docs/british-spellings.txt text eol=lf
+
 # AP64's prebuilt agent images and hook stubs.
 *.bin binary

@@ -53,7 +53,7 @@ The host reads the bytes **raw**, as edlink's `usbrd` does: whatever is waiting 
 
 ## 4. No L2 framing
 
-Neither direction adds anything. L3 frames carry their own boundaries (`MAGIC` + `PAYLOAD_LEN`) and its decoder resynchronises on `MAGIC`, and an L2 adapter must not interpret L3 ([l2-link-adapter.md §2](./l2-link-adapter.md#2-host-side-l2-interface-conceptual)). A datatype tag like SC64's or the X7's `DMA@` header would add nothing here: the PRO's link carries only this stream, provided §2's quiet-link rule holds.
+Neither direction adds anything. L3 frames carry their own boundaries (`MAGIC` + `PAYLOAD_LEN`) and its decoder resynchronizes on `MAGIC`, and an L2 adapter must not interpret L3 ([l2-link-adapter.md §2](./l2-link-adapter.md#2-host-side-l2-interface-conceptual)). A datatype tag like SC64's or the X7's `DMA@` header would add nothing here: the PRO's link carries only this stream, provided §2's quiet-link rule holds.
 
 ---
 
@@ -87,7 +87,7 @@ The cart's EDIO registers sit on the PI bus at **`0x1F800000`**, one 32-bit word
 | `+0x10` | `MBX` | R/W | Mailbox shared with the PC; unused here |
 | `+0x14` | `EDID` | R | Device ID, `0xED64xxxx` |
 
-ed64-pro-pub's sample performs no initialisation before using the FIFO or sending to USB; neither does this mapping.
+ed64-pro-pub's sample performs no initialization before using the FIFO or sending to USB; neither does this mapping.
 
 ### 6.2 Detecting a PRO
 
@@ -130,7 +130,7 @@ Write §3's sequence to `FIFODATA` and poll `SYSSTAT` bit 0 with a bounded wait.
 
 1. **Detection (§6.2):** what `EDID` a PRO reports; whether `SYSSTAT` shows the constant nibble and strobe; whether a running ROM gets a status reply through the FIFO at all.
 2. **What `FIFODATA` delivers:** only host bytes and replies to the ROM's own commands, or anything else the MCU generates.
-3. **Flow control (§5):** overflow behaviour, usable chunk size and spacing.
+3. **Flow control (§5):** overflow behavior, usable chunk size and spacing.
 4. **Sending (§3):** whether the MCU accepts endpoint `0x18` from a running game, how long `SYSSTAT` stays busy per 1024-byte block, and whether anything else must happen first.
 5. **The host handshake:** whether its 66 zero bytes and status commands, sent while a ROM is running, reach only the MCU and leave the ROM's FIFO alone.
 6. **Host polling:** the latency of polling for waiting bytes at 921600 baud on Windows and Linux VCP drivers.

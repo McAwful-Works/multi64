@@ -207,7 +207,7 @@ impl<T: Transport> Ed64Pro<T> {
         })
     }
 
-    /// Initialise the SD file system (`FS_SCMD_INIT`).
+    /// Initialize the SD file system (`FS_SCMD_INIT`).
     pub fn fs_init(&mut self) -> Result<()> {
         self.send(&scmd_frame(CMD_FS, fs::INIT))?;
         self.check_status()

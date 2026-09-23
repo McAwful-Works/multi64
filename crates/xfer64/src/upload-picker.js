@@ -672,7 +672,7 @@ async function runUpload() {
       // An empty folder copies and skips nothing; "Uploaded 0 files" would read as a failure.
       doneMsg = uploaded === 0 ? "Upload finished." : `Uploaded ${countNoun(uploaded, "file")} to cart.`;
     }
-    // The bridge stays paused until someone resumes it, so this outranks the success colour.
+    // The bridge stays paused until someone resumes it, so this outranks the success color.
     const resumeWarning = typeof summary?.resumeWarning === "string" ? summary.resumeWarning.trim() : "";
     if (resumeWarning) {
       doneMode = "warning";

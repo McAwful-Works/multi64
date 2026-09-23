@@ -316,7 +316,7 @@ static uint32_t stream_frame(void)
  * when the host has sent nothing. Only a frame that actually carries a request
  * does any copying.
  */
-/* Initialisation attempts before giving up for the rest of the boot. A cart that
+/* Initialization attempts before giving up for the rest of the boot. A cart that
    is there answers on the first one; this only allows for one still waking up. */
 #define AGENT_INIT_ATTEMPTS 16
 

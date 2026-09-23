@@ -1,6 +1,6 @@
 //! Detect an Archipelago N64 seed and splice the M64P cart agent into it.
 //!
-//! A seed is recognised by its header and checked against a per-game [`profile`]: the
+//! A seed is recognized by its header and checked against a per-game [`profile`]: the
 //! code the agent hooks into must be exactly what the profile was measured against, and
 //! nothing of the seed may lie where the agent goes. Only then is anything written.
 
@@ -77,7 +77,7 @@ pub fn withheld() -> Result<Vec<Bundle>, String> {
     Ok(vec![builtin!("cvlod", ["agent.bin", "stub.bin"])])
 }
 
-/// A ROM file as loaded: normalised to big-endian, with what could be learned from it.
+/// A ROM file as loaded: normalized to big-endian, with what could be learned from it.
 #[derive(Debug, Clone, Serialize)]
 pub struct Detection {
     pub byte_order: String,
@@ -114,7 +114,7 @@ impl std::fmt::Display for LoadError {
 
 impl std::error::Error for LoadError {}
 
-/// Normalise `data` to big-endian in place and verify it against every matching profile.
+/// Normalize `data` to big-endian in place and verify it against every matching profile.
 pub fn detect(bundles: &[Bundle], data: &mut [u8]) -> Result<Detection, LoadError> {
     let order = rom::byte_order(data).ok_or(LoadError::NotARom)?;
     rom::to_big_endian(data, order);

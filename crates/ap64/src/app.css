@@ -2,7 +2,7 @@
    AP64-only rules, laid out the way the Multi64 window is: a header with a tagline, cards
    of at most 40rem, status rows in a two-column grid, and any list that can grow held in a
    box of fixed height. The palette, size tokens, buttons, fields and hints come from
-   styles.css (the shared base, copied verbatim from multi64). No colour, font-size or
+   styles.css (the shared base, copied verbatim from multi64). No color, font-size or
    border-radius literals here -- use the tokens.
    =========================================================================== */
 
@@ -200,8 +200,8 @@ body[data-dev="on"] .dev-only {
 }
 
 /*
- * A link's own row: a dot in the colour of its state, then what that state means. The dot is
- * decoration -- the words carry it, so a reader who cannot tell the colours apart loses nothing.
+ * A link's own row: a dot in the color of its state, then what that state means. The dot is
+ * decoration -- the words carry it, so a reader who cannot tell the colors apart loses nothing.
  */
 .link::before {
   content: "";

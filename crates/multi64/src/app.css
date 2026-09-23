@@ -1,7 +1,7 @@
 /* ===========================================================================
    Multi64-only rules. The palette, size tokens, buttons, fields, hints, the app header brand
    and the dialogs come from styles.css (the shared base); this file only lays out what the
-   Multi64 main window has and the other apps do not. No colour literals here -- use the tokens.
+   Multi64 main window has and the other apps do not. No color literals here -- use the tokens.
    =========================================================================== */
 
 body {

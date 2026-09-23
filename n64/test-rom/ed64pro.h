@@ -1,7 +1,7 @@
 /**
  * EverDrive-64 PRO USB link for the test ROM: detection, receive from the host, send to it.
  *
- * libdragon's <usb.h> predates the PRO and does not recognise it, so this talks to the cart's
+ * libdragon's <usb.h> predates the PRO and does not recognize it, so this talks to the cart's
  * EDIO registers directly. Written against Krikzz's ed64-pro-pub `edio/everdrive.c` (MIT,
  * 5d7e96905331a841f97f8c51e0b0cba878e72fe3), not copied from it.
  *

@@ -184,7 +184,7 @@ A ROM sends to the host with `ed_usb_wr`, an `EPO` from LINK to the **USB** endp
 ## 11. Open questions — resolve on hardware before dropping Draft
 
 1. **The handshake itself.** Does a PRO answer §4 as described: silent on `CMD_STATUS2`, 4 bytes on `CMD_STATUS`?
-2. **VCP behaviour at 921600 baud** under sustained transfers, on Windows and Linux. What USB descriptors does the PRO present? These are needed for descriptor-based auto-detect.
+2. **VCP behavior at 921600 baud** under sustained transfers, on Windows and Linux. What USB descriptors does the PRO present? These are needed for descriptor-based auto-detect.
 3. **The 512-byte write split** (§3.4): is it still needed, and does it matter for anything but MCU app loads?
 4. **Directory paging:** is the 2048-byte FIFO limit relevant on the USB side, or can DIR_GET return many entries per request?
 5. **Existence checks:** does a non-zero DTEST/FTEST status only mean "absent", or can it also be an error that needs `CMD_NRESP`?

@@ -28,7 +28,7 @@ Default listen address: **`127.0.0.1:38765`** (configurable via `--listen` / `MU
 | `serial` | string | Configured serial device path (e.g. `COM3`); empty in the metadata-only test router. |
 | `serialActive` | boolean | `true` while the daemon holds an open serial link, or while `serialBusy` is `true`. `false` after **`POST /v1/serial/release`** until **`POST /v1/serial/resume`**, and also `false` while the link is **faulted** (§1.3). |
 | `serialBusy` | boolean | `true` when the daemon could not look at the serial link within **500 ms** because it was in use: writing a message to the cart, or opening the port (§1.2). `serialActive` is then `true`, so a client treats the port as held and releases before opening it. Daemons older than this field omit it, and wait for the link before answering instead. |
-| `cart` | string | The cart mapping the daemon was started for, as `--cart` names it (§5.1): `sc64`, `ed64` or `ed64pro`. Empty in the metadata-only test router. Daemons older than this field omit it; clients MUST treat a missing or unrecognised value as unknown. It is configuration, like `serial`: it says which mapping the daemon speaks, not that a cart of that kind is attached. |
+| `cart` | string | The cart mapping the daemon was started for, as `--cart` names it (§5.1): `sc64`, `ed64` or `ed64pro`. Empty in the metadata-only test router. Daemons older than this field omit it; clients MUST treat a missing or unrecognized value as unknown. It is configuration, like `serial`: it says which mapping the daemon speaks, not that a cart of that kind is attached. |
 
 ### 1.2 Serial yield (Xfer64)
 
@@ -62,7 +62,7 @@ The link is **faulted** whenever the daemon wants the port but does not hold it.
 
 A release always wins over a fault: if `POST /v1/serial/release` arrives while the link is faulted, the state becomes *released* and the daemon stops retrying, so it never takes the port back from a tool that asked for it.
 
-The recovered link is a **fresh** L2 pipe, so the L3 octet stream is discontinuous across a fault in the same way it is across release/resume. Clients resynchronise on the next frame boundary; see [`l3-bridge-protocol-v1.md`](./l3-bridge-protocol-v1.md).
+The recovered link is a **fresh** L2 pipe, so the L3 octet stream is discontinuous across a fault in the same way it is across release/resume. Clients resynchronize on the next frame boundary; see [`l3-bridge-protocol-v1.md`](./l3-bridge-protocol-v1.md).
 
 #### 1.3.1 A missing cart at startup is not fatal
 

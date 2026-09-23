@@ -49,7 +49,7 @@ fn default_true() -> bool {
 
 /// The cart `multi64d` is started for, passed as `--cart`.
 ///
-/// The serialised names are the daemon's own `--cart` values, so the settings file and the
+/// The serialized names are the daemon's own `--cart` values, so the settings file and the
 /// argument share one vocabulary (checked against `multi64d::CartKind` in the tests).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -502,10 +502,10 @@ impl StartPlan {
 /// what is plugged in, so a fixed cart with a saved port never costs an enumeration.
 ///
 /// - **A fixed cart** uses the saved port, else Auto's pick, which only ever finds a SummerCart64:
-///   the X7's FT245R (`0403:6001`) is a stock FTDI part, and a PRO can only be recognised by
+///   the X7's FT245R (`0403:6001`) is a stock FTDI part, and a PRO can only be recognized by
 ///   writing to it. Handing an EverDrive an SC64's port would run its framing against the wrong
 ///   cart, so a fixed EverDrive with no saved port is blocked.
-/// - **Auto-detect** takes a SummerCart64 recognised by its USB descriptors (the saved port, or the
+/// - **Auto-detect** takes a SummerCart64 recognized by its USB descriptors (the saved port, or the
 ///   unique one on Auto) without sending anything, and otherwise plans a probe. Two SC64s on Auto
 ///   are still a guess, so they block rather than probe.
 fn plan_start(
@@ -745,9 +745,9 @@ fn daemon_is_running(daemon: &Arc<Mutex<DaemonInner>>) -> bool {
     }
 }
 
-/// Serialises daemon lifecycle work: spawn, and kill-then-wait.
+/// Serializes daemon lifecycle work: spawn, and kill-then-wait.
 ///
-/// The commands driving these used to be serialised for free by running on the main thread. They
+/// The commands driving these used to be serialized for free by running on the main thread. They
 /// now run on the blocking pool so the window stays responsive, which leaves two overlapping
 /// starts each spawning a `multi64d` while only one child handle survives — orphaning a process
 /// that still holds the COM port. `DaemonInner`'s own mutex cannot cover this: it is released and
@@ -1457,14 +1457,14 @@ fn tray_labels(
             None => format!("Bridge: running ({listen})"),
         }
     } else if listen_in_use {
-        // Labelled, not greyed, as the window's Start button is: the menu is rebuilt only when the
-        // bridge changes, so a greyed Start would stay greyed after the other process has gone.
+        // Labeled, not grayed, as the window's Start button is: the menu is rebuilt only when the
+        // bridge changes, so a grayed Start would stay grayed after the other process has gone.
         // Named before a missing port, because Start checks the address first.
         "Bridge: stopped (listen address in use)".to_string()
     } else if can_start {
         "Bridge: stopped".to_string()
     } else {
-        // Start is greyed out below; say why, since the tray has no room for the full reason.
+        // Start is grayed out below; say why, since the tray has no room for the full reason.
         "Bridge: stopped (no serial port)".to_string()
     };
     TrayLabels {
@@ -2053,7 +2053,7 @@ mod tests {
 
     /// The baud the user picks must reach multi64d; it was collected and never passed.
     #[test]
-    fn baud_is_serialised_for_the_daemon_argument() {
+    fn baud_is_serialized_for_the_daemon_argument() {
         let s = Settings {
             baud: 57600,
             ..Settings::default()
@@ -2242,7 +2242,7 @@ mod port_selection_tests {
         assert!(matches!(&got, StartPlan::Blocked(why) if why.contains("More than one")));
     }
 
-    /// The common case sends nothing: an SC64 recognised by its descriptors.
+    /// The common case sends nothing: an SC64 recognized by its descriptors.
     #[test]
     fn auto_detect_takes_an_sc64_by_its_usb_ids_without_probing() {
         let got = plan_start(None, CartSetting::Auto, || {
@@ -2362,7 +2362,7 @@ mod port_selection_tests {
 
     /// The frontend reads `autoWarning`; a rename on either side would silently drop the warning.
     #[test]
-    fn options_serialise_the_warning_for_the_frontend() {
+    fn options_serialize_the_warning_for_the_frontend() {
         let json = serde_json::to_value(SerialPortOptions {
             ports: vec!["COM5".into()],
             auto: None,
@@ -2550,7 +2550,7 @@ mod tray_tests {
         // `start_daemon` fails without a port or a probe, so the item must not invite the click.
         let l = tray_labels(false, None, false, None, LISTEN, false);
         assert!(!l.toggle_enabled);
-        // ...and the status line says why it is greyed out.
+        // ...and the status line says why it is grayed out.
         assert_eq!(l.status, "Bridge: stopped (no serial port)");
     }
 
@@ -2708,7 +2708,7 @@ mod frontend_tests {
     /// `appearance.js` is duplicated verbatim in every app carrying the shared base, because
     /// `frontendDist` is per-app and no file can be shared across crates at runtime. Nothing else
     /// enforces that, so a fix applied to one copy would silently leave the others stale — one app
-    /// quietly ignoring a preference the rest honour. Documented in
+    /// quietly ignoring a preference the rest honor. Documented in
     /// `docs/frontend-appearance.md`; checked here.
     #[test]
     fn appearance_js_is_identical_in_both_apps() {
@@ -2744,8 +2744,8 @@ mod frontend_tests {
         }
     }
 
-    /// Colour functions whose arguments may be literals rather than tokens.
-    const COLOUR_FUNCTIONS: &[&str] = &[
+    /// Color functions whose arguments may be literals rather than tokens.
+    const COLOR_FUNCTIONS: &[&str] = &[
         "rgb",
         "rgba",
         "hsl",
@@ -2759,9 +2759,9 @@ mod frontend_tests {
         "color-mix",
     ];
 
-    /// The CSS named colours. `transparent` and `currentColor` are absent on purpose: neither
+    /// The CSS named colors. `transparent` and `currentColor` are absent on purpose: neither
     /// pins a hue, so neither breaks a theme.
-    const NAMED_COLOURS: &str = "\
+    const NAMED_COLORS: &str = "\
         aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue \
         blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk \
         crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki \
@@ -2807,7 +2807,7 @@ mod frontend_tests {
     }
 
     /// Quoted spans replaced by spaces: a font name or a `content:` string is not a declaration's
-    /// colour, however it reads.
+    /// color, however it reads.
     fn strip_strings(value: &str) -> String {
         let mut out = String::with_capacity(value.len());
         let mut quote: Option<char> = None;
@@ -2887,13 +2887,13 @@ mod frontend_tests {
     }
 
     /// The palette blocks: `:root` and `:root[data-theme="…"]`, the only rules that may hold a
-    /// colour. `:root[data-motion="reduced"] *` and the like are ordinary rules and are checked.
+    /// color. `:root[data-motion="reduced"] *` and the like are ordinary rules and are checked.
     fn is_palette_block(selector: &str) -> bool {
         selector == ":root" || (selector.starts_with(":root[") && selector.ends_with(']'))
     }
 
-    /// The first colour literal in a declaration's value, if it has one.
-    fn colour_literal(declaration: &str) -> Option<String> {
+    /// The first color literal in a declaration's value, if it has one.
+    fn color_literal(declaration: &str) -> Option<String> {
         let (_property, value) = declaration.split_once(':')?;
         let value: Vec<char> = strip_strings(value).chars().collect();
         let mut i = 0;
@@ -2933,7 +2933,7 @@ mod frontend_tests {
                     continue;
                 }
                 if value.get(end) == Some(&'(') {
-                    if COLOUR_FUNCTIONS.contains(&lower.as_str()) {
+                    if COLOR_FUNCTIONS.contains(&lower.as_str()) {
                         let mut depth = 0usize;
                         let mut close = end;
                         while close < value.len() {
@@ -2955,7 +2955,7 @@ mod frontend_tests {
                             return Some(format!("{word}{args})"));
                         }
                     }
-                } else if NAMED_COLOURS.split_whitespace().any(|named| named == lower) {
+                } else if NAMED_COLORS.split_whitespace().any(|named| named == lower) {
                     return Some(word);
                 }
                 i = end;
@@ -2967,7 +2967,7 @@ mod frontend_tests {
     }
 
     /// The palette rule of `docs/frontend-appearance.md` §1: outside the `:root` palette blocks,
-    /// no rule in either app's stylesheets may name a colour. A literal is invisible to the theme
+    /// no rule in either app's stylesheets may name a color. A literal is invisible to the theme
     /// switch, so it survives into Light and High contrast unchanged and usually becomes
     /// unreadable there — a failure a diff of the CSS does not show.
     ///
@@ -2975,7 +2975,7 @@ mod frontend_tests {
     /// scope: that window has one hardcoded palette and no theme switch, so it has nothing to
     /// break.
     #[test]
-    fn no_colour_literals_outside_the_palette() {
+    fn no_color_literals_outside_the_palette() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(3)
@@ -2998,7 +2998,7 @@ mod frontend_tests {
             "expected both apps' stylesheets, found {sheets:?}"
         );
 
-        let mut offences = Vec::new();
+        let mut offenses = Vec::new();
         for path in &sheets {
             let css = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
@@ -3006,8 +3006,8 @@ mod frontend_tests {
                 if is_palette_block(&selector) {
                     continue;
                 }
-                if let Some(literal) = colour_literal(&declaration) {
-                    offences.push(format!(
+                if let Some(literal) = color_literal(&declaration) {
+                    offenses.push(format!(
                         "{}:{line}: `{literal}` in `{declaration}` (rule `{selector}`)",
                         path.display()
                     ));
@@ -3015,10 +3015,10 @@ mod frontend_tests {
             }
         }
         assert!(
-            offences.is_empty(),
-            "colour literals outside the :root palette blocks. Use a token, or \
+            offenses.is_empty(),
+            "color literals outside the :root palette blocks. Use a token, or \
              rgba(var(--…-rgb), a) — docs/frontend-appearance.md §1:\n{}",
-            offences.join("\n")
+            offenses.join("\n")
         );
     }
 }

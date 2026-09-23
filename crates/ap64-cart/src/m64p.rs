@@ -731,7 +731,7 @@ mod tests {
     /// A reply id we do not know is still a real fault, and must not be quietly
     /// swallowed by the echo path.
     #[test]
-    fn an_unrecognised_reply_is_still_an_error() {
+    fn an_unrecognized_reply_is_still_an_error() {
         let app = [b'M', b'6', b'4', b'P', 0x8F];
         assert_eq!(
             parse(&app).unwrap_err(),

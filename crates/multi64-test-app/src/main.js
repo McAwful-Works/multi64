@@ -207,7 +207,7 @@ async function probeDaemon() {
     const held = info.serialActive ? "holding the port" : "not holding the port yet";
     setStatus(`Multi64 is on ${info.serial || "an unnamed port"} (${info.cart}), ${held}.`);
   } catch {
-    // Not an error worth colouring red: the daemon may simply not be running yet, and the run
+    // Not an error worth coloring red: the daemon may simply not be running yet, and the run
     // itself will say so far more clearly than a field would.
     setStatus(
       `No daemon answering at ${base}. Start Multi64, then press Run — the port below is a default, not a detection.`,
