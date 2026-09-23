@@ -7,8 +7,7 @@ upstream sha256
 85883bb4b626fec08984e69d40945bf62aad74f0ca5aa35127b4f8c0f3ab1f31  connector_banjo_tooie_bizhawk.lua
 
 256,935 bytes, 9,188 lines. Its header credits Mike Jackson (jjjj12212) with help from Rose
-(Oktorose) and the OoT Archipelago team -- the same lineage as connectors/oot and
-connectors/dkr.
+(Oktorose) and the OoT Archipelago team -- the same lineage as connectors/oot.
 
 Where this one came from needs saying, because it is not where the others came from.
 
@@ -30,7 +29,7 @@ of game logic in Rust.
 
 The risk that comes with that: upstream maintains the protocol for their EverDrive
 connector, not for this Lua, so the Lua can drift from the client in a way connectors/oot
-and connectors/dkr cannot. If SCRIPT_VERSION stops matching the client's script_version,
+cannot. If SCRIPT_VERSION stops matching the client's script_version,
 the client refuses the connection and says so, which is at least a loud failure.
 
 AP64 delta: BT_VERSION, "4.11.6" upstream, is "4.13.1" here.
