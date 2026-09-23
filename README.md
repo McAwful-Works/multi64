@@ -15,8 +15,8 @@ Windows apps sit on top of it, each installed on its own:
 | [**Xfer64**](crates/xfer64/README.md) | Browse and copy the files on the cart's SD card from Windows, with no drive letter. |
 | [**AP64**](crates/ap64/README.md) | Play Archipelago seeds on a real console: adds the cart agent to a patched seed, then connects Archipelago's client to the game. |
 
-AP64 needs Multi64's bridge running. Xfer64 talks to the cart itself, and steps aside for the
-bridge when it is up.
+AP64 needs Multi64's bridge running. Xfer64 talks to the cart itself: when the bridge is up,
+Xfer64 has it let go of the cart for each operation and hand it back afterward.
 
 ## Which carts work
 

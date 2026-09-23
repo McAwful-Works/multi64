@@ -174,7 +174,7 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Scale. Every size in both apps comes from these tokens, so equivalent things match:
+   Scale. Every size in every app comes from these tokens, so equivalent things match:
    four text sizes plus the app title, three corner radii, and the stacking of dialogs.
    Text sizes are in rem, so the Text size preference (--ui-scale) scales the whole UI.
    --------------------------------------------------------------------------- */
@@ -208,7 +208,7 @@ html {
 
 /* ---------------------------------------------------------------------------
    Focus. A single visible ring for keyboard users, themed like everything else, and the only
-   focus style in either app. `:focus-visible` rather than `:focus` so a mouse click on a button
+   focus style in any app. `:focus-visible` rather than `:focus` so a mouse click on a button
    does not draw it; text fields still show it on click, which is what a caret needs.
    --------------------------------------------------------------------------- */
 

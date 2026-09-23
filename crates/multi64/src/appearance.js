@@ -7,7 +7,7 @@
  * `type="module"`: module scripts are always deferred, so they run only after the document is parsed.
  *
  * Persistence is localStorage only: this must be readable synchronously at load, and a Tauri
- * `invoke` is async. Neither app keeps appearance in its settings file, so the preferences exist
+ * `invoke` is async. No app keeps appearance in its settings file, so the preferences exist
  * only in this PC's WebView data; a reinstall or cleared WebView data resets them to the defaults.
  */
 (() => {
@@ -69,8 +69,8 @@
    *
    * This lives here rather than in each app's main script because those import Tauri APIs at load
    * and cannot run outside the app shell — which would make appearance untestable in a browser and
-   * would need the same code written twice. This module has no Tauri dependency, so both apps get
-   * the behavior by loading it and adding the three controls to their markup.
+   * would need the same code written once per app. This module has no Tauri dependency, so every
+   * app gets the behavior by loading it and adding the three controls to its markup.
    */
   function bindAppearanceControls() {
     const fields = [

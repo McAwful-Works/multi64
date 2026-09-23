@@ -67,7 +67,7 @@ which is the most likely way to reintroduce a contrast failure.
 
 One script, **duplicated verbatim in every app that carries the shared base** — `crates/multi64/src/`, `crates/xfer64/src/`, `crates/multi64-test-app/src/` and `crates/ap64/src/`.
 There is no shared frontend directory: `frontendDist` points at each app's own `src`, so a file
-cannot be referenced across crates. **Edit one, copy to the other.** `appearance_js_is_identical_in_both_apps` in the `multi64` crate fails when they differ.
+cannot be referenced across crates. **Edit one, copy to the others.** `appearance_js_is_identical_in_every_app` in the `multi64` crate fails when they differ.
 
 Three constraints, each of which has already caused a bug:
 
@@ -102,7 +102,7 @@ meaningless — element sizes come back unchanged no matter what you set.
 
 ## 5. The shared base: `styles.css` and the size tokens
 
-`crates/multi64/src/styles.css`, `crates/xfer64/src/styles.css`, `crates/multi64-test-app/src/styles.css` and `crates/ap64/src/styles.css` are the **same file**. `shared_styles_css_is_identical_in_both_apps` in the `multi64` crate fails when any of them differ, so edit one and copy it to the others. It holds everything the apps must agree on:
+`crates/multi64/src/styles.css`, `crates/xfer64/src/styles.css`, `crates/multi64-test-app/src/styles.css` and `crates/ap64/src/styles.css` are the **same file**. `shared_styles_css_is_identical_in_every_app` in the `multi64` crate fails when any of them differ, so edit one and copy it to the others. It holds everything the apps must agree on:
 
 - **The palette** (§1–2).
 - **The scale tokens:** `--font-xs`, `--font-sm`, `--font-md`, `--font-lg` and `--font-title` for text; `--radius-sm`, `--radius-md` and `--radius-lg` for corners; `--z-dialog` and `--z-dialog-top` for stacking.
@@ -113,7 +113,7 @@ meaningless — element sizes come back unchanged no matter what you set.
   - the header brand block: `.app-brand…`, `.app-actions`;
   - the dialog used by Settings, Help and confirmations: `.dialog…`. A markup sketch sits beside its rules.
 
-App-only rules live in the app's own sheet: Multi64's `app.css`, Xfer64's `explorer.css` (which imports `styles.css`) and `upload-picker.css`, and Multi64 Test's `app.css`.
+App-only rules live in the app's own sheet: Multi64's `app.css`, Xfer64's `explorer.css` (which imports `styles.css`) and `upload-picker.css`, Multi64 Test's `app.css`, and AP64's `app.css`.
 
 Three rules keep it that way:
 

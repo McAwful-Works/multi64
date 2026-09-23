@@ -29,15 +29,33 @@ CI's Rust job runs these same six steps, in this order, on **Ubuntu** and **Wind
 
 The two `multi64d` builds are not a packaging step. `crates/multi64` declares `resources/multi64d.exe` under `bundle.resources` and its `src-tauri/build.rs` copies the daemon there; `tauri-build` treats a declared resource that is missing as a **hard error**. On a clean clone, skipping them makes `cargo clippy --workspace` fail before it lints anything. Build the daemon once per profile, as CI does — more detail in [CLAUDE.md](CLAUDE.md).
 
-Three further jobs run on **Ubuntu** only, and nothing above covers them:
+Five further jobs run on Ubuntu only, and nothing above covers them.
+
+Three are frontend checks. Each drives one app's `index.html` in headless Chromium with `window.__TAURI__` stubbed ([Xfer64](crates/xfer64/e2e/README.md), [Multi64](crates/multi64/e2e/README.md), [AP64](crates/ap64/README.md#checks)):
 
 ```sh
 cd crates/xfer64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
-cd crates/multi64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
-make -C n64/agent host-test
 ```
 
-The first two drive each app's `index.html` in headless Chromium with `window.__TAURI__` stubbed ([Xfer64](crates/xfer64/e2e/README.md), [Multi64](crates/multi64/e2e/README.md)). The third compiles the cart agent for the **PC**, under ASan and UBSan, and needs only a host `gcc` or `clang` and `make` — nothing from the N64 toolchain.
+```sh
+cd crates/multi64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
+```
+
+```sh
+cd crates/ap64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
+```
+
+The documentation check validates links, `<img>` targets and anchors, and enforces American English. It needs only `sh`, `git` and `grep`, and takes about a minute ([details](.claude/skills/check-docs/SKILL.md)):
+
+```sh
+sh .claude/skills/check-docs/check-docs.sh
+```
+
+The cart agent's host test compiles the agent for the PC, under ASan and UBSan, and needs only a host `gcc` or `clang` and `make` — nothing from the N64 toolchain:
+
+```sh
+make -C n64/agent host-test
+```
 
 With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` checks the HTTP surface with no cart attached (`pip install -r scripts/requirements.txt` first). The full `--e2e --assert-echo` run needs hardware and `multi64_test.z64` in **RAW_ECHO** mode. These are not part of CI.
 

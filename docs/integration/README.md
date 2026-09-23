@@ -74,17 +74,19 @@ goes and **what calls it**, and that is almost all of the work.
 
 ## What has been proven
 
-On a SummerCart64, the same agent source served three commercial games through randomizer
-clients, with location checks reaching a server and items arriving in game:
+On a SummerCart64, the same agent source has served six commercial games through randomizer
+clients, with location checks reaching a server and items arriving in game. They went in four
+ways:
 
 | Host | How the agent went in | What it added to the evidence |
 |---|---|---|
 | A game with an existing assembly payload | Relocatable object appended to the payload; the payload's frame hook retargeted | The protocol and the PI rules, under a game that loads from ROM constantly |
 | A decompiled game, then a randomizer seed built on it | A segment of the decomp's own build; the agent moved when the randomizer's mod took its RAM | Liftability; that a mod changes where things can go |
 | A game with no buildable source | Flat image, a hook stub in dead code, one retargeted `jal` | That none of the above needs a decomp |
+| A compressed game whose patch loads its own block at boot | Flat image inside the range the patch's boot code already copies, so the stub copies nothing | That a frame hook is not always a safe place to copy from ROM ([placing-the-agent.md §5.5](placing-the-agent.md#55-when-something-already-loads-it)) |
 
-Two things none of them has exercised: a **4 MB** console with the agent in the base RAM (all
-three put it in the Expansion Pak), and any cart other than the SummerCart64. EverDrive-64 X7 and
+Two things none of them has exercised: a **4 MB** console with the agent in the base RAM (every
+one put it in the Expansion Pak), and any cart other than the SummerCart64. EverDrive-64 X7 and
 PRO builds of the agent exist ([cart-agent.md §6](cart-agent.md#6-everdrive-builds-experimental)),
 but neither has run on a cart.
 

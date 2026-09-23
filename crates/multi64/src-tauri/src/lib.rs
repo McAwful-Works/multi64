@@ -2674,7 +2674,7 @@ mod frontend_tests {
     /// the components they all use (`docs/frontend-appearance.md` §5). Like `appearance.js` it is
     /// copied rather than shared, so this is what keeps them from drifting apart again.
     #[test]
-    fn shared_styles_css_is_identical_in_both_apps() {
+    fn shared_styles_css_is_identical_in_every_app() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(3)
@@ -2711,7 +2711,7 @@ mod frontend_tests {
     /// quietly ignoring a preference the rest honor. Documented in
     /// `docs/frontend-appearance.md`; checked here.
     #[test]
-    fn appearance_js_is_identical_in_both_apps() {
+    fn appearance_js_is_identical_in_every_app() {
         let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = here
             .parent()
@@ -2967,7 +2967,7 @@ mod frontend_tests {
     }
 
     /// The palette rule of `docs/frontend-appearance.md` §1: outside the `:root` palette blocks,
-    /// no rule in either app's stylesheets may name a color. A literal is invisible to the theme
+    /// no rule in any app's stylesheets may name a color. A literal is invisible to the theme
     /// switch, so it survives into Light and High contrast unchanged and usually becomes
     /// unreadable there — a failure a diff of the CSS does not show.
     ///
@@ -2995,7 +2995,7 @@ mod frontend_tests {
         sheets.sort();
         assert!(
             sheets.len() >= 4,
-            "expected both apps' stylesheets, found {sheets:?}"
+            "expected every app's stylesheets, found {sheets:?}"
         );
 
         let mut offenses = Vec::new();

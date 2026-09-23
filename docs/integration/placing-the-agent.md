@@ -3,7 +3,8 @@
 > [Integration guides](README.md) · [The cart agent](cart-agent.md) · [Testing](testing.md)
 
 The agent needs four things from a game: RAM to live in, a per-frame call, a place in ROM,
-and something that copies it from ROM to RAM. This guide is how to find each one, in the
+and something that copies it from ROM to RAM — its own loader, or a copy the game or patch
+already makes at boot. This guide is how to find each one, in the
 order that avoids redoing work, and what to verify before trusting the result.
 
 Every rule here came from an integration that got it wrong first.
@@ -68,8 +69,10 @@ python n64/agent/tools/ram-bounds.py seed.z64 0x80480000 0x80482400 --code 0x100
 ```
 
 Give `--code` for each ROM range that really holds instructions, and treat every hit as a
-thing to go and disassemble rather than a verdict. Of the four games integrated so far only
-Legacy of Darkness comes back bracketed; Castlevania 64, Paper Mario and Kirby 64 are clean.
+thing to go and disassemble rather than a verdict. Castlevania 64, Paper Mario and Kirby 64 come
+back clean. Mario Kart 64 did not: its largest untouched region, 2.3 MB of Expansion Pak, has
+both of its bounds built in code, so the agent went above it instead, where nothing brackets
+it. And Legacy of Darkness is the game that shows why a bracket matters.
 
 Castlevania: Legacy of Darkness is why this exists. Its main heap ends at `0x80400000` normally
 and `0x80634000` in the game's high quality mode, chosen by two instructions at `0x80000680`.
@@ -80,7 +83,7 @@ game to size its heap differently on a run you did not measure.
 
 ### 2.3 Prefer the Expansion Pak, guarded
 
-In all three integrations so far the Expansion Pak was the answer: where the patch left it
+In every integration so far the Expansion Pak was the answer: where the patch left it
 alone, play never touched it, and it holds nothing the base game depends on. Put the agent
 there and **skip it entirely below 8 MB**: read `osMemSize` (u32 at `0x80000318`) in the loader
 and do nothing if it is under `0x800000`. A console without the Expansion Pak then runs the game
@@ -176,17 +179,27 @@ Whatever runs at the call site has to: call what the `jal` used to call; check `
 the load marker; if absent, copy the image from ROM with the **game's own ROM-copy routine**; check
 the marker again; zero the BSS once; then call `agent_tick()`.
 
-Two details that bit:
+Details that bit, the last two only on a console:
 
 - **Do not assume the copy is synchronous.** Check the marker again after the copy returns, and
   run nothing until it reads back. If it does not, return and try next frame.
 - **Zero the BSS explicitly.** Segment-copy helpers copy the loadable image; they do not clear
   BSS. Uninitialized agent state is a first-frame crash that looks like a hardware fault.
+- **Invalidate the instruction cache after the copy**, unless the routine you call already does.
+  One game's copy routine invalidated the data cache only; the game itself follows it with
+  `osInvalICache` whenever it loads code, and so must the loader. Without it the CPU can run
+  stale I-cache lines instead of the agent, and no emulator models that, so every test before the
+  console passes.
+- **Call only a copy routine the game calls during play.** One game's routine ran exactly once,
+  at boot; called from a frame hook, its PI transfer did not survive the game's own traffic, and
+  the console black-screened. A bisect on hardware isolated the copy as the only step at fault.
+  When the game has no routine that is safe mid-play, do not copy at all: put the image where
+  something already copies it at boot (§5.5).
 
 Find the game's ROM-copy routine by what the game or its patch already calls to load code: its
 arguments (ROM offset? virtual ROM through a file table? file index?) decide how the loader calls
 it. [`templates/hook_stub.S`](../../n64/agent/templates/hook_stub.S) assumes
-`(rom_offset, dst, size)` in `a0`–`a2`.
+`(rom_offset, dst, size)` in `a0`–`a2`, and does not invalidate either cache.
 
 ### 5.2 With a decomp
 
@@ -241,6 +254,27 @@ Whatever writes the pieces into the ROM should refuse, rather than warn, when:
 It should then report every byte range it changed, and a rebuild from committed files should
 reproduce the tested ROM byte for byte. That last check is what lets a later reader trust that the
 ROM on the console came from the source in the repository.
+
+### 5.5 When something already loads it
+
+A patch that brings its own code in at boot usually copies a fixed ROM range to a fixed RAM
+address. If the agent's image fits inside that range, past the patch's last data, it arrives with
+the patch before the first frame, and the loader copies nothing: at most it checks `osMemSize`,
+checks the marker, zeroes the BSS, and calls `agent_tick()`. Two integrations work this way. In
+one, the agent is part of a payload the randomizer already loads, and that payload needs the
+Expansion Pak and carries the BSS as zeros, so its loader only checks the marker. In the other,
+no copy routine was safe to call mid-play (§5.1), so the agent was put where the patch's boot copy
+would bring it in, and its loader does all four.
+
+Two things change when the load is not yours:
+
+- **Pin the load itself.** The splicer should check the instructions that set the copy's ROM
+  range, length and destination. If a patch update shortens that copy, the agent is simply not
+  loaded, and nothing else would notice.
+- **BSS cannot tell you whether it was zeroed.** The boot copy brings in the load marker too, so the
+  marker reads back from the first frame whether or not the BSS was cleared. Keep the "zeroed" flag
+  inside the stub's own image, in the range the boot copy restores: it is then reset at every boot,
+  including a soft reset, and the stub zeroes the BSS once after each.
 
 ## 6. The boot CRC and IPL3
 

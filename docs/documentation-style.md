@@ -1,6 +1,6 @@
 # Documentation style
 
-How the Markdown in this repo is written, so that forty-five files read as one voice. The rules
+How the Markdown in this repo is written, so that every page reads in one voice. The rules
 that make documentation *true* live in [`CLAUDE.md`](../CLAUDE.md) and
 [`CONTRIBUTING.md`](../CONTRIBUTING.md); this page is about how it reads.
 
@@ -81,12 +81,20 @@ This is a truthfulness rule as much as a style one — see `CONTRIBUTING.md` —
 
 ## 7. Commands
 
-Shell blocks are tagged `sh`, hold one command a reader might actually run, and carry no `$`
-prompt and no interleaved output:
+Shell blocks are tagged `sh` and carry no `$` prompt and no interleaved output, so any line can
+be copied and run as it stands. A block holds one task: a single command, or the steps of one
+task in the order they run. Separate tasks get separate blocks. When a block is a menu of
+alternatives instead, such as ways to run the tests, each line says in a trailing comment what it
+is for:
 
 ````markdown
 ```sh
 cargo build -p multi64d
+```
+
+```sh
+cargo test -p multi64-l3                         # one crate
+cargo test -p multi64-l3 stream_decoder_resync   # one test by substring
 ```
 ````
 

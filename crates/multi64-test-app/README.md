@@ -51,7 +51,7 @@ baked in at compile time, and so only works on a machine that has built the repo
   through moves everything below it, which is exactly when someone is reading a result. The phase
   list comes from `suite::PHASES` rather than being repeated here, so renaming a phase cannot leave
   an empty section beside an orphaned one.
-- **The styling is the shared base**, byte-identical with Multi64 and Xfer64 and enforced by tests in
+- **The styling is the shared base**, byte-identical with Multi64, Xfer64 and AP64, and enforced by tests in
   the `multi64` crate. See [`docs/frontend-appearance.md`](../../docs/frontend-appearance.md): the
   palette lives in `:root`, no rule outside it may name a color, and app-only rules go in
   `app.css`.
