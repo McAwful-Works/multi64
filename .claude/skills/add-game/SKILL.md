@@ -169,9 +169,9 @@ more than anything else on it, and a game that does not boot comes off the candi
 rather than waiting to be rediscovered.
 
 **Batch the gate.** Five candidates were taken from nothing to a boot verdict in one
-sitting, because the expensive parts amortise: one download pass, one `ArchipelagoGenerate`
+sitting, because the expensive parts amortize: one download pass, one `ArchipelagoGenerate`
 per world with Archipelago's own option templates, one SD write session, one boot session.
-Four passed -- three Bombermans, Mario Kart 64 and Banjo-Tooie all boot and play on a
+All five passed -- the three Bombermans, Mario Kart 64 and Banjo-Tooie boot and play on a
 console -- and every base ROM matched the md5 its world demanded, which is the other thing
 worth checking before generating anything. DKR wanted a ROM revision nobody had for two
 sessions; that comparison costs seconds.
