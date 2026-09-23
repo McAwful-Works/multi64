@@ -2,17 +2,17 @@
 
 > [Doc map](../README.md) · [Flash carts](../README.md#flash-carts-l2-backends) · [Repo README](../../README.md)
 
-Rust CLI: **`multi64_test.z64`** ([`n64/test-rom`](../../n64/README.md)) ↔ **`multi64d`** WebSocket. Payloads follow **[M64T](../spec/test-l3-application-v0.md)** inside L3 **`DATA` / `APPLICATION`**. Use ROM **M64T_PROTO** or **BENCH** (not **RAW_ECHO**).
+Rust CLI: `multi64_test.z64` ([`n64/test-rom`](../../n64/README.md)) ↔ `multi64d` WebSocket. Payloads follow **[M64T](../spec/test-l3-application-v0.md)** inside L3 **`DATA` / `APPLICATION`**. Use ROM **M64T_PROTO** or **BENCH** (not **RAW_ECHO**).
 
-**L2 today:** **`multi64d`** uses **SC64** ([`l3-over-sc64.md`](../spec/l3-over-sc64.md)) by default. **EverDrive X7:** `multi64d --cart ed64` selects the [`l3-over-everdrive-x7.md`](../spec/l3-over-everdrive-x7.md) §4 mapping through **`ed64-l2`**, which is **unvalidated on hardware**. **EverDrive-64 PRO:** `multi64d --cart ed64pro` selects [`l3-over-everdrive-pro.md`](../spec/l3-over-everdrive-pro.md) through **`ed64pro-l2`**, equally unvalidated; the ROM detects the PRO itself (`n64/test-rom/ed64pro.c`).
+**L2 today:** `multi64d` uses **SC64** ([`l3-over-sc64.md`](../spec/l3-over-sc64.md)) by default. **EverDrive X7:** `multi64d --cart ed64` selects the [`l3-over-everdrive-x7.md`](../spec/l3-over-everdrive-x7.md) §4 mapping through `ed64-l2`, which is **unvalidated on hardware**. **EverDrive-64 PRO:** `multi64d --cart ed64pro` selects [`l3-over-everdrive-pro.md`](../spec/l3-over-everdrive-pro.md) through `ed64pro-l2`, equally unvalidated; the ROM detects the PRO itself (`n64/test-rom/ed64pro.c`).
 
 ## Optional GUI
 
-**`multi64-test-connector-gui`** — same commands over WebSocket; run **`multi64d`** (or Multi64) first. From **`crates/multi64-test-connector-gui/`**: `npm install`, `npm run dev`.
+`multi64-test-connector-gui` — same commands over WebSocket; run `multi64d` (or Multi64) first. From `crates/multi64-test-connector-gui/`: `npm install`, `npm run dev`.
 
 ## Prerequisites
 
-1. Cart + **`multi64d`** build you use (reference: **SC64** + USB) and **`multi64_test.z64`** on-console.  
+1. Cart + `multi64d` build you use (reference: **SC64** + USB) and `multi64_test.z64` on-console.  
 2. PC: `cargo run -p multi64d --release -- --serial COM3`  
 3. ROM mode **M64T_PROTO** or **BENCH** for the commands below. `set-mode` puts it there without touching the controller — it is the one command that also works in **RAW_ECHO**, so a host can drive the ROM from the mode it boots in.
 
@@ -57,7 +57,7 @@ Global options: `--url` (default `ws://127.0.0.1:38765/ws`), `--recv-timeout-sec
 ## Unattended end-to-end run (hardware)
 
 One run covers the whole L3 bridge and reports **PASS**/**FAIL** per check. All it needs is
-**`multi64d`** running against the cart and **`multi64_test.z64`** booted — **do not touch the
+`multi64d` running against the cart and `multi64_test.z64` booted — **do not touch the
 controller**. The ROM boots into **RAW_ECHO**, which parses nothing; the suite drives it out with
 `REQ_SET_MODE`, and that is what makes the run unattended.
 
@@ -92,8 +92,8 @@ Four things, and nothing else:
 
 1. the **Multi64 installer** — it carries `multi64d`;
 2. the **Xfer64 installer** — Xfer64 can put the ROM on the card;
-3. **`multi64_test.z64`**;
-4. **`multi64-test-app.exe`**.
+3. `multi64_test.z64`;
+4. `multi64-test-app.exe`.
 
 No Rust, no Node, no Python, no `bash`, no loose helper binaries. The direct-serial checks are
 linked into the app rather than shelling out to `sc64-echo-test` and `sc64-l3-framing-e2e`, which is
@@ -163,7 +163,7 @@ cargo run -p multi64-test-connector -- listen
 
 Press **B** on the ROM for **STRESS_LARGE**, and in **BENCH** mode wait for **BENCH_TICK** lines. A **CONTROLLER** snapshot is host-driven — send `req-controller`; there is no button for it. Non-**APPLICATION** L3 (e.g. **C-up** / **Start** on the ROM) may appear as non-**M64T** payloads depending on host decoding.
 
-Session, save, rumble, and display-text commands match **[`test-l3-application-v0.md`](../spec/test-l3-application-v0.md)** (**Spec-Revision** **1**). Default ROM build is **EEPROM**; rebuild the ROM with **`N64_ROM_SAVETYPE=sram256k`** (etc.) to get a non-zero SRAM window for **`sram-*`** commands.
+Session, save, rumble, and display-text commands match **[`test-l3-application-v0.md`](../spec/test-l3-application-v0.md)** (**Spec-Revision** **1**). Default ROM build is **EEPROM**; rebuild the ROM with `N64_ROM_SAVETYPE=sram256k` (etc.) to get a non-zero SRAM window for `sram-*` commands.
 
 Raw L3 loopback tests (**test ROM RAW_ECHO** mode — default at boot) use **serial L2** e2e tools on the USB port, not this WebSocket connector:
 
@@ -173,4 +173,4 @@ Raw L3 loopback tests (**test ROM RAW_ECHO** mode — default at boot) use **ser
 | EverDrive X7 (when `multi64-ed64-l2` works) | `ed64-l3-framing-e2e`, `ed64-echo-test` |
 | EverDrive-64 PRO (when `multi64-ed64pro-l2` works) | `ed64pro-l3-framing-e2e`, `ed64pro-echo-test` |
 
-The **`sc64-*`** crate names reflect the **reference** L2 implementation today.
+The `sc64-*` crate names reflect the **reference** L2 implementation today.

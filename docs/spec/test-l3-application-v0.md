@@ -2,9 +2,9 @@
 
 **Spec-Revision:** 1  
 
-Experimental payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATION` (`0x00`)** for the official **`n64/test-rom`** (see [`../../n64/README.md`](../../n64/README.md)). This is **not** game-specific; it is for **host ↔ cart** bring-up, controller snapshots, echo tests, stress paths, **session handshake**, **save hardware** checks, **host-triggered rumble**, and **host text on the ROM HUD**.
+Experimental payloads carried in L3 `DATA` frames on **`CHANNEL = APPLICATION` (`0x00`)** for the official `n64/test-rom` (see [`../../n64/README.md`](../../n64/README.md)). This is **not** game-specific; it is for **host ↔ cart** bring-up, controller snapshots, echo tests, stress paths, **session handshake**, **save hardware** checks, **host-triggered rumble**, and **host text on the ROM HUD**.
 
-**Magic:** ASCII **`M64T`** — bytes `0x4D 0x36 0x34 0x54`.
+**Magic:** ASCII `M64T` — bytes `0x4D 0x36 0x34 0x54`.
 
 ---
 
@@ -12,7 +12,7 @@ Experimental payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATIO
 
 | Offset | Size | Description |
 |--------|------|-------------|
-| `0`–`3` | 4 | Magic **`M64T`** |
+| `0`–`3` | 4 | Magic `M64T` |
 | `4` | 1 | `msg` — request or response code (see §2–§3) |
 | `5`– | * | Optional body; length = `L3_PAYLOAD_LEN - 5` |
 
@@ -36,7 +36,7 @@ Experimental payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATIO
 | `0x0A` | `REQ_SRAM_INFO` | Empty |
 | `0x0B` | `REQ_SRAM_READ` | `uint32` BE offset, `uint16` BE length (max **512**; **offset** and **length** must be **even**; PI SRAM) |
 | `0x0C` | `REQ_SRAM_WRITE` | `uint32` BE offset, `uint16` BE length, then **length** bytes — **requires active session**; same alignment rules as read |
-| `0x0D` | `REQ_RUMBLE` | `uint8` port `0`–`3`, `uint8` duration in VI frames (**`0`** = default **60**; cart clamps to **600** frames) |
+| `0x0D` | `REQ_RUMBLE` | `uint8` port `0`–`3`, `uint8` duration in VI frames (`0` = default **60**; cart clamps to **600** frames) |
 | `0x0E` | `REQ_DISPLAY_TEXT` | UTF-8 text for the cart HUD, at most **120** bytes (`TEST_HOST_DISPLAY_MAX`); a longer body is rejected in `DISPLAY_TEXT_ACK`. An empty body clears the text |
 | `0x0F` | `REQ_SET_MODE` | `uint8` mode (`0` RAW_ECHO, `1` M64T_PROTO, `2` BENCH, `3` CTRL_POLL, `4` MEM_AGENT). Out of range, or an empty body, changes nothing and is reported in `SET_MODE_ACK`. **Also honored in RAW_ECHO** — see §10 |
 | `0x10` | `REQ_DIAG` | empty body |
@@ -90,7 +90,7 @@ Experimental payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATIO
 | `0x02` | Bad parameters (range, alignment, length) |
 | `0x03` | No save hardware / not available for this ROM build |
 
-Third byte of **`RUMBLE_ACK`** (not the same semantics as save status codes above):
+Third byte of `RUMBLE_ACK` (not the same semantics as save status codes above):
 
 | Code | Meaning |
 |------|---------|
@@ -98,21 +98,21 @@ Third byte of **`RUMBLE_ACK`** (not the same semantics as save status codes abov
 | `0x01` | Rumble not supported on this port (controller / pak) |
 | `0x02` | Bad parameters (port not `0`–`3`) |
 
-**`DISPLAY_TEXT_ACK`** body byte (distinct from save/rumble tables above):
+`DISPLAY_TEXT_ACK` body byte (distinct from save/rumble tables above):
 
 | Code | Meaning |
 |------|---------|
 | `0x00` | OK — text accepted (or cleared if request body was empty) |
 | `0x01` | Body too long — exceeds **120** bytes; cart **does not** change the displayed string |
 
-The cart may sanitize control characters (except newline and tab) for safe console output; UTF-8 code units **`0x20`** and above (except **`0x7F`**) are preserved.
+The cart may sanitize control characters (except newline and tab) for safe console output; UTF-8 code units `0x20` and above (except `0x7F`) are preserved.
 
 ---
 
 ## 6. Session rules
 
-- **`SESSION_OPEN`** assigns a new non-zero **session_id** and echoes the **8-byte challenge** in **`SESSION_ACK`**.
-- **`REQ_EEPROM_WRITE`** and **`REQ_SRAM_WRITE`** are rejected with status **`0x01`** until a session is opened; **`SESSION_CLOSE`** clears the session.
+- `SESSION_OPEN` assigns a new non-zero **session_id** and echoes the **8-byte challenge** in `SESSION_ACK`.
+- `REQ_EEPROM_WRITE` and `REQ_SRAM_WRITE` are rejected with status `0x01` until a session is opened; `SESSION_CLOSE` clears the session.
 - Reads and **`REQ_EEPROM_INFO` / `REQ_SRAM_INFO` / `REQ_*_READ`** do **not** require a session.
 
 ---
@@ -125,8 +125,8 @@ Cart-originated stress frame: body is a deterministic byte pattern (`body[i] = i
 
 ## 8. EEPROM / SRAM (hardware)
 
-- **EEPROM** uses libdragon **`eeprom_*`**; the ROM image **save type** in the header must match EEPROM for hardware to respond (default **`multi64_test`** build uses **`eeprom4k`** in the Makefile).
-- **SRAM** uses PI DMA at **`0x08000000`** with a size fixed at **build time** (`TEST_SRAM_BYTES`). Default release is **0** (no SRAM). Build with e.g. **`N64_ROM_SAVETYPE=sram256k`** to enable a **32 KiB** window — see **`n64/test-rom/Makefile`**.
+- **EEPROM** uses libdragon `eeprom_*`; the ROM image **save type** in the header must match EEPROM for hardware to respond (default `multi64_test` build uses `eeprom4k` in the Makefile).
+- **SRAM** uses PI DMA at `0x08000000` with a size fixed at **build time** (`TEST_SRAM_BYTES`). Default release is **0** (no SRAM). Build with e.g. `N64_ROM_SAVETYPE=sram256k` to enable a **32 KiB** window — see `n64/test-rom/Makefile`.
 
 ---
 
@@ -138,7 +138,7 @@ The test ROM may also emit **non-APPLICATION** L3 frames (e.g. `HEARTBEAT` on Co
 
 ## 10. Relationship to **RAW_ECHO** mode
 
-- The same **`multi64_test.z64`** binary implements **M64T** (this document) and a separate **RAW_ECHO** mode (default at boot): verbatim `MULTI64_L3` loopback with **no** `M64B` application framing. Use **RAW_ECHO** with serial L2 e2e tools such as **`sc64-l3-framing-e2e`** / **`sc64-echo-test`** (**SC64** reference backend in the crate names).
+- The same `multi64_test.z64` binary implements **M64T** (this document) and a separate **RAW_ECHO** mode (default at boot): verbatim `MULTI64_L3` loopback with **no** `M64B` application framing. Use **RAW_ECHO** with serial L2 e2e tools such as `sc64-l3-framing-e2e` / `sc64-echo-test` (**SC64** reference backend in the crate names).
 - **`REQ_SET_MODE` is the one exception to that loopback.** A packet that is a whole L3 APPLICATION frame carrying `REQ_SET_MODE` is acted on and acknowledged instead of being echoed; every other packet is still returned verbatim. Without it a host could not leave the mode the ROM boots in, because RAW_ECHO parses nothing — mode selection would stay a physical controller action and no unattended run would be possible.
 - The exception is deliberately narrow. It requires the L3 magic, APPLICATION channel, `M64T` magic and opcode `0x0F`, with the whole frame in **one** packet — RAW_ECHO does no reassembly, so a `REQ_SET_MODE` split across two USB reads is echoed like anything else. A host MUST send it on its own and wait for `SET_MODE_ACK` before sending anything more, because applying a mode discards whatever is still buffered.
 - A host that wants byte-exact loopback for a pattern that might collide with this frame should send it in RAW_ECHO only after checking `SET_MODE_ACK`, or avoid opcode `0x0F` in an APPLICATION frame.
@@ -186,7 +186,7 @@ The cart byte is likewise otherwise invisible to a host: nothing else in this pr
 
 | Value | Meaning |
 |-------|---------|
-| **1** | **M64T** / **`multi64_test.z64`** application profile (includes **RAW_ECHO** vs **M64T_PROTO** in §10); pre-release tree. |
+| **1** | **M64T** / `multi64_test.z64` application profile (includes **RAW_ECHO** vs **M64T_PROTO** in §10); pre-release tree. |
 
 **Normative compatibility (preserved):** `M64T` magic bytes, `msg` opcodes, and payload layouts in §1–8 are **stable for interop** between the official test ROM and hosts; clarifications MUST NOT change wire bytes without a coordinated bump called out in text.
 

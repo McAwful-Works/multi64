@@ -15,8 +15,8 @@ Four things, and nothing else:
 
 1. the **Multi64 installer** — it carries `multi64d`;
 2. the **Xfer64 installer** — Xfer64 can put the ROM on the card;
-3. **`multi64_test.z64`** on the cart's SD card, booted;
-4. this **`multi64-test-app.exe`**.
+3. `multi64_test.z64` on the cart's SD card, booted;
+4. this `multi64-test-app.exe`.
 
 No Rust, no Node, no `bash`, no loose helper binaries. **The controller is not needed**: the ROM
 boots into `RAW_ECHO`, which parses nothing, and the suite drives it out with `REQ_SET_MODE`.

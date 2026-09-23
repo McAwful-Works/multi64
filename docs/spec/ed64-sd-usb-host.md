@@ -13,7 +13,7 @@ The on-wire format matches Krikzz’s reference tooling:
 - Repository: [krikzz/ed64-x-pub](https://github.com/krikzz/ed64-x-pub) — see `usb64/usb64/CommandProcessor.cs` (`CommandPacketTransmit`, opcodes).
 - Same packing as [N64-UNFLoader](https://github.com/buu342/N64-UNFLoader) (`device_sendcmd_everdrive`).
 
-Outbound: 16-byte **`cmd`** packet: ASCII `cmd`, 1-byte opcode, then three **big-endian `u32`**: address, length as **byte count ÷ 512** (sectors), argument. For **RomRead** (`R`) and **RamRead** (`r`), the cart then streams **`length` bytes** of raw payload on the serial port (no extra 16-byte CMP wrapper before the data in the vendor path we follow).
+Outbound: 16-byte `cmd` packet: ASCII `cmd`, 1-byte opcode, then three **big-endian `u32`**: address, length as **byte count ÷ 512** (sectors), argument. For **RomRead** (`R`) and **RamRead** (`r`), the cart then streams **`length` bytes** of raw payload on the serial port (no extra 16-byte CMP wrapper before the data in the vendor path we follow).
 
 Implementation: Rust crate [`multi64-ed64-link`](../../crates/multi64-ed64-link/src/lib.rs) (`Ed64Link::command_packet`, `rom_read`, `ram_read`, `test_connection`).
 
@@ -23,11 +23,11 @@ Krikzz's sample ROM [`ED64-XIO`](https://github.com/krikzz/ed64-x-pub/tree/maste
 
 ## Experimental: linear SD sectors via `RomRead`
 
-Vendor **`usb64`** has no SD command. Its command set is `c` (fill ROM), `R` (`RomRead`), `W` (`RomWrite`), `s` (start ROM), `t` (test connection), `r` (`RamRead`) and `f` (FPGA). The experiment nevertheless tries to read SD sectors with `RomRead`:
+Vendor `usb64` has no SD command. Its command set is `c` (fill ROM), `R` (`RomRead`), `W` (`RomWrite`), `s` (start ROM), `t` (test connection), `r` (`RamRead`) and `f` (FPGA). The experiment nevertheless tries to read SD sectors with `RomRead`:
 
-- User supplies **`ed64RomLinearBase`** (32-bit address in cart memory space).
-- Host reads logical block **`LBA`** by issuing **RomRead** at  
-  **`address = ed64RomLinearBase + LBA × 512`**, with length a multiple of 512 bytes.
+- User supplies `ed64RomLinearBase` (32-bit address in cart memory space).
+- Host reads logical block `LBA` by issuing **RomRead** at  
+  `address = ed64RomLinearBase + LBA × 512`, with length a multiple of 512 bytes.
 
 Writes are **not** supported on this path.
 
@@ -44,7 +44,7 @@ Treat any EverDrive listing produced this way as untrustworthy. Real host SD acc
 
 Xfer64 ships a **curated list** of candidate bases ([`ED64_LINEAR_BASE_HINTS`](../../crates/multi64-ed64-link/src/linear_probe.rs)) plus a **coarse grid** over typical N64 cart ROM space. For each address, the host issues **`RomRead` for 512 bytes at `base + 0`** and accepts the base if the buffer looks like **disk sector 0** (protective MBR / MBR boot signature `0x55AA`, plausible FAT BPB, or exFAT boot). Given the premise above, a match means only that those bytes resemble a boot sector: it can be a **false positive**, and there may be **several**.
 
-The UI exposes **Scan for SD base** (Settings → EverDrive SD (experimental)), which runs [`probe_ed64_sd_linear_bases`](../../crates/multi64-ed64-link/src/linear_probe.rs) on the resolved COM port. The saved **`ed64RomLinearBase`** (if any) is **tried first** during a scan, then the generic hint/grid list.
+The UI exposes **Scan for SD base** (Settings → EverDrive SD (experimental)), which runs [`probe_ed64_sd_linear_bases`](../../crates/multi64-ed64-link/src/linear_probe.rs) on the resolved COM port. The saved `ed64RomLinearBase` (if any) is **tried first** during a scan, then the generic hint/grid list.
 
 On each SD session open, [`Ed64RomLinear`](../../crates/multi64-sc64-sd/src/ed64_linear.rs) **re-reads sector 0** at the configured base and checks [`looks_like_disk_sector0`](../../crates/multi64-ed64-link/src/linear_probe.rs) so a replug, firmware change, or bad manual value fails fast with a clear error.
 
@@ -52,4 +52,4 @@ Implementation: [`Ed64RomLinear`](../../crates/multi64-sc64-sd/src/ed64_linear.r
 
 ## Xfer64 session behavior
 
-When **EverDrive** is selected and **`ed64RomLinearBase`** is set, Xfer64 opens a session analogous to SC64: serial open → work → flush/close. See [`xfer64-cart-serial.md`](./xfer64-cart-serial.md) for sessions, `multi64d` coordination, and the Rust module map.
+When **EverDrive** is selected and `ed64RomLinearBase` is set, Xfer64 opens a session analogous to SC64: serial open → work → flush/close. See [`xfer64-cart-serial.md`](./xfer64-cart-serial.md) for sessions, `multi64d` coordination, and the Rust module map.

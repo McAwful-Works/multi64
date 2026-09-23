@@ -61,7 +61,7 @@ Concrete mapping for this repository: **[l3-over-sc64.md](./l3-over-sc64.md)** (
 
 - **Scope:** USB-capable **X7-class** carts only; models without USB (e.g. X5) **cannot** implement this L2.
 - **Role:** Map `read`/`write` to the vendor USB model (host serial / usb64-style framing). **Normative mapping (draft):** [**l3-over-everdrive-x7.md**](./l3-over-everdrive-x7.md). References: **N64brew** wiki (EverDrive-64 X7), **[krikzz/ed64-x-pub](https://github.com/krikzz/ed64-x-pub)** (reference `usb64` + N64 samples), Krikzz dev pack.
-- **Implementation:** Rust crate **`multi64-ed64-l2`** (`crates/ed64-l2`) — implements the §4 host wire rules and performs real serial I/O. It has run on one X7 so far, so treat a failure as possibly the mapping rather than the ROM (see [§4.5](./l3-over-everdrive-x7.md)).
+- **Implementation:** Rust crate `multi64-ed64-l2` (`crates/ed64-l2`) — implements the §4 host wire rules and performs real serial I/O. It has run on one X7 so far, so treat a failure as possibly the mapping rather than the ROM (see [§4.5](./l3-over-everdrive-x7.md)).
 
 ### 5.1 Normative constraints for adapters (inform interoperability)
 
@@ -79,7 +79,7 @@ These rules keep **one L3 spec** for all carts; differences stay inside L2/L1.
 
 - **Scope:** the **EverDrive-64 PRO** only. It speaks Krikzz's edlink Gen3 protocol, not the X-series USB model above, so nothing in §5 before this subsection applies to it.
 - **Mapping (draft):** [**l3-over-everdrive-pro.md**](./l3-over-everdrive-pro.md). The host writes L3 octets into the cart FIFO in chunks of at most 2048 bytes (1024 recommended), paced by time because the host cannot see the FIFO's fill level; the ROM's output arrives raw. No padding and no framing, so §5.1 is satisfied by splitting alone.
-- **Implementation:** Rust crate **`multi64-ed64pro-l2`** (`crates/ed64pro-l2`). No public reference implementation exists, so this is the repository's own design, and it has never been run against a cart.
+- **Implementation:** Rust crate `multi64-ed64pro-l2` (`crates/ed64pro-l2`). No public reference implementation exists, so this is the repository's own design, and it has never been run against a cart.
 
 ---
 

@@ -1,7 +1,7 @@
 # EverDrive-64 PRO: host USB link (edlink Gen3)
 
 **Spec-Revision:** 1  
-**Status:** **Draft.** This is transcribed from Krikzz's sources and has **never been run against an EverDrive-64 PRO**. Nothing here is normative until someone answers §11 on hardware. **`multi64-ed64pro-link`** implements it and is equally unverified.
+**Status:** **Draft.** This is transcribed from Krikzz's sources and has **never been run against an EverDrive-64 PRO**. Nothing here is normative until someone answers §11 on hardware. `multi64-ed64pro-link` implements it and is equally unverified.
 
 This document describes how a PC talks to an **EverDrive-64 PRO** over USB: the handshake, command framing, status and errors, bulk transfers, the SD file system, cart memory, and the channel to a running ROM. It does **not** define L3 over the PRO; [`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md) does, on top of §8 and §9.
 
@@ -75,7 +75,7 @@ edlink writes in blocks of at most 4096 bytes and **never makes a single 512-byt
    - First byte is not `0x5A`: **reject**.
    - Otherwise read 2 more. If the protocol ID (byte 1) is `0x05` (Mega) or `0x06` (N8), it is a Gen2 cart for another console, which also answers `CMD_STATUS2`; read its remaining 2 bytes and **reject**.
    - Otherwise it is Gen3. A Gen3 cart does not answer `CMD_STATUS2`, so the 4 bytes are the reply to `CMD_STATUS`.
-5. Send `CMD_STATUS` and read the 4-byte status reply (§5). Require protocol **`0x07`** and device **`0x27`**.
+5. Send `CMD_STATUS` and read the 4-byte status reply (§5). Require protocol `0x07` and device `0x27`.
 
 ---
 
@@ -90,7 +90,7 @@ edlink writes in blocks of at most 4096 bytes and **never makes a single 512-byt
 | 2 | device ID, `0x27` for the EverDrive-64 PRO |
 | 3 | result of the previous command; `0` on success |
 
-Commands that end in a status check send `CMD_STATUS` after their payload. If byte 3 is non-zero, send **`CMD_NRESP`** (`0x13`) followed by that byte. The cart returns one byte of detail. edlink reports the pair as `operation error SS.DD`.
+Commands that end in a status check send `CMD_STATUS` after their payload. If byte 3 is non-zero, send `CMD_NRESP` (`0x13`) followed by that byte. The cart returns one byte of detail. edlink reports the pair as `operation error SS.DD`.
 
 ---
 
@@ -158,7 +158,7 @@ This matches `EpoXfer` in `everdrive.c` plus its `ed_run_xfer` byte.
 ## 8. Cart memory and the FIFO
 
 - **Memory:** read and write FCI addresses with §6.
-- **FIFO:** the host feeds a running ROM by writing to FCI **`0x10010000`** (`ADDR_FCI_SYS + 0x10000`). The ROM reads it through its `FIFODATA` register.
+- **FIFO:** the host feeds a running ROM by writing to FCI `0x10010000` (`ADDR_FCI_SYS + 0x10000`). The ROM reads it through its `FIFODATA` register.
 
 ---
 
@@ -197,11 +197,11 @@ A ROM sends to the host with `ed_usb_wr`, an `EPO` from LINK to the **USB** endp
 
 | Component | Role |
 |-----------|------|
-| [`crates/ed64pro-link`](../../crates/ed64pro-link/README.md) | **`multi64-ed64pro-link`**: `Ed64Pro` implements §2–§9. Tests use a scripted transport that checks exact request bytes; never run against a cart. |
+| [`crates/ed64pro-link`](../../crates/ed64pro-link/README.md) | `multi64-ed64pro-link`: `Ed64Pro` implements §2–§9. Tests use a scripted transport that checks exact request bytes; never run against a cart. |
 | `fake` feature of `multi64-ed64pro-link` | `FakeEd64Pro`: an in-memory cart that decodes this document's bytes, for host-only tests. It agrees with this document by construction, so it cannot catch errors in it. |
 | [`crates/multi64-sc64-sd`](../../crates/multi64-sc64-sd) (`ed64pro` feature) | `Ed64ProSdSession`: a file-level `CartSession` over §7 — list, copy both ways, mkdir, recursive delete, and rename as copy-then-delete, since §7 has no rename command. |
 | [`crates/xfer64`](../../crates/xfer64/README.md) | Cart mode `ed64_pro`; Auto-detect tries §4 after SC64. Writes need the user's consent each run. |
-| [`crates/ed64pro-l2`](../../crates/ed64pro-l2/README.md) | **`multi64-ed64pro-l2`**: the L3 stream over §8 and §9, as [`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md) specifies. Selected by `multi64d --cart ed64pro`. |
+| [`crates/ed64pro-l2`](../../crates/ed64pro-l2/README.md) | `multi64-ed64pro-l2`: the L3 stream over §8 and §9, as [`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md) specifies. Selected by `multi64d --cart ed64pro`. |
 | [`n64/test-rom`](../../n64/README.md) | `ed64pro.c`: the console side of that mapping — detection, FIFO receive, USB send. |
 
 ---

@@ -21,7 +21,7 @@ Any L3 client can use the same WebSocket the app does; the daemon it runs is spe
 - **Auto-detect** decides at each start, then starts `multi64d` for the cart it found; the daemon itself has no auto mode. First it looks for a SummerCart64 by its USB descriptors, as **Serial port → Auto-detect** does, which sends nothing. Failing that, it sends cart test commands ([`multi64-cart-probe`](../cart-probe/README.md): SC64 `IDENTIFIER_GET`, the PRO's edlink handshake, the X-series `usb64` test) to the chosen serial port, or with the port on Auto-detect to every serial port, USB devices first, until one answers. **Other devices on those ports receive those bytes**, a port another program holds cannot be probed, and the EverDrive checks have never been run against a cart. The status panel shows the cart it chose and the port it is on, and the log says Auto-detect chose it and lists each port it tried.
 - **Serial port → Auto-detect** picks only a port whose USB descriptors identify a SummerCart64: FTDI `0403:6014` with an `SC64…` serial number or product string. Nothing is written to a port to find out. Other serial devices are never chosen, and with two carts plugged in neither is: the port stays unset, Settings and the status line say why, and the daemon does not start. Pick a port explicitly to use anything else.
 - **With a fixed EverDrive selected, Serial port → Auto-detect picks nothing.** The X7's FT245R (`0403:6001`) is a stock FTDI part with nothing cart-specific in its descriptors, and a PRO can only be recognized by its edlink handshake, which means writing to each port. A fixed cart never probes, and never hands an EverDrive the SC64's port: choose the EverDrive's serial port, or set **Cart** to **Auto-detect**.
-- **Autostart** (log in → open this app): uses [`auto-launch`](https://crates.io/crates/auto-launch); still starts **`multi64d`** as a child when **Start the bridge when Multi64 opens** is on — not a Windows Service.
+- **Autostart** (log in → open this app): uses [`auto-launch`](https://crates.io/crates/auto-launch); still starts `multi64d` as a child when **Start the bridge when Multi64 opens** is on — not a Windows Service.
 ### Tray
 
 **Double-click** the tray icon to raise the window. **Right-click** opens the menu:
@@ -56,11 +56,11 @@ AP64 and Multi64 Test carry the same sheet and the same three options.
 
 **Motion** honors the OS reduced-motion setting by default; **Reduce animation** forces it for systems that do not expose one. Animation collapses to 1ms rather than being removed, so `animationend` / `transitionend` still fire.
 
-These preferences live in **`localStorage`**, *not* in the settings file — they must be readable synchronously before the first paint to avoid a flash of the wrong theme, and they are per-machine display choices rather than device configuration. Do not look for them in `gui-settings.json` or `xfer64-settings.json`.
+These preferences live in `localStorage`, *not* in the settings file — they must be readable synchronously before the first paint to avoid a flash of the wrong theme, and they are per-machine display choices rather than device configuration. Do not look for them in `gui-settings.json` or `xfer64-settings.json`.
 
 ## Building from source
 
-Rust + Cargo, Node + npm, **WebView2** (current Windows 10/11). Build **`multi64d`** before the GUI so `multi64d.exe` is found next to the app (`cargo build -p multi64d`).
+Rust + Cargo, Node + npm, **WebView2** (current Windows 10/11). Build `multi64d` before the GUI so `multi64d.exe` is found next to the app (`cargo build -p multi64d`).
 
 ### Develop
 
@@ -82,4 +82,4 @@ cd crates/multi64 && npm install && npm run build
 
 Installer graphics come from `windows/*.bmp`, regenerated from the brand masters by [`branding/installer-images`](../../branding/installer-images/README.md).
 
-Artifacts under `target/release/bundle/`: an NSIS `*-setup.exe` and an MSI. **`src-tauri/build.rs`** copies `multi64d.exe` into `src-tauri/resources/`, and [Tauri `bundle.resources`](https://v2.tauri.app/reference/config/#bundle) declares it; that is the only resource. Build `multi64d` with the same profile first — a declared resource that is missing is a hard error in `tauri-build`.
+Artifacts under `target/release/bundle/`: an NSIS `*-setup.exe` and an MSI. `src-tauri/build.rs` copies `multi64d.exe` into `src-tauri/resources/`, and [Tauri `bundle.resources`](https://v2.tauri.app/reference/config/#bundle) declares it; that is the only resource. Build `multi64d` with the same profile first — a declared resource that is missing is a hard error in `tauri-build`.

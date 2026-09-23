@@ -2,7 +2,7 @@
 
 > **See also:** [Daemon API](spec/daemon-api-v1.md) · [Documentation map](README.md) · [Flash carts (L2)](README.md#flash-carts-l2-backends)
 
-The reference daemon binds to **`127.0.0.1:38765`** by default (see [`spec/daemon-api-v1.md`](spec/daemon-api-v1.md)). Use a config file or `MULTI64D_LISTEN` if you need a different address or port.
+The reference daemon binds to `127.0.0.1:38765` by default (see [`spec/daemon-api-v1.md`](spec/daemon-api-v1.md)). Use a config file or `MULTI64D_LISTEN` if you need a different address or port.
 
 ## Configuration
 
@@ -19,7 +19,7 @@ This matters most when supervising the process. If the configured serial device 
 Two consequences for a service unit:
 
 - **`Restart=on-failure` will not fire for a missing cart**, and does not need to. The process stays up and waits; restarting it would accomplish nothing that the built-in retry does not.
-- **"Running" is not "has a cart".** Health checks against `/health` answer `{"status":"ok"}` whenever the process is alive, including while the link is down. Anything that needs to know the cart is present must read **`serialActive`** from `GET /`.
+- **"Running" is not "has a cart".** Health checks against `/health` answer `{"status":"ok"}` whenever the process is alive, including while the link is down. Anything that needs to know the cart is present must read `serialActive` from `GET /`.
 
 See [`daemon-api-v1.md` §1.3](spec/daemon-api-v1.md) for the faulted-link contract and §1.3.1 for the startup case.
 

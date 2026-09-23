@@ -108,7 +108,7 @@ agent go quiet.
 
 - Called **once per frame**, on the game's thread, after its game logic. Never an interrupt or
   exception handler ([cart-agent.md §1](cart-agent.md#1-the-contract)).
-- An existing **`jal`** whose target you can call first from your own code. Retargeting one
+- An existing `jal` whose target you can call first from your own code. Retargeting one
   instruction to your code keeps the instruction count, so nothing in the game moves.
 - **Unique**: the only call to that target, so the retarget changes exactly one path.
 - **Untouched by the patch**, now and — because patches change — checked again by the splicer

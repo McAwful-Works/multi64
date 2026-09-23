@@ -2,7 +2,7 @@
 
 **Spec-Revision:** 1  
 
-This document defines how **L3** octets ([l3-bridge-protocol-v1.md](./l3-bridge-protocol-v1.md)) are carried on the **SummerCart64** USB serial protocol described in the upstream **`docs/03_usb_interface.md`** / **`docs/02_n64_commands.md`**. It does not redefine L3 or the vendor packet shells (`CMD` / `CMP` / `PKT`).
+This document defines how **L3** octets ([l3-bridge-protocol-v1.md](./l3-bridge-protocol-v1.md)) are carried on the **SummerCart64** USB serial protocol described in the upstream `docs/03_usb_interface.md` / `docs/02_n64_commands.md`. It does not redefine L3 or the vendor packet shells (`CMD` / `CMP` / `PKT`).
 
 ---
 
@@ -36,9 +36,9 @@ SC64 command **`U` (`USB_WRITE`)** (PC → cart):
 
 ## 3. N64 → Host (async `PKT` id `U` **DATA**)
 
-When the running program issues the N64-side **`USB_WRITE`** command, the PC receives an asynchronous **`PKT`** with packet id **`U`** (**DATA**). Vendor layout of `PKT` + `data` applies.
+When the running program issues the N64-side `USB_WRITE` command, the PC receives an asynchronous `PKT` with packet id `U` (**DATA**). Vendor layout of `PKT` + `data` applies.
 
-Per SC64 USB documentation, the **`data`** field for id **`U`** has the structure:
+Per SC64 USB documentation, the `data` field for id `U` has the structure:
 
 | Offset | Type | Meaning |
 |--------|------|--------|
@@ -56,8 +56,8 @@ The host **MUST** validate `datatype == 0x01` for the Multi64 L3 stream, parse t
 
 ## 4. L2 byte stream semantics
 
-- **Transmit:** Concatenation of all `USB_WRITE` **`data`** payloads with `datatype = MULTI64_L3`, in issue order.
-- **Receive:** Concatenation of all `PKT` **`U`** payloads after removing the 4-byte prefix (`datatype` + 3-byte length) when `datatype = MULTI64_L3`, in reception order.
+- **Transmit:** Concatenation of all `USB_WRITE` `data` payloads with `datatype = MULTI64_L3`, in issue order.
+- **Receive:** Concatenation of all `PKT` `U` payloads after removing the 4-byte prefix (`datatype` + 3-byte length) when `datatype = MULTI64_L3`, in reception order.
 
 L3 **MUST** tolerate fragmentation: frame boundaries may span chunk boundaries.
 
@@ -65,7 +65,7 @@ L3 **MUST** tolerate fragmentation: frame boundaries may span chunk boundaries.
 
 ## 5. Relationship to [l2-link-adapter.md](./l2-link-adapter.md)
 
-This document is the **SummerCart64-specific** realization of L2 for the **Multi64** stack: it maps the abstract **ordered byte stream** to **`USB_WRITE`** + **`PKT` `U`**. **EverDrive-64 X7** uses a different host mapping — see [**l3-over-everdrive-x7.md**](./l3-over-everdrive-x7.md) (draft) — with the **same L3** octet stream at the codec boundary.
+This document is the **SummerCart64-specific** realization of L2 for the **Multi64** stack: it maps the abstract **ordered byte stream** to `USB_WRITE` + **`PKT` `U`**. **EverDrive-64 X7** uses a different host mapping — see [**l3-over-everdrive-x7.md**](./l3-over-everdrive-x7.md) (draft) — with the **same L3** octet stream at the codec boundary.
 
 ---
 
@@ -77,6 +77,6 @@ This document is the **SummerCart64-specific** realization of L2 for the **Multi
 |-------|---------|
 | **1** | SummerCart64 L3 mapping (`USB_WRITE` / `PKT` `U`); pre-release tree. |
 
-**Normative compatibility (preserved):** The **`USB_WRITE`** / **`PKT` `U`** rules in §1–4 keep a single **L3 octet stream** at the codec boundary; implementations MUST NOT change that stream’s semantics without coordinating with [`l3-bridge-protocol-v1.md`](./l3-bridge-protocol-v1.md).
+**Normative compatibility (preserved):** The `USB_WRITE` / **`PKT` `U`** rules in §1–4 keep a single **L3 octet stream** at the codec boundary; implementations MUST NOT change that stream’s semantics without coordinating with [`l3-bridge-protocol-v1.md`](./l3-bridge-protocol-v1.md).
 
 **Spec-Revision policy:** All normative docs use **Spec-Revision** **1** for now; edits **accumulate** under **1** until maintainers announce a bump. This is independent of L3 **Protocol-Major** / **Protocol-Minor** ([`l3-bridge-protocol-v1.md`](./l3-bridge-protocol-v1.md) §12).
