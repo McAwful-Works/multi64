@@ -1,11 +1,11 @@
 # L3 over EverDrive 64 X7 (draft mapping)
 
 **Spec-Revision:** 1  
-**Status:** **Draft** — §4 is now **derived from a working reference implementation** but has **not been validated against hardware in this repository**. **`multi64-ed64-l2`** (`Ed64L2Pipe`) implements §4 and has run on **one X7** (2026-09-18): L3 through `multi64d` worked, and the cart could not send while the host was sending (§4.5 item 6). One cart does not validate a mapping. In-tree EverDrive tooling: **`ed64-smoke`** (§8), **`ed64-echo-test`**, **`ed64-l3-framing-e2e`** — all runnable; the two e2e tools exercise §4 framing against a cart and are how §4.5 gets answered.
+**Status:** **Draft** — §4 is now **derived from a working reference implementation** but has **not been validated against hardware in this repository**. `multi64-ed64-l2` (`Ed64L2Pipe`) implements §4 and has run on **one X7** (2026-09-18): L3 through `multi64d` worked, and the cart could not send while the host was sending (§4.5 item 6). One cart does not validate a mapping. In-tree EverDrive tooling: `ed64-smoke` (§8), `ed64-echo-test`, `ed64-l3-framing-e2e` — all runnable; the two e2e tools exercise §4 framing against a cart and are how §4.5 gets answered.
 
 This document will define how **L3** octets ([l3-bridge-protocol-v1.md](./l3-bridge-protocol-v1.md)) are carried over the **EverDrive-64 X7** USB path. It does **not** redefine L3.
 
-§4 specifies the host↔USB byte model. It is **not yet normative**: it is transcribed from **UNFLoader**, which has shipped this protocol for EverDrive 64 for years, but nobody has run it against an X7 *here*. Treat it as the implementation target for **`crates/ed64-l2`**, and see §4.0 for exactly what "unvalidated" means. §8 documents a **non-normative** USB64 **`cmd`/`t`** smoke handshake (Krikzz **`usb64`** style) and notes legacy **uppercase `CMD` + `T`** probes.
+§4 specifies the host↔USB byte model. It is **not yet normative**: it is transcribed from **UNFLoader**, which has shipped this protocol for EverDrive 64 for years, but nobody has run it against an X7 *here*. Treat it as the implementation target for `crates/ed64-l2`, and see §4.0 for exactly what "unvalidated" means. §8 documents a **non-normative** USB64 **`cmd`/`t`** smoke handshake (Krikzz `usb64` style) and notes legacy **uppercase `CMD` + `T`** probes.
 
 ---
 
@@ -30,7 +30,7 @@ Krikzz's N64 carts fall into **two unrelated USB families**. This document cover
 | **EverDrive-64 PRO** | yes | **no — different protocol** | Released August 2026. Speaks **edlink** (Gen3; protocol ID `0x07`, device ID `0x27`), not `usb64` + `DMA@`. Its N64-side registers at `0x1F800000` are a command FIFO and a mailbox, with none of the X7's USB registers, and neither libdragon's `usb.c` nor UNFLoader recognizes it. Supporting it is a separate mapping: [`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md). |
 | Other EverDrive **PRO** / **CORE** carts | n/a | not applicable | Krikzz's other-console lines (Mega EverDrive PRO, EverDrive N8 PRO, …). |
 
-**Do not use edlink for the X7 or 3.0.** edlink is the Gen3 protocol (921600 baud, `EPO`/`FCI` commands) of the PRO and CORE series. A previous attempt in this repository added an `EdlinkLink` backend with a `PROTOCOL_ID_ED64` handshake for X-series carts; because they do not speak Gen3, the handshake could never match, the code silently fell through to the `usb64` path it was written to fall back to, and the work was reverted. The X-series host protocol is **`usb64`** (§8) plus the data framing in **§4** — not edlink.
+**Do not use edlink for the X7 or 3.0.** edlink is the Gen3 protocol (921600 baud, `EPO`/`FCI` commands) of the PRO and CORE series. A previous attempt in this repository added an `EdlinkLink` backend with a `PROTOCOL_ID_ED64` handshake for X-series carts; because they do not speak Gen3, the handshake could never match, the code silently fell through to the `usb64` path it was written to fall back to, and the work was reverted. The X-series host protocol is `usb64` (§8) plus the data framing in **§4** — not edlink.
 
 That conclusion is specific to the X-series. The **EverDrive-64 PRO does speak edlink**: [krikzz/edlink](https://github.com/krikzz/edlink) has an `ED64` device module, and [krikzz/ed64-pro-pub](https://github.com/krikzz/ed64-pro-pub) has N64-side sources for its FIFO, USB and SD file commands, both MIT-licensed. A PRO backend reuses neither §4 nor `ed64-l2`: it is `multi64-ed64pro-l2`, specified in [`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md), and it is no more proven than this mapping. Everything stated about the PRO here comes from those sources, not from hardware.
 
@@ -43,13 +43,13 @@ Implementors should start from vendor and community sources:
 | Resource | Notes |
 |----------|--------|
 | [Krikzz — EverDrive-64 X-series dev files](https://krikzz.com/pub/support/everdrive-64/x-series/dev/) | `usb64` sources, `usbio-sample.zip`, etc. |
-| [krikzz/ed64-x-pub](https://github.com/krikzz/ed64-x-pub) (GitHub) | Reference code: **`usb64/usb64/`** (Windows `usb64` tool, C# `CommandProcessor`), **`ED64-XIO`** sample, **`docs/`** (TOC, hardware ID; some USB wire notes may be **WIP**) |
+| [krikzz/ed64-x-pub](https://github.com/krikzz/ed64-x-pub) (GitHub) | Reference code: `usb64/usb64/` (Windows `usb64` tool, C# `CommandProcessor`), `ED64-XIO` sample, `docs/` (TOC, hardware ID; some USB wire notes may be **WIP**) |
 | [N64brew — EverDrive-64 X7](https://n64brew.dev/wiki/EverDrive-64_X7) | **N64-side** registers (`REG_USB_CFG`, `REG_USB_DATA` 512-byte buffer), `bi_usb_rd` / `bi_usb_wr` behavior |
 | [jsdf/webserial-ed64log](https://github.com/jsdf/webserial-ed64log) | Example of host serial/WebUSB usage |
 | [krikzz/edlink](https://github.com/krikzz/edlink) | Gen3 USB utility for PRO/CORE carts, including `edlink/DEV_ED64` for the **EverDrive-64 PRO** (MIT). **Not** applicable to the X-series (§1.1). |
 | [krikzz/ed64-pro-pub](https://github.com/krikzz/ed64-pro-pub) | **EverDrive-64 PRO** dev sources: the `edio` sample ROM (FIFO, USB, SD file access) and host scripts (MIT). |
 
-**Normative for Multi64:** once this spec defines the **PC-side** framing, the **`ed64-l2`** crate MUST match it; the N64 ROM MUST use compatible `bi_usb_*` (or equivalent) so L3 bytes round-trip.
+**Normative for Multi64:** once this spec defines the **PC-side** framing, the `ed64-l2` crate MUST match it; the N64 ROM MUST use compatible `bi_usb_*` (or equivalent) so L3 bytes round-trip.
 
 ---
 
@@ -59,7 +59,7 @@ EverDrive USB paths often use **fixed 512-byte** data areas on the cart. The hos
 
 Public documentation (N64brew) notes practical limits on the **N64** side, including:
 
-- Data moved through **`REG_USB_DATA`** in up to **512-byte** chunks.
+- Data moved through `REG_USB_DATA` in up to **512-byte** chunks.
 - Reads may require **at least 16 bytes** in some flows; hosts should pad outbound data accordingly when the final mapping requires it.
 
 The host packet layout that satisfies these constraints is given in **§4**.
@@ -100,10 +100,10 @@ Both directions send the same four fields:
 
 | Offset | Size | Field |
 |--------|------|-------|
-| 0 | 4 | ASCII **`DMA@`** (`0x44 0x4D 0x41 0x40`) |
+| 0 | 4 | ASCII `DMA@` (`0x44 0x4D 0x41 0x40`) |
 | 4 | 4 | **Big-endian `u32`**: `(datatype << 24) | (size & 0x00FF_FFFF)` |
 | 8 | *size* | Payload |
-| — | 4 | ASCII **`CMPH`** (`0x43 0x4D 0x50 0x48`) |
+| — | 4 | ASCII `CMPH` (`0x43 0x4D 0x50 0x48`) |
 
 The framing is **not symmetric**: the two directions put the 2-byte alignment padding (§4.3) in
 different places, and only that.
@@ -203,11 +203,11 @@ No other N64-side change is expected. If validation turns one up, record it here
 
 | Component | Role |
 |-----------|------|
-| [`crates/multi64-ed64-link`](../../crates/multi64-ed64-link) | Rust **`multi64-ed64-link`**: X7 **`usb64`** **`cmd`** framing, `RomRead` — **not** the L3 stream adapter (**`ed64-l2`**). |
+| [`crates/multi64-ed64-link`](../../crates/multi64-ed64-link) | Rust `multi64-ed64-link`: X7 `usb64` `cmd` framing, `RomRead` — **not** the L3 stream adapter (`ed64-l2`). |
 | [`crates/ed64-l2`](../../crates/ed64-l2/README.md) | `Ed64L2Pipe` — implements §4 framing, mirroring `multi64-sc64-l2::Sc64L2Pipe`. Unit-tested for framing, and run on one X7 (§4.5 item 6); **not validated** until §4.5 is closed. |
-| [`crates/ed64-smoke`](../../crates/ed64-smoke) | **`ed64-smoke`** binary: host **`cmd`/`t`** smoke test (§8, `usb64`-style), not L3. |
-| [`crates/ed64-echo-test`](../../crates/ed64-echo-test) | **`ed64-echo-test`**: same role as `sc64-echo-test` over **`Ed64L2Pipe`**; runs, exercising §4 framing that is still unvalidated. |
-| [`crates/ed64-l3-framing-e2e`](../../crates/ed64-l3-framing-e2e) | **`ed64-l3-framing-e2e`**: same role as `sc64-l3-framing-e2e` over **`Ed64L2Pipe`**; runs, exercising §4 framing that is still unvalidated. |
+| [`crates/ed64-smoke`](../../crates/ed64-smoke) | `ed64-smoke` binary: host **`cmd`/`t`** smoke test (§8, `usb64`-style), not L3. |
+| [`crates/ed64-echo-test`](../../crates/ed64-echo-test) | `ed64-echo-test`: same role as `sc64-echo-test` over `Ed64L2Pipe`; runs, exercising §4 framing that is still unvalidated. |
+| [`crates/ed64-l3-framing-e2e`](../../crates/ed64-l3-framing-e2e) | `ed64-l3-framing-e2e`: same role as `sc64-l3-framing-e2e` over `Ed64L2Pipe`; runs, exercising §4 framing that is still unvalidated. |
 | [`n64/test-rom`](../../n64/README.md) | Already uses libdragon `<usb.h>`, which supports both carts. Boots on `CART_SC64` and `CART_EVERDRIVE`, with an on-screen **UNVALIDATED** warning on the latter (§5). |
 | `multi64d` | `--cart ed64` selects `Ed64L2Pipe` ([daemon API §5.1](./daemon-api-v1.md)). Experimental: has carried L3 both ways to one X7, with zero stream errors across the test app's checks (2026-09-18). |
 | [`n64/agent`](../../n64/agent/README.md) | `make CART=ed64` builds the in-game agent around `ed64.c`: the console side of §4 without libdragon, under the agent's PI rules. Never run on a cart. |
@@ -219,25 +219,25 @@ No other N64-side change is expected. If validation turns one up, record it here
 
 For developers **with** an X7:
 
-1. Flash **`multi64_test.z64`** and leave it in **RAW_ECHO**. The committed binary accepts an EverDrive and shows `EverDrive: UNVALIDATED host mapping` at boot (§5). libdragon's `<usb.h>` is expected to handle cart bring-up; if it does not, that is a §4.5 finding.
+1. Flash `multi64_test.z64` and leave it in **RAW_ECHO**. The committed binary accepts an EverDrive and shows `EverDrive: UNVALIDATED host mapping` at boot (§5). libdragon's `<usb.h>` is expected to handle cart bring-up; if it does not, that is a §4.5 finding.
 2. Confirm **serial device** appears on the host when the ROM uses USB.
 3. Capture **host↔device** traces (optional) to help finalize §4.
-4. Open a PR updating this spec + **`ed64-l2`** with measured behavior.
-5. Run **`ed64-smoke`** (`crates/ed64-smoke`) if the cart exposes EverDrive-style USB serial — see §8.
+4. Open a PR updating this spec + `ed64-l2` with measured behavior.
+5. Run `ed64-smoke` (`crates/ed64-smoke`) if the cart exposes EverDrive-style USB serial — see §8.
 
 ---
 
 ## 8. Host USB64 `cmd`/`t` smoke handshake (non-normative)
 
-This is **not** the future normative L3 byte pipe from §4. It documents the host **test connection** probe used by Krikzz’s reference **`usb64`** (`CommandProcessor` in **`ed64-x-pub`**) and implemented as **`ed64-smoke`**. Some **older community** host code sent only a **short uppercase** form (`CMD` + `T`); **firmware** may or may not accept that.
+This is **not** the future normative L3 byte pipe from §4. It documents the host **test connection** probe used by Krikzz’s reference `usb64` (`CommandProcessor` in `ed64-x-pub`) and implemented as `ed64-smoke`. Some **older community** host code sent only a **short uppercase** form (`CMD` + `T`); **firmware** may or may not accept that.
 
 | Field | Value |
 |-------|--------|
-| PC → device (reference) | **16 bytes:** ASCII **`cmd`** (lowercase) + single-byte command **`t`** (`0x74`, test connection), then three **big-endian `uint32`** fields: **address**, **length** (in 512-byte blocks in the vendor tool), **argument** — all **zero** for this probe. Matches **`CommandPacketTransmit(TransmitCommand.TestConnection)`** in **`usb64/usb64/CommandProcessor.cs`**. |
-| PC → device (legacy) | **4 bytes:** ASCII **`CMD`** + **`T`** — seen in some community USB loaders; **not** interchangeable with the reference layout on all builds. |
-| Success pattern | Response buffer has **`k`** (legacy reply) or **`r`** (reply) at **byte index 3** (0-based), per vendor receive parsing. Some firmware builds also send **`3`** at index 4 and a region hint at index 5 (`p` / `n` / `m`). |
+| PC → device (reference) | **16 bytes:** ASCII `cmd` (lowercase) + single-byte command `t` (`0x74`, test connection), then three **big-endian `uint32`** fields: **address**, **length** (in 512-byte blocks in the vendor tool), **argument** — all **zero** for this probe. Matches `CommandPacketTransmit(TransmitCommand.TestConnection)` in `usb64/usb64/CommandProcessor.cs`. |
+| PC → device (legacy) | **4 bytes:** ASCII `CMD` + `T` — seen in some community USB loaders; **not** interchangeable with the reference layout on all builds. |
+| Success pattern | Response buffer has `k` (legacy reply) or `r` (reply) at **byte index 3** (0-based), per vendor receive parsing. Some firmware builds also send `3` at index 4 and a region hint at index 5 (`p` / `n` / `m`). |
 
-**X7 OS builds and USB drivers differ.** If `ed64-smoke` fails, try another baud rate, **`--flush`**, or confirm the EverDrive menu / OS has USB serial active. Capture traces to help finalize §4.
+**X7 OS builds and USB drivers differ.** If `ed64-smoke` fails, try another baud rate, `--flush`, or confirm the EverDrive menu / OS has USB serial active. Capture traces to help finalize §4.
 
 ---
 
@@ -247,7 +247,7 @@ This is **not** the future normative L3 byte pipe from §4. It documents the hos
 
 | Value | Meaning |
 |-------|---------|
-| **1** | EverDrive X7 draft mapping: **`usb64`** smoke (**§8**), **`ed64-x-pub`** references, **`multi64_test.z64`** checklist; pre-release tree. |
+| **1** | EverDrive X7 draft mapping: `usb64` smoke (**§8**), `ed64-x-pub` references, `multi64_test.z64` checklist; pre-release tree. |
 
 **Normative compatibility (preserved):** The goal remains **one L3 octet stream** at the codec boundary (see [l2-link-adapter.md](./l2-link-adapter.md)); ED64 host details in §4–§5 must not break that once normative.
 

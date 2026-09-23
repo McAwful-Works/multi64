@@ -1,6 +1,6 @@
 # Documentation
 
-Normative wire rules live in **`spec/`**. Each spec file carries its own **Spec-Revision** until maintainers bump it.
+Normative wire rules live in `spec/`. Each spec file carries its own **Spec-Revision** until maintainers bump it.
 
 ---
 
@@ -20,12 +20,12 @@ Normative wire rules live in **`spec/`**. Each spec file carries its own **Spec-
 | **EverDrive** SD notes | [ed64-sd-usb-host.md](spec/ed64-sd-usb-host.md) |
 | Cart comparison | [Flash carts (L2)](#flash-carts-l2-backends) below |
 | **Xfer64** (SD / COM, maintainers) | [xfer64-cart-serial.md](spec/xfer64-cart-serial.md) |
-| **`multi64d`** | [daemon-api-v1.md](spec/daemon-api-v1.md), [run-as-service.md](run-as-service.md) |
+| `multi64d` | [daemon-api-v1.md](spec/daemon-api-v1.md), [run-as-service.md](run-as-service.md) |
 | Test ROM + connector | [connectors/test-rom.md](connectors/test-rom.md) |
 | Frontend themes / tokens (all four apps) | [frontend-appearance.md](frontend-appearance.md) |
 | Writing documentation here | [documentation-style.md](documentation-style.md) |
 | The app marks, and where they are copied | [branding/README.md](../branding/README.md) |
-| Build **`multi64_test.z64`** | [n64/README](../n64/README.md) |
+| Build `multi64_test.z64` | [n64/README](../n64/README.md) |
 
 ---
 
@@ -41,7 +41,7 @@ Krikzz's N64 carts fall into two USB families: the **X-series** (X7, 3.0; X5 has
 | **Rust L2** | `multi64-sc64-l2` | `multi64-ed64-l2` (implemented, **unvalidated on hardware**) |
 | **USB smoke** (not L3) | `sc64-smoke` | `ed64-smoke` ([§8](spec/l3-over-everdrive-x7.md)) |
 | **Serial e2e** | `sc64-echo-test`, `sc64-l3-framing-e2e` | `ed64-echo-test`, `ed64-l3-framing-e2e` (run, but **unvalidated on hardware**) |
-| **`multi64d`** | SC64 L2 (default) | `--cart ed64` (experimental; run on one X7 so far) |
+| `multi64d` | SC64 L2 (default) | `--cart ed64` (experimental; run on one X7 so far) |
 
 The **EverDrive-64 PRO** has its own L2, [l3-over-everdrive-pro.md](spec/l3-over-everdrive-pro.md), implemented by `multi64-ed64pro-l2` (`multi64d --cart ed64pro`) and the test ROM's `ed64pro.c`, **unvalidated on hardware**. Its tools are `ed64pro-echo-test` and `ed64pro-l3-framing-e2e` (§9); opening its link runs the edlink handshake, so it needs no separate smoke tool. Neither has run on a cart.
 
@@ -98,13 +98,13 @@ Guides, not specifications: how to make a game on real hardware readable and wri
 
 ## Connectors (`connectors/`)
 
-Host programs that use **`multi64d`**’s **WebSocket** for **raw L3**. The cart link is whichever `--cart` **`multi64d`** was started with (**SC64 L2** by default; the EverDrive [X7](spec/l3-over-everdrive-x7.md) and [PRO](spec/l3-over-everdrive-pro.md) mappings are implemented, but their specs are still draft and neither has been run against a cart).
+Host programs that use `multi64d`’s **WebSocket** for **raw L3**. The cart link is whichever `--cart` `multi64d` was started with (**SC64 L2** by default; the EverDrive [X7](spec/l3-over-everdrive-x7.md) and [PRO](spec/l3-over-everdrive-pro.md) mappings are implemented, but their specs are still draft and neither has been run against a cart).
 
 | Document | Programs |
 |----------|----------|
-| [test-rom.md](connectors/test-rom.md) | **`multi64-test-connector`** and **Multi64 Test** (`multi64-test-app`) ↔ **`multi64_test.z64`** ([`n64/test-rom`](../n64/README.md)) — single commands, and the end-to-end suite both run |
+| [test-rom.md](connectors/test-rom.md) | `multi64-test-connector` and **Multi64 Test** (`multi64-test-app`) ↔ `multi64_test.z64` ([`n64/test-rom`](../n64/README.md)) — single commands, and the end-to-end suite both run |
 
-WebSocket contract: [daemon-api-v1.md](spec/daemon-api-v1.md). Start **`multi64d`** before running a connector.
+WebSocket contract: [daemon-api-v1.md](spec/daemon-api-v1.md). Start `multi64d` before running a connector.
 
 ---
 

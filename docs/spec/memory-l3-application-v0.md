@@ -2,13 +2,13 @@
 
 **Spec-Revision:** 1  
 
-Payloads carried in L3 **`DATA`** frames on **`CHANNEL = APPLICATION` (`0x00`)** that let a host read and write **console RDRAM**, and read the **cartridge ROM**, while a ROM runs.
+Payloads carried in L3 `DATA` frames on **`CHANNEL = APPLICATION` (`0x00`)** that let a host read and write **console RDRAM**, and read the **cartridge ROM**, while a ROM runs.
 
-**Magic:** ASCII **`M64P`** — bytes `0x4D 0x36 0x34 0x50`.
+**Magic:** ASCII `M64P` — bytes `0x4D 0x36 0x34 0x50`.
 
 Deliberately **game-agnostic**: it exposes bytes at addresses and nothing else. The cart is a PI-bus slave and cannot reach RDRAM on its own, so every request is serviced by code running on the console. Where that code lives is out of scope here — [`../../n64/README.md`](../../n64/README.md) implements it as a mode of the test ROM; a game-resident agent would implement the same messages.
 
-M64P shares the APPLICATION channel with **`M64T`** ([`test-l3-application-v0.md`](./test-l3-application-v0.md)); receivers dispatch on the 4-byte magic.
+M64P shares the APPLICATION channel with `M64T` ([`test-l3-application-v0.md`](./test-l3-application-v0.md)); receivers dispatch on the 4-byte magic.
 
 ---
 
@@ -16,13 +16,13 @@ M64P shares the APPLICATION channel with **`M64T`** ([`test-l3-application-v0.md
 
 | Offset | Size | Description |
 |--------|------|-------------|
-| `0`–`3` | 4 | Magic **`M64P`** |
+| `0`–`3` | 4 | Magic `M64P` |
 | `4` | 1 | `msg` — request or response code (§2–§3) |
 | `5`– | * | Body; length = `L3_PAYLOAD_LEN - 5` |
 
 `L3_PAYLOAD_LEN` is the APPLICATION payload length from the L3 header ([`l3-bridge-protocol-v1.md`](./l3-bridge-protocol-v1.md)). All multi-byte integers are **big-endian**.
 
-Every request carries a **`rid`** (`uint16`), echoed in its response. A host may therefore match a reply after an L3 resync; `rid` is opaque to the cart.
+Every request carries a `rid` (`uint16`), echoed in its response. A host may therefore match a reply after an L3 resync; `rid` is opaque to the cart.
 
 ---
 

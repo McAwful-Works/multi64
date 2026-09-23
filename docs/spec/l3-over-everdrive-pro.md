@@ -1,7 +1,7 @@
 # L3 over EverDrive-64 PRO (draft mapping)
 
 **Spec-Revision:** 1  
-**Status:** **Draft.** **Never run against an EverDrive-64 PRO.** Nothing here is normative until §8 is answered on hardware. **`multi64-ed64pro-l2`** implements the host side and the test ROM's `ed64pro.c` the console side; both are equally unverified.
+**Status:** **Draft.** **Never run against an EverDrive-64 PRO.** Nothing here is normative until §8 is answered on hardware. `multi64-ed64pro-l2` implements the host side and the test ROM's `ed64pro.c` the console side; both are equally unverified.
 
 This document defines how **L3** octets ([l3-bridge-protocol-v1.md](./l3-bridge-protocol-v1.md)) travel between a PC and a ROM running on an **EverDrive-64 PRO**, as an L2 mapping under [l2-link-adapter.md](./l2-link-adapter.md). It builds on the host link in [ed64-pro-usb-host.md](./ed64-pro-usb-host.md), which it does not repeat. It does **not** redefine L3.
 
@@ -26,7 +26,7 @@ So this mapping is **this repository's design**, built from the same Krikzz sour
 
 The host writes L3 octets into the cart FIFO, which the running ROM drains:
 
-- **Mechanism:** edlink's `FifoWR` — a memory write (`CMD_EPO` from **LINK** `0x10` to **FCI** `0x13`) with destination address **`0x10010000`**, followed by the bytes ([host link §6, §8](./ed64-pro-usb-host.md#6-bulk-transfers-epo)). No status is read afterwards; edlink reads none.
+- **Mechanism:** edlink's `FifoWR` — a memory write (`CMD_EPO` from **LINK** `0x10` to **FCI** `0x13`) with destination address `0x10010000`, followed by the bytes ([host link §6, §8](./ed64-pro-usb-host.md#6-bulk-transfers-epo)). No status is read afterwards; edlink reads none.
 - **Size:** each FIFO write MUST carry at most **2048** bytes, the FIFO's capacity. Hosts SHOULD use **1024**.
 - **Spacing:** hosts SHOULD leave at least **34 ms** between FIFO writes (§5).
 - **Quiet link:** while the stream is in use, the host MUST NOT send any command that returns data (status, file system, memory reads). Its reply would arrive among the ROM's bytes (§3), and nothing marks where it ends. The connection handshake runs once, before the stream starts, and the host discards any input that remains after it.
@@ -38,7 +38,7 @@ The host writes L3 octets into the cart FIFO, which the running ROM drains:
 The ROM sends with a transfer command written into its own FIFO port, which the cart microcontroller forwards to USB:
 
 1. Frame `2B D4 81 7E 10` (`CMD_EPO`, `EPO_SCMD_XFER`).
-2. A 16-byte header, big-endian: source address `0`, destination address `0`, length, source endpoint **`0x10`** (LINK), destination endpoint **`0x18`** (USB), reserved `0`.
+2. A 16-byte header, big-endian: source address `0`, destination address `0`, length, source endpoint `0x10` (LINK), destination endpoint `0x18` (USB), reserved `0`.
 3. One start byte, `0`.
 4. `length` data bytes, at most **1024** per command (`SIZE_ACK_BLOCK`).
 5. Wait until `SYSSTAT` bit 0 (MCU busy) clears, then send the next block.
@@ -77,7 +77,7 @@ ed64-pro-pub's header also names `ADDR_FCI_FAVB` (`0x10020000`, "mcu fifo rd ava
 
 ### 6.1 Registers
 
-The cart's EDIO registers sit on the PI bus at **`0x1F800000`**, one 32-bit word each (ed64-pro-pub `everdrive.h`):
+The cart's EDIO registers sit on the PI bus at `0x1F800000`, one 32-bit word each (ed64-pro-pub `everdrive.h`):
 
 | Offset | Register | Access | Meaning |
 |--------|----------|--------|---------|
@@ -91,7 +91,7 @@ ed64-pro-pub's sample performs no initialization before using the FIFO or sendin
 
 ### 6.2 Detecting a PRO
 
-libdragon's `usb_initialize` (`trunk` `c4a7e119`) looks for a 64drive, then writes the X-series register key `0xAA55` to `0x1F808004` and reads **`0x1F800014`**, accepting `0xED640013` (X7, X5) or `0xED640008` (3.0). On a PRO that address is `EDID`, whose low half is undocumented, and `0x1F808004` is not a register ed64-pro-pub describes. A PRO might therefore be rejected, or be driven as an X7.
+libdragon's `usb_initialize` (`trunk` `c4a7e119`) looks for a 64drive, then writes the X-series register key `0xAA55` to `0x1F808004` and reads `0x1F800014`, accepting `0xED640013` (X7, X5) or `0xED640008` (3.0). On a PRO that address is `EDID`, whose low half is undocumented, and `0x1F808004` is not a register ed64-pro-pub describes. A PRO might therefore be rejected, or be driven as an X7.
 
 A ROM that supports the PRO **MUST detect it before calling `usb_initialize`**, and SHOULD write nothing until the cart has identified itself:
 
@@ -116,13 +116,13 @@ Write §3's sequence to `FIFODATA` and poll `SYSSTAT` bit 0 with a bounded wait.
 
 | Component | Role |
 |-----------|------|
-| [`crates/ed64pro-l2`](../../crates/ed64pro-l2/README.md) | **`multi64-ed64pro-l2`**: `Ed64ProL2Pipe`, the host side of §2–§5, over `multi64-ed64pro-link`. Tested against the in-memory `FakeEd64Pro` only. |
+| [`crates/ed64pro-l2`](../../crates/ed64pro-l2/README.md) | `multi64-ed64pro-l2`: `Ed64ProL2Pipe`, the host side of §2–§5, over `multi64-ed64pro-link`. Tested against the in-memory `FakeEd64Pro` only. |
 | `multi64d` | `--cart ed64pro` selects it ([daemon API §5.1](./daemon-api-v1.md#51-flags)). The PRO runs at its fixed 921600 baud; `--baud` does not apply. |
 | [`n64/test-rom`](../../n64/README.md) | `ed64pro.c` implements §6; `cart_link.c` detects a PRO before libdragon's `usb_initialize` and routes the test ROM's USB traffic to it. The ROM shows an on-screen **UNVALIDATED** warning on a PRO. |
 | [`n64/agent`](../../n64/agent/README.md) | `make CART=ed64pro` builds the in-game agent around its own `ed64pro.c`: §6 without libdragon, under the agent's PI rules, reassembling L3 frames across ticks. |
 | [`crates/multi64`](../../crates/multi64/README.md) | Settings → **Cart** → *EverDrive-64 PRO (beta)* starts the daemon with `--cart ed64pro`. Its default, *Auto-detect*, finds a PRO only by sending the edlink handshake to ports ([`multi64-cart-probe`](../../crates/cart-probe/README.md)). |
-| [`crates/ed64pro-echo-test`](../../crates/ed64pro-echo-test) | **`ed64pro-echo-test`**: raw L3 bytes against the test ROM's **RAW_ECHO**, straight over `Ed64ProL2Pipe`, after printing what the handshake reported. Never run on a cart. |
-| [`crates/ed64pro-l3-framing-e2e`](../../crates/ed64pro-l3-framing-e2e) | **`ed64pro-l3-framing-e2e`**: whole L3 frames against **RAW_ECHO**; `--large` spans several FIFO writes and so probes §5. Never run on a cart. |
+| [`crates/ed64pro-echo-test`](../../crates/ed64pro-echo-test) | `ed64pro-echo-test`: raw L3 bytes against the test ROM's **RAW_ECHO**, straight over `Ed64ProL2Pipe`, after printing what the handshake reported. Never run on a cart. |
+| [`crates/ed64pro-l3-framing-e2e`](../../crates/ed64pro-l3-framing-e2e) | `ed64pro-l3-framing-e2e`: whole L3 frames against **RAW_ECHO**; `--large` spans several FIFO writes and so probes §5. Never run on a cart. |
 
 ---
 

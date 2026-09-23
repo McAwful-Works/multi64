@@ -41,7 +41,7 @@ Every L3 frame has a **fixed 16-byte header** followed by an optional **payload*
 
 | Field | Size | Description |
 |-------|------|-------------|
-| `MAGIC` | 4 | Constant `0x4D363442` — ASCII **`M64B`**. If `MAGIC` is wrong, the receiver MUST discard input until the next valid `MAGIC` (resynchronization). |
+| `MAGIC` | 4 | Constant `0x4D363442` — ASCII `M64B`. If `MAGIC` is wrong, the receiver MUST discard input until the next valid `MAGIC` (resynchronization). |
 | `TYPE` | 1 | Frame type; see §3. |
 | `CHANNEL` | 1 | Logical channel; see §4. Ignored where noted per frame type. |
 | `FLAGS` | 2 | Bitfield; see §5. |
@@ -187,15 +187,15 @@ No mandatory interval is specified in v1; implementations SHOULD document their 
 
 ## 11. Optional session layer
 
-When **`SESSION_LAYER`** is negotiated (§6.1), peers use an explicit **session open** step on `CHANNEL` **`CONTROL`** (`0x02`) before exchanging **`DATA`** on **`APPLICATION`** (`0x00`). When `SESSION_LAYER` is **not** negotiated, `SESSION_*` frames MUST NOT be sent; receivers SHOULD respond with `ERROR` / `SESSION_LAYER_REQUIRED` (or MAY drop and resync per policy).
+When `SESSION_LAYER` is negotiated (§6.1), peers use an explicit **session open** step on `CHANNEL` `CONTROL` (`0x02`) before exchanging `DATA` on `APPLICATION` (`0x00`). When `SESSION_LAYER` is **not** negotiated, `SESSION_*` frames MUST NOT be sent; receivers SHOULD respond with `ERROR` / `SESSION_LAYER_REQUIRED` (or MAY drop and resync per policy).
 
 ### 11.1 Ordering
 
 After `HANDSHAKE_OK`:
 
-1. The **host** sends **`SESSION_OPEN`** (`TYPE=0x30`, `CHANNEL=CONTROL`).
-2. The **device** responds with **`SESSION_OPEN_OK`** (`TYPE=0x31`, `CHANNEL=CONTROL`).
-3. Either side may then send **`DATA`** on **`APPLICATION`** (and other channels per policy).
+1. The **host** sends `SESSION_OPEN` (`TYPE=0x30`, `CHANNEL=CONTROL`).
+2. The **device** responds with `SESSION_OPEN_OK` (`TYPE=0x31`, `CHANNEL=CONTROL`).
+3. Either side may then send `DATA` on `APPLICATION` (and other channels per policy).
 
 Until step 2 completes, the host MUST NOT send `DATA` on `APPLICATION`. The device SHOULD NOT send `DATA` on `APPLICATION` until after it has sent `SESSION_OPEN_OK` (unless an implementation documents an exception).
 
@@ -205,7 +205,7 @@ If `SESSION_LAYER` is not negotiated, steps 1–2 are skipped; `DATA` on `APPLIC
 
 | Offset | Size | Field |
 |--------|------|--------|
-| 0 | 4 | `SESSION_ID` — `u32` big-endian. **`0`** means “assign a non-zero id”; otherwise the device SHOULD use this value as the effective session id if acceptable. |
+| 0 | 4 | `SESSION_ID` — `u32` big-endian. `0` means “assign a non-zero id”; otherwise the device SHOULD use this value as the effective session id if acceptable. |
 | 4 | 2 | Reserved; MUST be `0`. |
 
 Total: **6** bytes.
@@ -220,7 +220,7 @@ Total: **4** bytes.
 
 ### 11.4 `SESSION_CLOSE` and `SESSION_CLOSE_ACK`
 
-**`SESSION_CLOSE`** (`TYPE=0x32`, `CHANNEL=CONTROL`) — graceful teardown of the logical session (the L2 stream may remain up for re-handshake).
+`SESSION_CLOSE` (`TYPE=0x32`, `CHANNEL=CONTROL`) — graceful teardown of the logical session (the L2 stream may remain up for re-handshake).
 
 | Offset | Size | Field |
 |--------|------|--------|
@@ -228,7 +228,7 @@ Total: **4** bytes.
 | 2 | 2 | `MESSAGE_LEN` — UTF-8 diagnostic length (MAY be `0`). |
 | 4 | `MESSAGE_LEN` | Optional UTF-8 text. |
 
-**`SESSION_CLOSE_ACK`** (`TYPE=0x33`, `CHANNEL=CONTROL`) — `PAYLOAD_LEN` MAY be `0`. `REQUEST_ID` MAY match the `SESSION_CLOSE` being acknowledged if non-zero.
+`SESSION_CLOSE_ACK` (`TYPE=0x33`, `CHANNEL=CONTROL`) — `PAYLOAD_LEN` MAY be `0`. `REQUEST_ID` MAY match the `SESSION_CLOSE` being acknowledged if non-zero.
 
 After a close, implementations MAY send a new `HANDSHAKE` / `SESSION_OPEN` sequence or tear down L2.
 

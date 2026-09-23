@@ -26,10 +26,10 @@ Check that a toolchain exists: `cargo --version`. Some machines that hold this r
 
 ## Reading the failures
 
-- **`cargo fmt`** — run `cargo fmt --all` to fix, then re-check. Never hand-format to satisfy it.
-- **`cargo clippy`** — `-D warnings` promotes every rustc lint too, so an unused import, an unused `mut`, or dead code fails the build exactly like a type error. Fix the cause; do not add `#[allow(...)]` without saying why in the code.
-- **`cargo test`** — host-only. The SD/FAT logic is covered by RAM-disk tests in `multi64-sc64-sd`; if those fail, suspect the `hadris-fat` pin in the workspace `[patch.crates-io]` before suspecting the test.
-- **`cargo build --release`** — can surface errors debug builds miss, and builds the Tauri crates. Needs the Linux WebView dev packages on Ubuntu (the CI workflow lists them).
+- `cargo fmt` — run `cargo fmt --all` to fix, then re-check. Never hand-format to satisfy it.
+- `cargo clippy` — `-D warnings` promotes every rustc lint too, so an unused import, an unused `mut`, or dead code fails the build exactly like a type error. Fix the cause; do not add `#[allow(...)]` without saying why in the code.
+- `cargo test` — host-only. The SD/FAT logic is covered by RAM-disk tests in `multi64-sc64-sd`; if those fail, suspect the `hadris-fat` pin in the workspace `[patch.crates-io]` before suspecting the test.
+- `cargo build --release` — can surface errors debug builds miss, and builds the Tauri crates. Needs the Linux WebView dev packages on Ubuntu (the CI workflow lists them).
 
 ## Not covered here
 

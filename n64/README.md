@@ -10,7 +10,7 @@ The console side of an RDRAM peek/poke integration: libdragon- and libultra-free
 
 ## `test-rom/` — all-in-one hardware test ROM
 
-**Single** build output: **`multi64_test.z64`** — the official **Multi64** e2e ROM for **SummerCart64** + L3, and the same binary for **EverDrive X7** and **EverDrive-64 PRO** (both experimental). Uses libdragon (`N64_INST`).
+**Single** build output: `multi64_test.z64` — the official **Multi64** e2e ROM for **SummerCart64** + L3, and the same binary for **EverDrive X7** and **EverDrive-64 PRO** (both experimental). Uses libdragon (`N64_INST`).
 
 The committed binary is built from the current source and accepts SummerCart64, EverDrive X7 and EverDrive-64 PRO.
 
@@ -22,8 +22,8 @@ The committed binary is built from the current source and accepts SummerCart64, 
 
 | Mode | Behavior |
 |------|----------|
-| **RAW_ECHO** (default) | Verbatim `MULTI64_L3` loopback — use with **`sc64-l3-framing-e2e`**, **`sc64-echo-test`** (serial L2, not WebSocket). |
-| **M64T_PROTO** | L3 `DATA` / `APPLICATION` with magic **`M64T`** — `PING`→`PONG`, `ECHO`, `REQ_VERSION`, `REQ_CONTROLLER`, **`SESSION_*`**, EEPROM/SRAM test messages ([`docs/spec/test-l3-application-v0.md`](../docs/spec/test-l3-application-v0.md)). |
+| **RAW_ECHO** (default) | Verbatim `MULTI64_L3` loopback — use with `sc64-l3-framing-e2e`, `sc64-echo-test` (serial L2, not WebSocket). |
+| **M64T_PROTO** | L3 `DATA` / `APPLICATION` with magic `M64T` — `PING`→`PONG`, `ECHO`, `REQ_VERSION`, `REQ_CONTROLLER`, `SESSION_*`, EEPROM/SRAM test messages ([`docs/spec/test-l3-application-v0.md`](../docs/spec/test-l3-application-v0.md)). |
 | **BENCH** | Same RX as M64T + **periodic** cart→host `BENCH_TICK` + **A** sends controller snapshot. |
 | **MEM_AGENT** | **M64P** RDRAM peek/poke ([`docs/spec/memory-l3-application-v0.md`](../docs/spec/memory-l3-application-v0.md)) — `HELLO`, `PEEKV`, `POKEV`. Host-driven; no buttons beyond **L** / **R**. |
 
@@ -67,13 +67,13 @@ cargo run -p sc64-l3-framing-e2e --release -- --port COM3
 cargo run -p sc64-echo-test -- --port COM3
 ```
 
-**EverDrive X7:** same ROM — the committed binary boots on an EverDrive and shows an on-screen **UNVALIDATED** warning; use **`ed64-l3-framing-e2e`** / **`ed64-echo-test`**. [`multi64-ed64-l2`](../crates/ed64-l2/README.md) implements **`Ed64L2Pipe`**, but the mapping is **not yet validated**: it has run on one X7 (see the [hardware record](#hardware-record)), and these tools, or the test app, are how the rest of §4.5 gets answered. Start with **`ed64-smoke`** to confirm the port, then see [`l3-over-everdrive-x7.md`](../docs/spec/l3-over-everdrive-x7.md) §4.5.
+**EverDrive X7:** same ROM — the committed binary boots on an EverDrive and shows an on-screen **UNVALIDATED** warning; use `ed64-l3-framing-e2e` / `ed64-echo-test`. [`multi64-ed64-l2`](../crates/ed64-l2/README.md) implements `Ed64L2Pipe`, but the mapping is **not yet validated**: it has run on one X7 (see the [hardware record](#hardware-record)), and these tools, or the test app, are how the rest of §4.5 gets answered. Start with `ed64-smoke` to confirm the port, then see [`l3-over-everdrive-x7.md`](../docs/spec/l3-over-everdrive-x7.md) §4.5.
 
 **EverDrive-64 PRO:** same ROM. libdragon's `usb.h` does not know the PRO, so `test-rom/cart_link.c` detects one first and routes USB traffic through `test-rom/ed64pro.c`; the ROM then shows an on-screen **UNVALIDATED** warning. Host side: `ed64pro-echo-test` and `ed64pro-l3-framing-e2e` over the link alone, then `multi64d --cart ed64pro`. Never run on a cart — see [`l3-over-everdrive-pro.md`](../docs/spec/l3-over-everdrive-pro.md) §8 and §9.
 
 ### `multi64d` + M64T / BENCH
 
-With the ROM in **M64T_PROTO** or **BENCH** and `multi64d` running, use **`multi64-test-connector`** ([`docs/connectors/test-rom.md`](../docs/connectors/test-rom.md)):
+With the ROM in **M64T_PROTO** or **BENCH** and `multi64d` running, use `multi64-test-connector` ([`docs/connectors/test-rom.md`](../docs/connectors/test-rom.md)):
 
 ```sh
 cargo run -p multi64-test-connector -- ping
@@ -149,4 +149,4 @@ while the cart was still in RAW_ECHO, which echoes a ping rather than answering 
 
 ## Python WebSocket smoke
 
-With **`multi64_test.z64`** in **RAW_ECHO**, see [`scripts/multi64_ws_test.py`](../scripts/multi64_ws_test.py) and the [root README](../README.md).
+With `multi64_test.z64` in **RAW_ECHO**, see [`scripts/multi64_ws_test.py`](../scripts/multi64_ws_test.py) and the [root README](../README.md).
