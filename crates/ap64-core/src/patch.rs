@@ -435,12 +435,23 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
                 ImmValue::Named(n) if n == "region_start" => region_start as u32,
                 ImmValue::Named(_) => region_size,
             };
+            // The low instruction decides how the value splits. addiu sign-extends its
+            // immediate, so the lui must carry it; ori zero-extends, so it must not. Splitting
+            // an ori pair the addiu way loads a value 0x10000 too high whenever bit 15 is set.
             let (hi16, lo16) = match lo {
-                Some(_) => ((v.wrapping_add(0x8000) >> 16) & 0xFFFF, v & 0xFFFF),
+                Some(l) => match rom::read_u32(&out, *l as usize).map(|w| w >> 26) {
+                    Some(0x09) => ((v.wrapping_add(0x8000) >> 16) & 0xFFFF, v & 0xFFFF),
+                    Some(0x0D) => (v >> 16, v & 0xFFFF),
+                    _ => {
+                        return Err(ApplyError::Internal(format!(
+                            "imm {label:?}: the word at 0x{l:X} is neither an addiu nor an ori"
+                        )))
+                    }
+                },
                 None if v & 0xFFFF == 0 => (v >> 16, 0),
                 None => {
                     return Err(ApplyError::Internal(format!(
-                        "imm {label:?}: 0x{v:X} needs an addiu, and the profile gives none"
+                        "imm {label:?}: 0x{v:X} needs an addiu or ori, and the profile gives none"
                     )))
                 }
             };
@@ -590,6 +601,11 @@ mod tests {
     }
 
     fn bundle(stub_len: usize, rom: &[u8]) -> Bundle {
+        bundle_with(stub_len, rom, "")
+    }
+
+    /// `bundle`, with `extra` appended to the profile text.
+    fn bundle_with(stub_len: usize, rom: &[u8], extra: &str) -> Bundle {
         let sha = crc::hex(&Sha1::digest(&rom[STUB..STUB + 0x100]));
         let text = format!(
             r#"
@@ -634,7 +650,7 @@ kind = "jal"
 label = "Jal"
 at = {HOOK}
 target = 0x80019C00
-"#
+{extra}"#
         );
         let blobs = HashMap::from([
             ("agent.bin".to_string(), vec![0x11; 0x1103]),
@@ -677,6 +693,40 @@ target = 0x80019C00
             Some(crc::compute(&out, crc::Cic::Cic6102))
         );
         assert_eq!(out[0x1000..0x2000], rom[0x1000..0x2000]);
+    }
+
+    /// A lui/ori pair splits a value differently from lui/addiu, and bit 15 set is where
+    /// it shows: 0x805B9040 is lui 0x805B + ori 0x9040, but lui 0x805C + addiu -0x6FC0.
+    #[test]
+    fn an_imm_write_splits_by_the_low_instruction() {
+        const ORI: usize = 0x4000;
+        const ADDIU: usize = 0x4010;
+        let mut rom = seed();
+        rom::write_u32(&mut rom, ORI, 0x3C0D_805C); // lui t5, 0x805C
+        rom::write_u32(&mut rom, ORI + 4, 0x35AD_1040); // ori t5, t5, 0x1040
+        rom::write_u32(&mut rom, ADDIU, 0x3C0D_805C); // lui t5, 0x805C
+        rom::write_u32(&mut rom, ADDIU + 4, 0x25AD_1040); // addiu t5, t5, 0x1040
+        let pins: String = [ORI, ORI + 4, ADDIU, ADDIU + 4]
+            .iter()
+            .map(|&at| {
+                format!(
+                    "[[require]]\nkind = \"word\"\nlabel = \"w{at:X}\"\nat = {at}\nequals = {}\n",
+                    rom::read_u32(&rom, at).unwrap()
+                )
+            })
+            .collect();
+        let writes = format!(
+            "[[write]]\nkind = \"imm\"\nlabel = \"ori pair\"\nhi = {ORI}\nlo = {}\nvalue = 0x805B9040\n\
+             [[write]]\nkind = \"imm\"\nlabel = \"addiu pair\"\nhi = {ADDIU}\nlo = {}\nvalue = 0x805B9040\n",
+            ORI + 4,
+            ADDIU + 4
+        );
+        let b = bundle_with(0xCC, &rom, &format!("{pins}{writes}"));
+        let out = apply(&b, &rom).unwrap().rom;
+        assert_eq!(rom::read_u32(&out, ORI), Some(0x3C0D_805B));
+        assert_eq!(rom::read_u32(&out, ORI + 4), Some(0x35AD_9040));
+        assert_eq!(rom::read_u32(&out, ADDIU), Some(0x3C0D_805C));
+        assert_eq!(rom::read_u32(&out, ADDIU + 4), Some(0x25AD_9040));
     }
 
     #[test]

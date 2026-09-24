@@ -75,7 +75,7 @@ impl Agent {
     }
 }
 
-/// The value an `imm` write puts in a `lui`/`addiu` pair.
+/// The value an `imm` write puts in a `lui`/`addiu` or `lui`/`ori` pair.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum ImmValue {
@@ -127,8 +127,9 @@ pub enum Write {
         len: u32,
         at: u32,
     },
-    /// Set the immediate of the `lui` at `hi`, and of the `addiu` at `lo` if given, so the
-    /// pair loads `value`. Opcode and registers are kept.
+    /// Set the immediate of the `lui` at `hi`, and of the `addiu` or `ori` at `lo` if given,
+    /// so the pair loads `value`. Opcode and registers are kept; which of the two `lo` is
+    /// decides the split, since only `addiu` sign-extends.
     Imm {
         label: String,
         hi: u32,
