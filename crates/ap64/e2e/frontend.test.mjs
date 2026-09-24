@@ -47,6 +47,9 @@ async function serveFrontend() {
  * - `load`: what `load_rom` resolves to, or `{ error }` to reject
  * - `patch`: what `patch_rom` resolves to, or `{ error }` to reject
  * - `pick`: what `pick_rom` resolves to
+ * - `clientSetup`, `clientSetupAfter`: what `play_client_setup` answers per game id, before and
+ *   after a successful `play_client_fix`; a game not listed answers null, as most do
+ * - `clientFix`: what `play_client_fix` resolves to, or `{ error }` to reject
  */
 function installTauriStub(scenario) {
   const sc = scenario || {};
@@ -70,6 +73,12 @@ function installTauriStub(scenario) {
       { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector", client: "Game Two Client" },
     ]),
     play_start: () => answer(sc.start ?? null),
+    play_client_setup: (a) =>
+      answer(((window.__CLIENT_FIXED__ ? sc.clientSetupAfter : sc.clientSetup) || {})[a && a.game] ?? null),
+    play_client_fix: () => {
+      if (sc.clientFix && !sc.clientFix.error) window.__CLIENT_FIXED__ = true;
+      return answer(sc.clientFix ?? null);
+    },
     play_stop: () => answer(null),
     play_log: () => answer(sc.log ?? []),
     open_log_window: () => answer(sc.openLog ?? null),
@@ -443,6 +452,73 @@ const setDev = async (p, on) => {
   check("a write error is shown", (await text(p, "patch-error")).includes("Access is denied"));
   check("a write error shows no result", !(await visible(p, "pane-result")));
   check("the button is usable again", !(await p.evaluate(() => document.getElementById("btn-patch").disabled)));
+  await p.close();
+}
+
+// A game whose Archipelago client has to be changed before it can reach AP64 is settled at Start:
+// one dialog, and only for that game. Every other game just starts.
+{
+  const needed = { state: "needed", message: "Its copy of EmuLoader is missing a method. AP64 will add it to g2.apworld and keep the original", path: "C:\AP\custom_worlds\g2.apworld", technical: "" };
+  const p = await openScenario({
+    clientSetup: { g2: needed },
+    clientSetupAfter: { g2: { ...needed, state: "ready", message: "Game Two Client is ready for AP64" } },
+    clientFix: "Fixed. Restart the Archipelago Launcher before opening Game Two Client",
+  });
+  const starts = () => callsOf(p, "play_start");
+  await p.selectOption("#play-game-select", "g1");
+  await p.click("#btn-play-start");
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_start"));
+  check("a game whose client needs nothing just starts", (await starts()).length === 1 && !(await visible(p, "client-fix-dialog")));
+
+  await p.selectOption("#play-game-select", "g2");
+  await p.click("#btn-play-start");
+  await until(p, () => !document.getElementById("client-fix-dialog").hidden);
+  check("a client that needs the fix is asked about at Start", (await text(p, "client-fix-title")) === "Game Two Client needs a one-time fix");
+  check("the dialog says what changes and that the original is kept", (await text(p, "client-fix-text")).includes("keep the original"));
+  check("and nothing starts until it is answered", (await starts()).length === 1);
+  check("the file it changes is not in front of a player", !(await onScreen(p, "client-fix-path")));
+  await setDev(p, true);
+  check("but is behind developer details", (await text(p, "client-fix-path")).includes("g2.apworld"));
+  await setDev(p, false);
+  await p.click("#btn-client-fix-cancel");
+  check("Cancel closes it", !(await visible(p, "client-fix-dialog")));
+  check("and starts nothing", (await starts()).length === 1 && (await callsOf(p, "play_client_fix")).length === 0);
+
+  await p.click("#btn-play-start");
+  await until(p, () => !document.getElementById("client-fix-dialog").hidden);
+  await p.click("#btn-client-fix-go");
+  await until(p, () => window.__TAURI_CALLS__.filter((c) => c.cmd === "play_start").length === 2);
+  check("Fix and start fixes the chosen game's client", (await callsOf(p, "play_client_fix"))[0]?.args?.game === "g2");
+  check("and then starts it", (await starts())[1]?.args?.game === "g2");
+  check("with the dialog closed", !(await visible(p, "client-fix-dialog")));
+  check("and the Client row saying what is left to do", (await text(p, "link-client")) === "Restart the Archipelago Launcher, then open Game Two Client");
+  await p.evaluate(() => window.__TAURI_LISTENERS__["play://status"]({ payload: { running: true, state: "playing", detail: "Game Two Client connected", bridge: "ok", console: "ok", client: "ok" } }));
+  check("until the client connects", (await text(p, "link-client")) === "Connected");
+  await p.close();
+}
+
+{
+  const p = await openScenario({ clientSetup: { g2: { state: "missing", message: "Install this game's world in Archipelago (g2.apworld) before playing", path: "", technical: "" } } });
+  await p.selectOption("#play-game-select", "g2");
+  await p.click("#btn-play-start");
+  await until(p, () => !document.getElementById("play-error").hidden);
+  check("a client that is not installed stops Start and says so", (await text(p, "play-error")).includes("Install this game's world"));
+  check("without starting", (await callsOf(p, "play_start")).length === 0);
+  await p.close();
+}
+
+{
+  const p = await openScenario({
+    clientSetup: { g2: { state: "needed", message: "It is missing a method", path: "", technical: "" } },
+    clientFix: { error: "g2.apworld is in use; close Game Two Client and the Archipelago Launcher, then try again" },
+  });
+  await p.selectOption("#play-game-select", "g2");
+  await p.click("#btn-play-start");
+  await until(p, () => !document.getElementById("client-fix-dialog").hidden);
+  await p.click("#btn-client-fix-go");
+  await until(p, () => !document.getElementById("play-error").hidden);
+  check("a fix that fails says why", (await text(p, "play-error")).includes("is in use"));
+  check("and does not start", (await callsOf(p, "play_start")).length === 0);
   await p.close();
 }
 

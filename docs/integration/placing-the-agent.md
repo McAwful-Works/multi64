@@ -83,8 +83,9 @@ game to size its heap differently on a run you did not measure.
 
 ### 2.3 Prefer the Expansion Pak, guarded
 
-In every integration so far the Expansion Pak was the answer: where the patch left it
-alone, play never touched it, and it holds nothing the base game depends on. Put the agent
+In every integration but one the Expansion Pak was the answer: where the patch left it
+alone, play never touched it, and it holds nothing the base game depends on. (The exception is
+Donkey Kong 64, which needs the Pak and uses all of it; see §2.5.) Put the agent
 there and **skip it entirely below 8 MB**: read `osMemSize` (u32 at `0x80000318`) in the loader
 and do nothing if it is under `0x800000`. A console without the Expansion Pak then runs the game
 exactly as it would without the agent.
@@ -104,6 +105,38 @@ the game's own loader brought the image in at boot. That it arrived once does no
 there, and nothing reserves that RAM from the game: a frame that calls into RAM now holding
 something else hard locks the console, where a marker that no longer reads back only makes the
 agent go quiet.
+
+### 2.5 When nothing is free, move a bound
+
+Donkey Kong 64 touches every page of the 8 MB in play; with Archipelago live, the largest run
+left untouched was 20 KB. There is nothing to find, so room has to be made, and the way to make
+it is the one the randomizer used for itself: move a bound. The game's heap setup
+(`func_global_asm_80610388`) takes the top of its arena as one constant, built by
+`lui`/`ori` at `0x80610510`, and carves its fixed buffers downward from there; the heap ends
+below them. That constant is `0x805C1040`, which is exactly where the randomizer's own code
+starts. Lowering it by 32 KB moves every buffer and the heap's end down with it, and leaves a gap
+nothing is allocated in.
+
+What made that safe to believe, each checked against a control:
+
+1. **The bound is the one the heap is built from.** Found by a write hook on the heap list's
+   head during boot, which gives the program counter and the values written (start and size), not
+   by reading a name.
+2. **Nothing else builds the constant.** Only two instruction pairs do: the heap setup, and the
+   randomizer's boot code, which loads its own code *to* that address and must not move.
+3. **Nothing addresses the gap.** A reference scan that follows each `lui` register until it is
+   redefined found no address into the new gap; the same scan over a known-used range found 51.
+   `ram-bounds.py` alone is too coarse here: it flagged 117 builds of `0x805C0000`, and reading
+   them showed every one resolving elsewhere.
+4. **The heap still has room.** A watch of the heap's free list over 121,920 frames with
+   Archipelago live put its low point at 739 KB free (largest block 504 KB), so the 32 KB is about
+   4% of the worst seen. Measure this through the heaviest scenes the game has.
+5. **The gap stays empty.** Zero in every one of 4,064 samples, while a control that must change
+   did.
+
+A profile makes the change with an `imm` write on the pair. The split follows the low
+instruction: an `ori` does not sign-extend, so `0x805B9040` is `lui 0x805B`/`ori 0x9040` where an
+`addiu` pair would need `lui 0x805C`.
 
 ## 3. Find a per-frame call site
 
@@ -190,11 +223,15 @@ Details that bit, the last two only on a console:
   `osInvalICache` whenever it loads code, and so must the loader. Without it the CPU can run
   stale I-cache lines instead of the agent, and no emulator models that, so every test before the
   console passes.
-- **Call only a copy routine the game calls during play.** One game's routine ran exactly once,
-  at boot; called from a frame hook, its PI transfer did not survive the game's own traffic, and
-  the console black-screened. A bisect on hardware isolated the copy as the only step at fault.
-  When the game has no routine that is safe mid-play, do not copy at all: put the image where
-  something already copies it at boot (§5.5).
+- **Call only a copy routine whose transfer is safe during play.** One game's routine ran exactly
+  once, at boot; called from a frame hook, its PI transfer did not survive the game's own traffic,
+  and the console black-screened. A bisect on hardware isolated the copy as the only step at fault.
+  What matters is how the routine transfers, not who calls it: Donkey Kong 64's wrapper is also
+  called only at boot, but it goes through `osPiStartDma` and the PI manager, on the same message
+  queue as the game's in-play loaders, and it loads the agent on a console. A routine that starts
+  a raw PI DMA outside the manager is the unsafe kind: during play, its completion interrupt can
+  be taken as the end of the game's next transfer. When the game has no routine that is safe
+  mid-play, do not copy at all: put the image where something already copies it at boot (§5.5).
 
 Find the game's ROM-copy routine by what the game or its patch already calls to load code: its
 arguments (ROM offset? virtual ROM through a file table? file index?) decide how the loader calls

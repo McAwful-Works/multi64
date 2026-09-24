@@ -29,6 +29,7 @@ const DIALOGS = {
   games: { panel: "games-dialog", backdrop: "games-backdrop", focus: "btn-games" },
   helpPatch: { panel: "help-patch-dialog", backdrop: "help-patch-backdrop", focus: "btn-help-patch" },
   helpPlay: { panel: "help-play-dialog", backdrop: "help-play-backdrop", focus: "btn-help-play" },
+  clientFix: { panel: "client-fix-dialog", backdrop: "client-fix-backdrop", focus: "btn-play-start" },
 };
 let openDialogName = null;
 let dialogReturnFocus = null;
@@ -443,6 +444,9 @@ function renderLinks(s) {
     if (game && key === "client") {
       if (state === "idle") text = `${game.client} — not connected`;
       if (state === "waiting") text = `Open ${game.client} to connect`;
+      // Once it has connected, the fix is behind it.
+      if (state === "ok") clientHint = "";
+      if (clientHint && (state === "idle" || state === "waiting")) text = clientHint;
     }
     $(id).textContent = text;
   }
@@ -477,19 +481,76 @@ function renderStatus(s) {
 function selectPlayGame(id) {
   if (games.some((g) => g.id === id)) {
     $("play-game-select").value = id;
+    clientHint = "";
     renderPlay();
   }
 }
 
-async function startPlay() {
-  setError($("play-error"), "");
+/** A message from the backend as a sentence: they are written without the full stop. */
+const sentence = (text) => (text && !/[.!?]$/.test(text) ? `${text}.` : text || "");
+
+/**
+ * What the Client row says in place of its usual words, until the client connects: after a fix,
+ * the one thing left to do before it can.
+ */
+let clientHint = "";
+
+async function beginSession() {
   const url = $("play-url").value.trim();
   saveUrl(url);
-
   try {
     await invoke("play_start", { game: $("play-game-select").value, url });
   } catch (e) {
     setError($("play-error"), String(e));
+  }
+}
+
+/**
+ * Start. For a game whose Archipelago client has to be changed before it can reach AP64
+ * (`play_client_setup`), that is settled first: a client needing the fix gets one dialog, and one
+ * that is not installed stops here and says so. Every other game answers null and just starts.
+ */
+async function startPlay() {
+  setError($("play-error"), "");
+  const game = selectedGame();
+  if (!game) return;
+  let setup = null;
+  try {
+    setup = await invoke("play_client_setup", { game: game.id });
+  } catch {
+    setup = null;
+  }
+  if (setup?.state === "missing") {
+    setError($("play-error"), sentence(setup.message));
+    return;
+  }
+  if (setup?.state === "needed") {
+    $("client-fix-title").textContent = `${game.client} needs a one-time fix`;
+    $("client-fix-text").textContent = sentence(setup.message);
+    $("client-fix-path").textContent = setup.path || "";
+    openDialog("clientFix");
+    return; // The dialog's buttons carry on from here.
+  }
+  // A version AP64 does not recognize may still connect: say so, and start anyway.
+  if (setup?.state === "unknown") setError($("play-error"), sentence(setup.message));
+  await beginSession();
+}
+
+async function fixAndStart() {
+  const game = selectedGame();
+  if (!game) return closeDialog();
+  $("btn-client-fix-go").disabled = true;
+  try {
+    await invoke("play_client_fix", { game: game.id });
+    closeDialog();
+    clientHint = `Restart the Archipelago Launcher, then open ${game.client}`;
+    renderLinks(lastStatus);
+    await beginSession();
+  } catch (e) {
+    closeDialog();
+    setError($("play-error"), String(e));
+  } finally {
+    $("btn-client-fix-go").disabled = false;
   }
 }
 
@@ -504,7 +565,13 @@ async function initPlay() {
   }
   listen("play://status", (event) => renderStatus(event.payload || {}));
   $("play-url").value = readUrl((await invoke("play_default_url")) || "");
-  $("play-game-select").addEventListener("change", renderPlay);
+  $("play-game-select").addEventListener("change", () => {
+    clientHint = "";
+    renderPlay();
+  });
+  $("btn-client-fix-go").addEventListener("click", fixAndStart);
+  $("btn-client-fix-cancel").addEventListener("click", closeDialog);
+  $("client-fix-backdrop").addEventListener("click", closeDialog);
   $("btn-play-start").addEventListener("click", startPlay);
   $("btn-play-stop").addEventListener("click", () => invoke("play_stop"));
   renderStatus((await invoke("play_status")) || { state: "idle" });

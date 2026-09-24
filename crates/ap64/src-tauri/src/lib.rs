@@ -192,6 +192,26 @@ fn play_status(state: State<'_, AppState>) -> play::Status {
     s
 }
 
+/// Whether the chosen game's Archipelago client is ready for AP64; `None` for a game whose
+/// client needs nothing.
+#[tauri::command]
+fn play_client_setup(game: String, state: State<'_, AppState>) -> Option<play::ClientSetup> {
+    play::client_setup(&state.bundles, &game)
+}
+
+/// Make the fix [`play_client_setup`] reported as needed, keeping the original among AP64's own
+/// files.
+#[tauri::command]
+fn play_client_fix(
+    game: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    use tauri::Manager as _;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    play::fix_client(&state.bundles, &game, &dir.join("backups"))
+}
+
 #[tauri::command]
 fn play_default_url() -> &'static str {
     play::DEFAULT_URL
@@ -292,6 +312,8 @@ pub fn run() {
             play_stop,
             play_status,
             play_default_url,
+            play_client_setup,
+            play_client_fix,
             reveal
         ])
         .run(tauri::generate_context!())

@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use ap64_cart::backend::{Backend, Multi64, Stats};
 use ap64_cart::Log;
 use ap64_connector::server::{self, Event};
-use ap64_connector::{Connector, Script, SCRIPTS};
+use ap64_connector::{retroarch, Connector, Native, Script, NATIVES, SCRIPTS};
 use ap64_core::profile::{Transform, Write};
 use ap64_core::transform::{dma_entries, rom_address, DmaEntry};
 use ap64_core::{rom as rom_fmt, Bundle};
@@ -125,8 +125,40 @@ pub struct Play {
     log: Arc<Mutex<VecDeque<String>>>,
 }
 
-fn script(id: &str) -> Option<&'static Script> {
-    SCRIPTS.iter().find(|s| s.id == id)
+/// What plays a game: a connector script AP64 runs, or a client AP64 answers itself.
+#[derive(Clone, Copy)]
+enum Kind {
+    Script(Script),
+    Native(Native),
+}
+
+impl Kind {
+    fn name(&self) -> &'static str {
+        match self {
+            Kind::Script(s) => s.name,
+            Kind::Native(n) => n.name,
+        }
+    }
+
+    fn client(&self) -> &'static str {
+        match self {
+            Kind::Script(s) => s.client,
+            Kind::Native(n) => n.client,
+        }
+    }
+}
+
+fn kind(id: &str) -> Option<Kind> {
+    SCRIPTS
+        .iter()
+        .find(|s| s.id == id)
+        .map(|s| Kind::Script(*s))
+        .or_else(|| {
+            NATIVES
+                .iter()
+                .find(|n| n.id == id)
+                .map(|n| Kind::Native(*n))
+        })
 }
 
 /// A game the Play card offers: which connector plays it, and which Archipelago client
@@ -144,18 +176,143 @@ pub fn games(bundles: &[Bundle]) -> Vec<Game> {
     bundles
         .iter()
         .filter_map(|b| {
-            let s = script(&b.profile.connector)?;
+            let k = kind(&b.profile.connector)?;
             Some(Game {
                 id: b.profile.id.clone(),
                 // The name alone: Archipelago patched the seed, so the release was
                 // settled long before AP64 saw it, and there is nothing here to pick
                 // between. It stays on the profile for the header check to fail on.
                 name: b.profile.name.clone(),
-                connector: s.name.to_string(),
-                client: s.client.to_string(),
+                connector: k.name().to_string(),
+                client: k.client().to_string(),
             })
         })
         .collect()
+}
+
+/// Whether the chosen game's Archipelago client is ready for AP64. The Play card asks when Start
+/// is pressed, and offers the fix before starting when one is needed.
+///
+/// Only a game whose client needs changing before it can reach AP64 has one of these at all
+/// ([`ap64_connector::ClientFix`]); for every other game the answer is `None` and Start just
+/// starts.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientSetup {
+    /// `ready`, `needed`, `missing` (the client is not installed) or `unknown`.
+    pub state: String,
+    pub message: String,
+    /// The file the fix changes, when it was found.
+    pub path: String,
+    /// Why, for Developer details.
+    pub technical: String,
+}
+
+fn client_fix(bundles: &[Bundle], game_id: &str) -> Option<(Native, ap64_connector::ClientFix)> {
+    let b = bundles.iter().find(|b| b.profile.id == game_id)?;
+    match kind(&b.profile.connector)? {
+        Kind::Native(n) => n.client_fix.map(|f| (n, f)),
+        Kind::Script(_) => None,
+    }
+}
+
+pub fn client_setup(bundles: &[Bundle], game_id: &str) -> Option<ClientSetup> {
+    use ap64_connector::ClientState;
+    let (native, fix) = client_fix(bundles, game_id)?;
+    let client = native.client;
+    let setup = |state: &str, message: String, path: String, technical: String| ClientSetup {
+        state: state.into(),
+        message,
+        path,
+        technical,
+    };
+    let Some(path) = (fix.find)() else {
+        return Some(setup(
+            "missing",
+            format!(
+                "Install this game's world in Archipelago ({}) before playing",
+                fix.file
+            ),
+            String::new(),
+            "looked in custom_worlds and lib/worlds under %ProgramData%\\Archipelago and \
+             %LOCALAPPDATA%\\Archipelago, and AP64_ARCHIPELAGO_DIR if set"
+                .into(),
+        ));
+    };
+    let shown = path.display().to_string();
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            return Some(setup(
+                "unknown",
+                format!("{} could not be read", fix.file),
+                shown,
+                e.to_string(),
+            ))
+        }
+    };
+    Some(match (fix.state)(&bytes) {
+        ClientState::Ready => setup(
+            "ready",
+            format!("{client} is ready for AP64"),
+            shown,
+            String::new(),
+        ),
+        ClientState::NeedsFix => setup(
+            "needed",
+            format!(
+                "{}. AP64 will add it to {} and keep the original",
+                fix.why, fix.file
+            ),
+            shown,
+            String::new(),
+        ),
+        ClientState::Unrecognized(why) => setup(
+            "unknown",
+            format!(
+                "This version of {} is not one AP64 knows, so {client} may not connect",
+                fix.file
+            ),
+            shown,
+            why,
+        ),
+    })
+}
+
+/// Make the chosen game's client fix, keeping the original in `backups`. Returns what to
+/// tell the player.
+pub fn fix_client(
+    bundles: &[Bundle],
+    game_id: &str,
+    backups: &std::path::Path,
+) -> Result<String, String> {
+    let (native, fix) = client_fix(bundles, game_id).ok_or("this game's client needs no fix")?;
+    let path =
+        (fix.find)().ok_or_else(|| format!("{} is not installed in Archipelago", fix.file))?;
+    let original = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let fixed = (fix.apply)(&original)?;
+    std::fs::create_dir_all(backups).map_err(|e| format!("making {}: {e}", backups.display()))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = backups.join(format!("{}.{stamp}.original", fix.file));
+    std::fs::write(&backup, &original).map_err(|e| format!("saving the original: {e}"))?;
+    // Written beside it and moved over it, so a failure part-way leaves the original in place.
+    let staged = path.with_extension("apworld.ap64-new");
+    std::fs::write(&staged, &fixed).map_err(|e| format!("writing {}: {e}", staged.display()))?;
+    if let Err(e) = std::fs::rename(&staged, &path) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!(
+            "{} is in use; close {} and the Archipelago Launcher, then try again ({e})",
+            fix.file, native.client
+        ));
+    }
+    Ok(format!(
+        "Fixed. Restart the Archipelago Launcher before opening {}. The original is saved as {}",
+        native.client,
+        backup.display()
+    ))
 }
 
 /// A [`Multi64`] the session can still read counters from after the connector owns it.
@@ -319,7 +476,7 @@ impl Play {
             .find(|b| b.profile.id == game_id)
             .ok_or("choose a game")?
             .clone();
-        let script = *script(&game.profile.connector).ok_or("unknown connector")?;
+        let kind = kind(&game.profile.connector).ok_or("unknown connector")?;
         // A new session starts a new log: what the last one did is not this one's history.
         let kept = self.log.clone();
         kept.lock().unwrap().clear();
@@ -344,7 +501,7 @@ impl Play {
             let stop = stop.clone();
             std::thread::Builder::new()
                 .name("connector".into())
-                .spawn(move || run(app, game, script, url, stop, status, kept))
+                .spawn(move || run(app, game, kind, url, stop, status, kept))
                 .map_err(|e| e.to_string())?
         };
         *self.session.lock().unwrap() = Some(Session { stop, thread });
@@ -472,7 +629,7 @@ const CART_QUIET: Duration = Duration::from_secs(2);
 fn run(
     app: AppHandle,
     game: Bundle,
-    script: Script,
+    kind: Kind,
     url: String,
     stop: Arc<AtomicBool>,
     status: Arc<Mutex<Status>>,
@@ -650,7 +807,7 @@ fn run(
             let app = app.clone();
             let client_here = client_here.clone();
             let console_up = console_up.clone();
-            let client = script.client;
+            let client = kind.client();
             let log = log.clone();
             cart.set_health(Rc::new(move |answering: bool| {
                 if console_up.replace(answering) == answering {
@@ -685,26 +842,33 @@ fn run(
         }
 
         let cart = Rc::new(RefCell::new(cart));
-        let connector = match Connector::new(
-            &script,
-            Box::new(SharedCart(cart.clone())),
-            log.clone(),
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                log(format!("the connector script would not load: {e}"));
-                set(&|s| {
-                    s.state = "waiting-console".into();
-                    s.detail = "the connector could not read the game;                             check the ROM on the console"
+        // A native connector has no script to load: AP64 answers its client itself.
+        let connector = match kind {
+            Kind::Native(_) => None,
+            Kind::Script(script) => {
+                match Connector::new(&script, Box::new(SharedCart(cart.clone())), log.clone()) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        log(format!("the connector script would not load: {e}"));
+                        set(&|s| {
+                            s.state = "waiting-console".into();
+                            s.detail = "the connector could not read the game;                             check the ROM on the console"
                     .into();
-                    s.detail_dev = e.clone();
-                    s.console = FAILED.into();
-                });
-                continue 'session;
+                            s.detail_dev = e.clone();
+                            s.console = FAILED.into();
+                        });
+                        continue 'session;
+                    }
+                }
             }
         };
 
-        let ports = script.ports;
+        let client = kind.client();
+        // Where the client finds AP64, for the log: scripts are TCP, native connectors UDP.
+        let transport = match kind {
+            Kind::Script(_) => "localhost",
+            Kind::Native(_) => "UDP localhost",
+        };
         let mut last_stats = Instant::now();
         // A check the game showed only between two polls, handed to the client by the watch
         // rather than waiting for the scene to change. Worth a line: it is the only place a
@@ -718,36 +882,35 @@ fn run(
                 s.handled = handled;
             })
         };
-        let result = server::serve(&connector, ports, &stop, &mut |e| match e {
+        let mut on_event = |e| match e {
             Event::Listening(port) => {
                 log(format!(
-                    "listening on localhost:{port}; open {} from the Archipelago Launcher",
-                    script.client
+                    "listening on {transport}:{port}; open {client} from the Archipelago Launcher"
                 ));
                 set(&|s| {
                     s.state = "waiting-client".into();
                     s.port = Some(port);
-                    s.detail = format!("open {} from the Archipelago Launcher", script.client);
+                    s.detail = format!("open {client} from the Archipelago Launcher");
                     s.detail_dev = format!("listening on 127.0.0.1:{port}");
                     s.client = WAITING.into();
                 });
             }
             Event::ClientConnected(addr) => {
                 client_here.set(true);
-                log(format!("{} connected from {addr}", script.client));
+                log(format!("{client} connected from {addr}"));
                 set(&|s| {
                     s.state = "playing".into();
-                    s.detail = format!("{} connected", script.client);
+                    s.detail = format!("{client} connected");
                     s.detail_dev = format!("from {addr}");
                     s.client = OK.into();
                 });
             }
             Event::ClientDisconnected(why) => {
                 client_here.set(false);
-                log(format!("{} disconnected: {why}", script.client));
+                log(format!("{client} disconnected: {why}"));
                 set(&|s| {
                     s.state = "waiting-client".into();
-                    s.detail = format!("{} disconnected; waiting for it", script.client);
+                    s.detail = format!("{client} disconnected; waiting for it");
                     s.detail_dev = why.clone();
                     s.client = WAITING.into();
                 });
@@ -770,7 +933,7 @@ fn run(
                 // and the connector replied, which a script that catches its own errors will do
                 // with a cart that is not there at all. What the cart is doing is the backend's to
                 // report (set_health above) and the probe below's to check.
-                if let Some(w) = connector.watch_stats() {
+                if let Some(w) = connector.as_ref().and_then(|c| c.watch_stats()) {
                     if w.replayed > last_watch.replayed || w.dropped > last_watch.dropped {
                         log(format!(
                             "in-scene events: {} seen, {} given to the client{}",
@@ -790,7 +953,21 @@ fn run(
                     push_stats(cart.borrow().stats(), handled);
                 }
             }
-        });
+        };
+        let result = match (kind, &connector) {
+            (Kind::Script(script), Some(connector)) => {
+                server::serve(connector, script.ports, &stop, &mut on_event)
+            }
+            // The cart stays on this thread, and each call borrows it only for its length, so
+            // the handler's own borrows above never overlap one of these.
+            (Kind::Native(native), _) => retroarch::serve(
+                &mut SharedCart(cart.clone()),
+                &native.options,
+                &stop,
+                &mut on_event,
+            ),
+            (Kind::Script(_), None) => unreachable!("a script session loads its script first"),
+        };
         push_stats(cart.borrow().stats(), handled);
         match result {
             // `serve` only returns cleanly when the stop flag it was given is set.

@@ -18,7 +18,7 @@ Play Archipelago N64 seeds on a real console, from Windows. AP64 does two jobs:
 
 Supported today, each patched and played on a SummerCart64 with checks sent and items
 received (the first three on 2026-09-18, Kirby 64 on 2026-09-21, Banjo-Tooie and Mario Kart 64
-on 2026-09-22):
+on 2026-09-22, Donkey Kong 64 on 2026-09-23):
 
 - **Castlevania 64 (US 1.0)**, through Archipelago's BizHawk Client.
 - **Paper Mario (US 1.0)** with the Paper Mario Randomizer, through BizHawk Client.
@@ -54,6 +54,20 @@ on 2026-09-22):
   runs without a Pak is not yet known: its own code sits where the Pak is, and no console has
   been tried with the Pak removed. Played for 21 checks across three courses, with every item
   landing exactly once.
+- **Donkey Kong 64 (US)**, the DK64 randomizer's Archipelago world (v1.5.8, with the ROM built
+  on dk64randomizer.com), through its DK64 Client. Needs an Expansion Pak, as the retail game
+  does. The client uses no connector script: it reads emulator memory through a library called
+  EmuLoader, and with no emulator running it falls back to RetroArch's Network Commands over
+  UDP. AP64 answers those itself, from the cart. As released, that fallback is missing a method
+  the client calls on every loop, so pressing Start checks the installed `dk64.apworld` first
+  and, if it needs the fix, asks once in a dialog before making it. The original is kept in
+  AP64's own data folder (`%APPDATA%\dev.multi64.ap64\backups`). It checks again at every Start,
+  because the world replaces itself when the randomizer updates. DK64 uses all 8 MB of RAM, so
+  the agent lives in 32 KB taken from the top of the game's heap; the heap's low point measured
+  739 KB free with the change. The randomizer rewrites the game's main code in place and moves
+  its own region between releases, so expect a new randomizer release to be refused until it has
+  been measured again (#309). Played with checks going out and items arriving, among them a
+  Golden Banana and the Donkey kong.
 
 Written and working, but **not offered in the app**, because the game cannot be played
 through for a reason outside AP64. Kept in the tree and checked by the same tests as the
@@ -100,6 +114,8 @@ politely. That is deliberate: these clients read a line and hand it to `json.loa
 close gives them an empty string whose decode error their socket task does not catch — it dies
 without a word and the client goes on showing itself connected. A reset is the one ending they
 recover from on their own, so the client reconnects by itself once the console is back.
+A client AP64 answers over UDP (Donkey Kong 64's) has no connection to reset: its requests go
+unanswered while the console is away, and it tries again by itself until they are answered.
 
 ## Patching a seed
 
@@ -142,7 +158,7 @@ agent and the specs name no game; everything that does lives in these crates.
 | `crates/ap64-core/tools/<game>/` | BizHawk probe scripts for checking a patched ROM before it goes on a cart |
 | [`crates/ap64-cli`](../ap64-cli) | `ap64-patch`, a thin command line over the core |
 | [`crates/ap64-cart`](../ap64-cart) | M64P over multi64d: RDRAM reads and writes, cart ROM reads (cached), retry and reconnect |
-| [`crates/ap64-connector`](../ap64-connector) | Embedded Lua running a connector script, the `ap64` API it calls, the TCP side the client connects to |
+| [`crates/ap64-connector`](../ap64-connector) | Embedded Lua running a connector script, the `ap64` API it calls, the TCP side the client connects to; and the native connector AP64 answers itself (RetroArch Network Commands over UDP, for Donkey Kong 64) |
 | `crates/ap64-connector/connectors/<id>/` | Forked Archipelago connector scripts (MIT, with `UPSTREAM` provenance) |
 
 A profile's blobs are this repository's own cart agent ([`n64/agent`](../../n64/agent/README.md),

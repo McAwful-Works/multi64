@@ -237,6 +237,25 @@
       </div>
     </div>
 
+    <!-- Start opens this when the chosen game's Archipelago client has to be changed before it can
+         reach AP64 (play_client_setup). Every other game never sees it. -->
+    <div class="dialog-backdrop" id="client-fix-backdrop" hidden></div>
+    <div class="dialog" id="client-fix-dialog" role="dialog" aria-modal="true" aria-labelledby="client-fix-title" hidden>
+      <div class="dialog-panel">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="client-fix-title">The client needs a one-time fix</h2>
+        </div>
+        <div class="dialog-body">
+          <p class="hint" id="client-fix-text"></p>
+          <p class="hint dev-only" id="client-fix-path"></p>
+        </div>
+        <div class="dialog-footer">
+          <button type="button" id="btn-client-fix-cancel" class="btn">Cancel</button>
+          <button type="button" id="btn-client-fix-go" class="btn primary">Fix and start</button>
+        </div>
+      </div>
+    </div>
+
     <div class="dialog-backdrop" id="games-backdrop" hidden></div>
     <div class="dialog" id="games-dialog" role="dialog" aria-modal="true" aria-labelledby="games-dialog-title" hidden>
       <div class="dialog-panel">
