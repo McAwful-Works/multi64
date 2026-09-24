@@ -1,0 +1,109 @@
+# Donkey Kong 64 (US), as the DK64 randomizer builds it: dk64.apworld v1.5.8, ROM made on
+# dk64randomizer.com. Names from Rainchus/Donkey-Kong-64-Recompiled DK64Syms/dump.toml.
+# Every pinned range was checked byte-for-byte between the seed ROM and a live RAM dump.
+# Two mappings: boot segment vram = rom + 0x7FFFF400; main code (shipped uncompressed by
+# the randomizer, past 32 MB) vram = rom + 0x7E5C1540. Measurements: #309.
+# Blobs: crates/ap64-core/agent/build.sh dk64 (see BUILD_REV).
+#
+# Pinned to dk64.apworld v1.5.8. The randomizer patches the game's main code in place and
+# moves its own region between releases, so a new release is expected to fail these checks
+# and need measuring again (#309 has how).
+
+id = "dk64"
+name = "Donkey Kong 64"
+release = "US"
+game_code = "NDOE"
+version = 0
+cic = "6105"
+randomizer = "the DK64 randomizer's Archipelago world"
+connector = "dk64"        # native: AP64 answers the DK64 Client as RetroArch (ap64-connector dk64)
+
+[agent]
+image = "agent.bin"
+rom = 0x3402000         # past the 52 MB image the randomizer produces (ends 0x34013A8)
+vram = 0x805BA000       # in the 32 KB the heap-top write below takes from the heap
+min_ram = 0x800000      # DK64 does not boot without an Expansion Pak anyway
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0x203AF8C          # 0x805FC4CC in the frame loop: jal func_global_asm_8070DD44
+equals = 0x0C1C3751
+hint = "The randomizer changed DK64's frame loop. It already hooks the same loop at 0x805FC3FC (that is expected); this pin is the call five instructions after it."
+
+[[require]]
+kind = "word"
+label = "Heap top (lui)"
+at = 0x204EFD0          # 0x80610510 in func_global_asm_80610388: lui t5, 0x805C
+equals = 0x3C0D805C
+hint = "The heap's top is no longer 0x805C1040, which is where the randomizer's own code starts. The randomizer's region moved; the carve-out the agent lives in has to be re-measured."
+
+[[require]]
+kind = "word"
+label = "Heap top (ori)"
+at = 0x204EFD8          # 0x80610518: ori t5, t5, 0x1040
+equals = 0x35AD1040
+hint = "The heap's top is no longer 0x805C1040. Re-measure the carve-out before moving it."
+
+[[require]]
+kind = "sha1"
+label = "Space for the hook stub"
+at = 0xDD80             # 0x8000D180: __osRepairPackId, __osCheckPackId, __osGetId
+len = 0x660
+sha1 = "7c5fc61a6189fd92245dad3896b0efbf3b0f2cf1"
+hint = "Something now occupies the dead Controller Pak code the stub goes in. Re-run the dead-space count before moving it."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0x214C804          # func_global_asm_8070DD44
+len = 0x98
+sha1 = "305d22d293fa8e18a92e49a99731e2d18e5b0d76"
+hint = "The randomizer changed the code the hook passes each frame through to."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine"
+at = 0x203A210          # func_global_asm_805FB750 -- (romOffset, size, dest), base at 0x8000DDCC
+len = 0x94
+sha1 = "f24e90c61c47065d95239f95d6001b92ef37200f"
+hint = "The randomizer changed the routine the stub loads the agent with."
+
+[[require]]
+kind = "sha1"
+label = "PI DMA through the manager"
+at = 0x7B10             # osPiStartDma, 0x80006F10, called by the copy routine
+len = 0x10C
+sha1 = "019726997b80f8b221de15d69eb71a43e42467ed"
+hint = "libultra's osPiStartDma changed under the copy routine."
+
+[[require]]
+kind = "sha1"
+label = "I-cache invalidate"
+at = 0x5E60             # osInvalICache, 0x80005260
+len = 0x80
+sha1 = "7a08747cbcfbb94a18ecc13357d1762825f73f8b"
+hint = "The copy routine handles the data cache only, so the stub must invalidate I-cache itself or run stale lines. Emulators do not model this; a console does."
+
+# No IPL3 restore: the randomizer leaves 0x40..0x1000 byte-identical to retail (CIC-6105).
+# The stub lands inside the checksummed first megabyte, so the patcher recomputes the CRC.
+
+[[write]]
+kind = "imm"
+label = "Heap top lowered 32 KB for the agent"
+hi = 0x204EFD0
+lo = 0x204EFD8
+value = 0x805B9040      # was 0x805C1040; the heap's low point measured 739 KB with this
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0xDD80
+file = "stub.bin"
+max_len = 0x660
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0x203AF8C
+target = 0x8000D180

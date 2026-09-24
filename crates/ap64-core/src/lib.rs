@@ -59,6 +59,7 @@ pub fn builtin() -> Result<Vec<Bundle>, String> {
         builtin!("k64", ["agent.bin", "stub.bin"]),
         builtin!("bt", ["agent.bin", "stub.bin"]),
         builtin!("mk64", ["agent.bin", "stub.bin"]),
+        builtin!("dk64", ["agent.bin", "stub.bin"]),
     ];
     bundles.sort_by_key(|b| library_key(&b.profile.name));
     Ok(bundles)
@@ -165,6 +166,7 @@ mod tests {
         ("k64", include_str!("../profiles/k64/layout.env")),
         ("bt", include_str!("../profiles/bt/layout.env")),
         ("mk64", include_str!("../profiles/mk64/layout.env")),
+        ("dk64", include_str!("../profiles/dk64/layout.env")),
         ("cvlod", include_str!("../profiles/cvlod/layout.env")),
     ];
 
@@ -279,6 +281,7 @@ mod tests {
             [
                 "Banjo-Tooie",
                 "Castlevania 64",
+                "Donkey Kong 64",
                 "Kirby 64 - The Crystal Shards",
                 "The Legend of Zelda: Ocarina of Time",
                 "Mario Kart 64",

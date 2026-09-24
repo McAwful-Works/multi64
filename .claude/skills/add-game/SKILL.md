@@ -5,8 +5,9 @@ description: Add a new game to AP64 - checking its Archipelago world is one the 
 
 # Adding a game to AP64
 
-Six games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie and
-Mario Kart 64, with Legacy of Darkness written and held back in `ap64_core::withheld()`.
+Seven games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
+Mario Kart 64 and Donkey Kong 64, with Legacy of Darkness written and held back in
+`ap64_core::withheld()`.
 Each took a day or two, and most of that was spent on things this file now answers.
 
 [`docs/integration/placing-the-agent.md`](../../../docs/integration/placing-the-agent.md)
@@ -39,6 +40,14 @@ CV64, CVLoD, Kirby 64 and Mario Kart 64 all look like this.
 No such import, or a world that ships its own client (Ocarina of Time's OoT Client,
 Banjo-Tooie's Banjo-Tooie Client), means a **forked** connector. Say so and stop; that is a
 separate piece of work, not a profile.
+
+A client with no Lua at all -- one that reads emulator memory itself -- may still be reachable.
+Donkey Kong 64's client does that through EmuLoader, which falls back to RetroArch's Network
+Commands over UDP when no emulator is running, and AP64 answers those natively
+(`ap64-connector`'s `retroarch` module). Find out which emulator protocols the client can
+speak before calling it out of reach, and run the real client against a stand-in on that
+protocol early. That is how the missing `read_bytestring` in DK64's copy of EmuLoader turned
+up, which no reading of the code had caught.
 
 Diddy Kong Racing was dropped at exactly this step, after it was assumed from the game
 rather than checked in the apworld.
@@ -192,6 +201,15 @@ Three tools, three different questions. Use them in this order; see §2 of the g
 | [`ram-usage.lua`](../../../n64/agent/tools/ram-usage.lua) | which 4 KB pages does the game touch? |
 | [`watch-ranges.lua`](../../../n64/agent/tools/watch-ranges.lua) | do *these exact bytes* ever change? |
 | [`ram-bounds.py`](../../../n64/agent/tools/ram-bounds.py) | what addresses **bracket** the region? |
+
+**If the game will not run properly in BizHawk, measure in an emulator its client supports.**
+Donkey Kong 64's client refuses stock BizHawk, which gives the game a 4 KB EEPROM where it
+needs 16 KB, so its RAM, heap and call counts were measured in Project64 3.0.1 with these tools
+ported to its JavaScript API (the ports are not in the repo). Its write and exec hooks fire only
+on the interpreter core, and a changed core takes effect on a ROM reload, not a reset.
+
+**If nothing is free, make room by moving a bound**, as the guide's §2.5 describes. DK64 touches
+all 8 MB; its agent lives in 32 KB taken from the top of the heap.
 
 `ram-bounds.py` exists because untouched-and-unpointed-at is not enough. Legacy of
 Darkness passed both and froze anyway: its heap ends at `0x80400000` normally and

@@ -1,6 +1,6 @@
 [package]
 name = "ap64-connector"
-description = "Run a forked Archipelago connector script against a cart"
+description = "Run an Archipelago connector against a cart: a forked script, or a native one"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -16,3 +16,7 @@ base64 = "0.23"
 # politely -- see `Client::close`. std has no stable way to ask for that.
 socket2 = "0.6"
 sha1 = "0.11"
+# Reads and rewrites dk64.apworld to add the EmuLoader methods DK64's client lacks (see
+# src/dk64.rs). Deflate only, in pure Rust. Held at 4.2: 4.6 needs Rust 1.82, past the
+# workspace's 1.80.
+zip = { version = "~4.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }

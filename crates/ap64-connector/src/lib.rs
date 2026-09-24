@@ -1,9 +1,13 @@
-//! Run a forked Archipelago connector script against a cart.
+//! Run an Archipelago connector against a cart.
 //!
 //! The scripts in `connectors/` are Archipelago's own connectors with the emulator
 //! taken out: they keep the protocol their Archipelago client speaks and call
 //! [`ap64`](#the-ap64-table) for memory. AP64 owns the TCP socket the client connects
 //! to ([`server`]) and hands each line to the script.
+//!
+//! A client with no connector script to fork, one that reads emulator memory itself, is
+//! answered by AP64 directly instead: a [`Native`] connector, which answers RetroArch's
+//! Network Commands from the cart ([`retroarch`]). Donkey Kong 64 is the one ([`dk64`]).
 //!
 //! # The `ap64` table
 //!
@@ -23,6 +27,8 @@
 //! A cart failure (the backend has already retried and reconnected, and given up) is
 //! fatal: it ends the session, even if the script caught the error.
 
+pub mod dk64;
+pub mod retroarch;
 pub mod server;
 
 use std::cell::RefCell;
@@ -109,6 +115,62 @@ pub const BT: Script = Script {
 };
 
 pub const SCRIPTS: &[Script] = &[GENERIC, OOT, BT];
+
+/// A connector that is not a script: AP64 answers the client itself, from the cart.
+#[derive(Debug, Clone, Copy)]
+pub struct Native {
+    pub id: &'static str,
+    /// What it serves, for the user.
+    pub name: &'static str,
+    /// The Archipelago client to run alongside it.
+    pub client: &'static str,
+    pub options: retroarch::Options,
+    /// A change the installed client needs before it can reach AP64, if any.
+    pub client_fix: Option<ClientFix>,
+}
+
+/// Whether an installed Archipelago client can reach AP64.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientState {
+    Ready,
+    /// It cannot yet, and [`ClientFix::apply`] knows how to change that.
+    NeedsFix,
+    /// Not the version the fix was written against; the reason says what was missing.
+    Unrecognized(String),
+}
+
+/// A change made to an installed Archipelago client's own files, because as released it
+/// cannot reach AP64. Only ever applied when asked, and only to a file [`ClientFix::state`]
+/// reports as [`ClientState::NeedsFix`].
+#[derive(Debug, Clone, Copy)]
+pub struct ClientFix {
+    /// The installed file the change is made in.
+    pub file: &'static str,
+    /// Why the client cannot reach AP64 as released, in a clause for the player.
+    pub why: &'static str,
+    /// Where that file is, if it is installed.
+    pub find: fn() -> Option<std::path::PathBuf>,
+    pub state: fn(&[u8]) -> ClientState,
+    /// The file's new contents; an error if it is not one this can fix.
+    pub apply: fn(&[u8]) -> Result<Vec<u8>, String>,
+}
+
+/// Donkey Kong 64's client, answered as RetroArch ([`dk64`]).
+pub const DK64: Native = Native {
+    id: "dk64",
+    name: "Donkey Kong 64 (RetroArch Network Commands)",
+    client: "DK64 Client",
+    options: dk64::OPTIONS,
+    client_fix: Some(ClientFix {
+        file: dk64::APWORLD,
+        why: "Its copy of EmuLoader is missing a method it calls on every loop, so it cannot reach AP64",
+        find: dk64::installed_apworld,
+        state: dk64::client_state,
+        apply: dk64::fix_client,
+    }),
+};
+
+pub const NATIVES: &[Native] = &[DK64];
 
 const LIBS: &[(&str, &str)] = &[
     ("json", include_str!("../connectors/lib/json.lua")),
