@@ -278,6 +278,18 @@ Pin generously in `[[require]]`: the hook site word, a sha1 of the space the stu
 and of every function the stub calls. A pin is what turns "this seed is not the one this
 profile was measured against" into a refusal instead of a crash.
 
+**When the randomizer moves the code between releases, find it instead of pinning its
+offset.** A `[[find]]` names a region by its first word and a sha1, and the seed is refused
+unless exactly one word-aligned place matches. Give it the `vram` the region runs at, and
+every other place in that code can be written by RAM address, as `name@0x8...`; `name+N`
+works too. DK64's main code is the example: the randomizer ships it uncompressed after its
+own data, so its ROM offset moves whenever that data changes size, but the functions in it
+stay at their RAM addresses. Choose a region the randomizer never patches (DK64 uses the
+copy routine its stub already needed pinned), and no write may land inside it, or a
+patched ROM has nothing left to find. `Addr` in `ap64-core`'s `profile.rs` lists the
+forms. Where the code is the game's own and the randomizer leaves its offsets alone
+(CV64, Paper Mario, Kirby 64, Mario Kart 64), fixed offsets are simpler and just as safe.
+
 ## 7. Verify before hardware
 
 ```sh

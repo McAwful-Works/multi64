@@ -16,8 +16,12 @@ use serde::Serialize;
 use sha1::{Digest, Sha1};
 
 use crate::crc::{self, CRC_END, CRC_OFFSET};
-use crate::profile::{parse_hex, ImmValue, Profile, Transform, Write};
+use crate::profile::{parse_hex, Addr, ImmValue, Profile, Require, Transform, Write};
 use crate::rom;
+
+/// Where each of a profile's finds was located in a seed, by name. A find that was not
+/// located, or was located more than once, is absent.
+type Found = HashMap<String, u32>;
 
 /// A profile together with the blobs its writes reference.
 #[derive(Debug, Clone)]
@@ -95,6 +99,64 @@ fn region(rom: &[u8], at: u32, len: usize) -> Option<&[u8]> {
     rom.get(at as usize..at as usize + len)
 }
 
+/// Locate each of the profile's finds in `rom`, with a check for each.
+fn locate(p: &Profile, rom: &[u8]) -> (Vec<Check>, Found) {
+    let mut checks = Vec::new();
+    let mut found = Found::new();
+    for f in &p.find {
+        let len = f.len as usize;
+        let word = f.word.to_be_bytes();
+        let mut hits = Vec::new();
+        for (i, w) in rom.chunks_exact(4).enumerate() {
+            let at = i * 4;
+            if w == word
+                && rom
+                    .get(at..at + len)
+                    .is_some_and(|r| crc::hex(&Sha1::digest(r)) == f.sha1)
+            {
+                hits.push(at);
+                if hits.len() == 2 {
+                    break;
+                }
+            }
+        }
+        let detail = match hits.as_slice() {
+            [] => "not found".to_string(),
+            [at] => match f.vram {
+                Some(vram) => format!("found at 0x{at:X}, which runs at 0x{vram:08X}"),
+                None => format!("found at 0x{at:X}"),
+            },
+            [a, b, ..] => format!("found more than once (0x{a:X}, 0x{b:X})"),
+        };
+        if let [at] = hits.as_slice() {
+            found.insert(f.name.clone(), *at as u32);
+        }
+        checks.push(check(&f.label, hits.len() == 1, detail, &f.hint));
+    }
+    (checks, found)
+}
+
+/// `at` as a ROM offset, if what it is relative to was found.
+fn resolve(p: &Profile, found: &Found, at: &Addr) -> Option<u32> {
+    let (base, offset) = p.place(at).ok()?;
+    let base = match base {
+        None => 0,
+        Some(name) => i64::from(*found.get(name)?),
+    };
+    u32::try_from(base + offset).ok()
+}
+
+/// The label of the find `at` is relative to, for a check that could not be made.
+fn missing(p: &Profile, at: &Addr) -> String {
+    let name = p.place(at).ok().and_then(|(b, _)| b).unwrap_or_default();
+    let label = p
+        .find
+        .iter()
+        .find(|f| f.name == name)
+        .map_or(name, |f| f.label.as_str());
+    format!("not checked: it is placed relative to {label:?}, which was not located")
+}
+
 /// The seed as the profile's checks and writes see it: after its transform, if it has one.
 pub fn prepare<'a>(bundle: &Bundle, rom: &'a [u8]) -> Result<Cow<'a, [u8]>, String> {
     match &bundle.profile.transform {
@@ -108,7 +170,7 @@ pub fn prepare<'a>(bundle: &Bundle, rom: &'a [u8]) -> Result<Cow<'a, [u8]>, Stri
 /// `rom` must already be big-endian.
 pub fn verify(bundle: &Bundle, rom: &[u8]) -> Report {
     match prepare(bundle, rom) {
-        Ok(prepared) => verify_prepared(bundle, &prepared),
+        Ok(prepared) => verify_prepared(bundle, &prepared).0,
         Err(e) => report(
             &bundle.profile,
             vec![check(
@@ -121,7 +183,7 @@ pub fn verify(bundle: &Bundle, rom: &[u8]) -> Report {
     }
 }
 
-fn verify_prepared(bundle: &Bundle, rom: &[u8]) -> Report {
+fn verify_prepared(bundle: &Bundle, rom: &[u8]) -> (Report, Found) {
     let p = &bundle.profile;
     let mut checks = Vec::new();
 
@@ -145,18 +207,26 @@ fn verify_prepared(bundle: &Bundle, rom: &[u8]) -> Report {
         "too small to be an N64 ROM",
     ));
     if rom.len() < CRC_END {
-        return report(p, checks);
+        return (report(p, checks), Found::new());
     }
 
+    let (located, found) = locate(p, rom);
+    checks.extend(located);
+
     for r in &p.require {
+        let (Require::Word { label, at, .. } | Require::Sha1 { label, at, .. }) = r;
+        let Some(at) = resolve(p, &found, at) else {
+            checks.push(check(label, false, missing(p, at), ""));
+            continue;
+        };
         checks.push(match r {
-            crate::profile::Require::Word {
+            Require::Word {
                 label,
-                at,
                 equals,
                 hint,
+                ..
             } => {
-                let found = rom::read_u32(rom, *at as usize);
+                let found = rom::read_u32(rom, at as usize);
                 check(
                     label,
                     found == Some(*equals),
@@ -167,14 +237,14 @@ fn verify_prepared(bundle: &Bundle, rom: &[u8]) -> Report {
                     hint,
                 )
             }
-            crate::profile::Require::Sha1 {
+            Require::Sha1 {
                 label,
-                at,
                 len,
                 sha1,
                 hint,
+                ..
             } => {
-                let found = region(rom, *at, *len as usize).map(|b| crc::hex(&Sha1::digest(b)));
+                let found = region(rom, at, *len as usize).map(|b| crc::hex(&Sha1::digest(b)));
                 check(
                     label,
                     found.as_deref() == Some(sha1.as_str()),
@@ -276,7 +346,7 @@ fn verify_prepared(bundle: &Bundle, rom: &[u8]) -> Report {
         "the randomizer's data reaches where the agent goes",
     ));
 
-    report(p, checks)
+    (report(p, checks), found)
 }
 
 fn report(p: &Profile, checks: Vec<Check>) -> Report {
@@ -332,10 +402,14 @@ fn put(out: &mut Vec<u8>, allowed: &mut Vec<Range<usize>>, at: usize, bytes: &[u
 pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
     let p = &bundle.profile;
     let input = prepare(bundle, rom).map_err(|_| ApplyError::Refused(verify(bundle, rom)))?;
-    let report = verify_prepared(bundle, &input);
+    let (report, found) = verify_prepared(bundle, &input);
     if !report.ok() {
         return Err(ApplyError::Refused(report));
     }
+    // Every find was located, or the report would have failed, so this only fails on a bug.
+    let at = |a: &Addr| {
+        resolve(p, &found, a).ok_or_else(|| ApplyError::Internal(format!("{a} was not placed")))
+    };
     let cic = p.cic().map_err(ApplyError::Internal)?;
     let agent = bundle.blob(&p.agent.image).map_err(ApplyError::Internal)?;
     let region_start = p.agent.region() as usize;
@@ -349,11 +423,11 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
 
     for w in &p.write {
         let (at, bytes) = match w {
-            Write::Blob { at, file, .. } => (
-                *at,
+            Write::Blob { at: a, file, .. } => (
+                at(a)?,
                 bundle.blob(file).map_err(ApplyError::Internal)?.to_vec(),
             ),
-            Write::Jal { at, target, .. } => (*at, jal(*target).to_be_bytes().to_vec()),
+            Write::Jal { at: a, target, .. } => (at(a)?, jal(*target).to_be_bytes().to_vec()),
             Write::Restore { at, bytes, .. } => {
                 (*at, parse_hex(bytes).map_err(ApplyError::Internal)?)
             }
@@ -438,8 +512,10 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
             // The low instruction decides how the value splits. addiu sign-extends its
             // immediate, so the lui must carry it; ori zero-extends, so it must not. Splitting
             // an ori pair the addiu way loads a value 0x10000 too high whenever bit 15 is set.
+            let hi = at(hi)?;
+            let lo = lo.as_ref().map(at).transpose()?;
             let (hi16, lo16) = match lo {
-                Some(l) => match rom::read_u32(&out, *l as usize).map(|w| w >> 26) {
+                Some(l) => match rom::read_u32(&out, l as usize).map(|w| w >> 26) {
                     Some(0x09) => ((v.wrapping_add(0x8000) >> 16) & 0xFFFF, v & 0xFFFF),
                     Some(0x0D) => (v >> 16, v & 0xFFFF),
                     _ => {
@@ -455,7 +531,7 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
                     )))
                 }
             };
-            for (at, imm) in std::iter::once((*hi, hi16)).chain(lo.map(|l| (l, lo16))) {
+            for (at, imm) in std::iter::once((hi, hi16)).chain(lo.map(|l| (l, lo16))) {
                 let old = rom::read_u32(&out, at as usize)
                     .ok_or_else(|| ApplyError::Internal(format!("imm {label:?} past the end")))?;
                 let word = (old & 0xFFFF_0000) | imm;
@@ -563,12 +639,16 @@ pub fn has_agent(bundle: &Bundle, rom: &[u8]) -> bool {
         Some(a) => a,
         None => return false,
     };
+    let (_, found) = locate(p, rom);
+    let at = |a: &Addr| resolve(p, &found, a);
     let writes_hold = p.write.iter().all(|w| match w {
-        Write::Jal { at, target, .. } => rom::read_u32(rom, *at as usize) == Some(jal(*target)),
-        Write::Blob { at, file, .. } => bundle
+        Write::Jal { at: a, target, .. } => {
+            at(a).and_then(|a| rom::read_u32(rom, a as usize)) == Some(jal(*target))
+        }
+        Write::Blob { at: a, file, .. } => bundle
             .blobs
             .get(file)
-            .is_some_and(|b| region(rom, *at, b.len()) == Some(b.as_slice())),
+            .is_some_and(|b| at(a).and_then(|a| region(rom, a, b.len())) == Some(b.as_slice())),
         Write::Restore { .. } | Write::Copy { .. } | Write::Imm { .. } => true,
     });
     writes_hold && region(rom, p.agent.rom, agent.len()) == Some(agent.as_slice())
@@ -727,6 +807,129 @@ target = 0x80019C00
         assert_eq!(rom::read_u32(&out, ORI + 4), Some(0x35AD_9040));
         assert_eq!(rom::read_u32(&out, ADDIU), Some(0x3C0D_805C));
         assert_eq!(rom::read_u32(&out, ADDIU + 4), Some(0x25AD_9040));
+    }
+
+    /// Where `seed_with_code` puts the found region by default. Its bytes are 0xFE, which
+    /// `seed`'s filler never produces, so the region is unique unless a test copies it.
+    const CODE: usize = 0x5000;
+
+    /// `seed`, with a 0x40-byte region at `at` and a hook word 0x100 past its start: the
+    /// shape of code a randomizer moves as a whole between releases.
+    fn seed_with_code(at: usize) -> Vec<u8> {
+        let mut rom = seed();
+        rom[at..at + 0x40].fill(0xFE);
+        rom::write_u32(&mut rom, at + 0x100, 0x0C00_1234);
+        rom
+    }
+
+    /// A profile that finds the region and gives the hook by the RAM address it runs at.
+    fn found_bundle(rom: &[u8]) -> Bundle {
+        let sha = crc::hex(&Sha1::digest([0xFE; 0x40]));
+        let extra = format!(
+            r#"
+[[find]]
+name = "code"
+label = "Code"
+word = 0xFEFEFEFE
+len = 0x40
+sha1 = "{sha}"
+vram = 0x80100000
+[[require]]
+kind = "word"
+label = "Found hook"
+at = "code@0x80100100"
+equals = 0x0C001234
+[[write]]
+kind = "jal"
+label = "Found jal"
+at = "code@0x80100100"
+target = 0x80019C00
+"#
+        );
+        bundle_with(4, rom, &extra)
+    }
+
+    #[test]
+    fn a_find_places_checks_and_writes_wherever_the_seed_has_it() {
+        for at in [CODE, CODE + 0x800] {
+            let rom = seed_with_code(at);
+            let b = found_bundle(&rom);
+            let out = apply(&b, &rom).unwrap().rom;
+            assert_eq!(
+                rom::read_u32(&out, at + 0x100),
+                Some(0x0C00_6700),
+                "at 0x{at:X}"
+            );
+            assert!(has_agent(&b, &out) && !has_agent(&b, &rom), "at 0x{at:X}");
+        }
+    }
+
+    #[test]
+    fn a_find_not_located_or_located_twice_is_refused() {
+        let rom = seed_with_code(CODE);
+        let b = found_bundle(&rom);
+
+        let mut gone = rom.clone();
+        gone[CODE] = 0;
+        assert_eq!(refused(&b, &gone), ["Code", "Found hook"]);
+
+        let mut twice = rom.clone();
+        twice.copy_within(CODE..CODE + 0x40, 0x9000);
+        assert_eq!(refused(&b, &twice), ["Code", "Found hook"]);
+        let report = verify(&b, &twice);
+        assert!(report.checks[2].detail.contains("more than once"));
+    }
+
+    #[test]
+    fn a_found_place_the_profile_cannot_pin_is_a_profile_error() {
+        let text = |extra: &str| {
+            let sha = crc::hex(&Sha1::digest([0xFE; 0x40]));
+            format!(
+                r#"
+id = "t"
+name = "T"
+release = "US"
+game_code = "NTSE"
+version = 0
+cic = "6102"
+randomizer = "none"
+connector = "generic"
+[agent]
+image = "a"
+rom = 0x100000
+vram = 0
+min_ram = 0
+[[find]]
+name = "code"
+label = "Code"
+word = 0xFEFEFEFE
+len = 0x40
+sha1 = "{sha}"
+{extra}"#
+            )
+        };
+        let err = |extra: &str| Profile::parse(&text(extra)).unwrap_err();
+        // Writing over the region would leave a patched ROM with nothing to find.
+        assert!(err(
+            "[[require]]\nkind = \"word\"\nlabel = \"w\"\nat = \"code+0x3C\"\nequals = 0\n\
+             [[write]]\nkind = \"jal\"\nlabel = \"j\"\nat = \"code+0x3C\"\ntarget = 0\n"
+        )
+        .contains("inside find"));
+        // A RAM address means nothing without the find saying where its region runs.
+        assert!(err(
+            "[[require]]\nkind = \"word\"\nlabel = \"w\"\nat = \"code@0x80100100\"\nequals = 0\n"
+        )
+        .contains("gives no vram"));
+        assert!(
+            err("[[require]]\nkind = \"word\"\nlabel = \"w\"\nat = \"other+4\"\nequals = 0\n")
+                .contains("names no find")
+        );
+        // A pin relative to one place does not cover a write at the same number elsewhere.
+        assert!(err(
+            "[[require]]\nkind = \"word\"\nlabel = \"w\"\nat = \"code+0x100\"\nequals = 0\n\
+             [[write]]\nkind = \"jal\"\nlabel = \"j\"\nat = 0x100\ntarget = 0\n"
+        )
+        .contains("not covered"));
     }
 
     #[test]

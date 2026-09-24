@@ -64,9 +64,11 @@ on 2026-09-22, Donkey Kong 64 on 2026-09-23):
   AP64's own data folder (`%APPDATA%\dev.multi64.ap64\backups`). It checks again at every Start,
   because the world replaces itself when the randomizer updates. DK64 uses all 8 MB of RAM, so
   the agent lives in 32 KB taken from the top of the game's heap; the heap's low point measured
-  739 KB free with the change. The randomizer rewrites the game's main code in place and moves
-  its own region between releases, so expect a new randomizer release to be refused until it has
-  been measured again (#309). Played with checks going out and items arriving, among them a
+  739 KB free with the change. The randomizer moves the game's main code around in the ROM
+  between releases, so AP64 finds it in each seed instead of expecting it at one offset, and a
+  release that only moves it still patches. A release that changes the functions AP64 hooks, or
+  moves where the randomizer's own code begins (the heap's top), is refused until it has been
+  measured again (#309, #312). Played with checks going out and items arriving, among them a
   Golden Banana and the Donkey kong.
 
 Written and working, but **not offered in the app**, because the game cannot be played
@@ -133,6 +135,9 @@ The seed is checked before anything is written. AP64 refuses it if any of these 
 - The code the agent hooks into, and the space its stub goes in, must hash to exactly
   what the profile was measured against. Some randomizer options move that code; the
   check says which.
+- Where a randomizer moves the game's code between releases, the profile locates it by the
+  same kind of hash, and it must be found exactly once. Everything placed relative to it is
+  then checked where it was found.
 - Nothing of the seed may lie where the agent is appended.
 - After any known boot-code changes are undone, the boot code must be a retail one, so
   the header checksum can be recomputed.
