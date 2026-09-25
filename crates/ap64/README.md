@@ -50,7 +50,8 @@ on 2026-09-22, Donkey Kong 64 on 2026-09-23):
   the block the randomizer appends, and the agent is in RAM before the first frame because it
   sits inside the part of that block the randomizer's boot code already copies there. That
   block is the randomizer's own code, so a release that changes it is refused until it has
-  been measured again (#312). Played with a 1,077-location seed.
+  been measured again (#312). Played with a 1,077-location seed through a forked connector
+  script, which this replaced; the native path has not yet been played on a console (#319).
 - **Mario Kart 64 (US)**, Archipelago's Mario Kart 64 world, through BizHawk Client. The agent
   lives in the Expansion Pak and stays out of the way without one. Whether the world itself
   runs without a Pak is not yet known: its own code sits where the Pak is, and no console has

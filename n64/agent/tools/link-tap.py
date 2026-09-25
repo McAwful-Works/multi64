@@ -30,7 +30,6 @@ AP64 binds the first free port in its script's range, so this takes the first on
 forwards to the second. Start it BEFORE AP64:
 
     python link-tap.py                  # generic/BizHawk Client games: 43055 -> 43056
-    python link-tap.py --listen 21221 --upstream 21222     # Banjo-Tooie
     python link-tap.py --listen 28921 --upstream 28922     # Ocarina of Time
 
 then start AP64 (it lands on the upstream port) and the client (it finds this one). Writes
