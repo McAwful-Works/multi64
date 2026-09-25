@@ -142,7 +142,11 @@ The seed is checked before anything is written. AP64 refuses it if any of these 
   then checked where it was found.
 - A constant a randomizer moves between releases must load a value in the range the profile
   accepts, with the instructions that load it unchanged.
-- Nothing of the seed may lie where the agent is appended.
+- Nothing of the seed may lie where the agent is appended, and the agent must end within the
+  64 MiB a cart holds. The agent goes at the offset its profile was tested at, and a seed whose
+  data reaches that far gets it past the data instead, with the stub told where. Banjo-Tooie
+  and Ocarina of Time are the exceptions: the game's own loader puts their agent in place, so a
+  seed that reaches it is refused.
 - After any known boot-code changes are undone, the boot code must be a retail one, so
   the header checksum can be recomputed.
 

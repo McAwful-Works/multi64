@@ -16,7 +16,7 @@ use serde::Serialize;
 use sha1::{Digest, Sha1};
 
 use crate::crc::{self, CRC_END, CRC_OFFSET};
-use crate::profile::{parse_hex, Addr, ImmValue, Profile, Require, Transform, Write};
+use crate::profile::{imm_value, parse_hex, Addr, ImmValue, Profile, Require, Transform, Write};
 use crate::rom;
 
 /// Where each of a profile's finds was located in a seed, by name. A find that was not
@@ -286,7 +286,7 @@ fn verify_prepared(bundle: &Bundle, rom: &[u8]) -> (Report, Found) {
                         ),
                     ),
                     Some((h, l)) => {
-                        let v = crate::profile::imm_value(h, l);
+                        let v = imm_value(h, l);
                         let ok = (*min..=*max).contains(&v);
                         (
                             ok,
@@ -377,20 +377,69 @@ fn verify_prepared(bundle: &Bundle, rom: &[u8]) -> (Report, Found) {
         "the output would carry boot code whose checksum this tool cannot produce",
     ));
 
-    let agent_rom = p.agent.region() as usize;
-    let tail = rom.get(agent_rom..).unwrap_or(&[]);
-    let last_data = rom
-        .iter()
-        .rposition(|&b| b != 0x00 && b != 0xFF)
-        .map_or(0, |i| i + 1);
+    let agent_rom = agent_place(p, rom);
+    let last_data = data_end(rom);
+    let agent_end =
+        agent_rom + bundle.blobs.get(&p.agent.image).map_or(0, Vec::len) + p.agent.bss as usize;
+    let fits = p.transform.is_some() || agent_end <= ROM_LIMIT;
     checks.push(check(
         "Room for the agent",
-        tail.iter().all(|&b| b == 0x00 || b == 0xFF),
-        format!("seed data ends at 0x{last_data:X}; the agent goes at 0x{agent_rom:X}"),
-        "the randomizer's data reaches where the agent goes",
+        rom.get(agent_rom..)
+            .unwrap_or(&[])
+            .iter()
+            .all(|&b| is_padding(b))
+            && fits,
+        format!(
+            "seed data ends at 0x{last_data:X}; the agent goes at 0x{agent_rom:X}{}",
+            if agent_rom == p.agent.rom as usize {
+                String::new()
+            } else {
+                format!(", past the data, since it reaches 0x{:X}", p.agent.rom)
+            }
+        ),
+        if !fits {
+            "the seed leaves no room for the agent in the 64 MiB a cart can hold"
+        } else {
+            "the randomizer's data reaches where the agent goes"
+        },
     ));
 
     (report(p, checks), found)
+}
+
+/// Most ROM a cart holds: the SummerCart64's 64 MiB. The agent must end within it.
+const ROM_LIMIT: usize = 0x400_0000;
+
+/// The boundary an agent that moves is placed on, past the seed's data.
+const MOVED_ALIGN: usize = 0x1000;
+
+fn is_padding(b: u8) -> bool {
+    b == 0x00 || b == 0xFF
+}
+
+/// Where the seed's data ends: just past its last byte that is not padding.
+fn data_end(rom: &[u8]) -> usize {
+    rom.iter()
+        .rposition(|&b| !is_padding(b))
+        .map_or(0, |i| i + 1)
+}
+
+/// Where the agent goes in `rom`: the profile's offset, unless the profile lets the agent
+/// move and the seed's data reaches that offset, when it goes at the first 4 KiB boundary
+/// past the data. A profile's offset where the seed leaves room keeps outputs that have run
+/// on a console byte-identical.
+fn agent_place(p: &Profile, rom: &[u8]) -> usize {
+    let usual = p.agent.region() as usize;
+    let clear = rom
+        .get(usual..)
+        .unwrap_or(&[])
+        .iter()
+        .all(|&b| is_padding(b));
+    if clear || p.agent_rom_imm().is_none() {
+        usual
+    } else {
+        data_end(rom).next_multiple_of(MOVED_ALIGN)
+    }
 }
 
 fn report(p: &Profile, checks: Vec<Check>) -> Report {
@@ -456,7 +505,7 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
     };
     let cic = p.cic().map_err(ApplyError::Internal)?;
     let agent = bundle.blob(&p.agent.image).map_err(ApplyError::Internal)?;
-    let region_start = p.agent.region() as usize;
+    let region_start = agent_place(p, &input);
     let mut out = input.to_vec();
     out.truncate(region_start);
     out.resize(region_start, 0);
@@ -495,7 +544,13 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
         });
     }
 
-    let agent_rom = p.agent.rom as usize;
+    // An agent that can move has no region before it (profile.rs refuses one), so it goes
+    // exactly where the region starts.
+    let agent_rom = if p.agent_rom_imm().is_some() {
+        region_start
+    } else {
+        p.agent.rom as usize
+    };
     if out.len() > agent_rom {
         return Err(ApplyError::Internal(
             "a write lands where the agent goes".into(),
@@ -507,9 +562,14 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
     let align = if p.agent.dma_slot.is_some() { 16 } else { 4 };
     out.resize(out.len().next_multiple_of(align), 0);
     summary.push(format!(
-        "Agent: {} bytes at {} 0x{agent_rom:X}{}, runs at 0x{:08X}{}",
+        "Agent: {} bytes at {} 0x{agent_rom:X}{}{}, runs at 0x{:08X}{}",
         agent.len(),
         if p.transform.is_some() { "vrom" } else { "ROM" },
+        if agent_rom == p.agent.rom as usize {
+            String::new()
+        } else {
+            " (past the seed's data)".to_string()
+        },
         if p.agent.bss > 0 {
             format!(" with {} bytes of BSS", p.agent.bss)
         } else {
@@ -551,6 +611,7 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
             let v = match value {
                 ImmValue::Const(v) => *v,
                 ImmValue::Named(n) if n == "region_start" => region_start as u32,
+                ImmValue::Named(n) if n == "agent_rom" => agent_rom as u32,
                 ImmValue::Named(_) => region_size,
             };
             // The low instruction decides how the value splits. addiu sign-extends its
@@ -685,17 +746,43 @@ pub fn has_agent(bundle: &Bundle, rom: &[u8]) -> bool {
     };
     let (_, found) = locate(p, rom);
     let at = |a: &Addr| resolve(p, &found, a);
+    // Words an imm write set, which a blob holding them no longer matches its file at.
+    let rewritten: Vec<u32> = p
+        .write
+        .iter()
+        .flat_map(|w| match w {
+            Write::Imm { hi, lo, .. } => std::iter::once(hi).chain(lo).collect(),
+            _ => Vec::new(),
+        })
+        .filter_map(at)
+        .collect();
     let writes_hold = p.write.iter().all(|w| match w {
         Write::Jal { at: a, target, .. } => {
             at(a).and_then(|a| rom::read_u32(rom, a as usize)) == Some(jal(*target))
         }
-        Write::Blob { at: a, file, .. } => bundle
-            .blobs
-            .get(file)
-            .is_some_and(|b| at(a).and_then(|a| region(rom, a, b.len())) == Some(b.as_slice())),
+        Write::Blob { at: a, file, .. } => match (at(a), bundle.blobs.get(file)) {
+            (Some(a), Some(b)) => region(rom, a, b.len()).is_some_and(|r| {
+                r.chunks(4)
+                    .zip(b.chunks(4))
+                    .enumerate()
+                    .all(|(i, (r, b))| r == b || rewritten.contains(&(a + 4 * i as u32)))
+            }),
+            _ => false,
+        },
         Write::Restore { .. } | Write::Copy { .. } | Write::Imm { .. } => true,
     });
-    writes_hold && region(rom, p.agent.rom, agent.len()) == Some(agent.as_slice())
+    // An agent that can move is wherever the stub was told it is.
+    let agent_rom = match p.agent_rom_imm() {
+        None => Some(p.agent.rom),
+        Some((hi, lo)) => {
+            let word = |a: &Addr| at(a).and_then(|a| rom::read_u32(rom, a as usize));
+            match lo {
+                None => word(hi).map(|h| h << 16),
+                Some(lo) => word(hi).zip(word(lo)).map(|(h, l)| imm_value(h, l)),
+            }
+        }
+    };
+    writes_hold && agent_rom.and_then(|a| region(rom, a, agent.len())) == Some(agent.as_slice())
 }
 
 #[cfg(test)]
@@ -1025,6 +1112,52 @@ sha1 = "{sha}"
         use crate::profile::imm_value;
         assert_eq!(imm_value(0x3C0D_805C, 0x25AD_9040), 0x805B_9040);
         assert_eq!(imm_value(0x3C0D_805B, 0x35AD_9040), 0x805B_9040);
+    }
+
+    /// A profile whose stub loads the agent's ROM offset with `lui a0`/`addiu a0` at its
+    /// start, and tells it where the agent went.
+    fn moving_bundle(rom: &[u8]) -> Bundle {
+        let extra = format!(
+            "[[write]]\nkind = \"imm\"\nlabel = \"Where\"\nhi = {STUB}\nlo = {}\nvalue = \"agent_rom\"\n",
+            STUB + 4
+        );
+        let mut b = bundle_with(8, rom, &extra);
+        let pair = [
+            0x3C04_0000 | (AGENT as u32 >> 16),
+            0x2484_0000 | (AGENT as u32 & 0xFFFF),
+        ];
+        b.blobs.insert(
+            "stub.bin".into(),
+            pair.iter().flat_map(|w| w.to_be_bytes()).collect(),
+        );
+        b
+    }
+
+    #[test]
+    fn an_agent_that_can_move_stays_put_when_the_seed_leaves_room() {
+        let rom = seed();
+        let b = moving_bundle(&rom);
+        let out = apply(&b, &rom).unwrap().rom;
+        assert_eq!(out[AGENT..AGENT + 0x1103], [0x11; 0x1103]);
+        assert_eq!(out[STUB..STUB + 8], b.blobs["stub.bin"][..]);
+        assert!(has_agent(&b, &out));
+    }
+
+    #[test]
+    fn an_agent_that_can_move_goes_past_data_where_it_would_have_gone() {
+        let mut rom = seed();
+        rom[AGENT + 0x1_0000] = 0x42;
+        let b = moving_bundle(&rom);
+        let out = apply(&b, &rom).unwrap().rom;
+        const MOVED: usize = 0x19_1000; // the first 4 KiB boundary past 0x190000
+        assert_eq!(out[AGENT + 0x1_0000], 0x42, "the seed's data is kept");
+        assert_eq!(out[MOVED..MOVED + 0x1103], [0x11; 0x1103]);
+        // lui a0, 0x19 / addiu a0, a0, 0x1000
+        assert_eq!(rom::read_u32(&out, STUB), Some(0x3C04_0019));
+        assert_eq!(rom::read_u32(&out, STUB + 4), Some(0x2484_1000));
+        assert!(has_agent(&b, &out) && !has_agent(&b, &rom));
+        // A profile whose stub cannot be told still refuses the same seed.
+        assert_eq!(refused(&bundle(4, &rom), &rom), ["Room for the agent"]);
     }
 
     #[test]

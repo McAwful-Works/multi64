@@ -115,3 +115,40 @@ fn dk64_accepts_any_heap_top_that_clears_the_agent() {
         other => panic!("a top inside the agent must be refused, got {other:?}"),
     }
 }
+
+/// A stand-in for a release whose ROM grew into where the agent usually goes: the same seed
+/// with 8 KB of data past its end. The agent goes past that data instead, the stub is told
+/// where, and nothing else in the splice changes.
+#[test]
+#[ignore = "needs ROMs from the environment"]
+fn dk64_puts_its_agent_past_a_seed_that_grew_into_it() {
+    const AGENT: usize = 0x340_2000;
+    const MOVED: usize = 0x340_4000; // the first 4 KiB boundary past the grown data
+    const PAIR: usize = 0xDDD4; // the stub's lui/addiu of the agent's ROM offset
+    let mut seed = std::fs::read(env_path("AP64_DK64_SEED")).unwrap();
+    let expected = std::fs::read(env_path("AP64_DK64_EXPECTED")).unwrap();
+    let original = seed.len();
+    seed.resize(MOVED - 0x800, 0x5A);
+
+    let bundles = ap64_core::builtin().unwrap();
+    let bundle = bundles.iter().find(|b| b.profile.id == "dk64").unwrap();
+    let out = ap64_core::apply(bundle, &seed).unwrap().rom;
+
+    let word = |at: usize| u32::from_be_bytes(out[at..at + 4].try_into().unwrap());
+    assert_eq!((word(PAIR), word(PAIR + 4)), (0x3C04_0340, 0x2484_4000));
+    assert_eq!(out[MOVED..], expected[AGENT..], "the same agent, moved");
+    assert_eq!(
+        out[original..MOVED - 0x800],
+        seed[original..],
+        "the grown data is kept"
+    );
+    // Everything else is the splice that ran on the console: the stub differs only in the pair.
+    let diff: Vec<usize> = (0..original).filter(|&i| out[i] != expected[i]).collect();
+    assert!(
+        diff.iter()
+            .all(|&i| (PAIR..PAIR + 8).contains(&i) || (0x10..0x18).contains(&i)),
+        "differs outside the pair and the checksum: {:X?}",
+        &diff[..diff.len().min(8)]
+    );
+    assert!(ap64_core::has_agent(bundle, &out));
+}
