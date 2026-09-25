@@ -394,6 +394,13 @@ const setDev = async (p, on) => {
   check("and counts the lines", (await text(p, "log-count")) === "2 lines");
   await p.evaluate(() => window.__TAURI_LISTENERS__["play://log"]({ payload: "Archipelago: Got Roast Chicken" }));
   check("and follows the session while open", (await text(p, "log")).includes("Roast Chicken") && (await text(p, "log-count")) === "3 lines");
+  // The log is the window: its box runs to the bottom, less the page's own padding, however
+  // tall the window is made. A card's log box stops at 220px, and once that cap won here.
+  const gap = async () => p.evaluate(() => window.innerHeight - document.getElementById("log").getBoundingClientRect().bottom);
+  const before = await gap();
+  await p.setViewportSize({ width: 620, height: 760 });
+  const after = await gap();
+  check("the log fills the window, whatever its height", before < 20 && after < 20, `${before}px then ${after}px below it`);
   await p.close();
 }
 
