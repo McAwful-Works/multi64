@@ -11,7 +11,7 @@
  * whatever overwrote the image now owns that RAM. The link to the cart falls silent.
  *
  * .data and .bss are left out: they change as the agent runs. A slice keeps the cost of a
- * tick small (256 loads, about 50 us), and a pass over the ~8.5 KB takes about nine ticks.
+ * tick small (256 loads, about 50 us), and a pass over the ~9 KB takes about ten ticks.
  *
  * Symbols from build.sh: AGENT_VRAM, AGENT_CHECK_END (AGENT_VRAM plus the bytes checked,
  * a multiple of 4) and AGENT_CHECK_SUM (their big-endian words added, modulo 2^32).
