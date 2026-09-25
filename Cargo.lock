@@ -104,6 +104,7 @@ dependencies = [
  "ap64-cart",
  "ap64-connector",
  "ap64-core",
+ "chrono",
  "rfd",
  "serde",
  "sysinfo",

@@ -98,7 +98,9 @@ rest (`ap64_core::withheld`), so re-offering it is a one-line change:
 
 Two cards, each a fixed height: dropping a seed, patching it or a session failing changes what
 they say, never how much room they take. Anything that grows — the checklist, the list of writes,
-the session log, the bridge address — opens in a window of its own.
+the session log, the bridge address — opens in a window of its own. Each line of the session log
+starts with the local time it was logged, to line up with the client's log file in
+Archipelago's `logs` folder.
 
 The patch window keeps its detail behind **More details**, which anyone can open: the seed's
 header line and every check, then the SHA-1 and what was written. **Developer details**, the

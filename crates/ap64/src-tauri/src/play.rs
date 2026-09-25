@@ -680,6 +680,9 @@ fn run(
     let log: Log = {
         let app = app.clone();
         Arc::new(move |line: String| {
+            // Local time, to the second, to line up against the client's log file in
+            // Archipelago's `logs` folder, which stamps every line in local time.
+            let line = format!("{} {line}", chrono::Local::now().format("%H:%M:%S"));
             {
                 let mut kept = kept_log.lock().unwrap();
                 if kept.len() == LOG_LINES {
