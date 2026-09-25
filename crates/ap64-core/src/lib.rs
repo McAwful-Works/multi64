@@ -265,6 +265,52 @@ mod tests {
         }
     }
 
+    /// An agent that can move is found by the stub through the pair the profile rewrites, so
+    /// that pair must be the one the build filled with AGENT_ROM. A wrong offset would rewrite
+    /// some other instruction and leave the stub loading from the old place.
+    #[test]
+    fn a_moving_agent_rewrites_the_pair_the_stub_loads_it_by() {
+        let mut bundles = builtin().unwrap();
+        bundles.extend(withheld().unwrap());
+        let mut seen = 0;
+        for b in bundles.iter() {
+            let p = &b.profile;
+            let Some((profile::Addr::Rom(hi), Some(profile::Addr::Rom(lo)))) = p.agent_rom_imm()
+            else {
+                assert!(
+                    p.agent_rom_imm().is_none(),
+                    "{}: pair not at fixed offsets",
+                    p.id
+                );
+                continue;
+            };
+            let stub_at = p
+                .write
+                .iter()
+                .find_map(|w| match w {
+                    profile::Write::Blob {
+                        at: profile::Addr::Rom(at),
+                        ..
+                    } => Some(*at),
+                    _ => None,
+                })
+                .expect("the stub is at a fixed offset");
+            let w = stub_words(b);
+            let word = |at: u32| w[((at - stub_at) / 4) as usize];
+            assert_eq!(
+                profile::imm_value(word(*hi), word(*lo)),
+                layout(layout_for(&p.id), "AGENT_ROM"),
+                "{}: the pair at 0x{hi:X} does not load AGENT_ROM",
+                p.id
+            );
+            seen += 1;
+        }
+        assert_eq!(
+            seen, 6,
+            "every profile whose stub copies the agent lets it move"
+        );
+    }
+
     /// The profile must describe the blobs it carries: the numbers in profile.toml are
     /// typed by hand, layout.env is written by the build that linked the blobs.
     /// The games list is in library order: a leading article files under the next word.

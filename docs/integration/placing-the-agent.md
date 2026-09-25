@@ -211,6 +211,12 @@ size, so nothing after it moves.
   the old end is safe; round the new size to a 4-byte boundary. The SummerCart64 maps up to 64 MiB.
 - **Not in padding a patch may grow into.** Patches that recompress files or append per-item data
   grow with options and seeds. Leave margin, or append past the end.
+- **Let AP64 move it when a seed grows.** A stub that builds `AGENT_ROM` with a `lui`/`addiu`
+  pair can be told where the agent went. Give the profile an `imm` write of `"agent_rom"` on that
+  pair, and AP64 keeps `agent.rom` whenever the seed leaves room there; when the seed's data
+  reaches it, the agent goes at the first 4 KiB boundary past the data, and the pair says so.
+  This works only where the stub copies the agent itself. An agent loaded by the game's own
+  loader, as in Banjo-Tooie and Ocarina of Time, is where that loader puts it.
 
 ## 5. Build and splice
 

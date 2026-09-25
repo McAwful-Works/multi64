@@ -57,7 +57,9 @@ pub enum Transform {
 pub struct Agent {
     /// Blob file name in the profile directory.
     pub image: String,
-    /// ROM offset the image is written at.
+    /// ROM offset the image is written at. For a profile whose stub is told where the agent
+    /// is (an `imm` write of `"agent_rom"`), this is where it goes when the seed leaves room
+    /// there; a seed whose data reaches it gets the agent past its data instead.
     pub rom: u32,
     /// Start of the ROM this profile appends (default `rom`). Nothing of the seed may lie at
     /// or past it, and writes there need no check: the bytes are all ours.
@@ -127,7 +129,8 @@ impl std::fmt::Display for Addr {
 #[serde(untagged)]
 pub enum ImmValue {
     Const(u32),
-    /// `"region_start"` (the appended file's vrom) or `"region_size"` (its length).
+    /// `"region_start"` (the appended file's vrom), `"region_size"` (its length), or
+    /// `"agent_rom"` (where this seed's agent went).
     Named(String),
 }
 
@@ -384,7 +387,7 @@ impl Profile {
                         }
                     }
                     if let ImmValue::Named(n) = value {
-                        if n != "region_start" && n != "region_size" {
+                        if !["region_start", "region_size", "agent_rom"].contains(&n.as_str()) {
                             return Err(format!("imm {:?}: unknown value {n:?}", w.label()));
                         }
                     }
@@ -392,7 +395,37 @@ impl Profile {
                 _ => {}
             }
         }
+        // An agent that moves has nothing appended before it for other writes to rely on.
+        if profile.agent_rom_imm().is_some()
+            && (profile.agent.region.is_some()
+                || profile.agent.dma_slot.is_some()
+                || profile.transform.is_some()
+                || profile
+                    .write
+                    .iter()
+                    .any(|w| matches!(w, Write::Copy { .. })))
+        {
+            return Err(
+                "an agent_rom imm cannot be combined with agent.region, dma_slot, a transform \
+                 or a copy"
+                    .into(),
+            );
+        }
         Ok(profile)
+    }
+
+    /// The `lui` (and `addiu` or `ori`) that tell the stub where the agent is in the ROM, if
+    /// the profile lets the agent move.
+    pub fn agent_rom_imm(&self) -> Option<(&Addr, Option<&Addr>)> {
+        self.write.iter().find_map(|w| match w {
+            Write::Imm {
+                hi,
+                lo,
+                value: ImmValue::Named(n),
+                ..
+            } if n == "agent_rom" => Some((hi, lo.as_ref())),
+            _ => None,
+        })
     }
 
     pub fn cic(&self) -> Result<Cic, String> {

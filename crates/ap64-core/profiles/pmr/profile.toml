@@ -54,6 +54,16 @@ at = 0xB0E0
 file = "stub.bin"
 max_len = 0x320
 
+# The stub's lui/addiu of AGENT_ROM (stub + 0x4C). It keeps agent.rom when the seed
+# leaves room there; when the seed's data reaches it, the agent goes past the data and
+# this tells the stub where.
+[[write]]
+kind = "imm"
+label = "Where the agent is, for the stub"
+hi = 0xB12C
+lo = 0xB130
+value = "agent_rom"
+
 [[write]]
 kind = "jal"
 label = "Frame hook"

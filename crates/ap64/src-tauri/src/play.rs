@@ -453,8 +453,19 @@ fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<String, Issue> {
     }
     if found_hooks {
         let image = &bundle.blobs[&p.agent.image];
+        // An agent that can move is wherever the stub on the cart was told it is.
+        let agent_rom = match p.agent_rom_imm() {
+            Some((Addr::Rom(hi), Some(Addr::Rom(lo)))) if table.is_none() => {
+                let got = cart
+                    .read_rom_many(&[(*hi, 4), (*lo, 4)])
+                    .map_err(|e| Issue::plain(e.to_string()))?;
+                let word = |b: &[u8]| u32::from_be_bytes(b[..4].try_into().unwrap());
+                ap64_core::profile::imm_value(word(&got[0]), word(&got[1]))
+            }
+            _ => p.agent.rom,
+        };
         let at = match &table {
-            None => p.agent.rom,
+            None => agent_rom,
             Some(t) => rom_address(t, p.agent.rom).ok_or_else(|| {
                 without(format!(
                     "the file holding the agent at 0x{:X} is still compressed",
