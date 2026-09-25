@@ -152,6 +152,50 @@ pub enum Require {
         #[serde(default)]
         hint: String,
     },
+    /// A `lui` at `hi` and an `addiu` or `ori` at `lo` load a value within `min..=max`.
+    /// Both instructions are pinned apart from their immediates: `hi_word` and `lo_word` are
+    /// them with the immediate zeroed. For a constant a randomizer moves between releases,
+    /// where any value in a range is safe.
+    Imm {
+        label: String,
+        hi: Addr,
+        lo: Addr,
+        hi_word: u32,
+        lo_word: u32,
+        min: u32,
+        max: u32,
+        #[serde(default)]
+        hint: String,
+    },
+}
+
+impl Require {
+    pub fn label(&self) -> &str {
+        match self {
+            Require::Word { label, .. }
+            | Require::Sha1 { label, .. }
+            | Require::Imm { label, .. } => label,
+        }
+    }
+
+    /// Every place the check reads, each with its length.
+    pub fn places(&self) -> Vec<(&Addr, u32)> {
+        match self {
+            Require::Word { at, .. } => vec![(at, 4)],
+            Require::Sha1 { at, len, .. } => vec![(at, *len)],
+            Require::Imm { hi, lo, .. } => vec![(hi, 4), (lo, 4)],
+        }
+    }
+}
+
+/// The value a `lui` and an `addiu` or `ori` load together. `addiu` sign-extends.
+pub fn imm_value(hi: u32, lo: u32) -> u32 {
+    let low = if lo >> 26 == 0x09 {
+        lo as u16 as i16 as i32 as u32
+    } else {
+        lo & 0xFFFF
+    };
+    (hi << 16).wrapping_add(low)
 }
 
 /// Something written into the seed.
@@ -240,8 +284,28 @@ impl Profile {
             }
         }
         for r in &profile.require {
-            let (Require::Word { at, .. } | Require::Sha1 { at, .. }) = r;
-            profile.place(at)?;
+            for (at, _) in r.places() {
+                profile.place(at)?;
+            }
+            if let Require::Imm {
+                hi_word,
+                lo_word,
+                min,
+                max,
+                ..
+            } = r
+            {
+                let shape = hi_word >> 26 == 0x0F
+                    && matches!(lo_word >> 26, 0x09 | 0x0D)
+                    && (hi_word | lo_word) & 0xFFFF == 0;
+                if !shape || min > max {
+                    return Err(format!(
+                        "imm check {:?} needs a lui, an addiu or ori, both with the immediate \
+                         zeroed, and min <= max",
+                        r.label()
+                    ));
+                }
+            }
         }
 
         // Every write must land on bytes a check has pinned down, so a seed that changed
@@ -263,15 +327,11 @@ impl Profile {
                 }
             }
             for r in &profile.require {
-                let covers = match r {
-                    Require::Word { at: w, .. } => profile.place(w)? == (base, at) && len == 4,
-                    Require::Sha1 { at: s, len: n, .. } => {
-                        let (b, s) = profile.place(s)?;
-                        b == base && s <= at && at + len <= s + i64::from(*n)
+                for (s, n) in r.places() {
+                    let (b, s) = profile.place(s)?;
+                    if b == base && s <= at && at + len <= s + i64::from(n) {
+                        return Ok(true);
                     }
-                };
-                if covers {
-                    return Ok(true);
                 }
             }
             Ok(false)

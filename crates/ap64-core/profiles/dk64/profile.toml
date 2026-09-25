@@ -9,10 +9,13 @@
 # size, so it is found in each seed (the `main` find below) and every main-code place is
 # given by its RAM address through it, as main@0x8.... The boot segment does not move.
 #
-# Measured against dk64.apworld v1.5.8. What finding the main code cannot absorb: a release
-# that patches the functions pinned here, or one that moves the heap top (where the
-# randomizer's own code starts). Those still fail these checks and need measuring again
-# (#309 has how, #312 the plan for the heap top).
+# The heap's top is where the randomizer's own code starts, which moves too, so it is read
+# rather than pinned: any value that keeps that code clear of the agent is accepted, and the
+# write gives the game the same heap it was measured with wherever the top was.
+#
+# Measured against dk64.apworld v1.5.8. What this cannot absorb: a release that patches the
+# functions pinned here. That still fails these checks and needs measuring again (#309 has
+# how).
 
 id = "dk64"
 name = "Donkey Kong 64"
@@ -26,7 +29,7 @@ connector = "dk64"        # native: AP64 answers the DK64 Client as RetroArch (a
 [agent]
 image = "agent.bin"
 rom = 0x3402000         # past the 52 MB image the randomizer produces (ends 0x34013A8)
-vram = 0x805BA000       # in the 32 KB the heap-top write below takes from the heap
+vram = 0x805BA000       # above the heap top the write below sets
 min_ram = 0x800000      # DK64 does not boot without an Expansion Pak anyway
 
 # The copy routine the stub loads the agent with, which the randomizer leaves alone, is
@@ -49,19 +52,56 @@ at = "main@0x805FC4CC"  # in the frame loop: jal func_global_asm_8070DD44
 equals = 0x0C1C3751
 hint = "The randomizer changed DK64's frame loop. It already hooks the same loop at 0x805FC3FC (that is expected); this pin is the call five instructions after it."
 
+# The heap's top, in the heap setup (func_global_asm_80610350, 0x80610350..0x806109EC):
+# lui t5 / ori t5 build it, and the fixed buffers are carved downward from it before the
+# heap. Retail has 0x805FAE00, where the randomizer's code ends; the randomizer lowers it to
+# make room for that code, to 0x805C1040 in v1.5.8. The write below always makes it
+# 0x805B9040, so what lies under the top is exactly what was measured, and the top may be
+# anything from the agent's end (AGENT_BSS_END) up to the end of the randomizer's code.
 [[require]]
-kind = "word"
-label = "Heap top (lui)"
-at = "main@0x80610510"  # in func_global_asm_80610388: lui t5, 0x805C
-equals = 0x3C0D805C
-hint = "The heap's top is no longer 0x805C1040, which is where the randomizer's own code starts. The randomizer's region moved; the carve-out the agent lives in has to be re-measured."
+kind = "imm"
+label = "Heap top"
+hi = "main@0x80610510"
+lo = "main@0x80610518"
+hi_word = 0x3C0D0000    # lui t5, ...
+lo_word = 0x35AD0000    # ori t5, t5, ...
+min = 0x805C0520        # the agent's end: below it, the randomizer's code would overlap it
+max = 0x805FAE00        # retail's top, where the randomizer's code ends
+hint = "The randomizer's own code now starts below the end of the agent, so the two would overlap. The agent needs a lower address, and the carve-out measuring again."
+
+# The rest of the heap setup, so a change to the buffers carved under the top still refuses.
+# Pinned in pieces around the heap top and around 0x80610948, where the randomizer jumps
+# into its own code: that jump's target moves with the randomizer's code.
+[[require]]
+kind = "sha1"
+label = "Heap setup (before the top)"
+at = "main@0x80610350"
+len = 0x1C0
+sha1 = "a1e5033d7f803f8b0c601b50a85ebd90b90fa4e3"
+hint = "The randomizer changed the heap setup, which decides how much heap is left under the agent."
 
 [[require]]
 kind = "word"
-label = "Heap top (ori)"
-at = "main@0x80610518"  # ori t5, t5, 0x1040
-equals = 0x35AD1040
-hint = "The heap's top is no longer 0x805C1040. Re-measure the carve-out before moving it."
+label = "Heap setup (between the top's two halves)"
+at = "main@0x80610514"
+equals = 0xAC264474
+hint = "The randomizer changed the heap setup, which decides how much heap is left under the agent."
+
+[[require]]
+kind = "sha1"
+label = "Heap setup (after the top)"
+at = "main@0x8061051C"
+len = 0x42C
+sha1 = "08afe39f232bb117359cce815c99bbb91bcadded"
+hint = "The randomizer changed the heap setup, which decides how much heap is left under the agent."
+
+[[require]]
+kind = "sha1"
+label = "Heap setup (after the randomizer's jump)"
+at = "main@0x80610950"
+len = 0x9C
+sha1 = "1dd429dae82c36e29f28025d3174471f324ff27c"
+hint = "The randomizer changed the heap setup, which decides how much heap is left under the agent."
 
 [[require]]
 kind = "sha1"
@@ -100,10 +140,10 @@ hint = "The copy routine handles the data cache only, so the stub must invalidat
 
 [[write]]
 kind = "imm"
-label = "Heap top lowered 32 KB for the agent"
+label = "Heap top lowered for the agent"
 hi = "main@0x80610510"
 lo = "main@0x80610518"
-value = 0x805B9040      # was 0x805C1040; the heap's low point measured 739 KB with this
+value = 0x805B9040      # 32 KB under v1.5.8's; the heap's low point measured 739 KB with this
 
 [[write]]
 kind = "blob"

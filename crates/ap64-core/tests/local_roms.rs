@@ -78,3 +78,40 @@ fn dk64_follows_its_main_code_when_it_moves() {
         "the agent stays where it goes"
     );
 }
+
+/// A stand-in for a randomizer release whose own code starts somewhere else: the same seed
+/// with another heap top. The splice writes the same top whatever the seed held, so the output
+/// is the same ROM; a top below the agent's end is refused.
+#[test]
+#[ignore = "needs ROMs from the environment"]
+fn dk64_accepts_any_heap_top_that_clears_the_agent() {
+    const HI: usize = 0x204_EFD0; // lui t5 / ori t5 at 0x80610510 in v1.5.8
+    let seed = std::fs::read(env_path("AP64_DK64_SEED")).unwrap();
+    let expected = std::fs::read(env_path("AP64_DK64_EXPECTED")).unwrap();
+    let bundles = ap64_core::builtin().unwrap();
+    let bundle = bundles.iter().find(|b| b.profile.id == "dk64").unwrap();
+    let with_top = |top: u32| {
+        let mut rom = seed.clone();
+        rom[HI..HI + 4].copy_from_slice(&(0x3C0D_0000 | top >> 16).to_be_bytes());
+        rom[HI + 8..HI + 12].copy_from_slice(&(0x35AD_0000 | top & 0xFFFF).to_be_bytes());
+        rom
+    };
+
+    let out = ap64_core::apply(bundle, &with_top(0x805D_0000))
+        .unwrap()
+        .rom;
+    assert!(out == expected, "a higher top patches to the same ROM");
+
+    match ap64_core::apply(bundle, &with_top(0x805C_0000)) {
+        Err(ap64_core::ApplyError::Refused(r)) => {
+            let failed: Vec<_> = r
+                .checks
+                .iter()
+                .filter(|c| !c.ok)
+                .map(|c| &c.label)
+                .collect();
+            assert_eq!(failed, ["Heap top"]);
+        }
+        other => panic!("a top inside the agent must be refused, got {other:?}"),
+    }
+}

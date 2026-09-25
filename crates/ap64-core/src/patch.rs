@@ -214,11 +214,20 @@ fn verify_prepared(bundle: &Bundle, rom: &[u8]) -> (Report, Found) {
     checks.extend(located);
 
     for r in &p.require {
-        let (Require::Word { label, at, .. } | Require::Sha1 { label, at, .. }) = r;
-        let Some(at) = resolve(p, &found, at) else {
-            checks.push(check(label, false, missing(p, at), ""));
+        let places = r.places();
+        let Some(ats) = places
+            .iter()
+            .map(|(a, _)| resolve(p, &found, a))
+            .collect::<Option<Vec<u32>>>()
+        else {
+            let (lost, _) = places
+                .iter()
+                .find(|(a, _)| resolve(p, &found, a).is_none())
+                .expect("one place did not resolve");
+            checks.push(check(r.label(), false, missing(p, lost), ""));
             continue;
         };
+        let at = ats[0];
         checks.push(match r {
             Require::Word {
                 label,
@@ -255,6 +264,41 @@ fn verify_prepared(bundle: &Bundle, rom: &[u8]) -> (Report, Found) {
                     },
                     hint,
                 )
+            }
+            Require::Imm {
+                label,
+                hi_word,
+                lo_word,
+                min,
+                max,
+                hint,
+                ..
+            } => {
+                let lo = ats[1];
+                let words = rom::read_u32(rom, at as usize).zip(rom::read_u32(rom, lo as usize));
+                let (ok, detail) = match words {
+                    None => (false, format!("0x{at:X} or 0x{lo:X} is past the end")),
+                    Some((h, l)) if h & 0xFFFF_0000 != *hi_word || l & 0xFFFF_0000 != *lo_word => (
+                        false,
+                        format!(
+                            "0x{at:X} holds 0x{h:08X} and 0x{lo:X} holds 0x{l:08X}, not the \
+                             instructions expected"
+                        ),
+                    ),
+                    Some((h, l)) => {
+                        let v = crate::profile::imm_value(h, l);
+                        let ok = (*min..=*max).contains(&v);
+                        (
+                            ok,
+                            format!(
+                                "0x{at:X} and 0x{lo:X} load 0x{v:08X} ({} 0x{min:08X} to \
+                                 0x{max:08X})",
+                                if ok { "within" } else { "outside" }
+                            ),
+                        )
+                    }
+                };
+                check(label, ok, detail, hint)
             }
         });
     }
@@ -930,6 +974,57 @@ sha1 = "{sha}"
              [[write]]\nkind = \"jal\"\nlabel = \"j\"\nat = 0x100\ntarget = 0\n"
         )
         .contains("not covered"));
+    }
+
+    /// `seed` with a `lui t5`/`ori t5` pair at 0x4000 loading `value`, and a profile that
+    /// accepts 0x805C0000..=0x805D0000 there and writes 0x805B9040 over it.
+    fn ranged(value: u32) -> (Vec<u8>, Bundle) {
+        let mut rom = seed();
+        rom::write_u32(&mut rom, 0x4000, 0x3C0D_0000 | value >> 16);
+        rom::write_u32(&mut rom, 0x4004, 0x35AD_0000 | value & 0xFFFF);
+        let extra = "[[require]]\nkind = \"imm\"\nlabel = \"Top\"\nhi = 0x4000\nlo = 0x4004\n\
+                     hi_word = 0x3C0D0000\nlo_word = 0x35AD0000\nmin = 0x805C0000\nmax = 0x805D0000\n\
+                     [[write]]\nkind = \"imm\"\nlabel = \"Lowered\"\nhi = 0x4000\nlo = 0x4004\n\
+                     value = 0x805B9040\n";
+        let b = bundle_with(4, &rom, extra);
+        (rom, b)
+    }
+
+    #[test]
+    fn an_imm_check_accepts_any_value_in_its_range() {
+        for top in [0x805C_0000, 0x805C_1040, 0x805D_0000] {
+            let (rom, b) = ranged(top);
+            let out = apply(&b, &rom).unwrap().rom;
+            assert_eq!(
+                rom::read_u32(&out, 0x4000),
+                Some(0x3C0D_805B),
+                "top 0x{top:X}"
+            );
+            assert_eq!(
+                rom::read_u32(&out, 0x4004),
+                Some(0x35AD_9040),
+                "top 0x{top:X}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_imm_check_refuses_a_value_outside_its_range_or_other_instructions() {
+        for top in [0x805B_FFF0, 0x805D_0010] {
+            let (rom, b) = ranged(top);
+            assert_eq!(refused(&b, &rom), ["Top"], "top 0x{top:X}");
+        }
+        // The same value, built in another register.
+        let (mut rom, b) = ranged(0x805C_1040);
+        rom::write_u32(&mut rom, 0x4004, 0x35AC_1040);
+        assert_eq!(refused(&b, &rom), ["Top"]);
+    }
+
+    #[test]
+    fn an_addiu_pair_loads_its_low_half_sign_extended() {
+        use crate::profile::imm_value;
+        assert_eq!(imm_value(0x3C0D_805C, 0x25AD_9040), 0x805B_9040);
+        assert_eq!(imm_value(0x3C0D_805B, 0x35AD_9040), 0x805B_9040);
     }
 
     #[test]

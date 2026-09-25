@@ -111,7 +111,7 @@ agent go quiet.
 Donkey Kong 64 touches every page of the 8 MB in play; with Archipelago live, the largest run
 left untouched was 20 KB. There is nothing to find, so room has to be made, and the way to make
 it is the one the randomizer used for itself: move a bound. The game's heap setup
-(`func_global_asm_80610388`) takes the top of its arena as one constant, built by
+(`func_global_asm_80610350`) takes the top of its arena as one constant, built by
 `lui`/`ori` at `0x80610510`, and carves its fixed buffers downward from there; the heap ends
 below them. That constant is `0x805C1040`, which is exactly where the randomizer's own code
 starts. Lowering it by 32 KB moves every buffer and the heap's end down with it, and leaves a gap
@@ -137,6 +137,14 @@ What made that safe to believe, each checked against a control:
 A profile makes the change with an `imm` write on the pair. The split follows the low
 instruction: an `ori` does not sign-extend, so `0x805B9040` is `lui 0x805B`/`ori 0x9040` where an
 `addiu` pair would need `lui 0x805C`.
+
+A bound like this one can move between randomizer releases: it is wherever the randomizer's code
+starts. So don't pin its value. Write the lowered bound as a constant, and check the seed's value
+with an `imm` require, which pins the two instructions apart from their immediates and accepts a
+range. For DK64, that range runs from the agent's end up to where the randomizer's code ends.
+What lies under the written bound is then exactly what was measured, whatever the seed held.
+Pin the rest of the function that uses the bound by hash, since that decides how much is carved
+out under it.
 
 ## 3. Find a per-frame call site
 
