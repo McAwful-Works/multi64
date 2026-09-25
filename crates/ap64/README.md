@@ -127,10 +127,12 @@ What it says:
 - **The cart going quiet.** The first stall of a run gets a line saying how long the agent was
   silent. The rest of that run is one line 30 seconds later, with the count and the longest. A
   reconnect says how long the cart was out of reach.
-- **For a client AP64 answers itself** (DK64 Client, Banjo-Tooie Client), every reply that had to say the cart hadn't
-  answered yet, with the address as the client wrote it, so it can be found in the client's log. Also any
-  reply slower than the half second the client waits, and the client asking again after a
-  pause.
+- **For a client AP64 answers itself** (DK64 Client, Banjo-Tooie Client), every reply that had
+  to say the cart hadn't answered yet, with the address as the client wrote it, so it can be
+  found in the client's log. Also any reply slower than the half second the client waits, the
+  client asking again after a pause, and the client reconnecting, with the last request AP64
+  answered before it and how fast. When the client logs "timed out", that line shows whether
+  the request reached AP64 at all.
 - **Every five minutes, a summary:** requests answered, errors, stalls, reconnects, and whether
   the client is connected.
 
