@@ -723,6 +723,10 @@ const CART_GRACE: Duration = Duration::from_secs(8);
 /// only take a round trip from them.
 const CART_QUIET: Duration = Duration::from_secs(2);
 
+/// How long a silent agent is waited out before its link is rebuilt, in a session whose
+/// client AP64 answers itself ([`Multi64::set_silence_budget`]).
+const NATIVE_SILENCE: Duration = Duration::from_secs(10);
+
 /// Between the session log's summary lines.
 const SUMMARY_EVERY: Duration = Duration::from_secs(300);
 
@@ -950,6 +954,12 @@ fn run(
             cart.set_cancelled(Rc::new(move || stop.load(Ordering::Relaxed)));
         }
         cart.set_reconnect_deadline(CART_GRACE);
+        // A client AP64 answers itself never waits on the cart, so a long scene load can be
+        // waited out rather than costing a reconnect. DK64's loads silence the agent for up to
+        // 3 s, against the 3.6 s the default allows.
+        if let Kind::Native(_) = kind {
+            cart.set_silence_budget(NATIVE_SILENCE);
+        }
         {
             let status = status.clone();
             let app = app.clone();
