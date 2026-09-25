@@ -22,7 +22,26 @@ function render() {
   if (atEnd) log.scrollTop = log.scrollHeight;
 }
 
+/** Enable Show file when the backend has a file for this session's log, and say which. */
+async function checkFile() {
+  let path = null;
+  try {
+    path = await invoke("play_log_file");
+  } catch {
+    // No file to show; the button stays off.
+  }
+  $("btn-log-file").disabled = !path;
+  $("btn-log-file").title = path ? `Show ${path} in its folder` : "This session's log is not saved to a file";
+  return path;
+}
+
 async function init() {
+  // A session started while this window is open writes a new file, so ask again on each click.
+  $("btn-log-file").addEventListener("click", async () => {
+    const path = await checkFile();
+    if (path) await invoke("reveal", { path }).catch(() => {});
+  });
+  checkFile();
   $("btn-copy").addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(lines.join("\n"));

@@ -81,6 +81,7 @@ function installTauriStub(scenario) {
     },
     play_stop: () => answer(null),
     play_log: () => answer(sc.log ?? []),
+    play_log_file: () => answer(sc.logFile ?? null),
     open_log_window: () => answer(sc.openLog ?? null),
     fit_window_height: () => answer(null),
   };
@@ -401,6 +402,30 @@ const setDev = async (p, on) => {
   await p.setViewportSize({ width: 620, height: 760 });
   const after = await gap();
   check("the log fills the window, whatever its height", before < 20 && after < 20, `${before}px then ${after}px below it`);
+  await p.close();
+}
+
+// The session's log file, shown in its folder: asked for at the moment of the click, since a
+// session started while the window is open writes a new one.
+{
+  const p = await browser.newPage({ viewport: { width: 620, height: 420 } });
+  p.on("pageerror", (e) => consoleErrors.push(`uncaught: ${e.message}`));
+  await p.addInitScript(installTauriStub, { log: [], logFile: "C:/AP64/logs/session-2026-09-25-000000.txt" });
+  await p.goto(`${origin}/log.html`);
+  await until(p, () => !document.getElementById("btn-log-file").disabled);
+  await p.click("#btn-log-file");
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "reveal"));
+  const reveal = (await callsOf(p, "reveal"))[0];
+  check("Show file shows the session's log file", reveal?.args?.path === "C:/AP64/logs/session-2026-09-25-000000.txt", JSON.stringify(reveal));
+  await p.close();
+}
+{
+  const p = await browser.newPage({ viewport: { width: 620, height: 420 } });
+  p.on("pageerror", (e) => consoleErrors.push(`uncaught: ${e.message}`));
+  await p.addInitScript(installTauriStub, { log: [] });
+  await p.goto(`${origin}/log.html`);
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_log_file"));
+  check("with no file, Show file stays off", await p.evaluate(() => document.getElementById("btn-log-file").disabled));
   await p.close();
 }
 

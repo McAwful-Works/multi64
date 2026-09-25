@@ -232,6 +232,12 @@ fn play_log(state: State<'_, AppState>) -> Vec<String> {
     state.play.log_lines()
 }
 
+/// Where the current (or last) session's log is saved, for the log window's Show file.
+#[tauri::command]
+fn play_log_file(state: State<'_, AppState>) -> Option<String> {
+    state.play.log_file().map(|p| p.display().to_string())
+}
+
 /// Show the session log in a window of its own, or bring it forward if it is already up.
 ///
 /// Its own window rather than a panel in the main one: a log is the one thing here worth
@@ -302,6 +308,7 @@ pub fn run() {
             fit_window_height,
             open_log_window,
             play_log,
+            play_log_file,
             profiles,
             pick_rom,
             pick_output,

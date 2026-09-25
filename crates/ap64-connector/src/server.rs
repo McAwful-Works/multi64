@@ -36,6 +36,11 @@ pub enum Event {
     ClientDisconnected(String),
     /// A request line was answered.
     Handled,
+    /// A request answered with an error because the cart had not answered in time, said in a
+    /// line for the session log.
+    Missed(String),
+    /// Something else about the client worth a line in the session log.
+    Note(String),
     /// Nothing has happened for a moment.
     ///
     /// Emitted while a session is up and quiet, so a caller can check on things that only

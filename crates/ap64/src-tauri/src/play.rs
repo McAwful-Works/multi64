@@ -12,8 +12,9 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::io;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{self, Write as _};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,7 +30,7 @@ use ap64_core::profile::{Addr, Transform, Write};
 use ap64_core::transform::{dma_entries, rom_address, DmaEntry};
 use ap64_core::{rom as rom_fmt, Bundle};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// The Multi64 app's daemon, where it listens by default.
 pub const DEFAULT_URL: &str = "ws://127.0.0.1:38765/ws";
@@ -124,6 +125,8 @@ pub struct Play {
     /// The window that shows it can be closed and opened again, and need not exist when a line
     /// is written, so the lines live here rather than in whichever page happens to be up.
     log: Arc<Mutex<VecDeque<String>>>,
+    /// Where the current (or last) session's log is saved, if it could be.
+    log_file: Mutex<Option<PathBuf>>,
 }
 
 /// What plays a game: a connector script AP64 runs, or a client AP64 answers itself.
@@ -367,7 +370,7 @@ fn cart_table(cart: &mut Multi64, table: u32) -> Result<Vec<DmaEntry>, String> {
 ///
 /// A hook placed relative to a find has no fixed offset to read, and locating it would mean
 /// reading the whole ROM back. The agent image is checked at its offset in its place.
-fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<String, Issue> {
+fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<OnCart, Issue> {
     let p = &bundle.profile;
     let mut found_hooks = false;
     let jals: Vec<(u32, u32)> = p
@@ -451,21 +454,21 @@ fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<String, Issue> {
             }));
         }
     }
+    // An agent that can move is wherever the stub on the cart was told it is.
+    let agent_rom = match p.agent_rom_imm() {
+        Some((Addr::Rom(hi), Some(Addr::Rom(lo)))) if table.is_none() => {
+            let got = cart
+                .read_rom_many(&[(*hi, 4), (*lo, 4)])
+                .map_err(|e| Issue::plain(e.to_string()))?;
+            let word = |b: &[u8]| u32::from_be_bytes(b[..4].try_into().unwrap());
+            Some(ap64_core::profile::imm_value(word(&got[0]), word(&got[1])))
+        }
+        _ => None,
+    };
     if found_hooks {
         let image = &bundle.blobs[&p.agent.image];
-        // An agent that can move is wherever the stub on the cart was told it is.
-        let agent_rom = match p.agent_rom_imm() {
-            Some((Addr::Rom(hi), Some(Addr::Rom(lo)))) if table.is_none() => {
-                let got = cart
-                    .read_rom_many(&[(*hi, 4), (*lo, 4)])
-                    .map_err(|e| Issue::plain(e.to_string()))?;
-                let word = |b: &[u8]| u32::from_be_bytes(b[..4].try_into().unwrap());
-                ap64_core::profile::imm_value(word(&got[0]), word(&got[1]))
-            }
-            _ => p.agent.rom,
-        };
         let at = match &table {
-            None => agent_rom,
+            None => agent_rom.unwrap_or(p.agent.rom),
             Some(t) => rom_address(t, p.agent.rom).ok_or_else(|| {
                 without(format!(
                     "the file holding the agent at 0x{:X} is still compressed",
@@ -482,7 +485,48 @@ fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<String, Issue> {
             )));
         }
     }
-    Ok(h.name)
+    Ok(OnCart {
+        name: h.name,
+        agent_rom,
+    })
+}
+
+/// What [`verify_cart`] learned about the cart, for the session log.
+struct OnCart {
+    /// The ROM's internal name.
+    name: String,
+    /// Where the agent is in the cart's ROM, read from the stub, for a profile whose agent can
+    /// move. `None` for one whose agent the game's own loader puts in place.
+    agent_rom: Option<u32>,
+}
+
+/// Session logs kept on disk, newest first; older ones are deleted when a session starts.
+const LOG_FILES: usize = 20;
+
+/// Open this session's log file under `dir`, deleting all but the newest [`LOG_FILES`] - 1
+/// already there, so this one makes [`LOG_FILES`]. Named by the local time it started, so the
+/// names sort by age.
+fn open_log_file(dir: &Path) -> io::Result<(PathBuf, File)> {
+    std::fs::create_dir_all(dir)?;
+    let mut old: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("session-") && n.ends_with(".txt"))
+        })
+        .collect();
+    old.sort();
+    let excess = old.len().saturating_sub(LOG_FILES - 1);
+    for p in &old[..excess] {
+        let _ = std::fs::remove_file(p);
+    }
+    let path = dir.join(format!(
+        "session-{}.txt",
+        chrono::Local::now().format("%Y-%m-%d-%H%M%S")
+    ));
+    let file = File::create(&path)?;
+    Ok((path, file))
 }
 
 impl Play {
@@ -493,6 +537,11 @@ impl Play {
     /// Everything the session has logged so far, for a window opened after it started.
     pub fn log_lines(&self) -> Vec<String> {
         self.log.lock().unwrap().iter().cloned().collect()
+    }
+
+    /// The file the current (or last) session's log is saved to, if it could be.
+    pub fn log_file(&self) -> Option<PathBuf> {
+        self.log_file.lock().unwrap().clone()
     }
 
     pub fn running(&self) -> bool {
@@ -522,6 +571,13 @@ impl Play {
         // A new session starts a new log: what the last one did is not this one's history.
         let kept = self.log.clone();
         kept.lock().unwrap().clear();
+        let file = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| io::Error::other(e.to_string()))
+            .and_then(|dir| open_log_file(&dir.join("logs")))
+            .map_err(|e| e.to_string());
+        *self.log_file.lock().unwrap() = file.as_ref().ok().map(|(p, _)| p.clone());
         let url = if url.trim().is_empty() {
             DEFAULT_URL.to_string()
         } else {
@@ -543,7 +599,7 @@ impl Play {
             let stop = stop.clone();
             std::thread::Builder::new()
                 .name("connector".into())
-                .spawn(move || run(app, game, kind, url, stop, status, kept))
+                .spawn(move || run(app, game, kind, url, stop, status, kept, file))
                 .map_err(|e| e.to_string())?
         };
         *self.session.lock().unwrap() = Some(Session { stop, thread });
@@ -667,6 +723,9 @@ const CART_GRACE: Duration = Duration::from_secs(8);
 /// only take a round trip from them.
 const CART_QUIET: Duration = Duration::from_secs(2);
 
+/// Between the session log's summary lines.
+const SUMMARY_EVERY: Duration = Duration::from_secs(300);
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     app: AppHandle,
@@ -676,13 +735,27 @@ fn run(
     stop: Arc<AtomicBool>,
     status: Arc<Mutex<Status>>,
     kept_log: Arc<Mutex<VecDeque<String>>>,
+    file: Result<(PathBuf, File), String>,
 ) {
+    let (file_path, file) = match file {
+        Ok((path, file)) => (Ok(path), Some(file)),
+        Err(e) => (Err(e), None),
+    };
     let log: Log = {
         let app = app.clone();
+        let file = Mutex::new(file);
         Arc::new(move |line: String| {
             // Local time, to the second, to line up against the client's log file in
             // Archipelago's `logs` folder, which stamps every line in local time.
             let line = format!("{} {line}", chrono::Local::now().format("%H:%M:%S"));
+            // Written as it happens, so a crash or a closed window loses nothing. A write that
+            // fails stops the file there; the window keeps the whole log regardless.
+            {
+                let mut f = file.lock().unwrap();
+                if f.as_mut().is_some_and(|f| writeln!(f, "{line}").is_err()) {
+                    *f = None;
+                }
+            }
             {
                 let mut kept = kept_log.lock().unwrap();
                 if kept.len() == LOG_LINES {
@@ -704,6 +777,20 @@ fn run(
         s.bridge = WAITING.into();
         s.console = WAITING.into();
         s.client = WAITING.into();
+    });
+
+    // What anyone reading this log later needs first: which build, which game, which bridge,
+    // and where the log is kept.
+    log(format!(
+        "AP64 {} ({}), {} ({} profile), through Multi64 at {url}",
+        env!("CARGO_PKG_VERSION"),
+        env!("AP64_COMMIT"),
+        game.profile.name,
+        game.profile.id
+    ));
+    log(match &file_path {
+        Ok(path) => format!("this log is also saved to {}", path.display()),
+        Err(e) => format!("this log is not being saved to a file: {e}"),
     });
 
     // A session needs Multi64, so start it rather than wait for someone to notice.
@@ -803,16 +890,32 @@ fn run(
 
         let mut cart = cart;
         match verify_cart(&game, &mut cart) {
-            Ok(name) => {
+            Ok(on) => {
                 log(format!(
                     "the cart is running {} ({}) with the agent",
                     game.profile.name,
-                    if name.is_empty() {
+                    if on.name.is_empty() {
                         "no internal name"
                     } else {
-                        &name
+                        &on.name
                     }
                 ));
+                let agent = &game.profile.agent;
+                log(match on.agent_rom {
+                    Some(at) if at != agent.rom => format!(
+                        "the agent is at ROM 0x{at:X}, past the seed's data (its usual place is \
+                         0x{:X}), and runs at 0x{:08X}",
+                        agent.rom, agent.vram
+                    ),
+                    Some(at) => format!(
+                        "the agent is at ROM 0x{at:X} and runs at 0x{:08X}",
+                        agent.vram
+                    ),
+                    None => format!(
+                        "the agent runs at 0x{:08X}, put there by the game's own loader",
+                        agent.vram
+                    ),
+                });
                 set(&|s| s.console = OK.into());
             }
             Err(e) => {
@@ -927,76 +1030,108 @@ fn run(
                 s.handled = handled;
             })
         };
-        let mut on_event = |e| match e {
-            Event::Listening(port) => {
-                log(format!(
+        // A line every few minutes saying what this link has been doing, so a quiet stretch of
+        // log reads as quiet rather than as nothing being written.
+        let mut misses = 0u64;
+        let mut last_summary = Instant::now();
+        let mut summarized = (handled, 0u64, Stats::default());
+        let mut on_event = |e| {
+            match e {
+                Event::Listening(port) => {
+                    log(format!(
                     "listening on {transport}:{port}; open {client} from the Archipelago Launcher"
                 ));
-                set(&|s| {
-                    s.state = "waiting-client".into();
-                    s.port = Some(port);
-                    s.detail = format!("open {client} from the Archipelago Launcher");
-                    s.detail_dev = format!("listening on 127.0.0.1:{port}");
-                    s.client = WAITING.into();
-                });
-            }
-            Event::ClientConnected(addr) => {
-                client_here.set(true);
-                log(format!("{client} connected from {addr}"));
-                set(&|s| {
-                    s.state = "playing".into();
-                    s.detail = format!("{client} connected");
-                    s.detail_dev = format!("from {addr}");
-                    s.client = OK.into();
-                });
-            }
-            Event::ClientDisconnected(why) => {
-                client_here.set(false);
-                log(format!("{client} disconnected: {why}"));
-                set(&|s| {
-                    s.state = "waiting-client".into();
-                    s.detail = format!("{client} disconnected; waiting for it");
-                    s.detail_dev = why.clone();
-                    s.client = WAITING.into();
-                });
-            }
-            // Nothing is being asked of the cart, so ask it something: a console that was reset
-            // or a ROM that was swapped answers nothing, and a session with no client attached would
-            // otherwise go on reporting whatever was true when the last request was answered.
-            Event::Idle => {
-                // A client that is polling proves the cart for free; this is for the quiet spells,
-                // including a session with no client attached at all. `alive` reports through the
-                // same health callback, so the wording lives in one place.
-                if last_answer.elapsed() >= CART_QUIET {
-                    let _ = cart.borrow_mut().alive();
+                    set(&|s| {
+                        s.state = "waiting-client".into();
+                        s.port = Some(port);
+                        s.detail = format!("open {client} from the Archipelago Launcher");
+                        s.detail_dev = format!("listening on 127.0.0.1:{port}");
+                        s.client = WAITING.into();
+                    });
                 }
-            }
-            Event::Handled => {
-                handled += 1;
-                last_answer = Instant::now();
-                // Deliberately not touched here: an answered line says the client asked something
-                // and the connector replied, which a script that catches its own errors will do
-                // with a cart that is not there at all. What the cart is doing is the backend's to
-                // report (set_health above) and the probe below's to check.
-                if let Some(w) = connector.as_ref().and_then(|c| c.watch_stats()) {
-                    if w.replayed > last_watch.replayed || w.dropped > last_watch.dropped {
-                        log(format!(
-                            "in-scene events: {} seen, {} given to the client{}",
-                            w.events,
-                            w.replayed,
-                            if w.dropped > 0 {
-                                format!(", {} dropped by a full queue", w.dropped)
-                            } else {
-                                String::new()
-                            }
-                        ));
+                Event::ClientConnected(addr) => {
+                    client_here.set(true);
+                    log(format!("{client} connected from {addr}"));
+                    set(&|s| {
+                        s.state = "playing".into();
+                        s.detail = format!("{client} connected");
+                        s.detail_dev = format!("from {addr}");
+                        s.client = OK.into();
+                    });
+                }
+                Event::ClientDisconnected(why) => {
+                    client_here.set(false);
+                    log(format!("{client} disconnected: {why}"));
+                    set(&|s| {
+                        s.state = "waiting-client".into();
+                        s.detail = format!("{client} disconnected; waiting for it");
+                        s.detail_dev = why.clone();
+                        s.client = WAITING.into();
+                    });
+                }
+                // Nothing is being asked of the cart, so ask it something: a console that was reset
+                // or a ROM that was swapped answers nothing, and a session with no client attached would
+                // otherwise go on reporting whatever was true when the last request was answered.
+                Event::Idle => {
+                    // A client that is polling proves the cart for free; this is for the quiet spells,
+                    // including a session with no client attached at all. `alive` reports through the
+                    // same health callback, so the wording lives in one place.
+                    if last_answer.elapsed() >= CART_QUIET {
+                        let _ = cart.borrow_mut().alive();
                     }
-                    last_watch = w;
                 }
-                if last_stats.elapsed() >= STATS_EVERY {
-                    last_stats = Instant::now();
-                    push_stats(cart.borrow().stats(), handled);
+                Event::Handled => {
+                    handled += 1;
+                    last_answer = Instant::now();
+                    // Deliberately not touched here: an answered line says the client asked something
+                    // and the connector replied, which a script that catches its own errors will do
+                    // with a cart that is not there at all. What the cart is doing is the backend's to
+                    // report (set_health above) and the probe below's to check.
+                    if let Some(w) = connector.as_ref().and_then(|c| c.watch_stats()) {
+                        if w.replayed > last_watch.replayed || w.dropped > last_watch.dropped {
+                            log(format!(
+                                "in-scene events: {} seen, {} given to the client{}",
+                                w.events,
+                                w.replayed,
+                                if w.dropped > 0 {
+                                    format!(", {} dropped by a full queue", w.dropped)
+                                } else {
+                                    String::new()
+                                }
+                            ));
+                        }
+                        last_watch = w;
+                    }
+                    if last_stats.elapsed() >= STATS_EVERY {
+                        last_stats = Instant::now();
+                        push_stats(cart.borrow().stats(), handled);
+                    }
                 }
+                Event::Missed(line) => {
+                    misses += 1;
+                    log(line);
+                }
+                Event::Note(line) => log(line),
+            }
+            if last_summary.elapsed() >= SUMMARY_EVERY {
+                let stats = cart.borrow().stats();
+                let (h, m, st) = summarized;
+                log(format!(
+                    "in the last {} min: {} requests answered, {} with an error for want of the \
+                     cart; {} stalls, {} reconnects; {client} {}",
+                    SUMMARY_EVERY.as_secs() / 60,
+                    handled - h,
+                    misses - m,
+                    stats.stalls - st.stalls,
+                    stats.reconnects - st.reconnects,
+                    if client_here.get() {
+                        "connected"
+                    } else {
+                        "not connected"
+                    }
+                ));
+                last_summary = Instant::now();
+                summarized = (handled, misses, stats);
             }
         };
         let result = match (kind, &connector) {
@@ -1013,6 +1148,8 @@ fn run(
             ),
             (Kind::Script(_), None) => unreachable!("a script session loads its script first"),
         };
+        // Whatever stalls were being counted belong before what happens next.
+        cart.borrow_mut().flush_stalls(true);
         push_stats(cart.borrow().stats(), handled);
         match result {
             // `serve` only returns cleanly when the stop flag it was given is set.
@@ -1108,5 +1245,34 @@ mod tests {
         let found = multi64_exe();
         std::env::remove_var("MULTI64_APP");
         assert_ne!(found.as_deref(), Some(missing.as_path()));
+    }
+
+    /// Starting a session keeps the newest logs and makes the new one the last of them; anything
+    /// else in the folder is not the pruning's to touch.
+    #[test]
+    fn a_session_log_keeps_the_newest_and_nothing_else_is_touched() {
+        let dir = std::env::temp_dir().join(format!("ap64-logs-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..25 {
+            std::fs::write(dir.join(format!("session-2000-01-01-0000{i:02}.txt")), "").unwrap();
+        }
+        std::fs::write(dir.join("notes.txt"), "mine").unwrap();
+
+        let (path, _file) = open_log_file(&dir).unwrap();
+        let mut sessions: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.starts_with("session-"))
+            .collect();
+        sessions.sort();
+        assert_eq!(sessions.len(), LOG_FILES);
+        assert_eq!(
+            sessions[0], "session-2000-01-01-000006.txt",
+            "the oldest went"
+        );
+        assert!(path.exists() && sessions.last().unwrap().starts_with("session-20"));
+        assert!(dir.join("notes.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

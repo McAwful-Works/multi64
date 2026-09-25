@@ -59,6 +59,13 @@ const CLIENT_GONE: Duration = Duration::from_secs(3);
 const RECV_POLL: Duration = Duration::from_millis(50);
 /// Between [`Event::Idle`]s while nothing is being asked.
 const IDLE_EVENT_EVERY: Duration = Duration::from_secs(2);
+/// Silence from the client worth a line when it ends, short of [`CLIENT_GONE`]. The client
+/// asks many times a second while it runs, and restarts after an error with a pause of its
+/// own, so a gap this long is that restart or something holding it up.
+const CLIENT_PAUSE: Duration = Duration::from_secs(2);
+/// A reply slower than this is worth a line: it is past the 0.5 s EmuLoader waits, so the
+/// client has already given up on it and logged "timed out".
+const SLOW_REPLY: Duration = Duration::from_millis(500);
 
 /// How a game's client is answered.
 #[derive(Debug, Clone, Copy)]
@@ -86,6 +93,20 @@ struct Shared {
     requests: u64,
     /// Replies that were an error because a window's first fetch did not come back in time.
     unfetched: u64,
+    /// Lines for the session log, taken by whoever raises events ([`Snapshot::take_notes`]).
+    notes: Vec<Note>,
+}
+
+/// Something the UDP side saw that the session log should say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Note {
+    /// A reply made an error for want of a first fetch: the command, the address as the client
+    /// wrote it, so it lines up with the client's own log, and how long it waited.
+    Missed(String, String),
+    /// A reply that took longer than the client waits.
+    Slow(String, Duration),
+    /// The client asked again after this long a silence.
+    Back(Duration),
 }
 
 /// What the client is answered from. Cloned freely: every clone is the same snapshot.
@@ -116,7 +137,8 @@ impl Snapshot {
     }
 
     /// The big-endian word at `phys`, waiting a bounded time for its window's first fetch.
-    fn word(&self, phys: u32) -> Option<[u8; 4]> {
+    /// A miss is noted against `cmd` and `addr_s`, as the client wrote them.
+    fn word(&self, phys: u32, cmd: &str, addr_s: &str) -> Option<[u8; 4]> {
         let base = phys & !(WINDOW - 1);
         let off = (phys - base) as usize;
         let (lock, cvar) = &*self.inner;
@@ -130,6 +152,8 @@ impl Snapshot {
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
                     s.unfetched += 1;
+                    s.notes
+                        .push(Note::Missed(cmd.to_string(), addr_s.to_string()));
                     return None;
                 }
                 s = cvar.wait_timeout(s, left).unwrap().0;
@@ -144,7 +168,13 @@ impl Snapshot {
         {
             let mut s = self.inner.0.lock().unwrap();
             s.requests += 1;
-            s.last_request = Some(Instant::now());
+            let now = Instant::now();
+            if let Some(gap) = s.last_request.map(|t| now - t) {
+                if (CLIENT_PAUSE..CLIENT_GONE).contains(&gap) {
+                    s.notes.push(Note::Back(gap));
+                }
+            }
+            s.last_request = Some(now);
             if peer.is_some() {
                 s.last_peer = peer;
             }
@@ -162,7 +192,7 @@ impl Snapshot {
             return format!("{cmd} {addr_s} -1 address outside RDRAM or unaligned");
         }
         match cmd {
-            "READ_CORE_MEMORY" => match self.word(phys) {
+            "READ_CORE_MEMORY" => match self.word(phys, cmd, addr_s) {
                 // Big-endian in RDRAM, shown little-endian: reverse the bytes.
                 Some(b) => format!(
                     "READ_CORE_MEMORY {addr_s} {:02X} {:02X} {:02X} {:02X}",
@@ -179,7 +209,7 @@ impl Snapshot {
                     return format!("{cmd} {addr_s} -1 bad data");
                 };
                 let client = [le[3], le[2], le[1], le[0]];
-                let Some(served) = self.word(phys) else {
+                let Some(served) = self.word(phys, cmd, addr_s) else {
                     return format!("{cmd} {addr_s} -1 the console has not answered yet");
                 };
                 let base = phys & !(WINDOW - 1);
@@ -197,6 +227,50 @@ impl Snapshot {
             }
             _ => format!("{cmd} {addr_s} -1 unsupported"),
         }
+    }
+
+    /// A reply to `line` took `took`. Noted if the client will have given up on it.
+    fn replied(&self, line: &str, took: Duration) {
+        if took >= SLOW_REPLY {
+            let what = line
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ");
+            self.inner
+                .0
+                .lock()
+                .unwrap()
+                .notes
+                .push(Note::Slow(what, took));
+        }
+    }
+
+    /// The session-log lines noted since the last call, oldest first, as events.
+    pub fn take_notes(&self) -> Vec<Event> {
+        let notes = std::mem::take(&mut self.inner.0.lock().unwrap().notes);
+        notes
+            .into_iter()
+            .map(|n| match n {
+                Note::Missed(cmd, addr) => {
+                    Event::Missed(format!(
+                    "answered the client's {} of 0x{addr} with an error: the first in that area, \
+                     and the cart gave nothing within {} ms",
+                    if cmd == "WRITE_CORE_MEMORY" { "write" } else { "read" },
+                    FIRST_FETCH.as_millis()
+                ))
+                }
+                Note::Slow(what, took) => Event::Note(format!(
+                    "a reply to the client took {} ms ({what}), past the {} ms it waits",
+                    took.as_millis(),
+                    SLOW_REPLY.as_millis()
+                )),
+                Note::Back(gap) => Event::Note(format!(
+                    "the client asked again after {:.1} s of silence",
+                    gap.as_secs_f32()
+                )),
+            })
+            .collect()
     }
 
     /// One pass for whoever owns the cart: queued writes, in order, then every window the
@@ -317,9 +391,11 @@ fn answer(sock: &UdpSocket, snap: &Snapshot, stop: &AtomicBool) {
             Err(e) if e.kind() == io::ErrorKind::ConnectionReset => continue,
             Err(_) => continue,
         };
+        let got = Instant::now();
         let line = String::from_utf8_lossy(&buf[..n]);
         let reply = snap.handle(&line, Some(peer));
         let _ = sock.send_to(reply.as_bytes(), peer);
+        snap.replied(&line, got.elapsed());
     }
 }
 
@@ -364,6 +440,9 @@ pub fn serve(
                 on_event(Event::Handled);
             }
             counted = requests;
+            for note in snap.take_notes() {
+                on_event(note);
+            }
             let (last, peer) = snap.last_seen();
             let asking = last.is_some_and(|t| t.elapsed() < CLIENT_GONE);
             if asking && !here {
@@ -447,6 +526,53 @@ mod tests {
             t.elapsed()
         );
         assert_eq!(snap.counts(), (1, 1));
+    }
+
+    /// Each error reply is a line in the session log, with the address as the client wrote it,
+    /// so it can be found in the client's own log.
+    #[test]
+    fn a_miss_is_a_line_naming_the_address_the_client_used() {
+        let snap = Snapshot::new(0x80_0000);
+        snap.handle("READ_CORE_MEMORY A07FFF1C 4", None);
+        let notes = snap.take_notes();
+        assert!(
+            matches!(notes.as_slice(), [Event::Missed(m)]
+                if m.contains("read of 0xA07FFF1C") && !m.contains("  ")),
+            "{notes:?}"
+        );
+        assert!(snap.take_notes().is_empty(), "each note is taken once");
+    }
+
+    /// A pause short of the client being gone is how its restart after an error shows.
+    #[test]
+    fn a_client_back_after_a_pause_is_a_line() {
+        let mut cart = ram();
+        let snap = primed(&mut cart, &[0x2000]);
+        snap.inner.0.lock().unwrap().last_request =
+            Some(Instant::now() - Duration::from_millis(2500));
+        snap.handle("READ_CORE_MEMORY A0002000 4", None);
+        let notes = snap.take_notes();
+        assert!(
+            matches!(notes.as_slice(), [Event::Note(n)] if n.contains("after 2.5 s of silence")),
+            "{notes:?}"
+        );
+        // Asking at the usual pace says nothing.
+        snap.handle("READ_CORE_MEMORY A0002000 4", None);
+        assert!(snap.take_notes().is_empty());
+    }
+
+    /// A reply the client has already given up on is the one thing that makes it log "timed out".
+    #[test]
+    fn a_reply_slower_than_the_client_waits_is_a_line() {
+        let snap = Snapshot::new(0x80_0000);
+        snap.replied("READ_CORE_MEMORY A0002000 4", Duration::from_millis(120));
+        assert!(snap.take_notes().is_empty());
+        snap.replied("READ_CORE_MEMORY A0002000 4", Duration::from_millis(640));
+        let notes = snap.take_notes();
+        assert!(
+            matches!(notes.as_slice(), [Event::Note(n)] if n.contains("took 640 ms (READ_CORE_MEMORY A0002000)")),
+            "{notes:?}"
+        );
     }
 
     #[test]
