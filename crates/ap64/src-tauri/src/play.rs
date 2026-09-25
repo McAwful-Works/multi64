@@ -1197,6 +1197,19 @@ fn run(
 mod tests {
     use super::*;
 
+    /// A profile whose connector names nothing is silently left off the Play card, so every
+    /// built-in game is checked for one, and a script and a native connector never share an id.
+    #[test]
+    fn every_game_has_a_connector_and_ids_are_unambiguous() {
+        let bundles = ap64_core::builtin().unwrap();
+        assert_eq!(games(&bundles).len(), bundles.len());
+        for s in SCRIPTS {
+            assert!(!NATIVES.iter().any(|n| n.id == s.id), "{}", s.id);
+        }
+        let bt = bundles.iter().find(|b| b.profile.id == "bt").unwrap();
+        assert!(matches!(kind(&bt.profile.connector), Some(Kind::Native(_))));
+    }
+
     /// `MULTI64_PROCESS` is compared against what sysinfo reports, which is the executable's
     /// file name -- with its extension on Windows. Checked against this very process, so the
     /// form is pinned without needing Multi64 installed.

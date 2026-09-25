@@ -7,7 +7,8 @@
 //!
 //! A client with no connector script to fork, one that reads emulator memory itself, is
 //! answered by AP64 directly instead: a [`Native`] connector, which answers RetroArch's
-//! Network Commands from the cart ([`retroarch`]). Donkey Kong 64 is the one ([`dk64`]).
+//! Network Commands from the cart ([`retroarch`]). Donkey Kong 64 ([`dk64`]) and Banjo-Tooie
+//! ([`bt`]) are answered this way.
 //!
 //! # The `ap64` table
 //!
@@ -27,6 +28,7 @@
 //! A cart failure (the backend has already retried and reconnected, and given up) is
 //! fatal: it ends the session, even if the script caught the error.
 
+pub mod bt;
 pub mod dk64;
 pub mod retroarch;
 pub mod server;
@@ -81,7 +83,8 @@ pub const GENERIC: Script = Script {
     //
     // Nothing needed this. A timeout's job is to free the slot for a new client, and
     // accept_newest() already replaces the old one the moment a new connection arrives.
-    // oot and bt have always been None and neither shows the behavior.
+    // oot has always been None, as was Banjo-Tooie's script before it went native, and
+    // neither showed the behavior.
     client_timeout: None,
 };
 
@@ -100,21 +103,7 @@ pub const OOT: Script = Script {
     client_timeout: None,
 };
 
-/// Banjo-Tooie, for the randomizer's own client.
-pub const BT: Script = Script {
-    id: "bt",
-    name: "Banjo-Tooie",
-    client: "Banjo-Tooie Client",
-    source: include_str!("../connectors/bt/connector.lua"),
-    ports: &[21221],
-    modules: &[("cartmem", include_str!("../connectors/bt/cartmem.lua"))],
-    // Upstream never drops the client: its receive is non-blocking and silence is a
-    // `timeout` it counts and carries on from. The client is the end that gives up, with a
-    // 10 s read timeout, and it reconnects itself.
-    client_timeout: None,
-};
-
-pub const SCRIPTS: &[Script] = &[GENERIC, OOT, BT];
+pub const SCRIPTS: &[Script] = &[GENERIC, OOT];
 
 /// A connector that is not a script: AP64 answers the client itself, from the cart.
 #[derive(Debug, Clone, Copy)]
@@ -170,7 +159,43 @@ pub const DK64: Native = Native {
     }),
 };
 
-pub const NATIVES: &[Native] = &[DK64];
+/// Banjo-Tooie's client, answered as RetroArch ([`bt`]).
+pub const BT: Native = Native {
+    id: "bt",
+    name: "Banjo-Tooie (RetroArch Network Commands)",
+    client: "Banjo-Tooie Client",
+    options: bt::OPTIONS,
+    client_fix: Some(ClientFix {
+        file: bt::APWORLD,
+        why: "Its copy of EmuLoader stops it as soon as it attaches to anything but an emulator, so it cannot reach AP64",
+        find: bt::installed_apworld,
+        state: bt::client_state,
+        apply: bt::fix_client,
+    }),
+};
+
+pub const NATIVES: &[Native] = &[DK64, BT];
+
+/// Where Archipelago keeps an installed world, by its file name: the Windows installer's
+/// default, then the per-user one. `AP64_ARCHIPELAGO_DIR` names an Archipelago folder
+/// installed elsewhere.
+pub fn installed_apworld(file: &str) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = std::env::var_os("AP64_ARCHIPELAGO_DIR") {
+        roots.push(PathBuf::from(dir));
+    }
+    for var in ["ProgramData", "LOCALAPPDATA"] {
+        if let Some(dir) = std::env::var_os(var) {
+            roots.push(PathBuf::from(dir).join("Archipelago"));
+        }
+    }
+    roots
+        .into_iter()
+        .flat_map(|r| [r.join("custom_worlds"), r.join("lib").join("worlds")])
+        .map(|d| d.join(file))
+        .find(|p| p.is_file())
+}
 
 const LIBS: &[(&str, &str)] = &[
     ("json", include_str!("../connectors/lib/json.lua")),

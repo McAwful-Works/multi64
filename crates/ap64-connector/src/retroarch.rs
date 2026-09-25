@@ -63,8 +63,6 @@ const FIRST_FETCH: Duration = Duration::from_millis(350);
 /// meant another error, and on a console the errors came in bursts. Until it is gone the
 /// snapshot is kept current, so nothing is served stale for keeping it longer.
 const CLIENT_GONE: Duration = Duration::from_secs(10);
-/// How often the UDP side looks up from its socket to see whether it should stop.
-const RECV_POLL: Duration = Duration::from_millis(50);
 /// Between [`Event::Idle`]s while nothing is being asked.
 const IDLE_EVENT_EVERY: Duration = Duration::from_secs(2);
 /// Silence from the client worth a line when it ends, short of [`CLIENT_GONE`]. The client
@@ -98,6 +96,8 @@ struct Shared {
     writes: VecDeque<Write>,
     last_request: Option<Instant>,
     last_peer: Option<SocketAddr>,
+    /// The last request answered, and how long its reply took.
+    last_answered: Option<(String, Duration)>,
     requests: u64,
     /// Replies that were an error because a window's first fetch did not come back in time.
     unfetched: u64,
@@ -115,6 +115,10 @@ enum Note {
     Slow(String, Duration),
     /// The client asked again after this long a silence.
     Back(Duration),
+    /// The client asked from a new socket, this long after its last request, which was this
+    /// one and was answered this fast. It opens a new socket each time it reconnects, so this
+    /// says whether the request it gave up on ever reached AP64, and how its answer went.
+    Reopened(Duration, Option<(String, Duration)>),
 }
 
 /// What the client is answered from. Cloned freely: every clone is the same snapshot.
@@ -177,9 +181,14 @@ impl Snapshot {
             let mut s = self.inner.0.lock().unwrap();
             s.requests += 1;
             let now = Instant::now();
-            if let Some(gap) = s.last_request.map(|t| now - t) {
-                if (CLIENT_PAUSE..CLIENT_GONE).contains(&gap) {
-                    s.notes.push(Note::Back(gap));
+            let gap = s.last_request.map(|t| now - t);
+            if let Some(gap) = gap.filter(|g| (CLIENT_PAUSE..CLIENT_GONE).contains(g)) {
+                s.notes.push(Note::Back(gap));
+            }
+            if let (Some(p), Some(old), Some(gap)) = (peer, s.last_peer, gap) {
+                if p != old && gap < CLIENT_GONE {
+                    let last = s.last_answered.clone();
+                    s.notes.push(Note::Reopened(gap, last));
                 }
             }
             s.last_request = Some(now);
@@ -239,19 +248,16 @@ impl Snapshot {
 
     /// A reply to `line` took `took`. Noted if the client will have given up on it.
     fn replied(&self, line: &str, took: Duration) {
+        let what = line
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut s = self.inner.0.lock().unwrap();
         if took >= SLOW_REPLY {
-            let what = line
-                .split_whitespace()
-                .take(2)
-                .collect::<Vec<_>>()
-                .join(" ");
-            self.inner
-                .0
-                .lock()
-                .unwrap()
-                .notes
-                .push(Note::Slow(what, took));
+            s.notes.push(Note::Slow(what.clone(), took));
         }
+        s.last_answered = Some((what, took));
     }
 
     /// The session-log lines noted since the last call, oldest first, as events.
@@ -277,49 +283,74 @@ impl Snapshot {
                     "the client asked again after {:.1} s of silence",
                     gap.as_secs_f32()
                 )),
+                Note::Reopened(gap, last) => Event::Note(match last {
+                    Some((what, took)) => format!(
+                        "the client reconnected {} ms after its last request ({what}), which \
+                         was answered in {} ms",
+                        gap.as_millis(),
+                        took.as_millis()
+                    ),
+                    None => format!(
+                        "the client reconnected {} ms after its last request",
+                        gap.as_millis()
+                    ),
+                }),
             })
             .collect()
     }
 
-    /// One pass for whoever owns the cart: queued writes, in order, then every window the
-    /// client is using, in batched reads. Returns whether there was anything to do.
+    /// One pass for whoever owns the cart: windows the client has just asked for, then queued
+    /// writes, in order, then every other window the client is using, in batched reads.
+    /// Returns whether there was anything to do.
+    ///
+    /// New windows go first because a reply is waiting on each of them, for at most
+    /// [`FIRST_FETCH`]. Behind the writes they missed it: a new seed's settings are a burst of
+    /// writes, and the first fetch of the window the burst ran into waited out all of them.
     pub fn refresh(&self, cart: &mut dyn Backend, bitwise: &[Range<u32>]) -> io::Result<bool> {
-        let (lock, cvar) = &*self.inner;
-        let (writes, bases) = {
+        let lock = &self.inner.0;
+        let fresh: Vec<u32> = {
             let mut s = lock.lock().unwrap();
-            let writes: Vec<Write> = s.writes.drain(..).collect();
-            let gone = s.last_request.map_or(true, |t| t.elapsed() >= CLIENT_GONE);
-            if gone {
+            if s.last_request.map_or(true, |t| t.elapsed() >= CLIENT_GONE) {
                 // Nothing to keep current, and nothing to serve from once the client is back.
                 s.windows.clear();
             }
-            let wanted = std::mem::take(&mut s.wanted);
-            let mut bases: Vec<u32> = if gone {
-                Vec::new()
-            } else {
-                s.windows.keys().copied().collect()
-            };
-            bases.extend(wanted);
-            bases.sort_unstable();
-            bases.dedup();
-            (writes, bases)
+            let mut wanted = std::mem::take(&mut s.wanted);
+            wanted.sort_unstable();
+            wanted.dedup();
+            wanted.retain(|b| !s.windows.contains_key(b));
+            wanted
         };
-        for w in &writes {
-            apply(cart, w, bitwise)?;
-        }
+        self.fetch(cart, &fresh)?;
+        let writes: Vec<Write> = lock.lock().unwrap().writes.drain(..).collect();
+        apply(cart, &writes, bitwise)?;
+        let rest: Vec<u32> = {
+            let s = lock.lock().unwrap();
+            s.windows
+                .keys()
+                .copied()
+                .filter(|b| !fresh.contains(b))
+                .collect()
+        };
+        self.fetch(cart, &rest)?;
+        Ok(!fresh.is_empty() || !writes.is_empty() || !rest.is_empty())
+    }
+
+    /// Read `bases` from the cart into the snapshot, in one batched read.
+    fn fetch(&self, cart: &mut dyn Backend, bases: &[u32]) -> io::Result<()> {
         if bases.is_empty() {
-            return Ok(!writes.is_empty());
+            return Ok(());
         }
+        let (lock, cvar) = &*self.inner;
         let regions: Vec<(u32, usize)> = bases
             .iter()
             .map(|&b| (b, WINDOW.min(self.rdram - b) as usize))
             .collect();
         let blocks = cart.read_many(&regions)?;
         let mut s = lock.lock().unwrap();
-        // A write queued while this read was in flight is already in the snapshot, and may not
-        // be on the cart yet: keep it over what came back.
+        // A write still queued is already in the snapshot, and not on the cart yet: keep it
+        // over what came back.
         let queued: Vec<(u32, [u8; 4])> = s.writes.iter().map(|w| (w.phys, w.client)).collect();
-        for (base, mut data) in bases.into_iter().zip(blocks) {
+        for (&base, mut data) in bases.iter().zip(blocks) {
             for &(phys, bytes) in &queued {
                 if phys & !(WINDOW - 1) == base {
                     let off = (phys - base) as usize;
@@ -329,76 +360,93 @@ impl Snapshot {
             s.windows.insert(base, data);
         }
         cvar.notify_all();
-        Ok(true)
+        Ok(())
     }
 }
 
-/// The word to put on the cart for `w`, given the `live` word where the change is bitwise,
-/// and which byte indices changed. See the module docs.
-fn merge(w: &Write, live: Option<[u8; 4]>, bitwise: &[Range<u32>]) -> ([u8; 4], Vec<usize>) {
-    let changed: Vec<usize> = (0..4).filter(|&i| w.client[i] != w.served[i]).collect();
-    let mut out = w.client;
-    if let Some(live) = live {
-        for &i in &changed {
-            if bitwise.iter().any(|r| r.contains(&(w.phys + i as u32))) {
-                let set = w.client[i] & !w.served[i];
-                let clear = w.served[i] & !w.client[i];
-                out[i] = (live[i] & !clear) | set;
+/// Every write in `writes`, in order, put on the cart in one batched request. See the module
+/// docs for which bytes are written and how.
+///
+/// One request rather than one per write: the client writes in bursts (a new seed's settings,
+/// every item count when it connects), and at a round trip each a burst held up the snapshot
+/// for seconds. The writes are merged byte by byte first, later over earlier, so what lands does
+/// not depend on the order the agent applies a request's regions in.
+fn apply(cart: &mut dyn Backend, writes: &[Write], bitwise: &[Range<u32>]) -> io::Result<()> {
+    let flag = |a: u32| bitwise.iter().any(|r| r.contains(&a));
+    let changed = |w: &Write| {
+        (0..4)
+            .filter(|&i| w.client[i] != w.served[i])
+            .collect::<Vec<_>>()
+    };
+    // The live bytes a bitwise change is merged into, read in one request.
+    let mut words: Vec<u32> = writes
+        .iter()
+        .filter(|w| changed(w).iter().any(|&i| flag(w.phys + i as u32)))
+        .map(|w| w.phys)
+        .collect();
+    words.sort_unstable();
+    words.dedup();
+    let mut live: BTreeMap<u32, u8> = BTreeMap::new();
+    if !words.is_empty() {
+        let regions: Vec<(u32, usize)> = words.iter().map(|&p| (p, 4)).collect();
+        for (&p, data) in words.iter().zip(cart.read_many(&regions)?) {
+            for (i, &b) in data.iter().take(4).enumerate() {
+                live.insert(p + i as u32, b);
             }
         }
     }
-    (out, changed)
-}
-
-fn apply(cart: &mut dyn Backend, w: &Write, bitwise: &[Range<u32>]) -> io::Result<()> {
-    let needs_live = (0..4).any(|i| {
-        w.client[i] != w.served[i] && bitwise.iter().any(|r| r.contains(&(w.phys + i as u32)))
-    });
-    let live = if needs_live {
-        let got = cart.read_many(&[(w.phys, 4)])?;
-        Some(got[0][..4].try_into().unwrap())
-    } else {
-        None
-    };
-    let (out, changed) = merge(w, live, bitwise);
-    if changed.is_empty() {
-        return Ok(());
-    }
-    // One region per run of adjacent changed bytes.
-    let mut runs: Vec<(usize, usize)> = Vec::new();
-    for &i in &changed {
-        match runs.last_mut() {
-            Some((_, end)) if *end == i => *end = i + 1,
-            _ => runs.push((i, i + 1)),
+    let mut out: BTreeMap<u32, u8> = BTreeMap::new();
+    for w in writes {
+        for i in changed(w) {
+            let a = w.phys + i as u32;
+            let byte = if flag(a) {
+                let set = w.client[i] & !w.served[i];
+                let clear = w.served[i] & !w.client[i];
+                let now = out.get(&a).or(live.get(&a)).copied().unwrap_or(w.served[i]);
+                (now & !clear) | set
+            } else {
+                w.client[i]
+            };
+            out.insert(a, byte);
         }
     }
-    let writes: Vec<(u32, &[u8])> = runs
-        .iter()
-        .map(|&(a, b)| (w.phys + a as u32, &out[a..b]))
-        .collect();
-    cart.write_many(&writes)
+    // One region per run of adjacent bytes.
+    let mut runs: Vec<(u32, Vec<u8>)> = Vec::new();
+    for (a, b) in out {
+        match runs.last_mut() {
+            Some((start, bytes)) if *start + bytes.len() as u32 == a => bytes.push(b),
+            _ => runs.push((a, vec![b])),
+        }
+    }
+    if runs.is_empty() {
+        return Ok(());
+    }
+    let regions: Vec<(u32, &[u8])> = runs.iter().map(|(a, b)| (*a, b.as_slice())).collect();
+    cart.write_many(&regions)
 }
 
 /// The UDP side: answer every datagram from the snapshot until `stop`.
+///
+/// The receive blocks with no timeout, and [`serve`] wakes it to stop with an empty datagram.
+/// It used to wake every 50 ms on a read timeout to look at `stop`, and on Windows a receive
+/// that times out can drop a datagram arriving as it does. On a console that was the client's
+/// first request after its 0.2 s pause between passes, now and then: it never reached
+/// [`Snapshot::handle`], and the client logged "timed out" and reconnected.
 fn answer(sock: &UdpSocket, snap: &Snapshot, stop: &AtomicBool) {
     let mut buf = [0u8; 4096];
     while !stop.load(Ordering::Relaxed) {
         let (n, peer) = match sock.recv_from(&mut buf) {
             Ok(r) => r,
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue
-            }
             // Windows reports an earlier reply's ICMP port-unreachable on the next receive.
             // It says nothing about this datagram, and clients open a fresh socket each time
             // they attach, so it happens as a matter of course.
             Err(e) if e.kind() == io::ErrorKind::ConnectionReset => continue,
             Err(_) => continue,
         };
+        if n == 0 {
+            // A wake from `serve`, or nothing a client would send.
+            continue;
+        }
         let got = Instant::now();
         let line = String::from_utf8_lossy(&buf[..n]);
         let reply = snap.handle(&line, Some(peer));
@@ -425,12 +473,11 @@ pub fn serve(
             opts.port
         )
     })?;
-    sock.set_read_timeout(Some(RECV_POLL))
-        .map_err(|e| e.to_string())?;
+    let here_at = sock.local_addr().map_err(|e| e.to_string())?;
     let snap = Snapshot::new(cart.rdram_size());
     let done = AtomicBool::new(false);
     std::thread::scope(|scope| {
-        scope.spawn(|| answer(&sock, &snap, &done));
+        let answering = scope.spawn(|| answer(&sock, &snap, &done));
         on_event(Event::Listening(opts.port));
         let mut here = false;
         let mut counted = 0u64;
@@ -474,6 +521,11 @@ pub fn serve(
             }
         };
         done.store(true, Ordering::Relaxed);
+        // The answering thread is blocked in its receive: wake it until it has seen `done`.
+        while !answering.is_finished() {
+            let _ = sock.send_to(&[], here_at);
+            std::thread::sleep(Duration::from_millis(10));
+        }
         result
     })
 }
@@ -645,13 +697,196 @@ mod tests {
         );
     }
 
+    /// A cart that records each request made of it, in order.
+    struct Recording {
+        ram: RamImage,
+        calls: Vec<String>,
+    }
+
+    impl Backend for Recording {
+        fn rdram_size(&self) -> u32 {
+            self.ram.rdram_size()
+        }
+        fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+            let at: Vec<String> = regions.iter().map(|r| format!("{:X}", r.0)).collect();
+            self.calls.push(format!("read {}", at.join(",")));
+            self.ram.read_many(regions)
+        }
+        fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
+            let at: Vec<String> = writes
+                .iter()
+                .map(|w| format!("{:X}+{}", w.0, w.1.len()))
+                .collect();
+            self.calls.push(format!("write {}", at.join(",")));
+            self.ram.write_many(writes)
+        }
+        fn rom_window(&self) -> Option<u32> {
+            None
+        }
+        fn read_rom_many(&mut self, _: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+            unimplemented!()
+        }
+    }
+
+    /// A window the client has just asked for is fetched before the writes queued ahead of it,
+    /// because a reply is waiting on it. Behind a new seed's settings it missed its deadline.
     #[test]
-    fn merge_writes_nothing_for_an_unchanged_word() {
-        let w = Write {
-            phys: 0x1000,
-            served: [1, 2, 3, 4],
-            client: [1, 2, 3, 4],
+    fn a_new_window_is_fetched_before_queued_writes_go_out() {
+        let mut cart = Recording {
+            ram: ram(),
+            calls: Vec::new(),
         };
-        assert!(merge(&w, None, &[FLAGS]).1.is_empty());
+        let snap = primed(&mut cart.ram, &[0x2000]);
+        snap.handle("WRITE_CORE_MEMORY A0002000 01 02 03 04", None);
+        snap.inner.0.lock().unwrap().wanted.push(0x5000);
+        snap.refresh(&mut cart, &[FLAGS]).unwrap();
+        assert_eq!(cart.calls, ["read 5000", "write 2000+4", "read 2000"]);
+        // The queued write shows over the fetch, which the cart did not have yet.
+        assert_eq!(
+            snap.handle("READ_CORE_MEMORY A0002000 4", None),
+            "READ_CORE_MEMORY A0002000 01 02 03 04"
+        );
+    }
+
+    /// A burst of writes is one request to the cart, not one each.
+    #[test]
+    fn a_burst_of_writes_is_one_request() {
+        let mut cart = Recording {
+            ram: ram(),
+            calls: Vec::new(),
+        };
+        let snap = primed(&mut cart.ram, &[0x3000]);
+        for (addr, v) in [("A0003000", "11"), ("A0003004", "22"), ("A0003040", "33")] {
+            let reply = snap.handle(&format!("WRITE_CORE_MEMORY {addr} 00 00 00 {v}"), None);
+            assert_eq!(reply, format!("WRITE_CORE_MEMORY {addr} 4"));
+        }
+        snap.refresh(&mut cart, &[FLAGS]).unwrap();
+        assert_eq!(cart.calls, ["write 3000+1,3004+1,3040+1", "read 3000"]);
+        assert_eq!(word(&mut cart.ram, 0x3000)[0], 0x11);
+        assert_eq!(word(&mut cart.ram, 0x3004)[0], 0x22);
+        assert_eq!(word(&mut cart.ram, 0x3040)[0], 0x33);
+    }
+
+    /// Two writes to one byte in a batch: the later lands, as it would one at a time.
+    #[test]
+    fn the_later_of_two_writes_to_a_byte_lands() {
+        let mut cart = ram();
+        let snap = primed(&mut cart, &[0x3000]);
+        snap.handle("WRITE_CORE_MEMORY A0003000 00 00 00 05", None);
+        snap.handle("WRITE_CORE_MEMORY A0003000 00 00 00 06", None);
+        snap.refresh(&mut cart, &[FLAGS]).unwrap();
+        assert_eq!(word(&mut cart, 0x3000)[0], 0x06);
+    }
+
+    /// Two bitwise writes to one flag byte in a batch both land, over the bit the game set.
+    #[test]
+    fn bitwise_writes_in_a_batch_compose() {
+        let mut cart = ram();
+        let snap = primed(&mut cart, &[0x1000]);
+        cart.write_many(&[(0x1000, &[0b0000_0101])]).unwrap(); // the game sets bit 2
+        snap.handle("WRITE_CORE_MEMORY A0001000 00 00 00 03", None); // client: bit 1
+        snap.handle("WRITE_CORE_MEMORY A0001000 00 00 00 0B", None); // client: bit 3
+        snap.refresh(&mut cart, &[FLAGS]).unwrap();
+        assert_eq!(word(&mut cart, 0x1000)[0], 0b0000_1111);
+    }
+
+    /// A word the client wrote back unchanged puts nothing on the cart.
+    #[test]
+    fn an_unchanged_word_writes_nothing() {
+        let mut cart = Recording {
+            ram: ram(),
+            calls: Vec::new(),
+        };
+        let snap = primed(&mut cart.ram, &[0x2000]);
+        snap.handle("WRITE_CORE_MEMORY A0002000 28 33 5E 80", None);
+        snap.refresh(&mut cart, &[FLAGS]).unwrap();
+        assert_eq!(cart.calls, ["read 2000"]);
+    }
+
+    /// The client opens a new socket each time it reconnects. That it did, and what AP64 last
+    /// answered and how fast, tells a reply lost on the way from a request never seen.
+    #[test]
+    fn a_client_on_a_new_socket_is_a_line_with_the_last_answer() {
+        let mut cart = ram();
+        let snap = primed(&mut cart, &[0x2000]);
+        let (a, b): (SocketAddr, SocketAddr) = (
+            "127.0.0.1:50001".parse().unwrap(),
+            "127.0.0.1:50002".parse().unwrap(),
+        );
+        snap.handle("READ_CORE_MEMORY A0002000 4", Some(a));
+        snap.replied("READ_CORE_MEMORY A0002000 4", Duration::from_millis(3));
+        snap.handle("READ_CORE_MEMORY A0002000 4", Some(a));
+        assert!(snap.take_notes().is_empty(), "the same socket says nothing");
+        snap.handle("READ_CORE_MEMORY A0002000 4", Some(b));
+        let notes = snap.take_notes();
+        assert!(
+            matches!(notes.as_slice(), [Event::Note(n)]
+                if n.contains("reconnected") && n.contains("(READ_CORE_MEMORY A0002000), which was answered in 3 ms")
+                    && !n.contains("  ")),
+            "{notes:?}"
+        );
+    }
+
+    /// Over a real socket: requests after idle gaps are answered, as the client makes them
+    /// after each pause between passes, and a stop ends the session at once even though the
+    /// receive has no timeout.
+    #[test]
+    fn serve_answers_after_idle_gaps_and_stops_promptly() {
+        let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let stop = AtomicBool::new(false);
+        let opts = Options { port, bitwise: &[] };
+        let (listening, heard) = std::sync::mpsc::channel();
+        let stop_at = &stop;
+        let (answers, stopped_in) = std::thread::scope(|scope| {
+            let serving = scope.spawn(move || {
+                let mut cart = ram();
+                serve(&mut cart, &opts, stop_at, &mut |e| {
+                    if matches!(e, Event::Listening(_)) {
+                        let _ = listening.send(());
+                    }
+                })
+            });
+            heard
+                .recv_timeout(Duration::from_secs(5))
+                .expect("serve listens");
+            let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut buf = [0u8; 256];
+            let mut ask = || {
+                client
+                    .send_to(b"READ_CORE_MEMORY A0002000 4", (Ipv4Addr::LOCALHOST, port))
+                    .unwrap();
+                client
+                    .recv(&mut buf)
+                    .map(|n| String::from_utf8_lossy(&buf[..n]).into_owned())
+                    .unwrap_or_else(|e| format!("no answer: {e}"))
+            };
+            // The first ask may be a miss while the window is fetched; after that, every one
+            // is the word, however long the pause before it.
+            let _ = ask();
+            std::thread::sleep(Duration::from_millis(400));
+            let answers: Vec<String> = [120, 210, 90, 260]
+                .iter()
+                .map(|&pause| {
+                    std::thread::sleep(Duration::from_millis(pause));
+                    ask()
+                })
+                .collect();
+            // Stopped before anything is asserted, so a failure cannot leave serve running.
+            let t = Instant::now();
+            stop.store(true, Ordering::Relaxed);
+            serving.join().unwrap().unwrap();
+            (answers, t.elapsed())
+        });
+        for a in answers {
+            assert_eq!(a, "READ_CORE_MEMORY A0002000 28 33 5E 80");
+        }
+        assert!(stopped_in < Duration::from_secs(1), "{stopped_in:?}");
     }
 }

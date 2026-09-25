@@ -92,7 +92,7 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [crates/ap64-core](crates/ap64-core) | `ap64-core` — seed detection, per-game profiles, splicing the cart agent in; the prebuilt agent images and their build |
 | [crates/ap64-cli](crates/ap64-cli) | `ap64-cli` — `ap64-patch`, the patcher from the command line |
 | [crates/ap64-cart](crates/ap64-cart) | `ap64-cart` — RDRAM and cart ROM over M64P through `multi64d` |
-| [crates/ap64-connector](crates/ap64-connector) | `ap64-connector` — forked Archipelago connector scripts in embedded Lua, and the TCP side their client connects to; and the native connector for clients with no script to fork (RetroArch Network Commands over UDP, for Donkey Kong 64) |
+| [crates/ap64-connector](crates/ap64-connector) | `ap64-connector` — forked Archipelago connector scripts in embedded Lua, and the TCP side their client connects to; and the native connector for clients with no script to fork (RetroArch Network Commands over UDP, for Donkey Kong 64 and Banjo-Tooie) |
 | [crates/multi64-sc64-sd](crates/multi64-sc64-sd) | **SC64 SD over USB** — `Sc64SdSession`, FAT32 + exFAT (Xfer64 and the `sc64-sd-e2e` tool; **not** `multi64d`, which speaks L3 only); RAM-disk tests in `cargo test` |
 | [crates/multi64-ed64-link](crates/multi64-ed64-link) | EverDrive X-series `usb64` serial (`RomRead` / `RamRead`) |
 | [crates/ed64pro-link](crates/ed64pro-link) | `multi64-ed64pro-link` — EverDrive-64 PRO host link over edlink Gen3 ([spec](docs/spec/ed64-pro-usb-host.md)); scripted-transport tests only, **never run against a cart** |

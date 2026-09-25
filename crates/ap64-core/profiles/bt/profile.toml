@@ -21,7 +21,7 @@ game_code = "NEDE"        # the randomizer changes it from retail's NB7E
 version = 48
 cic = "6105"
 randomizer = "jjjj12212's Banjo-Tooie world"
-connector = "bt"          # its own client; AP64 forks the connector Lua
+connector = "bt"          # native: AP64 answers Banjo-Tooie Client as RetroArch (ap64-connector bt)
 
 # The agent rides the randomizer's boot DMA rather than being copied by the stub. The
 # first design did it the usual way -- the stub calls the game's ROM copy routine -- and
