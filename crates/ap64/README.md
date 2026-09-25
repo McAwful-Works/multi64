@@ -106,6 +106,29 @@ switch in the corner, is for what only someone working on AP64 reads: the connec
 round-trip counters, the bridge address, and the addresses behind a failed status. It is off
 until turned on, and remembered after that.
 
+## The session log
+
+Each line starts with the local time it was logged, to line up with the client's log file in
+Archipelago's `logs` folder. Each session's log is also written to a file as it happens, in
+`%APPDATA%\dev.multi64.ap64\logs`, named by the time the session started. The newest 20 are
+kept. **Show file** in the log window opens the folder with the current one selected, so a crash
+or a closed window loses nothing, and the log can be sent with a report.
+
+What it says:
+
+- **First:** the AP64 version and the commit it was built from, the game, the Multi64 address, and
+  where the log file is. Then, once the cart answers, where the agent is on it. For most games
+  that's its ROM offset; if a seed's data ran into the agent's usual place, the log says so.
+- **The cart going quiet.** The first stall of a run gets a line saying how long the agent was
+  silent. The rest of that run is one line 30 seconds later, with the count and the longest. A
+  reconnect says how long the cart was out of reach.
+- **For a client AP64 answers itself** (DK64 Client), every reply that had to say the cart hadn't
+  answered yet, with the address as the client wrote it, so it can be found in the client's log. Also any
+  reply slower than the half second the client waits, and the client asking again after a
+  pause.
+- **Every five minutes, a summary:** requests answered, errors, stalls, reconnects, and whether
+  the client is connected.
+
 ## Starting and stopping
 
 **Start** means keep at it until you say otherwise. A console reset, a ROM swapped, the wrong

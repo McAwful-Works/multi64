@@ -201,6 +201,81 @@ const ROM_PAGE: u32 = 1024;
 /// Tries at a `PEEKROM` the cart answered `E_BUSY` (the game held the PI bus).
 const ROM_BUSY_TRIES: u32 = 5;
 
+/// After a stall is logged, how long later ones are counted instead of logged one by one.
+///
+/// A scene load stalls the agent over and over, and a line for each buried everything else in
+/// the session log. The first says it has started; one line at the end says how many more there
+/// were and the longest.
+const STALL_RUN: Duration = Duration::from_secs(30);
+
+/// Stalls counted since the one that was logged.
+struct StallRun {
+    since: Instant,
+    more: u32,
+    longest: Duration,
+}
+
+/// What the session log says about stalls: the first of a run in full, the rest counted and
+/// said in one line once [`STALL_RUN`] has passed. Times are passed in, so tests can move them.
+#[derive(Default)]
+struct StallLog {
+    run: Option<StallRun>,
+}
+
+impl StallLog {
+    /// A stall of `silent`, answered on `attempt`. The line to log, if this one gets one.
+    fn stalled(
+        &mut self,
+        at: Instant,
+        what: &str,
+        silent: Duration,
+        attempt: u32,
+    ) -> Option<String> {
+        match &mut self.run {
+            Some(run) => {
+                run.more += 1;
+                run.longest = run.longest.max(silent);
+                None
+            }
+            None => {
+                self.run = Some(StallRun {
+                    since: at,
+                    more: 0,
+                    longest: Duration::ZERO,
+                });
+                Some(format!(
+                    "cart {what}: agent silent for {}, answered on attempt {attempt}",
+                    secs(silent)
+                ))
+            }
+        }
+    }
+
+    /// The line for the stalls counted since the last one logged, once [`STALL_RUN`] has
+    /// passed by `at`, or regardless with `now`. `total` is the session's count so far.
+    fn flush(&mut self, at: Instant, now: bool, total: u32) -> Option<String> {
+        let run = self.run.as_ref()?;
+        let spent = at.saturating_duration_since(run.since);
+        if !now && spent < STALL_RUN {
+            return None;
+        }
+        let run = self.run.take()?;
+        (run.more > 0).then(|| {
+            format!(
+                "cart: {} more stall{} in the {} after that, the longest {} ({total} this session)",
+                run.more,
+                if run.more == 1 { "" } else { "s" },
+                secs(spent),
+                secs(run.longest),
+            )
+        })
+    }
+}
+
+fn secs(d: Duration) -> String {
+    format!("{:.1} s", d.as_secs_f32())
+}
+
 /// Counters worth showing a player: what the session has survived.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -254,6 +329,8 @@ pub struct Multi64 {
     reconnect_deadline: Duration,
     /// Whether the last request had to be retried, so recovery is reported once.
     ailing: bool,
+    /// Stalls being counted rather than logged ([`STALL_RUN`]).
+    stall_log: StallLog,
     /// The link generation the watch was last set up for, so a cart that restarted is
     /// asked again before anything relies on it.
     watch_armed_at: Option<u32>,
@@ -278,6 +355,7 @@ impl Multi64 {
             cancelled: None,
             reconnect_deadline: RECONNECT_DEADLINE,
             ailing: false,
+            stall_log: StallLog::default(),
         })
     }
 
@@ -315,6 +393,25 @@ impl Multi64 {
         }
     }
 
+    /// Log a stall: the first of a run in full, the rest counted ([`STALL_RUN`]).
+    fn note_stall(&mut self, what: &str, silent: Duration, attempt: u32) {
+        self.stats.stalls += 1;
+        if let Some(line) = self
+            .stall_log
+            .stalled(Instant::now(), what, silent, attempt)
+        {
+            (self.log)(line);
+        }
+    }
+
+    /// Say how many stalls were counted since the last one logged, once [`STALL_RUN`] has
+    /// passed, or at once with `now` (before a line that should follow them, or at the end).
+    pub fn flush_stalls(&mut self, now: bool) {
+        if let Some(line) = self.stall_log.flush(Instant::now(), now, self.stats.stalls) {
+            (self.log)(line);
+        }
+    }
+
     /// Run `op`, riding out a silent agent, then rebuilding the transport with backoff.
     ///
     /// Both operations are idempotent -- `PEEKV` is a read, and a repeated `POKEV`
@@ -325,6 +422,8 @@ impl Multi64 {
         mut op: impl FnMut(&mut Multi64Transport) -> io::Result<T>,
     ) -> io::Result<T> {
         let health = self.health.clone();
+        self.flush_stalls(false);
+        let started = Instant::now();
         let mut last = match op(&mut self.t) {
             Ok(v) => {
                 if self.ailing {
@@ -353,12 +452,7 @@ impl Multi64 {
             }
             match op(&mut self.t) {
                 Ok(v) => {
-                    self.stats.stalls += 1;
-                    (self.log)(format!(
-                        "cart {what}: agent silent, answered on attempt {} (stall #{})",
-                        attempt + 1,
-                        self.stats.stalls
-                    ));
+                    self.note_stall(what, started.elapsed(), attempt + 1);
                     if self.ailing {
                         self.ailing = false;
                         if let Some(h) = &health {
@@ -371,10 +465,13 @@ impl Multi64 {
             }
         }
 
+        self.flush_stalls(true);
         (self.log)(format!(
-            "cart {what} failed: {last}; reconnecting to {}",
+            "cart {what} failed after {} silent: {last}; reconnecting to {}",
+            secs(started.elapsed()),
             self.url
         ));
+        let down = Instant::now();
         // Past the soft retries: whatever the caller asked for, the cart is not answering, and
         // from here this call may not return for minutes.
         if !self.ailing {
@@ -417,7 +514,8 @@ impl Multi64 {
                     // may not even be the same agent. Ask again before anything reads.
                     self.watch_on_cart = false;
                     (self.log)(format!(
-                        "cart reconnected (reconnect #{})",
+                        "cart reconnected after {} (reconnect #{})",
+                        secs(down.elapsed()),
                         self.stats.reconnects
                     ));
                     match op(&mut self.t) {
@@ -801,6 +899,54 @@ mod tests {
 
     fn spans(chunks: &[m64p::Region]) -> Vec<(u32, u16)> {
         chunks.iter().map(|c| (c.addr, c.len)).collect()
+    }
+
+    /// A scene load's stalls come to two lines: the first, and one for the rest of the run.
+    #[test]
+    fn a_run_of_stalls_is_two_lines() {
+        let t0 = Instant::now();
+        let ms = |n| Duration::from_millis(n);
+        let mut log = StallLog::default();
+        let first = log.stalled(t0, "read", ms(1400), 2).unwrap();
+        assert_eq!(
+            first,
+            "cart read: agent silent for 1.4 s, answered on attempt 2"
+        );
+        assert_eq!(log.stalled(t0 + ms(900), "write", ms(2100), 2), None);
+        assert_eq!(log.stalled(t0 + ms(1800), "read", ms(700), 2), None);
+        assert_eq!(
+            log.flush(t0 + ms(5000), false, 3),
+            None,
+            "still inside the run"
+        );
+        assert_eq!(
+            log.flush(t0 + STALL_RUN, false, 3).unwrap(),
+            "cart: 2 more stalls in the 30.0 s after that, the longest 2.1 s (3 this session)"
+        );
+        // The next stall starts a new run, logged in full.
+        assert!(log
+            .stalled(t0 + STALL_RUN + ms(1), "read", ms(500), 2)
+            .is_some());
+    }
+
+    /// A stall on its own says nothing more, and a flush forced early says what it has.
+    #[test]
+    fn a_lone_stall_is_one_line_and_a_forced_flush_is_immediate() {
+        let t0 = Instant::now();
+        let mut log = StallLog::default();
+        assert!(log
+            .stalled(t0, "read", Duration::from_millis(600), 2)
+            .is_some());
+        assert_eq!(log.flush(t0 + STALL_RUN, false, 1), None);
+        assert!(log
+            .stalled(t0, "read", Duration::from_millis(600), 2)
+            .is_some());
+        assert_eq!(log.stalled(t0, "read", Duration::from_millis(900), 2), None);
+        let line = log.flush(t0 + Duration::from_secs(2), true, 2).unwrap();
+        assert!(
+            line.starts_with("cart: 1 more stall in the 2.0 s"),
+            "{line}"
+        );
     }
 
     /// The three regions read from Paper Mario on hardware go out as one request, as

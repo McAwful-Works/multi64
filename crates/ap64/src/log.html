@@ -15,7 +15,11 @@
   <body class="log-page">
     <div class="row log-actions">
       <span class="hint" id="log-count">No lines yet.</span>
-      <button type="button" id="btn-copy" class="btn btn-quiet">Copy</button>
+      <span class="row log-buttons">
+        <button type="button" id="btn-log-file" class="btn btn-quiet" disabled
+                title="Show this session's log file in its folder">Show file</button>
+        <button type="button" id="btn-copy" class="btn btn-quiet">Copy</button>
+      </span>
     </div>
     <pre id="log" class="log log-fill" aria-label="Session log" tabindex="0"></pre>
   </body>
