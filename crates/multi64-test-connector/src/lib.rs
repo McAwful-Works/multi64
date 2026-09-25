@@ -713,7 +713,8 @@ impl DiagSnapshot {
             1 => Self::BODY_LEN_V1,
             2 => Self::BODY_LEN_V2,
             v => anyhow::bail!(
-                "DIAG body version {v} is not one this build understands (1 or 2) - update the                  connector to match the ROM"
+                "DIAG body version {v} is not one this build understands (1 or 2) - update the \
+                 connector to match the ROM"
             ),
         };
         if body.len() < need {

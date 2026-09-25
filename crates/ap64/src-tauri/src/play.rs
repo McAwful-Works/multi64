@@ -1000,8 +1000,9 @@ fn run(
                         log(format!("the connector script would not load: {e}"));
                         set(&|s| {
                             s.state = "waiting-console".into();
-                            s.detail = "the connector could not read the game;                             check the ROM on the console"
-                    .into();
+                            s.detail =
+                                "the connector could not read the game; check the ROM on the console"
+                                    .into();
                             s.detail_dev = e.clone();
                             s.console = FAILED.into();
                         });
