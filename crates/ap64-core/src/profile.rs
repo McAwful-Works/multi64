@@ -3,6 +3,10 @@
 //!
 //! Profiles carry no retail bytes beyond single instruction words: regions are checked by
 //! hash, and code comes from our own blobs.
+//!
+//! Most places are fixed ROM offsets. A randomizer that moves the game's code around between
+//! releases gets a [`Find`] instead: a hashed region located in each seed, which other checks
+//! and writes then give their places relative to (see [`Addr`]).
 
 use serde::Deserialize;
 
@@ -31,6 +35,8 @@ pub struct Profile {
     #[serde(default)]
     pub transform: Option<Transform>,
     pub agent: Agent,
+    #[serde(default)]
+    pub find: Vec<Find>,
     #[serde(default)]
     pub require: Vec<Require>,
     #[serde(default)]
@@ -75,6 +81,47 @@ impl Agent {
     }
 }
 
+/// A region located in each seed instead of at a fixed offset: the one word-aligned place
+/// where `len` bytes starting with `word` hash to `sha1`. Not found, or found more than once,
+/// and the seed is refused. It is as strong a pin as a `sha1` check, only allowed to move.
+///
+/// Its `name` is what an [`Addr`] refers to it by.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Find {
+    pub name: String,
+    pub label: String,
+    /// The region's first word, which picks the candidates the hash is tried on.
+    pub word: u32,
+    pub len: u32,
+    pub sha1: String,
+    /// The RAM address the region runs at, so places near it can be given as `name@0x8...`.
+    #[serde(default)]
+    pub vram: Option<u32>,
+    #[serde(default)]
+    pub hint: String,
+}
+
+/// Where a check or a write is in the seed: a ROM offset, or a place relative to a [`Find`].
+///
+/// The string forms are `name`, `name+0x14`, `name-0x14`, and `name@0x805FC4CC`: the byte
+/// that runs at that RAM address, for a find that says where its region runs.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum Addr {
+    Rom(u32),
+    Found(String),
+}
+
+impl std::fmt::Display for Addr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Addr::Rom(at) => write!(f, "0x{at:X}"),
+            Addr::Found(s) => f.write_str(s),
+        }
+    }
+}
+
 /// The value an `imm` write puts in a `lui`/`addiu` or `lui`/`ori` pair.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -91,7 +138,7 @@ pub enum Require {
     /// A 32-bit word equals a constant (typically the call being retargeted).
     Word {
         label: String,
-        at: u32,
+        at: Addr,
         equals: u32,
         #[serde(default)]
         hint: String,
@@ -99,7 +146,7 @@ pub enum Require {
     /// A region hashes to a known SHA-1 (typically where the stub goes, or code the stub calls).
     Sha1 {
         label: String,
-        at: u32,
+        at: Addr,
         len: u32,
         sha1: String,
         #[serde(default)]
@@ -114,12 +161,16 @@ pub enum Write {
     /// A blob from the profile directory, at a fixed offset, no longer than `max_len`.
     Blob {
         label: String,
-        at: u32,
+        at: Addr,
         file: String,
         max_len: u32,
     },
     /// A `jal` to `target`, replacing the word at `at`.
-    Jal { label: String, at: u32, target: u32 },
+    Jal {
+        label: String,
+        at: Addr,
+        target: u32,
+    },
     /// Copy `len` bytes of the seed, from `from`, into the appended region at `at`.
     Copy {
         label: String,
@@ -132,9 +183,9 @@ pub enum Write {
     /// decides the split, since only `addiu` sign-extends.
     Imm {
         label: String,
-        hi: u32,
+        hi: Addr,
         #[serde(default)]
-        lo: Option<u32>,
+        lo: Option<Addr>,
         value: ImmValue,
     },
     /// Put back bytes a patch changed. The seed must hold either `bytes` already or one of
@@ -169,21 +220,64 @@ impl Profile {
                 profile.game_code
             ));
         }
+        let mut names = std::collections::HashSet::new();
+        for f in &profile.find {
+            let ok = !f.name.is_empty()
+                && f.name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            if !ok || !names.insert(f.name.as_str()) {
+                return Err(format!(
+                    "find name {:?} is empty, invalid or repeated",
+                    f.name
+                ));
+            }
+            if f.len < 4 || f.sha1.len() != 40 || parse_hex(&f.sha1).is_err() {
+                return Err(format!(
+                    "find {:?} needs a len of at least 4 and a 40-digit sha1",
+                    f.name
+                ));
+            }
+        }
+        for r in &profile.require {
+            let (Require::Word { at, .. } | Require::Sha1 { at, .. }) = r;
+            profile.place(at)?;
+        }
+
         // Every write must land on bytes a check has pinned down, so a seed that changed
         // them is refused instead of silently overwritten. The appended region is ours.
         let region = profile.agent.region();
         if profile.agent.rom < region {
             return Err("agent.rom lies before agent.region".into());
         }
-        let pinned = |at: u32, len: u32| {
-            at >= region
-                || profile.require.iter().any(|r| match r {
-                    Require::Word { at: w, .. } => *w == at && len == 4,
-                    Require::Sha1 { at: s, len: n, .. } => *s <= at && at + len <= s + n,
-                })
+        let pinned = |at: &Addr, len: u32| -> Result<bool, String> {
+            let (base, at) = profile.place(at)?;
+            let len = i64::from(len);
+            if base.is_none() && at >= i64::from(region) {
+                return Ok(true);
+            }
+            // Writing into a find's own region would leave a patched ROM with nothing to find.
+            if let Some(f) = base.and_then(|b| profile.find.iter().find(|f| f.name == b)) {
+                if at < i64::from(f.len) && at + len > 0 {
+                    return Err(format!("a write lands inside find {:?}", f.name));
+                }
+            }
+            for r in &profile.require {
+                let covers = match r {
+                    Require::Word { at: w, .. } => profile.place(w)? == (base, at) && len == 4,
+                    Require::Sha1 { at: s, len: n, .. } => {
+                        let (b, s) = profile.place(s)?;
+                        b == base && s <= at && at + len <= s + i64::from(*n)
+                    }
+                };
+                if covers {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
         };
         if let Some(slot) = profile.agent.dma_slot {
-            if !pinned(slot, 32) {
+            if !pinned(&Addr::Rom(slot), 32)? {
                 return Err(format!(
                     "dma_slot 0x{slot:X} and the entry after it are not covered by a sha1 check"
                 ));
@@ -202,15 +296,15 @@ impl Profile {
                         }
                     }
                 }
-                Write::Blob { at, max_len, .. } if !pinned(*at, *max_len) => {
+                Write::Blob { at, max_len, .. } if !pinned(at, *max_len)? => {
                     return Err(format!(
-                        "blob {:?} at 0x{at:X}+0x{max_len:X} is not covered by a sha1 check",
+                        "blob {:?} at {at}+0x{max_len:X} is not covered by a sha1 check",
                         w.label()
                     ));
                 }
-                Write::Jal { at, .. } if !pinned(*at, 4) => {
+                Write::Jal { at, .. } if !pinned(at, 4)? => {
                     return Err(format!(
-                        "jal {:?} at 0x{at:X} is not covered by a word check",
+                        "jal {:?} at {at} is not covered by a word check",
                         w.label()
                     ));
                 }
@@ -221,10 +315,10 @@ impl Profile {
                     ));
                 }
                 Write::Imm { hi, lo, value, .. } => {
-                    for at in std::iter::once(*hi).chain(*lo) {
-                        if !pinned(at, 4) {
+                    for at in std::iter::once(hi).chain(lo) {
+                        if !pinned(at, 4)? {
                             return Err(format!(
-                                "imm {:?} at 0x{at:X} is not covered by a word check",
+                                "imm {:?} at {at} is not covered by a word check",
                                 w.label()
                             ));
                         }
@@ -243,6 +337,45 @@ impl Profile {
 
     pub fn cic(&self) -> Result<Cic, String> {
         self.cic.parse()
+    }
+
+    /// `at` as an offset from the start of the named find's region, or from the start of
+    /// the ROM (`None`).
+    pub fn place<'a>(&'a self, at: &'a Addr) -> Result<(Option<&'a str>, i64), String> {
+        let text = match at {
+            Addr::Rom(at) => return Ok((None, i64::from(*at))),
+            Addr::Found(text) => text.as_str(),
+        };
+        let bad = || format!("{text:?} is not name, name+N, name-N or name@VRAM");
+        let (name, rest) = match text.find(['+', '-', '@']) {
+            Some(i) => text.split_at(i),
+            None => (text, ""),
+        };
+        let find = self
+            .find
+            .iter()
+            .find(|f| f.name == name.trim())
+            .ok_or_else(|| format!("{text:?} names no find"))?;
+        let number = |n: &str| {
+            let n = n.trim();
+            match n.strip_prefix("0x") {
+                Some(hex) => i64::from_str_radix(hex, 16),
+                None => n.parse(),
+            }
+            .map_err(|_| bad())
+        };
+        let offset = match rest.chars().next() {
+            None => 0,
+            Some('+') => number(&rest[1..])?,
+            Some('-') => -number(&rest[1..])?,
+            _ => {
+                let vram = find
+                    .vram
+                    .ok_or_else(|| format!("{text:?}: find {:?} gives no vram", find.name))?;
+                number(&rest[1..])? - i64::from(vram)
+            }
+        };
+        Ok((Some(find.name.as_str()), offset))
     }
 }
 

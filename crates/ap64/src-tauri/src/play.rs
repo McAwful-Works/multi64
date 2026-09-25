@@ -2,8 +2,9 @@
 //! daemon, for Archipelago's own client to connect to.
 //!
 //! There is no ROM file to choose. The connector reads the ROM from the cart (M64P
-//! `PEEKROM`), and before starting, the session reads the cart's header and hook sites to
-//! check it is running the chosen game with its agent in place.
+//! `PEEKROM`), and before starting, the session reads the cart's header and hook sites (or,
+//! for a hook the profile finds per seed, the agent image) to check it is running the chosen
+//! game with its agent in place.
 //!
 //! One session at a time, on its own thread (the connector's Lua state is not `Send`,
 //! so everything is built there). The page hears about it through two events:
@@ -24,7 +25,7 @@ use ap64_cart::backend::{Backend, Multi64, Stats};
 use ap64_cart::Log;
 use ap64_connector::server::{self, Event};
 use ap64_connector::{retroarch, Connector, Native, Script, NATIVES, SCRIPTS};
-use ap64_core::profile::{Transform, Write};
+use ap64_core::profile::{Addr, Transform, Write};
 use ap64_core::transform::{dma_entries, rom_address, DmaEntry};
 use ap64_core::{rom as rom_fmt, Bundle};
 use serde::Serialize;
@@ -363,14 +364,24 @@ fn cart_table(cart: &mut Multi64, table: u32) -> Result<Vec<DmaEntry>, String> {
 /// A profile's offsets are where the game sees its bytes. For a profile with a transform they
 /// are not ROM offsets: AP64 stores a file it patched away from where the seed had it
 /// (`transform::repack`), so each hook is looked up in the cart's own file table first.
+///
+/// A hook placed relative to a find has no fixed offset to read, and locating it would mean
+/// reading the whole ROM back. The agent image is checked at its offset in its place.
 fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<String, Issue> {
     let p = &bundle.profile;
+    let mut found_hooks = false;
     let jals: Vec<(u32, u32)> = p
         .write
         .iter()
         .filter_map(|w| match w {
-            Write::Jal { at, target, .. } => {
-                Some((*at, 0x0C00_0000 | ((target >> 2) & 0x03FF_FFFF)))
+            Write::Jal {
+                at: Addr::Rom(at),
+                target,
+                ..
+            } => Some((*at, 0x0C00_0000 | ((target >> 2) & 0x03FF_FFFF))),
+            Write::Jal { .. } => {
+                found_hooks = true;
+                None
             }
             _ => None,
         })
@@ -438,6 +449,26 @@ fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<String, Issue> {
             } else {
                 format!("the hook at 0x{at:X}, ROM 0x{rom:X}, is 0x{word:08X}")
             }));
+        }
+    }
+    if found_hooks {
+        let image = &bundle.blobs[&p.agent.image];
+        let at = match &table {
+            None => p.agent.rom,
+            Some(t) => rom_address(t, p.agent.rom).ok_or_else(|| {
+                without(format!(
+                    "the file holding the agent at 0x{:X} is still compressed",
+                    p.agent.rom
+                ))
+            })?,
+        };
+        let got = cart
+            .read_rom_many(&[(at, image.len())])
+            .map_err(|e| Issue::plain(e.to_string()))?;
+        if got[0] != *image {
+            return Err(without(format!(
+                "the agent at ROM 0x{at:X} is not this build's"
+            )));
         }
     }
     Ok(h.name)

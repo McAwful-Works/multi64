@@ -2,12 +2,17 @@
 # dk64randomizer.com. Names from Rainchus/Donkey-Kong-64-Recompiled DK64Syms/dump.toml.
 # Every pinned range was checked byte-for-byte between the seed ROM and a live RAM dump.
 # Two mappings: boot segment vram = rom + 0x7FFFF400; main code (shipped uncompressed by
-# the randomizer, past 32 MB) vram = rom + 0x7E5C1540. Measurements: #309.
+# the randomizer, past 32 MB) vram = rom + 0x7E5C1540 in v1.5.8. Measurements: #309.
 # Blobs: crates/ap64-core/agent/build.sh dk64 (see BUILD_REV).
 #
-# Pinned to dk64.apworld v1.5.8. The randomizer patches the game's main code in place and
-# moves its own region between releases, so a new release is expected to fail these checks
-# and need measuring again (#309 has how).
+# The main code's ROM offset moves whenever anything the randomizer puts before it changes
+# size, so it is found in each seed (the `main` find below) and every main-code place is
+# given by its RAM address through it, as main@0x8.... The boot segment does not move.
+#
+# Measured against dk64.apworld v1.5.8. What finding the main code cannot absorb: a release
+# that patches the functions pinned here, or one that moves the heap top (where the
+# randomizer's own code starts). Those still fail these checks and need measuring again
+# (#309 has how, #312 the plan for the heap top).
 
 id = "dk64"
 name = "Donkey Kong 64"
@@ -24,24 +29,37 @@ rom = 0x3402000         # past the 52 MB image the randomizer produces (ends 0x3
 vram = 0x805BA000       # in the 32 KB the heap-top write below takes from the heap
 min_ram = 0x800000      # DK64 does not boot without an Expansion Pak anyway
 
+# The copy routine the stub loads the agent with, which the randomizer leaves alone, is
+# what locates the main code: the one place in the seed holding it is where the main
+# code's 0x805FB750 is. 0x203A210 in v1.5.8, among 313 places that open with the same
+# instruction.
+[[find]]
+name = "main"
+label = "ROM copy routine"
+word = 0x27BDFFD0       # addiu sp, sp, -0x30
+len = 0x94
+sha1 = "f24e90c61c47065d95239f95d6001b92ef37200f"
+vram = 0x805FB750       # func_global_asm_805FB750 -- (romOffset, size, dest), base at 0x8000DDCC
+hint = "The randomizer changed the routine the stub loads the agent with, which is also what locates the game's main code in the seed."
+
 [[require]]
 kind = "word"
 label = "Frame hook site"
-at = 0x203AF8C          # 0x805FC4CC in the frame loop: jal func_global_asm_8070DD44
+at = "main@0x805FC4CC"  # in the frame loop: jal func_global_asm_8070DD44
 equals = 0x0C1C3751
 hint = "The randomizer changed DK64's frame loop. It already hooks the same loop at 0x805FC3FC (that is expected); this pin is the call five instructions after it."
 
 [[require]]
 kind = "word"
 label = "Heap top (lui)"
-at = 0x204EFD0          # 0x80610510 in func_global_asm_80610388: lui t5, 0x805C
+at = "main@0x80610510"  # in func_global_asm_80610388: lui t5, 0x805C
 equals = 0x3C0D805C
 hint = "The heap's top is no longer 0x805C1040, which is where the randomizer's own code starts. The randomizer's region moved; the carve-out the agent lives in has to be re-measured."
 
 [[require]]
 kind = "word"
 label = "Heap top (ori)"
-at = 0x204EFD8          # 0x80610518: ori t5, t5, 0x1040
+at = "main@0x80610518"  # ori t5, t5, 0x1040
 equals = 0x35AD1040
 hint = "The heap's top is no longer 0x805C1040. Re-measure the carve-out before moving it."
 
@@ -56,18 +74,10 @@ hint = "Something now occupies the dead Controller Pak code the stub goes in. Re
 [[require]]
 kind = "sha1"
 label = "Function the hook calls first"
-at = 0x214C804          # func_global_asm_8070DD44
+at = "main@0x8070DD44"  # func_global_asm_8070DD44
 len = 0x98
 sha1 = "305d22d293fa8e18a92e49a99731e2d18e5b0d76"
 hint = "The randomizer changed the code the hook passes each frame through to."
-
-[[require]]
-kind = "sha1"
-label = "ROM copy routine"
-at = 0x203A210          # func_global_asm_805FB750 -- (romOffset, size, dest), base at 0x8000DDCC
-len = 0x94
-sha1 = "f24e90c61c47065d95239f95d6001b92ef37200f"
-hint = "The randomizer changed the routine the stub loads the agent with."
 
 [[require]]
 kind = "sha1"
@@ -91,8 +101,8 @@ hint = "The copy routine handles the data cache only, so the stub must invalidat
 [[write]]
 kind = "imm"
 label = "Heap top lowered 32 KB for the agent"
-hi = 0x204EFD0
-lo = 0x204EFD8
+hi = "main@0x80610510"
+lo = "main@0x80610518"
 value = 0x805B9040      # was 0x805C1040; the heap's low point measured 739 KB with this
 
 [[write]]
@@ -105,5 +115,5 @@ max_len = 0x660
 [[write]]
 kind = "jal"
 label = "Frame hook"
-at = 0x203AF8C
+at = "main@0x805FC4CC"
 target = 0x8000D180
