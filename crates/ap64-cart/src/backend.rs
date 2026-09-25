@@ -196,6 +196,13 @@ const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(2);
 /// only safe together, and `retry_budget_fits_the_clients_deadline` pins the pair.
 pub(crate) const SOFT_RETRIES: u32 = 2;
 
+/// Soft retries for a silence of up to `budget`: as many whole reply timeouts as fit, less the
+/// first attempt, and never fewer than [`SOFT_RETRIES`].
+fn soft_retries_for(budget: Duration) -> u32 {
+    let attempts = (budget.as_millis() / crate::transport::REPLY_TIMEOUT.as_millis()) as u32;
+    attempts.saturating_sub(1).max(SOFT_RETRIES)
+}
+
 /// Cached ROM is kept in pages of this size, fetched several to a request.
 const ROM_PAGE: u32 = 1024;
 /// Tries at a `PEEKROM` the cart answered `E_BUSY` (the game held the PI bus).
@@ -327,6 +334,9 @@ pub struct Multi64 {
     cancelled: Option<Cancelled>,
     /// How long to keep trying to reach a cart that has stopped answering.
     reconnect_deadline: Duration,
+    /// Timeouts ridden out on the same transport before rebuilding it ([`SOFT_RETRIES`] unless
+    /// [`Multi64::set_silence_budget`] says otherwise).
+    soft_retries: u32,
     /// Whether the last request had to be retried, so recovery is reported once.
     ailing: bool,
     /// Stalls being counted rather than logged ([`STALL_RUN`]).
@@ -354,6 +364,7 @@ impl Multi64 {
             health: None,
             cancelled: None,
             reconnect_deadline: RECONNECT_DEADLINE,
+            soft_retries: SOFT_RETRIES,
             ailing: false,
             stall_log: StallLog::default(),
         })
@@ -371,6 +382,17 @@ impl Multi64 {
     /// was waiting start again, while holding it looks to them exactly like a hang.
     pub fn set_reconnect_deadline(&mut self, deadline: Duration) {
         self.reconnect_deadline = deadline;
+    }
+
+    /// How long a silent agent is waited out on the same link before it is rebuilt.
+    ///
+    /// The default, [`SOFT_RETRIES`] retries, keeps a request inside the 5 s a client waiting
+    /// on it allows. A caller whose client never waits on the cart can afford more, and should
+    /// take it: a game that loads for longer than the default otherwise costs a reconnect, and
+    /// a reconnect that overruns [`Multi64::set_reconnect_deadline`] ends the session. Never
+    /// less than the default.
+    pub fn set_silence_budget(&mut self, budget: Duration) {
+        self.soft_retries = soft_retries_for(budget);
     }
 
     /// Give up on an unanswering cart when `cancelled` says so ([`Cancelled`]).
@@ -439,7 +461,7 @@ impl Multi64 {
 
         // Silence first, on the same transport. A late reply to the request we gave up
         // on is discarded by rid, so asking again is safe.
-        for attempt in 1..=SOFT_RETRIES {
+        for attempt in 1..=self.soft_retries {
             if last.kind() != io::ErrorKind::TimedOut {
                 break;
             }
@@ -1063,6 +1085,16 @@ mod tests {
     ///
     /// Pinned as a pair because neither constant is wrong alone, and a later change to
     /// either one can quietly put the product back over the line.
+    /// A budget buys whole reply timeouts, and never fewer retries than the default.
+    #[test]
+    fn a_silence_budget_is_whole_reply_timeouts() {
+        // 1.2 s timeouts: 10 s fits 8 attempts, the first and 7 retries.
+        assert_eq!(soft_retries_for(Duration::from_secs(10)), 7);
+        assert!(crate::transport::REPLY_TIMEOUT * 8 <= Duration::from_secs(10));
+        assert_eq!(soft_retries_for(Duration::from_secs(1)), SOFT_RETRIES);
+        assert_eq!(soft_retries_for(Duration::ZERO), SOFT_RETRIES);
+    }
+
     #[test]
     fn retry_budget_fits_the_clients_deadline() {
         /// worlds/_bizhawk/__init__.py, `_send_message`.

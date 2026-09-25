@@ -42,6 +42,10 @@ use crate::{m64p, Log};
 /// 1.2 s is therefore ~5x the slowest reply ever actually observed to arrive, while
 /// 3 x 1.2 = 3.6 s keeps the whole retry budget inside the client's 5 s. The reconnect loop
 /// below is untouched: that is the real "cart is gone" path and should stay patient.
+///
+/// All of that is about a client waiting on the cart. A session whose client never does, one
+/// AP64 answers from a snapshot, can spend more of these before reconnecting
+/// (`Multi64::set_silence_budget`).
 pub(crate) const REPLY_TIMEOUT: Duration = Duration::from_millis(1200);
 
 pub struct Multi64Transport {
