@@ -66,9 +66,11 @@ on 2026-09-22, Donkey Kong 64 on 2026-09-23):
   the agent lives in 32 KB taken from the top of the game's heap; the heap's low point measured
   739 KB free with the change. The randomizer moves the game's main code around in the ROM
   between releases, so AP64 finds it in each seed instead of expecting it at one offset, and a
-  release that only moves it still patches. A release that changes the functions AP64 hooks, or
-  moves where the randomizer's own code begins (the heap's top), is refused until it has been
-  measured again (#309, #312). Played with checks going out and items arriving, among them a
+  release that only moves it still patches. The heap's top, which is where the randomizer's own
+  code begins, is read from each seed too: any top that keeps that code clear of the agent is
+  accepted, and the game gets the same heap it was measured with. A release that changes the
+  functions AP64 hooks or the heap setup is refused until it has been measured again (#309,
+  #312). Played with checks going out and items arriving, among them a
   Golden Banana and the Donkey kong.
 
 Written and working, but **not offered in the app**, because the game cannot be played
@@ -138,6 +140,8 @@ The seed is checked before anything is written. AP64 refuses it if any of these 
 - Where a randomizer moves the game's code between releases, the profile locates it by the
   same kind of hash, and it must be found exactly once. Everything placed relative to it is
   then checked where it was found.
+- A constant a randomizer moves between releases must load a value in the range the profile
+  accepts, with the instructions that load it unchanged.
 - Nothing of the seed may lie where the agent is appended.
 - After any known boot-code changes are undone, the boot code must be a retail one, so
   the header checksum can be recomputed.
