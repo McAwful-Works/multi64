@@ -25,7 +25,9 @@
 //!   the cart's owner to put on the console.
 //!
 //! The one wait is for a window no one has asked for before, and it is bounded well inside
-//! the client's timeout; past it the reply is an error, never a late answer.
+//! the client's timeout; past it the reply is an error, never a late answer. The client
+//! reconnects after such an error, and the snapshot outlasts that, so one miss during a
+//! scene load does not leave it asking for everything again.
 //!
 //! # Writes
 //!
@@ -54,7 +56,13 @@ pub const WINDOW: u32 = 0x100;
 const FIRST_FETCH: Duration = Duration::from_millis(350);
 /// Silence after which the client is taken to have gone. Its snapshot is dropped then, so
 /// a client that comes back is not answered from memory that has moved on without it.
-const CLIENT_GONE: Duration = Duration::from_secs(3);
+///
+/// Longer than the client takes to come back after an error reply: DK64 Client reconnects
+/// about 4.1 s after one. At 3 s the snapshot was dropped every time, so the client came
+/// back to a cold snapshot whose every read was a first fetch. During a scene load that
+/// meant another error, and on a console the errors came in bursts. Until it is gone the
+/// snapshot is kept current, so nothing is served stale for keeping it longer.
+const CLIENT_GONE: Duration = Duration::from_secs(10);
 /// How often the UDP side looks up from its socket to see whether it should stop.
 const RECV_POLL: Duration = Duration::from_millis(50);
 /// Between [`Event::Idle`]s while nothing is being asked.
