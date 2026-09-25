@@ -839,11 +839,20 @@ mod tests {
             .port();
         let stop = AtomicBool::new(false);
         let opts = Options { port, bitwise: &[] };
-        std::thread::scope(|scope| {
-            let serving = scope.spawn(|| {
+        let (listening, heard) = std::sync::mpsc::channel();
+        let stop_at = &stop;
+        let (answers, stopped_in) = std::thread::scope(|scope| {
+            let serving = scope.spawn(move || {
                 let mut cart = ram();
-                serve(&mut cart, &opts, &stop, &mut |_| {})
+                serve(&mut cart, &opts, stop_at, &mut |e| {
+                    if matches!(e, Event::Listening(_)) {
+                        let _ = listening.send(());
+                    }
+                })
             });
+            heard
+                .recv_timeout(Duration::from_secs(5))
+                .expect("serve listens");
             let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
             client
                 .set_read_timeout(Some(Duration::from_secs(2)))
@@ -853,21 +862,31 @@ mod tests {
                 client
                     .send_to(b"READ_CORE_MEMORY A0002000 4", (Ipv4Addr::LOCALHOST, port))
                     .unwrap();
-                let n = client.recv(&mut buf).expect("every request is answered");
-                String::from_utf8_lossy(&buf[..n]).into_owned()
+                client
+                    .recv(&mut buf)
+                    .map(|n| String::from_utf8_lossy(&buf[..n]).into_owned())
+                    .unwrap_or_else(|e| format!("no answer: {e}"))
             };
             // The first ask may be a miss while the window is fetched; after that, every one
             // is the word, however long the pause before it.
             let _ = ask();
             std::thread::sleep(Duration::from_millis(400));
-            for pause in [120, 210, 90, 260] {
-                std::thread::sleep(Duration::from_millis(pause));
-                assert_eq!(ask(), "READ_CORE_MEMORY A0002000 28 33 5E 80");
-            }
+            let answers: Vec<String> = [120, 210, 90, 260]
+                .iter()
+                .map(|&pause| {
+                    std::thread::sleep(Duration::from_millis(pause));
+                    ask()
+                })
+                .collect();
+            // Stopped before anything is asserted, so a failure cannot leave serve running.
             let t = Instant::now();
             stop.store(true, Ordering::Relaxed);
             serving.join().unwrap().unwrap();
-            assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+            (answers, t.elapsed())
         });
+        for a in answers {
+            assert_eq!(a, "READ_CORE_MEMORY A0002000 28 33 5E 80");
+        }
+        assert!(stopped_in < Duration::from_secs(1), "{stopped_in:?}");
     }
 }
