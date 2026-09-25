@@ -202,23 +202,9 @@ pub fn fix_client(apworld: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Where Archipelago keeps an installed world: the Windows installer's default, then the
-/// per-user one. `AP64_ARCHIPELAGO_DIR` names an Archipelago folder installed elsewhere.
+/// Where the installed `dk64.apworld` is ([`crate::installed_apworld`]).
 pub fn installed_apworld() -> Option<PathBuf> {
-    let mut roots: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = std::env::var_os("AP64_ARCHIPELAGO_DIR") {
-        roots.push(PathBuf::from(dir));
-    }
-    for var in ["ProgramData", "LOCALAPPDATA"] {
-        if let Some(dir) = std::env::var_os(var) {
-            roots.push(PathBuf::from(dir).join("Archipelago"));
-        }
-    }
-    roots
-        .into_iter()
-        .flat_map(|r| [r.join("custom_worlds"), r.join("lib").join("worlds")])
-        .map(|d| d.join(APWORLD))
-        .find(|p| p.is_file())
+    crate::installed_apworld(APWORLD)
 }
 
 #[cfg(test)]

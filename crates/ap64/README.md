@@ -45,8 +45,10 @@ on 2026-09-22, Donkey Kong 64 on 2026-09-23):
   an Expansion Pak, as the retail game does. Like Donkey Kong 64's client (below), it reads
   emulator memory through EmuLoader and falls back to RetroArch's Network Commands, which AP64
   answers from the cart. The client's own code does all of the game's work, so a new release
-  of the world needs nothing from AP64 on the client side, and unlike DK64's it needs no fix
-  first. Almost all of the game is compressed, so the hook, the stub and the agent all go in
+  of the world needs nothing from AP64 on the client side. As released, that fallback stops the
+  client the moment it attaches, for want of one attribute its monitor loop reads, so Start
+  offers a fix to the installed `banjo_tooie.apworld` exactly as it does for DK64's (below).
+  Almost all of the game is compressed, so the hook, the stub and the agent all go in
   the block the randomizer appends, and the agent is in RAM before the first frame because it
   sits inside the part of that block the randomizer's boot code already copies there. That
   block is the randomizer's own code, so a release that changes it is refused until it has

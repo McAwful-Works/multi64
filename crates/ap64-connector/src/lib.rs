@@ -165,10 +165,37 @@ pub const BT: Native = Native {
     name: "Banjo-Tooie (RetroArch Network Commands)",
     client: "Banjo-Tooie Client",
     options: bt::OPTIONS,
-    client_fix: None,
+    client_fix: Some(ClientFix {
+        file: bt::APWORLD,
+        why: "Its copy of EmuLoader stops it as soon as it attaches to anything but an emulator, so it cannot reach AP64",
+        find: bt::installed_apworld,
+        state: bt::client_state,
+        apply: bt::fix_client,
+    }),
 };
 
 pub const NATIVES: &[Native] = &[DK64, BT];
+
+/// Where Archipelago keeps an installed world, by its file name: the Windows installer's
+/// default, then the per-user one. `AP64_ARCHIPELAGO_DIR` names an Archipelago folder
+/// installed elsewhere.
+pub fn installed_apworld(file: &str) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = std::env::var_os("AP64_ARCHIPELAGO_DIR") {
+        roots.push(PathBuf::from(dir));
+    }
+    for var in ["ProgramData", "LOCALAPPDATA"] {
+        if let Some(dir) = std::env::var_os(var) {
+            roots.push(PathBuf::from(dir).join("Archipelago"));
+        }
+    }
+    roots
+        .into_iter()
+        .flat_map(|r| [r.join("custom_worlds"), r.join("lib").join("worlds")])
+        .map(|d| d.join(file))
+        .find(|p| p.is_file())
+}
 
 const LIBS: &[(&str, &str)] = &[
     ("json", include_str!("../connectors/lib/json.lua")),
