@@ -20,8 +20,7 @@ fail, and they are cheap on purpose: everything expensive is behind them.
 ## 1. Can the generic connector drive it?
 
 Check before anything else. A game whose world needs its own client is a different and
-much larger job: AP64 would need a connector of its own, like `connectors/oot/` or
-`connectors/bt/`.
+much larger job: AP64 would need a connector of its own, like `connectors/oot/`.
 
 Open the apworld and look for a client that subclasses Archipelago's BizHawk client:
 
@@ -37,14 +36,16 @@ print([l for l in z.read('GAME/client.py').decode('utf8','replace').split(chr(10
 BizHawk Client runs the world's own logic, and AP64 needs no connector work. Paper Mario,
 CV64, CVLoD, Kirby 64 and Mario Kart 64 all look like this.
 
-No such import, or a world that ships its own client (Ocarina of Time's OoT Client,
-Banjo-Tooie's Banjo-Tooie Client), means a **forked** connector. Say so and stop; that is a
-separate piece of work, not a profile.
+No such import, or a world that ships its own client (Ocarina of Time's OoT Client), means a
+**forked** connector. Say so and stop; that is a separate piece of work, not a profile.
 
 A client with no Lua at all -- one that reads emulator memory itself -- may still be reachable.
-Donkey Kong 64's client does that through EmuLoader, which falls back to RetroArch's Network
-Commands over UDP when no emulator is running, and AP64 answers those natively
-(`ap64-connector`'s `retroarch` module). Find out which emulator protocols the client can
+Donkey Kong 64's and Banjo-Tooie's clients do that through EmuLoader, which falls back to
+RetroArch's Network Commands over UDP when no emulator is running, and AP64 answers those
+natively (`ap64-connector`'s `retroarch` module). Look for that path before forking anything.
+Banjo-Tooie was first played through a fork of a connector script its released world had
+already stopped shipping, and the fork broke on every release until it was replaced by the
+path the client already had (#319). Find out which emulator protocols the client can
 speak before calling it out of reach, and run the real client against a stand-in on that
 protocol early. That is how the missing `read_bytestring` in DK64's copy of EmuLoader turned
 up, which no reading of the code had caught.

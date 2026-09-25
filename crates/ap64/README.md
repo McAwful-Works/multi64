@@ -42,13 +42,15 @@ on 2026-09-22, Donkey Kong 64 on 2026-09-23):
   reads back. In BizHawk the agent loads, its image stays identical to the ROM's, and it
   ticks once per frame.
 - **Banjo-Tooie (US)**, jjjj12212's Banjo-Tooie world, through its Banjo-Tooie Client. Needs
-  an Expansion Pak, as the retail game does. The world's released version ships no connector
-  script, so AP64 forks the one that speaks the client's socket protocol;
-  `connectors/bt/UPSTREAM` says where it came from and which version string to watch. Almost
-  all of the game is compressed, so the hook, the stub and the agent all go in the block the
-  randomizer appends, and the agent is in RAM before the first frame because it sits inside
-  the part of that block the randomizer's boot code already copies there. Played with a
-  1,077-location seed.
+  an Expansion Pak, as the retail game does. Like Donkey Kong 64's client (below), it reads
+  emulator memory through EmuLoader and falls back to RetroArch's Network Commands, which AP64
+  answers from the cart. The client's own code does all of the game's work, so a new release
+  of the world needs nothing from AP64 on the client side, and unlike DK64's it needs no fix
+  first. Almost all of the game is compressed, so the hook, the stub and the agent all go in
+  the block the randomizer appends, and the agent is in RAM before the first frame because it
+  sits inside the part of that block the randomizer's boot code already copies there. That
+  block is the randomizer's own code, so a release that changes it is refused until it has
+  been measured again (#312). Played with a 1,077-location seed.
 - **Mario Kart 64 (US)**, Archipelago's Mario Kart 64 world, through BizHawk Client. The agent
   lives in the Expansion Pak and stays out of the way without one. Whether the world itself
   runs without a Pak is not yet known: its own code sits where the Pak is, and no console has
@@ -122,7 +124,7 @@ What it says:
 - **The cart going quiet.** The first stall of a run gets a line saying how long the agent was
   silent. The rest of that run is one line 30 seconds later, with the count and the longest. A
   reconnect says how long the cart was out of reach.
-- **For a client AP64 answers itself** (DK64 Client), every reply that had to say the cart hadn't
+- **For a client AP64 answers itself** (DK64 Client, Banjo-Tooie Client), every reply that had to say the cart hadn't
   answered yet, with the address as the client wrote it, so it can be found in the client's log. Also any
   reply slower than the half second the client waits, and the client asking again after a
   pause.
@@ -194,7 +196,7 @@ agent and the specs name no game; everything that does lives in these crates.
 | `crates/ap64-core/tools/<game>/` | BizHawk probe scripts for checking a patched ROM before it goes on a cart |
 | [`crates/ap64-cli`](../ap64-cli) | `ap64-patch`, a thin command line over the core |
 | [`crates/ap64-cart`](../ap64-cart) | M64P over multi64d: RDRAM reads and writes, cart ROM reads (cached), retry and reconnect |
-| [`crates/ap64-connector`](../ap64-connector) | Embedded Lua running a connector script, the `ap64` API it calls, the TCP side the client connects to; and the native connector AP64 answers itself (RetroArch Network Commands over UDP, for Donkey Kong 64) |
+| [`crates/ap64-connector`](../ap64-connector) | Embedded Lua running a connector script, the `ap64` API it calls, the TCP side the client connects to; and the native connector AP64 answers itself (RetroArch Network Commands over UDP, for Donkey Kong 64 and Banjo-Tooie) |
 | `crates/ap64-connector/connectors/<id>/` | Forked Archipelago connector scripts (MIT, with `UPSTREAM` provenance) |
 
 A profile's blobs are this repository's own cart agent ([`n64/agent`](../../n64/agent/README.md),

@@ -21,7 +21,7 @@
 -- Cost is reported as coalesced regions, not raw accesses, because that is what a cart
 -- link charges for. Neighboring addresses ride in one request; a scattered set does not.
 -- Multiply regions-per-frame by your measured round trip (~67 ms on the SC64 link, see
--- ../connectors/bt/cartmem.lua) to get the real per-frame cost, and compare it against a
+-- ../connectors/oot/cartmem.lua) to get the real per-frame cost, and compare it against a
 -- 16.7 ms frame.
 --
 -- What this does NOT show: whether a read's *address* came from a previous read. A
