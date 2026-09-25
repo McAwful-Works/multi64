@@ -275,6 +275,16 @@ mips64-ultra-elf toolchain in WSL), then `profiles/<game>/profile.toml` by hand,
 register it in `ap64-core::builtin()`. Comment `game.env` with *why* each address is safe
 — that comment is the evidence for a decision nobody will remember.
 
+Start `stub.S` from an existing one and keep its two image-check lines
+(`agent/common/image_check.inc`): `IMAGE_STOOD_DOWN done` before anything that touches
+the agent's RAM, including a reload, and `IMAGE_CHECK done` just before `agent_tick`, with
+`IMAGE_CHECK_STATE` at the end. They add about 150 bytes, so leave that much room in the
+stub space. `every_stub_checks_the_agent_that_ships_with_it` fails if a stub doesn't load
+the sum `build.sh` took. Where the stub copies the agent itself, the profile's `agent_rom`
+write names the `lui`/`addiu` pair that loads `AGENT_ROM`: take its offset from the stub as
+built, with the check in, and `a_moving_agent_rewrites_the_pair_the_stub_loads_it_by` fails
+if it's wrong.
+
 Pin generously in `[[require]]`: the hook site word, a sha1 of the space the stub goes in,
 and of every function the stub calls. A pin is what turns "this seed is not the one this
 profile was measured against" into a refusal instead of a crash.

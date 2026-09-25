@@ -23,6 +23,7 @@
  * Every call goes through jalr $t9 rather than jal: the agent's symbols arrive via
  * --just-symbols sign-extended to 64 bits, and an R_MIPS_26 against them does not fit.
  */
+#include "image_check.inc"
         .macro  CALL target
         lui     $t9, %hi(\target)
         addiu   $t9, $t9, %lo(\target)
@@ -47,6 +48,7 @@ agent_hook_stub:
         sltu    $t0, $t0, $t1
         bnez    $t0, done
         nop
+        IMAGE_STOOD_DOWN done           /* the image check stood the stub down */
 
         lui     $t1, 0x4D36
         ori     $t1, $t1, 0x3450        /* 'M64P' */
@@ -85,6 +87,7 @@ zero:
         addiu   $t0, $t0, 4
 
 tick:
+        IMAGE_CHECK done                /* the next slice of the agent's code */
         CALL    agent_tick
         nop
 done:
@@ -92,3 +95,5 @@ done:
         lw      $ra, 28($sp)
         jr      $ra
         addiu   $sp, $sp, 32
+
+        IMAGE_CHECK_STATE

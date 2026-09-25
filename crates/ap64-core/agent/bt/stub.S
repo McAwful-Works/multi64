@@ -45,6 +45,7 @@
  * Every call goes through jalr $t9 rather than jal: the agent's symbols arrive via
  * --just-symbols sign-extended to 64 bits, and an R_MIPS_26 against them does not fit.
  */
+#include "image_check.inc"
         .macro  CALL target
         lui     $t9, %hi(\target)
         addiu   $t9, $t9, %lo(\target)
@@ -68,6 +69,7 @@ agent_hook_stub:
         sltu    $t0, $t0, $t1
         bnez    $t0, done
         nop
+        IMAGE_STOOD_DOWN done           /* the image check stood the stub down */
 
         /* Run the agent only while its image is intact. The boot DMA put it there; that
            says it arrived, not that it is still there, and nothing reserves that RAM. */
@@ -100,6 +102,7 @@ zeroed:
         sw      $t1, %lo(s_bss_zeroed)($t0)
 
 tick:
+        IMAGE_CHECK done                /* the next slice of the agent's code */
         CALL    agent_tick
         nop
 done:
@@ -112,3 +115,5 @@ done:
         .globl  s_bss_zeroed
 s_bss_zeroed:
         .word   0
+
+        IMAGE_CHECK_STATE

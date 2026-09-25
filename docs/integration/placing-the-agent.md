@@ -104,7 +104,8 @@ Read it every frame, before calling the agent, **including when there is nothing
 the game's own loader brought the image in at boot. That it arrived once does not say it is still
 there, and nothing reserves that RAM from the game: a frame that calls into RAM now holding
 something else hard locks the console, where a marker that no longer reads back only makes the
-agent go quiet.
+agent go quiet. The marker is one word, though: an overwrite anywhere else in the image passes it,
+which is what the image check in §5.6 is for.
 
 ### 2.5 When nothing is free, move a bound
 
@@ -326,6 +327,29 @@ Two things change when the load is not yours:
   marker reads back from the first frame whether or not the BSS was cleared. Keep the "zeroed" flag
   inside the stub's own image, in the range the boot copy restores: it is then reset at every boot,
   including a soft reset, and the stub zeroes the BSS once after each.
+
+### 5.6 Check the image before running it
+
+The load marker only says the agent arrived. Nothing reserves its RAM, and the measurements in §2
+are of one version of the game or patch. An update that starts using more RAM can overwrite the
+agent while every ROM check in §5.4 still passes. Only an overwrite that hits the marker is
+noticed. Anything else in the image gets executed.
+
+So the stub checks the agent's `.text` and `.rodata` as it goes. Each tick, before calling
+`agent_tick()`, it adds up the next 1 KB of them. At the end of each pass it compares the total
+with one worked out from `agent.bin` at build time. On a mismatch it stands down for good: it never
+calls the agent again and never reloads it, since whatever overwrote the image now owns that RAM.
+The game plays on, and the link to the cart goes quiet.
+
+- Leave `.data` and `.bss` out. They change while the agent runs.
+- Keep the stub's state (where the pass is, the total so far, and whether it stood down) in the
+  stub's own image, as with the "zeroed" flag in §5.5.
+- Check "stood down" before anything that touches the agent's RAM, including a reload.
+
+A 1 KB slice costs about 256 loads a tick. A pass over a ~9 KB image takes about ten ticks, so an
+overwrite is caught within a fraction of a second at any game's frame rate.
+[`crates/ap64-core/agent/common/image_check.inc`](../../crates/ap64-core/agent/common/image_check.inc)
+is one implementation: about 150 bytes of stub, shared by every AP64 stub.
 
 ## 6. The boot CRC and IPL3
 

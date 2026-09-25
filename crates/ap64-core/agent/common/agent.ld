@@ -13,6 +13,7 @@ SECTIONS
 
     .text : { *(.text .text.*) }
     .rodata : { *(.rodata .rodata.* .rodata1) }
+    agent_RO_END = .;       /* what the stub's image check covers: .text and .rodata */
     .data : {
         KEEP(*host.o(.data))
         *(.data .data.* .sdata .sdata.*)
