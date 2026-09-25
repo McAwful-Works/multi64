@@ -63,8 +63,6 @@ const FIRST_FETCH: Duration = Duration::from_millis(350);
 /// meant another error, and on a console the errors came in bursts. Until it is gone the
 /// snapshot is kept current, so nothing is served stale for keeping it longer.
 const CLIENT_GONE: Duration = Duration::from_secs(10);
-/// How often the UDP side looks up from its socket to see whether it should stop.
-const RECV_POLL: Duration = Duration::from_millis(50);
 /// Between [`Event::Idle`]s while nothing is being asked.
 const IDLE_EVENT_EVERY: Duration = Duration::from_secs(2);
 /// Silence from the client worth a line when it ends, short of [`CLIENT_GONE`]. The client
@@ -428,25 +426,27 @@ fn apply(cart: &mut dyn Backend, writes: &[Write], bitwise: &[Range<u32>]) -> io
 }
 
 /// The UDP side: answer every datagram from the snapshot until `stop`.
+///
+/// The receive blocks with no timeout, and [`serve`] wakes it to stop with an empty datagram.
+/// It used to wake every 50 ms on a read timeout to look at `stop`, and on Windows a receive
+/// that times out can drop a datagram arriving as it does. On a console that was the client's
+/// first request after its 0.2 s pause between passes, now and then: it never reached
+/// [`Snapshot::handle`], and the client logged "timed out" and reconnected.
 fn answer(sock: &UdpSocket, snap: &Snapshot, stop: &AtomicBool) {
     let mut buf = [0u8; 4096];
     while !stop.load(Ordering::Relaxed) {
         let (n, peer) = match sock.recv_from(&mut buf) {
             Ok(r) => r,
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue
-            }
             // Windows reports an earlier reply's ICMP port-unreachable on the next receive.
             // It says nothing about this datagram, and clients open a fresh socket each time
             // they attach, so it happens as a matter of course.
             Err(e) if e.kind() == io::ErrorKind::ConnectionReset => continue,
             Err(_) => continue,
         };
+        if n == 0 {
+            // A wake from `serve`, or nothing a client would send.
+            continue;
+        }
         let got = Instant::now();
         let line = String::from_utf8_lossy(&buf[..n]);
         let reply = snap.handle(&line, Some(peer));
@@ -473,12 +473,11 @@ pub fn serve(
             opts.port
         )
     })?;
-    sock.set_read_timeout(Some(RECV_POLL))
-        .map_err(|e| e.to_string())?;
+    let here_at = sock.local_addr().map_err(|e| e.to_string())?;
     let snap = Snapshot::new(cart.rdram_size());
     let done = AtomicBool::new(false);
     std::thread::scope(|scope| {
-        scope.spawn(|| answer(&sock, &snap, &done));
+        let answering = scope.spawn(|| answer(&sock, &snap, &done));
         on_event(Event::Listening(opts.port));
         let mut here = false;
         let mut counted = 0u64;
@@ -522,6 +521,11 @@ pub fn serve(
             }
         };
         done.store(true, Ordering::Relaxed);
+        // The answering thread is blocked in its receive: wake it until it has seen `done`.
+        while !answering.is_finished() {
+            let _ = sock.send_to(&[], here_at);
+            std::thread::sleep(Duration::from_millis(10));
+        }
         result
     })
 }
@@ -821,5 +825,49 @@ mod tests {
                     && !n.contains("  ")),
             "{notes:?}"
         );
+    }
+
+    /// Over a real socket: requests after idle gaps are answered, as the client makes them
+    /// after each pause between passes, and a stop ends the session at once even though the
+    /// receive has no timeout.
+    #[test]
+    fn serve_answers_after_idle_gaps_and_stops_promptly() {
+        let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let stop = AtomicBool::new(false);
+        let opts = Options { port, bitwise: &[] };
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| {
+                let mut cart = ram();
+                serve(&mut cart, &opts, &stop, &mut |_| {})
+            });
+            let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut buf = [0u8; 256];
+            let mut ask = || {
+                client
+                    .send_to(b"READ_CORE_MEMORY A0002000 4", (Ipv4Addr::LOCALHOST, port))
+                    .unwrap();
+                let n = client.recv(&mut buf).expect("every request is answered");
+                String::from_utf8_lossy(&buf[..n]).into_owned()
+            };
+            // The first ask may be a miss while the window is fetched; after that, every one
+            // is the word, however long the pause before it.
+            let _ = ask();
+            std::thread::sleep(Duration::from_millis(400));
+            for pause in [120, 210, 90, 260] {
+                std::thread::sleep(Duration::from_millis(pause));
+                assert_eq!(ask(), "READ_CORE_MEMORY A0002000 28 33 5E 80");
+            }
+            let t = Instant::now();
+            stop.store(true, Ordering::Relaxed);
+            serving.join().unwrap().unwrap();
+            assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+        });
     }
 }
