@@ -16,8 +16,14 @@
 //! `AttributeError` on its first line, outside its own `try`, and the task ends without a word
 //! logged: the client says "Emulator connected and ready!", asks nothing more, and never
 //! reconnects. That is every Banjo-Tooie player on the fallback, whether the other end is AP64
-//! or RetroArch itself. [`client_state`] reports whether an installed `banjo_tooie.apworld`'s
-//! backend has an `id`, and [`fix_client`] gives it one.
+//! or RetroArch itself.
+//!
+//! The fix is made where the attribute is read, not in EmuLoader, because the client may not be
+//! running its own EmuLoader: it imports a global `emu_loader` package first, and DK64's world
+//! puts its vendored copy on `sys.path` when the Launcher loads it. On a console with both worlds
+//! installed, a fix to Banjo-Tooie's copy changed nothing. [`client_state`] reports whether an
+//! installed `banjo_tooie.apworld` still reads the attribute unguarded, and [`fix_client`] reads
+//! it with a fallback, whichever EmuLoader answers.
 //!
 //! DK64's gap, a missing `read_bytestring`, is here too, but nothing on Banjo-Tooie Client's
 //! path calls it: it reads and writes only `u8`, `u16` and `u32`. Its signature check
@@ -56,33 +62,17 @@ pub const OPTIONS: Options = Options {
 /// The installed world's file name.
 pub const APWORLD: &str = "banjo_tooie.apworld";
 
-const MODULE: &str = "banjo_tooie/emu_loader/retroarch_udp.py";
-const PYCACHE: &str = "banjo_tooie/emu_loader/__pycache__/retroarch_udp.";
-const BACKEND: &str = "class RetroArchNetworkInfo";
-/// The line the `id` goes after: the backend's other name, its first class attribute.
-const ANCHOR: &str = "    readable_emulator_name = \"RetroArch Network Commands\"";
-/// The same name EmuLoader's `emulators.json` gives RetroArch's process backend.
-const ADDED: &str = "    # Added by AP64: EmuLoader's process backends have an id and this one did not, so\n    # Banjo-Tooie Client's monitor loop failed on it as soon as it attached.\n    id = \"RetroArch\"";
+const MODULE: &str = "banjo_tooie/BTClient.py";
+const PYCACHE: &str = "banjo_tooie/__pycache__/BTClient.";
+/// The read, as 4.13.1 has it.
+const READ: &str = ".emulator_info.id";
+const UNFIXED: &str = "emu_name = ctx.emu_loader.emulator_info.id";
+/// The same read with a fallback: `RetroArch` is EmuLoader's own name for RetroArch's process
+/// backend, in its `emulators.json`.
+const FIXED: &str = "emu_name = getattr(ctx.emu_loader.emulator_info, \"id\", \"RetroArch\")  # AP64: EmuLoader's RetroArch backend has no id";
 
 fn bad(e: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e.to_string())
-}
-
-/// The backend's class body: from its `class` line to the next top-level statement.
-fn backend_class(module: &str) -> Option<&str> {
-    let start = module.find(BACKEND)?;
-    let body = &module[start..];
-    let end = body[1..]
-        .find("\nclass ")
-        .or_else(|| body[1..].find("\ndef "))
-        .map_or(body.len(), |i| i + 1);
-    Some(&body[..end])
-}
-
-fn has_id(class: &str) -> bool {
-    class
-        .lines()
-        .any(|l| l.starts_with("    id =") || l.starts_with("    id:"))
 }
 
 fn module(apworld: &[u8]) -> io::Result<String> {
@@ -94,7 +84,7 @@ fn module(apworld: &[u8]) -> io::Result<String> {
 }
 
 /// Whether the client in `apworld` (the bytes of an installed `banjo_tooie.apworld`) can reach
-/// AP64: [`ClientState::Ready`] when its RetroArch backend has an `id`.
+/// AP64: [`ClientState::Ready`] when nothing in `BTClient.py` reads `emulator_info.id` bare.
 pub fn client_state(apworld: &[u8]) -> ClientState {
     let text = match module(apworld) {
         Ok(t) => t,
@@ -104,31 +94,13 @@ pub fn client_state(apworld: &[u8]) -> ClientState {
             ))
         }
     };
-    let Some(class) = backend_class(&text) else {
-        return ClientState::Unrecognized(format!("{MODULE} has no RetroArch backend"));
-    };
-    if has_id(class) {
-        ClientState::Ready
-    } else if class.contains(ANCHOR) {
-        ClientState::NeedsFix
-    } else {
-        ClientState::Unrecognized(format!(
-            "the RetroArch backend in {MODULE} is not laid out as AP64 expects"
-        ))
+    match (text.matches(READ).count(), text.matches(UNFIXED).count()) {
+        (0, _) => ClientState::Ready,
+        (1, 1) => ClientState::NeedsFix,
+        _ => ClientState::Unrecognized(format!(
+            "{MODULE} reads emulator_info.id somewhere AP64 does not know to fix"
+        )),
     }
-}
-
-/// The module with the `id` added after [`ANCHOR`], keeping the file's own line endings.
-fn add_id(text: &str) -> Option<String> {
-    let class_at = text.find(BACKEND)?;
-    let at = class_at + text[class_at..].find(ANCHOR)? + ANCHOR.len();
-    let eol = if text[at..].starts_with("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
-    let added = ADDED.replace('\n', eol);
-    Some(format!("{}{eol}{added}{}", &text[..at], &text[at..]))
 }
 
 /// `apworld` with the fix applied. Refuses a world [`client_state`] does not report as
@@ -142,7 +114,7 @@ pub fn fix_client(apworld: &[u8]) -> Result<Vec<u8>, String> {
     }
     let e = |e: io::Error| e.to_string();
     let text = module(apworld).map_err(e)?;
-    let fixed = add_id(&text).ok_or("the RetroArch backend could not be changed")?;
+    let fixed = text.replacen(UNFIXED, FIXED, 1);
     let mut src = ZipArchive::new(Cursor::new(apworld)).map_err(|e| e.to_string())?;
     let mut dst = ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..src.len() {
@@ -177,8 +149,18 @@ pub fn installed_apworld() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// The released backend's head, as 4.13.1 ships it.
-    const UNFIXED: &str = "\"\"\"RetroArch Network Commands memory backend for EmuLoader.\"\"\"\n\nimport socket\n\n\nclass RetroArchNetworkInfo:\n    \"\"\"RetroArch Network Commands memory backend.\n    \"\"\"\n\n    readable_emulator_name = \"RetroArch Network Commands\"\n\n    def __init__(self):\n        self.socket = None\n";
+    /// The released monitor loop's head, as 4.13.1 ships it: CRLF, like the file itself.
+    fn released() -> String {
+        [
+            "    while not ctx.exit_event.is_set():",
+            "      await ctx.emu_loader.wait_for_emulator()",
+            "",
+            "      emu_name = ctx.emu_loader.emulator_info.id",
+            "      logger.info(f\"Connected to {emu_name}.\")",
+            "",
+        ]
+        .join("\r\n")
+    }
 
     fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut w = ZipWriter::new(Cursor::new(Vec::new()));
@@ -193,15 +175,12 @@ mod tests {
         w.finish().unwrap().into_inner()
     }
 
-    fn apworld(module: &str) -> Vec<u8> {
+    fn apworld(client: &str) -> Vec<u8> {
         zip_of(&[
             ("banjo_tooie/__init__.py", b"# world\n"),
-            ("banjo_tooie/emu_loader/client.py", b"# client\n"),
-            ("banjo_tooie/emu_loader/retroarch_udp.py", module.as_bytes()),
-            (
-                "banjo_tooie/emu_loader/__pycache__/retroarch_udp.cpython-313.pyc",
-                b"stale",
-            ),
+            ("banjo_tooie/BTClient.py", client.as_bytes()),
+            ("banjo_tooie/__pycache__/BTClient.cpython-313.pyc", b"stale"),
+            ("banjo_tooie/emu_loader/retroarch_udp.py", b"# backend\n"),
             ("banjo_tooie/assets/big.bin", &[7u8; 4096]),
         ])
     }
@@ -215,24 +194,22 @@ mod tests {
     }
 
     #[test]
-    fn the_released_backend_needs_the_fix_and_the_fix_makes_it_ready() {
-        let world = apworld(UNFIXED);
+    fn the_released_client_needs_the_fix_and_the_fix_makes_it_ready() {
+        let world = apworld(&released());
         assert_eq!(client_state(&world), ClientState::NeedsFix);
         let fixed = fix_client(&world).unwrap();
         assert_eq!(client_state(&fixed), ClientState::Ready);
 
-        let module = String::from_utf8(read(&fixed, MODULE).unwrap()).unwrap();
-        assert!(module.contains(&format!("{ANCHOR}\n{ADDED}\n\n    def __init__")));
-        assert!(module.contains("\n    id = \"RetroArch\"\n"));
-        // Stale bytecode would keep running the old class.
-        assert!(read(
-            &fixed,
-            "banjo_tooie/emu_loader/__pycache__/retroarch_udp.cpython-313.pyc"
-        )
-        .is_none());
+        let client = String::from_utf8(read(&fixed, MODULE).unwrap()).unwrap();
+        assert_eq!(client, released().replace(UNFIXED, FIXED));
+        assert!(client.contains(
+            "\r\n      emu_name = getattr(ctx.emu_loader.emulator_info, \"id\", \"RetroArch\")"
+        ));
+        // Stale bytecode would keep running the old loop.
+        assert!(read(&fixed, "banjo_tooie/__pycache__/BTClient.cpython-313.pyc").is_none());
         for name in [
             "banjo_tooie/__init__.py",
-            "banjo_tooie/emu_loader/client.py",
+            "banjo_tooie/emu_loader/retroarch_udp.py",
             "banjo_tooie/assets/big.bin",
         ] {
             assert_eq!(read(&fixed, name), read(&world, name), "{name}");
@@ -240,43 +217,39 @@ mod tests {
     }
 
     #[test]
-    fn crlf_line_endings_are_kept() {
-        let crlf = UNFIXED.replace('\n', "\r\n");
-        let fixed = fix_client(&apworld(&crlf)).unwrap();
-        let module = String::from_utf8(read(&fixed, MODULE).unwrap()).unwrap();
-        assert!(module.contains("\r\n    id = \"RetroArch\"\r\n"));
-        assert!(!module.replace("\r\n", "").contains('\n'));
-    }
-
-    #[test]
     fn a_fixed_world_is_not_fixed_twice() {
-        let fixed = fix_client(&apworld(UNFIXED)).unwrap();
+        let fixed = fix_client(&apworld(&released())).unwrap();
         assert!(fix_client(&fixed).unwrap_err().contains("already"));
     }
 
     #[test]
-    fn a_backend_that_already_has_an_id_is_ready() {
-        let upstream_fixed =
-            UNFIXED.replace(ANCHOR, &format!("{ANCHOR}\n    id = \"RetroArchNetwork\""));
+    fn a_client_that_no_longer_reads_the_id_is_ready() {
+        let upstream_fixed = released().replace(UNFIXED, "emu_name = \"emulator\"");
         assert_eq!(client_state(&apworld(&upstream_fixed)), ClientState::Ready);
     }
 
     #[test]
-    fn an_id_elsewhere_in_the_module_does_not_count() {
-        let other = format!("{UNFIXED}\n\nclass Other:\n    id = \"x\"\n");
-        assert_eq!(client_state(&apworld(&other)), ClientState::NeedsFix);
+    fn a_read_somewhere_else_is_not_guessed_at() {
+        let moved = released().replace(UNFIXED, "name = ctx.emu_loader.emulator_info.id");
+        assert!(matches!(
+            client_state(&apworld(&moved)),
+            ClientState::Unrecognized(_)
+        ));
+        let twice = format!("{}\r\n  x = info.emulator_info.id\r\n", released());
+        assert!(matches!(
+            client_state(&apworld(&twice)),
+            ClientState::Unrecognized(_)
+        ));
+        assert!(fix_client(&apworld(&twice)).is_err());
     }
 
     #[test]
     fn an_unrecognized_world_is_left_alone() {
-        let no_module = zip_of(&[("banjo_tooie/__init__.py", b"# world\n")]);
+        let no_client = zip_of(&[("banjo_tooie/__init__.py", b"# world\n")]);
         assert!(matches!(
-            client_state(&no_module),
+            client_state(&no_client),
             ClientState::Unrecognized(_)
         ));
-        let moved = apworld(&UNFIXED.replace(ANCHOR, "    name = \"x\""));
-        assert!(matches!(client_state(&moved), ClientState::Unrecognized(_)));
-        assert!(fix_client(&moved).is_err());
         assert!(matches!(
             client_state(b"not a zip"),
             ClientState::Unrecognized(_)
@@ -299,5 +272,8 @@ mod tests {
             before, after,
             "the released world carries no bytecode to drop"
         );
+        if let Ok(out) = std::env::var("BT_APWORLD_FIXED") {
+            std::fs::write(out, &fixed).unwrap();
+        }
     }
 }
