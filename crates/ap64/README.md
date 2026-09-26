@@ -126,6 +126,8 @@ What it says:
 - **First:** the AP64 version and the commit it was built from, the game, the Multi64 address, and
   where the log file is. Then, once the cart answers, where the agent is on it. For most games
   that's its ROM offset; if a seed's data ran into the agent's usual place, the log says so.
+  If the randomizer release differs from the one AP64 was measured against, a `note:` line
+  says so, once a session.
 - **The cart going quiet.** The first stall of a run gets a line saying how long the agent was
   silent. The rest of that run is one line 30 seconds later, with the count and the longest. A
   reconnect says how long the cart was out of reach.
@@ -194,6 +196,14 @@ The seed is checked before anything is written. AP64 refuses it if any of these 
 
 After writing, the output is diffed against the seed. A change that no step accounts
 for withholds the output.
+
+Each profile also records which release of its randomizer it was measured against. Where
+the world installed in Archipelago is a different release, or MK64's header names a
+different one, AP64 says so. That goes in the Patch dialog, as a `[warn]` line from
+`ap64-patch`, and in the session log at Start. It is a note, not a refusal: most releases
+change nothing AP64 depends on. It just means the seed is one AP64 has not been tested with.
+The world's version is its `world_version`, or Archipelago's own for a world that ships
+with it. Paper Mario's world declares no version, so it gets no note.
 
 Those checks are all of the ROM, but the agent runs from RAM, and a randomizer release that
 starts using more RAM can overwrite it with every check above still passing. So on the

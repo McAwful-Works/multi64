@@ -190,6 +190,8 @@ function renderSeedChecks() {
 async function loadSeed(path) {
   resetResults();
   setError($("load-error"), "");
+  $("release-notes").textContent = "";
+  show($("release-notes"), false);
   setSeedLine("Reading…");
   $("btn-open-patch").disabled = true;
   $("drop-zone").dataset.state = "busy";
@@ -202,6 +204,10 @@ async function loadSeed(path) {
       ? `${h.name || "(no name)"} · ${h.game_code} v${h.version} · boot code ${d.cic || "patched or unknown"} · ${d.byte_order}`
       : "unreadable";
     const report = renderChecks(d);
+    // A different randomizer release: worth knowing before the console, never a refusal.
+    const notes = r.notes || [];
+    $("release-notes").textContent = notes.join(" ");
+    show($("release-notes"), notes.length > 0);
     if (!report) {
       $("seed-game").textContent = "Not a game AP64 knows";
       setError($("load-error"), `AP64 has no profile for this game. Supported: ${supportedNames()}.`);

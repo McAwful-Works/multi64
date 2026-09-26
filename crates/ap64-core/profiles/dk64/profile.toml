@@ -26,6 +26,11 @@ cic = "6105"
 randomizer = "the DK64 randomizer's Archipelago world"
 connector = "dk64"        # native: AP64 answers the DK64 Client as RetroArch (ap64-connector dk64)
 
+# The release this was measured against; a different one installed is noted, not refused.
+[measured]
+world = "dk64.apworld"
+version = "1.5.8"
+
 [agent]
 image = "agent.bin"
 rom = 0x3402000         # past the 52 MB image the randomizer produces (ends 0x34013A8)

@@ -17,6 +17,11 @@ cic = "6102"
 randomizer = "Archipelago's Castlevania: Legacy of Darkness world"
 connector = "generic"     # Archipelago's BizHawk Client
 
+# The release this was measured against; a different one installed is noted, not refused.
+[measured]
+world = "cvlod.apworld"
+version = "2.0.2"
+
 [agent]
 image = "agent.bin"
 rom = 0x1000000         # past the 16 MiB image; the patch's own data ends by 0xFFEA48

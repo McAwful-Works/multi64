@@ -122,7 +122,10 @@ const loadOk = {
   },
   chosen: "g1",
   defaultOutput: "C:\\seeds\\seed-agent.z64",
+  notes: [],
 };
+const loadNoted = structuredClone(loadOk);
+loadNoted.notes = ["g1.apworld here is version 1.6.0, and AP64 was measured against 1.5.8."];
 const loadFailing = structuredClone(loadOk);
 loadFailing.chosen = null;
 loadFailing.detection.candidates[0].checks[1] = {
@@ -233,6 +236,7 @@ const setDev = async (p, on) => {
   check("the output defaults beside the seed", (await p.inputValue("#output")) === "C:\\seeds\\seed-agent.z64");
   check("the game is named, without its release", (await text(p, "seed-game")) === "Game One · Archipelago", await text(p, "seed-game"));
   check("passing checks read as ready", (await text(p, "seed-checks")) === "Ready for the agent" && !(await visible(p, "failed-checks")));
+  check("a seed of the measured release has no release note", !(await visible(p, "release-notes")));
   check("the detail starts folded", !(await p.evaluate(() => document.getElementById("checks-more").open)));
   check("the detail is there without Developer details", await p.evaluate(() => document.querySelector("#checks-more summary").offsetParent !== null));
   check("the header line is inside it", (await text(p, "seed-header")).includes("NG1E") && (await text(p, "seed-header")).includes("z64 (big-endian)"));
@@ -438,6 +442,16 @@ const setDev = async (p, on) => {
   await p.goto(`${origin}/log.html`);
   await until(p, () => document.getElementById("log").textContent.includes("could not read"));
   check("a log that cannot be read says so", (await text(p, "log")).includes("play_log: command not found"));
+  await p.close();
+}
+
+{
+  const p = await openScenario({ load: loadNoted });
+  await drop(p, ["C:\\seeds\\newer.z64"]);
+  await until(p, () => !document.getElementById("patch-dialog").hidden);
+  check("a newer release is noted", (await visible(p, "release-notes")) && (await text(p, "release-notes")).includes("1.6.0"));
+  check("and still offers to patch", await visible(p, "patch-controls"));
+  check("the note is not an error", !(await visible(p, "load-error")));
   await p.close();
 }
 

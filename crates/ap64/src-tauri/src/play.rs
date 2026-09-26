@@ -830,6 +830,8 @@ fn run(
     };
 
     let mut first_try = true;
+    // Release notes are said once a session, not at every reconnect.
+    let mut noted = false;
     'session: while !stop.load(Ordering::Relaxed) {
         if !std::mem::take(&mut first_try) {
             pause();
@@ -925,6 +927,11 @@ fn run(
                         agent.vram
                     ),
                 });
+                if !std::mem::replace(&mut noted, true) {
+                    for note in ap64_core::installed::release_notes(&game.profile, on.name.trim()) {
+                        log(format!("note: {note}"));
+                    }
+                }
                 set(&|s| s.console = OK.into());
             }
             Err(e) => {

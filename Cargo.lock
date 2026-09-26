@@ -146,8 +146,10 @@ name = "ap64-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "sha1 0.11.0",
  "toml 1.1.0+spec-1.1.0",
+ "zip",
 ]
 
 [[package]]
