@@ -5,6 +5,7 @@
 //! nothing of the seed may lie where the agent goes. Only then is anything written.
 
 pub mod crc;
+pub mod installed;
 pub mod patch;
 pub mod profile;
 pub mod rom;
@@ -309,6 +310,19 @@ mod tests {
             seen, 6,
             "every profile whose stub copies the agent lets it move"
         );
+    }
+
+    /// Every profile says which randomizer release it was measured against, so a seed from
+    /// another can be pointed out (#292). Paper Mario's world declares no version and its ROM
+    /// carries none, so it is the one that cannot, and its profile says so.
+    #[test]
+    fn every_profile_records_the_release_it_was_measured_against() {
+        let mut bundles = builtin().unwrap();
+        bundles.extend(withheld().unwrap());
+        for b in &bundles {
+            let p = &b.profile;
+            assert_eq!(p.measured.is_some(), p.id != "pmr", "{}", p.id);
+        }
     }
 
     /// Every stub checks the agent's code in RAM against a sum build.sh took from agent.bin

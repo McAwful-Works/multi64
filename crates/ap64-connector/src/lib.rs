@@ -176,26 +176,7 @@ pub const BT: Native = Native {
 
 pub const NATIVES: &[Native] = &[DK64, BT];
 
-/// Where Archipelago keeps an installed world, by its file name: the Windows installer's
-/// default, then the per-user one. `AP64_ARCHIPELAGO_DIR` names an Archipelago folder
-/// installed elsewhere.
-pub fn installed_apworld(file: &str) -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-    let mut roots: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = std::env::var_os("AP64_ARCHIPELAGO_DIR") {
-        roots.push(PathBuf::from(dir));
-    }
-    for var in ["ProgramData", "LOCALAPPDATA"] {
-        if let Some(dir) = std::env::var_os(var) {
-            roots.push(PathBuf::from(dir).join("Archipelago"));
-        }
-    }
-    roots
-        .into_iter()
-        .flat_map(|r| [r.join("custom_worlds"), r.join("lib").join("worlds")])
-        .map(|d| d.join(file))
-        .find(|p| p.is_file())
-}
+pub use ap64_core::installed::installed_apworld;
 
 const LIBS: &[(&str, &str)] = &[
     ("json", include_str!("../connectors/lib/json.lua")),

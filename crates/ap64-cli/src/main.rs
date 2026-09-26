@@ -71,13 +71,17 @@ fn run() -> Result<(), String> {
     let chosen = d
         .chosen()
         .ok_or("no profile passes every check; nothing written")?;
-    if check_only {
-        return Ok(());
-    }
     let bundle = bundles
         .iter()
         .find(|b| b.profile.id == chosen.profile_id)
         .ok_or("profile vanished")?;
+    let name = h.map_or("", |h| h.name.as_str());
+    for note in ap64_core::installed::release_notes(&bundle.profile, name.trim()) {
+        println!("  [warn] {note}");
+    }
+    if check_only {
+        return Ok(());
+    }
     let patched = apply(bundle, &rom).map_err(|e: ApplyError| e.to_string())?;
     for line in &patched.summary {
         println!("  {line}");

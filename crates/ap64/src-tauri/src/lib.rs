@@ -49,6 +49,9 @@ struct LoadResult {
     /// The profile that will be applied, when exactly one passes.
     chosen: Option<String>,
     default_output: String,
+    /// How this seed, or the world installed here, differs from the release the chosen profile
+    /// was measured against. Notes, not refusals ([`ap64_core::installed::release_notes`]).
+    notes: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -117,7 +120,16 @@ fn load_rom(path: String, state: State<'_, AppState>) -> Result<LoadResult, Stri
     }
     let mut rom = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let detection = detect(&state.bundles, &mut rom).map_err(|e| e.to_string())?;
+    let notes = detection
+        .chosen()
+        .and_then(|r| state.bundles.iter().find(|b| b.profile.id == r.profile_id))
+        .map(|b| {
+            let name = detection.header.as_ref().map_or("", |h| h.name.as_str());
+            ap64_core::installed::release_notes(&b.profile, name.trim())
+        })
+        .unwrap_or_default();
     let result = LoadResult {
+        notes,
         path: path.display().to_string(),
         file_name: path
             .file_name()

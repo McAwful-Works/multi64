@@ -10,6 +10,9 @@ cic = "6103"
 randomizer = "Paper Mario Randomizer (papermario.apworld)"
 connector = "generic"     # Archipelago's BizHawk Client
 
+# No [measured]: papermario.apworld declares no version and the ROM carries none, so a
+# seed from another release cannot be told apart here. The pins are the only guard.
+
 [agent]
 image = "agent.bin"
 rom = 0x2B00000         # past the randomizer's base mod, which ends at 0x2AE40C0

@@ -29,6 +29,9 @@ pub struct Profile {
     pub cic: String,
     /// The randomizer this profile was measured against, shown to the user.
     pub randomizer: String,
+    /// Which release of it, where that can be told apart ([`crate::installed`]).
+    #[serde(default)]
+    pub measured: Option<Measured>,
     /// Which connector script plays this game (`connectors/<id>/`).
     pub connector: String,
     /// Applied to the seed before any check or write.
@@ -41,6 +44,21 @@ pub struct Profile {
     pub require: Vec<Require>,
     #[serde(default)]
     pub write: Vec<Write>,
+}
+
+/// The randomizer release a profile was measured against, so a seed from another release can
+/// be pointed out before it reaches a console. A note, never a refusal: see
+/// [`crate::installed::release_notes`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Measured {
+    /// The installed world whose version is compared: an apworld's file name, or
+    /// [`crate::installed::ARCHIPELAGO`] for a world that ships with Archipelago.
+    pub world: Option<String>,
+    /// That world's version when the profile was measured.
+    pub version: Option<String>,
+    /// The header name, for a randomizer that stamps its release there.
+    pub header_name: Option<String>,
 }
 
 /// A whole-ROM transform (see `transform.rs`).
@@ -261,6 +279,14 @@ impl Profile {
     pub fn parse(text: &str) -> Result<Self, String> {
         let profile: Profile = toml::from_str(text).map_err(|e| e.to_string())?;
         profile.cic()?;
+        if let Some(m) = &profile.measured {
+            if m.world.is_some() != m.version.is_some() {
+                return Err("[measured] needs world and version together".into());
+            }
+            if m.world.is_none() && m.header_name.is_none() {
+                return Err("[measured] records nothing to compare".into());
+            }
+        }
         if profile.game_code.len() != 4 {
             return Err(format!(
                 "game_code {:?} is not 4 characters",

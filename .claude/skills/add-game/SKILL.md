@@ -289,6 +289,12 @@ Pin generously in `[[require]]`: the hook site word, a sha1 of the space the stu
 and of every function the stub calls. A pin is what turns "this seed is not the one this
 profile was measured against" into a refusal instead of a crash.
 
+Record the release you measured in `[measured]`. Give `world` and `version` for an apworld
+that declares a `world_version` in its `archipelago.json`, or `world = "Archipelago"` for one
+that ships with Archipelago. Give `header_name` if the randomizer stamps its release in the
+header, as MK64's does. AP64 then notes a seed from another release (§8). If there is nothing
+to record, say why in a comment, as Paper Mario's profile does.
+
 **When the randomizer moves the code between releases, find it instead of pinning its
 offset.** A `[[find]]` names a region by its first word and a sha1, and the seed is refused
 unless exactly one word-aligned place matches. Give it the `vram` the region runs at, and
@@ -315,6 +321,30 @@ Then `agent-probe.lua` in BizHawk on the patched ROM: it reads `layout.env`, so 
 frame means the agent is loaded, unclobbered and running on the game's thread.
 
 Only then the cart. The console must be powered off for PC-side SD writes.
+
+## 8. When the randomizer releases again
+
+A profile is a measurement of one release. AP64 says when the installed world is a
+different one: a `[warn]` line from `--check`, a note in the Patch dialog, and a line in the
+session log. It notes, never refuses, because most releases change nothing AP64 depends on.
+The pins refuse what they can see, and the stub stands the agent down if its RAM is
+overwritten. That leaves anything else to find, which is this routine:
+
+1. **The ROM side, in seconds.** Generate a fresh seed from the new release (a maximal one,
+   where options change the payload) and run `--check`. A failed pin names what moved. Where
+   the randomizer moves the code rather than changing it, a `[[find]]` absorbs the move
+   (§6).
+2. **The RAM side, in BizHawk.** Patch that seed and run `agent-probe.lua` with Archipelago
+   live, through a few scene changes. `text=intact` and climbing ticks mean the agent is
+   loaded and nothing overwrote it. If the randomizer's own RAM grew, §4's tools say where
+   it now reaches.
+3. **The client.** For a native connector (DK64, Banjo-Tooie), press Start and read what the
+   client-fix check says: `ready`, `needed` or `unknown`. `unknown` means the fix's anchors
+   moved, and the release's client has to be read again (§1). For the forked OoT connector,
+   diff upstream's Lua against what `connectors/oot/UPSTREAM` records.
+4. **One session on the console,** with checks going out and items coming in.
+5. **Update the profile:** the pins that moved, and `[measured]` to the new release. Say
+   what was checked in the commit.
 
 ## When it misbehaves
 

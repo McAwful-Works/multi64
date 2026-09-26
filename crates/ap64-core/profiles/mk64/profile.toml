@@ -11,6 +11,11 @@ cic = "6102"
 randomizer = "Archipelago's Mario Kart 64 world"
 connector = "generic"     # Archipelago's BizHawk Client
 
+# The world declares no version, but stamps its release in the header name. A seed
+# naming another is noted, not refused.
+[measured]
+header_name = "MK64 ARCHIPELAGO 0.2"
+
 [agent]
 image = "agent.bin"
 rom = 0x1000000         # past the 16 MiB image the AP basepatch produces
