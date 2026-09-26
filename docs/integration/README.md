@@ -27,13 +27,14 @@ it to use, and what went wrong the first times it was done.
       RDRAM
 ```
 
-Three parts, and multi64 supplies two of them:
+Three parts. multi64 supplies the first two for any tool, and the third for Archipelago's
+clients:
 
 | Part | Provided | Your work |
 |---|---|---|
 | **Agent** — serves M64P from inside the ROM | [`n64/agent/`](../../n64/agent/README.md) | Choose its RAM, a per-frame call site, and a ROM location; build and splice it in |
 | **Bridge** — cart link over USB | [`multi64d`](../spec/daemon-api-v1.md) | Nothing |
-| **Stand-in** — answers the tool's memory calls with M64P | — | Write it, following [host-connector.md](host-connector.md) |
+| **Stand-in** — answers the tool's memory calls with M64P | For Archipelago's clients, [AP64](../../crates/ap64/README.md)'s [`ap64-connector`](../../crates/ap64-connector) | For any other tool, write it, following [host-connector.md](host-connector.md) |
 
 The agent itself contains nothing about any game. Everything game-specific is **where** it
 goes and **what calls it**, and that is almost all of the work.
@@ -52,8 +53,14 @@ goes and **what calls it**, and that is almost all of the work.
    the **patched** ROM, never the retail one.
 3. **How does the tool read memory?** If it goes through an emulator's scripting API
    (memory domains, frame advance, sockets), a stand-in can serve it unmodified. If it
-   reads the emulator's process memory directly, there is no API to stand in for, and it
-   cannot be served this way. Check this first; it decides whether the rest is worth doing.
+   reads the emulator's process memory directly, look for a second way in before ruling it
+   out: a tool may also speak a network protocol an emulator offers, and a stand-in can
+   answer that. Archipelago clients that read memory through EmuLoader fall back to
+   RetroArch's Network Commands when no emulator is running, which is how AP64 serves
+   Donkey Kong 64's and Banjo-Tooie's clients
+   ([host-connector.md §10](host-connector.md#10-serving-a-network-protocol-instead-of-a-script)).
+   A tool with neither cannot be served this way. Check this first; it decides whether the
+   rest is worth doing.
 
 ---
 
