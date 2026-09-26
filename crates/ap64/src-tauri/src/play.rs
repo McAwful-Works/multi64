@@ -480,9 +480,14 @@ fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<OnCart, Issue> {
             .read_rom_many(&[(at, image.len())])
             .map_err(|e| Issue::plain(e.to_string()))?;
         if got[0] != *image {
-            return Err(without(format!(
-                "the agent at ROM 0x{at:X} is not this build's"
-            )));
+            // The hook is AP64's, so the seed was patched: by another version of AP64, whose
+            // agent or stub differs from this one's. Its stub may even say the agent is
+            // somewhere else, which is why the address can look strange.
+            return Err(Issue::new(
+                "the ROM on the cart was patched by a different version of AP64; add the \
+                 agent to the seed again with this one and load that ROM",
+                format!("the agent at ROM 0x{at:X} is not this build's"),
+            ));
         }
     }
     Ok(OnCart {

@@ -41,6 +41,7 @@ fi
 tr -d '\r' < "$HERE/common/host.c" > "$B/src/host.c"
 tr -d '\r' < "$HERE/common/agent.ld" > "$B/agent.ld"
 tr -d '\r' < "$GDIR/stub.S" > "$B/stub.S"
+tr -d '\r' < "$HERE/common/image_check.inc" > "$B/image_check.inc"
 
 P=mips64-ultra-elf-
 # The agent's own flags, plus -G0 so nothing lands in gp-relative sections: this image
@@ -65,11 +66,22 @@ MAGIC=$(sym gAgentSegmentMagic)
 TICK=$(sym agent_tick)
 LOAD_SIZE=$(printf '0x%X' $(( LOAD_END - VRAM )))
 BIN_SIZE=$(stat -c %s "$B/agent.bin")
+# The stub's image check (common/image_check.inc): the whole words of .text and .rodata,
+# and their big-endian sum modulo 2^32, taken from the agent.bin that ships.
+RO_END=$(sym agent_RO_END)
+CHECK_BYTES=$(( (RO_END - VRAM) / 4 * 4 ))
+CHECK_END=$(printf '0x%X' $(( VRAM + CHECK_BYTES )))
+SUM=0
+for w in $(od -An -v -tx4 --endian=big -N "$CHECK_BYTES" "$B/agent.bin"); do
+    SUM=$(( (SUM + 0x$w) & 0xFFFFFFFF ))
+done
+CHECK_SUM=$(printf '0x%08X' "$SUM")
 
 ${P}gcc -march=vr4300 -mabi=32 -G0 -mno-abicalls -fno-pic -c "$B/stub.S" -o "$B/stub.o"
 ${P}ld -Ttext=$STUB_VRAM --just-symbols="$B/agent.elf" \
     --defsym AGENT_ROM=$ROM --defsym AGENT_LOAD_SIZE=$LOAD_SIZE \
     --defsym AGENT_MAGIC_ADDR=$MAGIC --defsym AGENT_MIN_RAM=$MINRAM \
+    --defsym AGENT_CHECK_END=$CHECK_END --defsym AGENT_CHECK_SUM=$CHECK_SUM \
     -e agent_hook_stub -o "$B/stub.elf" "$B/stub.o"
 ${P}objcopy -O binary --only-section=.text "$B/stub.elf" "$B/stub.bin"
 STUB_SIZE=$(stat -c %s "$B/stub.bin")
@@ -81,6 +93,7 @@ ${P}nm -u "$B/agent.elf" || true
 echo "AGENT_VRAM=$VRAM LOAD_END=$LOAD_END LOAD_SIZE=$LOAD_SIZE (agent.bin $BIN_SIZE B)"
 echo "BSS $BSS_START-$BSS_END ($(( BSS_END - BSS_START )) B)  RAM total $(( BSS_END - VRAM )) B"
 echo "gAgentSegmentMagic=$MAGIC agent_tick=$TICK"
+echo "image check: $CHECK_BYTES B to $CHECK_END, sum $CHECK_SUM"
 echo "--- stub at $STUB_VRAM: $STUB_SIZE B (limit $STUB_MAX)"
 [ "$STUB_SIZE" -le "$STUB_MAX" ] || { echo "STUB TOO LARGE"; exit 1; }
 ${P}objdump -d "$B/stub.elf" | grep -E '^ *8[0-9a-f]+:' | cut -c1-70
@@ -93,6 +106,8 @@ AGENT_BSS_START=$BSS_START
 AGENT_BSS_END=$BSS_END
 AGENT_MAGIC_ADDR=$MAGIC
 AGENT_TICK=$TICK
+AGENT_CHECK_END=$CHECK_END
+AGENT_CHECK_SUM=$CHECK_SUM
 STUB_VRAM=$STUB_VRAM
 STUB_SIZE=$STUB_SIZE
 OFF_MAGIC=$(off gAgentSegmentMagic)

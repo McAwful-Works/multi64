@@ -311,6 +311,42 @@ mod tests {
         );
     }
 
+    /// Every stub checks the agent's code in RAM against a sum build.sh took from agent.bin
+    /// (agent/common/image_check.inc). A sum that disagrees with the agent.bin that ships
+    /// would stand every stub down on its first pass, so the blobs and layout.env are held
+    /// to each other here: the sum is right for agent.bin, and the stub loads it.
+    #[test]
+    fn every_stub_checks_the_agent_that_ships_with_it() {
+        let mut bundles = builtin().unwrap();
+        bundles.extend(withheld().unwrap());
+        for b in &bundles {
+            let (id, env) = (&b.profile.id, layout_for(&b.profile.id));
+            let (vram, end) = (layout(env, "AGENT_VRAM"), layout(env, "AGENT_CHECK_END"));
+            let sum = layout(env, "AGENT_CHECK_SUM");
+            assert!(end > vram && (end - vram) % 4 == 0, "{id}: check range");
+            assert!(
+                end - vram <= layout(env, "AGENT_LOAD_SIZE"),
+                "{id}: the check stays inside the image"
+            );
+            let agent = &b.blobs["agent.bin"];
+            let taken = agent[..(end - vram) as usize]
+                .chunks_exact(4)
+                .fold(0u32, |s, c| {
+                    s.wrapping_add(u32::from_be_bytes(c.try_into().unwrap()))
+                });
+            assert_eq!(taken, sum, "{id}: AGENT_CHECK_SUM is not agent.bin's");
+            let w = stub_words(b);
+            let loads = w.windows(2).any(|p| {
+                let (lui, addiu) = (p[0], p[1]);
+                lui >> 26 == 0x0F
+                    && addiu >> 26 == 0x09
+                    && (addiu >> 21) & 0x1F == (lui >> 16) & 0x1F
+                    && profile::imm_value(lui, addiu) == sum
+            });
+            assert!(loads, "{id}: the stub does not load AGENT_CHECK_SUM");
+        }
+    }
+
     /// The profile must describe the blobs it carries: the numbers in profile.toml are
     /// typed by hand, layout.env is written by the build that linked the blobs.
     /// The games list is in library order: a leading article files under the next word.

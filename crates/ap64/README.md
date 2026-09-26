@@ -150,8 +150,18 @@ politely. That is deliberate: these clients read a line and hand it to `json.loa
 close gives them an empty string whose decode error their socket task does not catch — it dies
 without a word and the client goes on showing itself connected. A reset is the one ending they
 recover from on their own, so the client reconnects by itself once the console is back.
-A client AP64 answers over UDP (Donkey Kong 64's) has no connection to reset: its requests go
-unanswered while the console is away, and it tries again by itself until they are answered.
+A client AP64 answers over UDP (Donkey Kong 64's and Banjo-Tooie's) has no connection to reset:
+its requests go unanswered while the console is away, and it tries again by itself until they
+are answered.
+
+Before anything else, Start checks that the ROM on the cart is one this version of AP64 patched.
+A new version can change the agent or the stub that loads it, so a ROM patched by another
+version is refused, with a note to add the agent to the seed again.
+
+When the stub stands the agent down because its code in RAM changed (see
+[Patching a seed](#patching-a-seed)), it stays down until the console is powered off. A reset
+is not enough where the agent lives in the Expansion Pak, because that RAM survives a reset and
+the changed code is found again.
 
 ## Patching a seed
 
@@ -184,6 +194,13 @@ The seed is checked before anything is written. AP64 refuses it if any of these 
 
 After writing, the output is diffed against the seed. A change that no step accounts
 for withholds the output.
+
+Those checks are all of the ROM, but the agent runs from RAM, and a randomizer release that
+starts using more RAM can overwrite it with every check above still passing. So on the
+console, the stub also checks the agent's code each frame, a slice at a time, against a sum
+taken when it was built. If the code has changed, the stub stops calling the agent and never
+reloads it. The game plays on, the cart goes quiet, and the session log says the agent
+stopped answering. On the seeds tested, an overwrite was caught within 30 frames.
 
 No retail ROM is needed, and none of Nintendo's code ships with AP64. The profiles
 contain hashes, addresses and a few single instruction words; the agent and stubs are

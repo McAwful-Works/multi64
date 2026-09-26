@@ -124,7 +124,7 @@ fn dk64_accepts_any_heap_top_that_clears_the_agent() {
 fn dk64_puts_its_agent_past_a_seed_that_grew_into_it() {
     const AGENT: usize = 0x340_2000;
     const MOVED: usize = 0x340_4000; // the first 4 KiB boundary past the grown data
-    const PAIR: usize = 0xDDD4; // the stub's lui/addiu of the agent's ROM offset
+    const PAIR: usize = 0xDDE4; // the stub's lui/addiu of the agent's ROM offset
     let mut seed = std::fs::read(env_path("AP64_DK64_SEED")).unwrap();
     let expected = std::fs::read(env_path("AP64_DK64_EXPECTED")).unwrap();
     let original = seed.len();

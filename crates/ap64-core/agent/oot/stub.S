@@ -18,6 +18,7 @@
  * Every call goes through jalr $t9 rather than jal: the agent's symbols arrive via
  * --just-symbols sign-extended to 64 bits, and an R_MIPS_26 against them does not fit.
  */
+#include "image_check.inc"
         .macro  CALL target
         lui     $t9, %hi(\target)
         addiu   $t9, $t9, %lo(\target)
@@ -32,6 +33,7 @@ agent_hook_stub:
         sw      $ra, 20($sp)
         CALL    0x80401D88              /* before_game_state_update_hook, a0 intact */
         nop
+        IMAGE_STOOD_DOWN done           /* the image check stood the stub down */
 
         /* Run the agent only while its image is intact. */
         lui     $t1, 0x4D36
@@ -41,9 +43,12 @@ agent_hook_stub:
         bne     $t0, $t1, done
         nop
 
+        IMAGE_CHECK done                /* the next slice of the agent's code */
         CALL    agent_tick
         nop
 done:
         lw      $ra, 20($sp)
         jr      $ra
         addiu   $sp, $sp, 24
+
+        IMAGE_CHECK_STATE

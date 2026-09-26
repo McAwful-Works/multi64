@@ -64,14 +64,14 @@ at = 0x3C90C
 file = "stub.bin"
 max_len = 0x440
 
-# The stub's lui/addiu of AGENT_ROM (stub + 0x4C). It keeps agent.rom when the seed
+# The stub's lui/addiu of AGENT_ROM (stub + 0x5C). It keeps agent.rom when the seed
 # leaves room there; when the seed's data reaches it, the agent goes past the data and
 # this tells the stub where.
 [[write]]
 kind = "imm"
 label = "Where the agent is, for the stub"
-hi = 0x3C958
-lo = 0x3C95C
+hi = 0x3C968
+lo = 0x3C96C
 value = "agent_rom"
 
 [[write]]

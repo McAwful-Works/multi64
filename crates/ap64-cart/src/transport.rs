@@ -255,7 +255,8 @@ impl Multi64Transport {
             if Instant::now() >= deadline {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "no M64P reply within timeout; is the ROM with the agent running?",
+                    "no M64P reply within timeout; is the ROM with the agent running? \
+                     (The agent also goes quiet for good if its code in RAM is overwritten.)",
                 ));
             }
 
