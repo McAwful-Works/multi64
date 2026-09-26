@@ -8,7 +8,8 @@ cheapest way onto real hardware is to keep that connector **unmodified** and rep
 underneath it: implement the emulator functions it calls on top of M64P, sent through
 [`multi64d`](../spec/daemon-api-v1.md).
 
-multi64 does not ship a stand-in. This guide is what one has to get right.
+multi64's stand-in is AP64's [`ap64-connector`](../../crates/ap64-connector), which serves
+Archipelago's clients. This guide is what any stand-in has to get right.
 
 ---
 
@@ -31,7 +32,10 @@ It cannot serve, and a stand-in must **fail loudly** on:
 - savestates, input injection, framebuffer or screenshot reads.
 
 A client that finds the emulator by scanning its process memory, instead of through a scripting
-API, has nothing to stand in for.
+API, has nothing to stand in for, unless it can also reach an emulator over the network. Check
+for that before ruling it out. EmuLoader, which some Archipelago clients read emulator memory
+through, falls back to RetroArch's Network Commands over UDP when it finds no emulator process,
+and a stand-in can answer those. §10 covers what changes.
 
 ## 2. Be the emulator, not correct
 
@@ -156,3 +160,31 @@ Build the stand-in so its memory backend can be a **RAM dump file** as well as t
 unmodified connector against a dump captured from the emulator, over the real socket, and check what
 the client receives. That exercises everything above except timing without a console, a cart or a
 server — and is where most mistakes here were caught.
+
+## 10. Serving a network protocol instead of a script
+
+Some clients carry their game logic in their own code and read emulator memory themselves. When
+the library they read it through can also talk to an emulator over the network, a stand-in can
+answer that protocol directly, with no connector script at all. AP64 does this for RetroArch's
+Network Commands, the fallback EmuLoader uses when no emulator is running
+([`retroarch.rs`](../../crates/ap64-connector/src/retroarch.rs)): `READ_CORE_MEMORY` and
+`WRITE_CORE_MEMORY`, four bytes at a time at a KSEG1 address, over UDP.
+
+Most of the sections above still apply. What changes:
+
+- **Never answer late.** The protocol carries no request id, so a reply that arrives after the
+  client gave up is taken as the answer to its *next* request, and every exchange after that is
+  off by one. On a console that showed as garbage pointers and a false "new ROM" at every scene
+  change, because the agent stops answering while the game loads. So the cart is not asked
+  anything on the request path: reads are served from a snapshot of every window the client has
+  used, refreshed continuously in batched `PEEKV`s, and writes are acknowledged at once and queued
+  in order. The one wait is for a window never asked for before, bounded well inside the client's
+  timeout (EmuLoader gives up after half a second); past it, answer with an error, never late.
+- **Write only what changed.** The client writes a whole word even to change one byte, so
+  replaying the word would put back whatever the game changed in the other three. Write the bytes
+  the client changed; in a flag field the client read-modify-writes a bit at a time, read the live
+  byte first and apply only the bits it changed.
+- **Run the real client against the stand-in early.** A fallback path is the one its authors
+  exercise least. Both clients AP64 serves this way needed a fix to their own installed files before
+  they could reach it at all: one called a method its RetroArch backend lacked, the other read an
+  attribute that backend does not have. Neither showed up from reading the code.
