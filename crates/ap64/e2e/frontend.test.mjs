@@ -69,8 +69,8 @@ function installTauriStub(scenario) {
     play_default_url: () => answer("ws://127.0.0.1:38765/ws"),
     play_status: () => answer({ state: "idle", detail: "", port: null, requests: 0, reconnects: 0, stalls: 0, handled: 0 }),
     play_games: () => answer([
-      { id: "g1", name: "Game One", connector: "Generic (BizHawk Client games)", client: "BizHawk Client" },
-      { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector", client: "Game Two Client" },
+      { id: "g1", name: "Game One", connector: "Generic (BizHawk Client games)" },
+      { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector" },
     ]),
     play_start: () => answer(sc.start ?? null),
     play_client_setup: (a) =>
@@ -203,7 +203,7 @@ const setDev = async (p, on) => {
   // not carry a paragraph each and a player has somewhere to go when one line is not enough.
   for (const [card, btn, panel, want] of [
     ["patch", "btn-help-patch", "help-patch-dialog", "Generate and patch your seed with Archipelago"],
-    ["play", "btn-help-play", "help-play-dialog", "Open the game's client from the Archipelago Launcher"],
+    ["play", "btn-help-play", "help-play-dialog", "Open the AP client from the Archipelago Launcher"],
   ]) {
     const there = await onScreen(p, btn);
     check(`the ${card} card has an info button`, there);
@@ -254,7 +254,7 @@ const setDev = async (p, on) => {
   check("the card says the ROM is ready", (await text(p, "seed-line")).includes("ready for the console"));
   check("Show in folder is offered on the card", !(await p.evaluate(() => document.getElementById("btn-reveal").disabled)));
   check("a loaded seed picks its game for Play", (await p.inputValue("#play-game-select")) === "g1");
-  check("Play names the client to open", (await text(p, "link-client")).includes("BizHawk Client"));
+  check("Play calls the client the AP client", (await p.textContent("#play-facts")).includes("AP client") && (await text(p, "link-client")) === "Not connected", await text(p, "link-client"));
   check("Start is enabled once a game is chosen", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
   check("Play asks for no ROM file", (await p.locator("#play-rom, #btn-play-rom").count()) === 0);
   await p.close();
@@ -268,7 +268,7 @@ const setDev = async (p, on) => {
   check("Start is disabled until a game is chosen", await p.evaluate(() => document.getElementById("btn-play-start").disabled));
   const before = await cardHeights(p);
   await p.selectOption("#play-game-select", "g2");
-  check("choosing a game names the client to open", (await text(p, "link-client")).includes("Game Two Client"));
+  check("choosing a game does not name its client", (await text(p, "link-client")) === "Not connected", await text(p, "link-client"));
   check("choosing a game does not move the card", (await cardHeights(p)).join() === before.join(), `${before} then ${await cardHeights(p)}`);
   check("and enables Start", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
   await p.close();
@@ -289,14 +289,14 @@ const setDev = async (p, on) => {
   // Every status from a live session carries running: true, and Start and Stop follow that
   // and nothing else: whether a session exists is not something to read off its wording.
   const live = { running: true, port: 43055, requests: 0, reconnects: 0, stalls: 0, handled: 0 };
-  await emit("play://status", { ...live, state: "waiting-client", detail: "open BizHawk Client from the Archipelago Launcher", bridge: "ok", console: "ok", client: "waiting" });
-  check("waiting shows what to do next", (await text(p, "play-status")).includes("open BizHawk Client"));
+  await emit("play://status", { ...live, state: "waiting-client", detail: "open the AP client from the Archipelago Launcher", bridge: "ok", console: "ok", client: "waiting" });
+  check("waiting shows what to do next", (await text(p, "play-status")).includes("open the AP client"));
   // Each link is tracked on its own: one line can say what is happening, but not which part is.
   const links = () => p.evaluate(() => ["link-bridge", "link-console", "link-client"].map((i) => {
     const el = document.getElementById(i);
     return `${el.dataset.state}: ${el.textContent}`;
   }));
-  check("waiting has the cart up and the client not", (await links()).join(" | ") === "ok: Connected | ok: Running | waiting: Open BizHawk Client to connect", (await links()).join(" | "));
+  check("waiting has the cart up and the client not", (await links()).join(" | ") === "ok: Connected | ok: Running | waiting: Waiting for it to connect", (await links()).join(" | "));
   check("a link that is up says so in one word", (await links()).filter((l) => l.startsWith("ok:")).every((l) => l.split(": ")[1].split(" ").length === 1), (await links()).join(" | "));
   const buttons = () => p.evaluate(() => ({
     start: document.getElementById("btn-play-start").disabled,
@@ -307,7 +307,7 @@ const setDev = async (p, on) => {
   check("running disables Start and enables Stop", await p.evaluate(() => document.getElementById("btn-play-start").disabled && !document.getElementById("btn-play-stop").disabled));
   check("running locks the game", (await buttons()).game);
   check("running locks the URL", (await buttons()).url);
-  await emit("play://status", { ...live, state: "playing", detail: "BizHawk Client connected", requests: 120, reconnects: 1, stalls: 2, handled: 40, bridge: "ok", console: "ok", client: "ok" });
+  await emit("play://status", { ...live, state: "playing", detail: "AP client connected", requests: 120, reconnects: 1, stalls: 2, handled: 40, bridge: "ok", console: "ok", client: "ok" });
   check("playing shows the counters", (await text(p, "play-counters")).includes("120 cart round trips") && (await text(p, "play-counters")).includes("1 reconnects"));
   check("playing has all three up", (await links()).every((l) => l.startsWith("ok:")), (await links()).join(" | "));
   // A console reset while a session runs. The session stays up and keeps trying: the person
@@ -322,7 +322,7 @@ const setDev = async (p, on) => {
   await emit("play://status", { ...live, state: "waiting-console", detail: "the cart is running ZELDA [CZLE v0], not Game One US 1.0 [NG1E v0]", bridge: "ok", console: "failed", client: "idle" });
   check("a wrong game names the link that is down, not just the session", (await links())[1].startsWith("failed:") && (await links())[0].startsWith("ok:"), (await links()).join(" | "));
   check("and it is a session still waiting, not one that ended", (await buttons()).start && !(await buttons()).stop);
-  await emit("play://status", { ...live, state: "playing", detail: "BizHawk Client connected", requests: 140, reconnects: 1, stalls: 2, handled: 41, bridge: "ok", console: "ok", client: "ok" });
+  await emit("play://status", { ...live, state: "playing", detail: "AP client connected", requests: 140, reconnects: 1, stalls: 2, handled: 41, bridge: "ok", console: "ok", client: "ok" });
   check("and it goes back up on its own when the ROM returns", (await links())[1] === "ok: Running", (await links()).join(" | "));
   await p.click("#btn-play-stop");
   await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_stop"));
@@ -507,8 +507,8 @@ const setDev = async (p, on) => {
   const needed = { state: "needed", message: "Its copy of EmuLoader is missing a method. AP64 will add it to g2.apworld and keep the original", path: "C:\AP\custom_worlds\g2.apworld", technical: "" };
   const p = await openScenario({
     clientSetup: { g2: needed },
-    clientSetupAfter: { g2: { ...needed, state: "ready", message: "Game Two Client is ready for AP64" } },
-    clientFix: "Fixed. Restart the Archipelago Launcher before opening Game Two Client",
+    clientSetupAfter: { g2: { ...needed, state: "ready", message: "The AP client is ready for AP64" } },
+    clientFix: "Fixed. Restart the Archipelago Launcher before opening the AP client",
   });
   const starts = () => callsOf(p, "play_start");
   await p.selectOption("#play-game-select", "g1");
@@ -519,7 +519,7 @@ const setDev = async (p, on) => {
   await p.selectOption("#play-game-select", "g2");
   await p.click("#btn-play-start");
   await until(p, () => !document.getElementById("client-fix-dialog").hidden);
-  check("a client that needs the fix is asked about at Start", (await text(p, "client-fix-title")) === "Game Two Client needs a one-time fix");
+  check("a client that needs the fix is asked about at Start", (await text(p, "client-fix-title")) === "The AP client needs a one-time fix");
   check("the dialog says what changes and that the original is kept", (await text(p, "client-fix-text")).includes("keep the original"));
   check("and nothing starts until it is answered", (await starts()).length === 1);
   check("the file it changes is not in front of a player", !(await onScreen(p, "client-fix-path")));
@@ -537,8 +537,8 @@ const setDev = async (p, on) => {
   check("Fix and start fixes the chosen game's client", (await callsOf(p, "play_client_fix"))[0]?.args?.game === "g2");
   check("and then starts it", (await starts())[1]?.args?.game === "g2");
   check("with the dialog closed", !(await visible(p, "client-fix-dialog")));
-  check("and the Client row saying what is left to do", (await text(p, "link-client")) === "Restart the Archipelago Launcher, then open Game Two Client");
-  await p.evaluate(() => window.__TAURI_LISTENERS__["play://status"]({ payload: { running: true, state: "playing", detail: "Game Two Client connected", bridge: "ok", console: "ok", client: "ok" } }));
+  check("and the AP client row saying what is left to do", (await text(p, "link-client")) === "Restart the Archipelago Launcher, then open the AP client");
+  await p.evaluate(() => window.__TAURI_LISTENERS__["play://status"]({ payload: { running: true, state: "playing", detail: "AP client connected", bridge: "ok", console: "ok", client: "ok" } }));
   check("until the client connects", (await text(p, "link-client")) === "Connected");
   await p.close();
 }
@@ -556,7 +556,7 @@ const setDev = async (p, on) => {
 {
   const p = await openScenario({
     clientSetup: { g2: { state: "needed", message: "It is missing a method", path: "", technical: "" } },
-    clientFix: { error: "g2.apworld is in use; close Game Two Client and the Archipelago Launcher, then try again" },
+    clientFix: { error: "g2.apworld is in use; close the AP client and the Archipelago Launcher, then try again" },
   });
   await p.selectOption("#play-game-select", "g2");
   await p.click("#btn-play-start");

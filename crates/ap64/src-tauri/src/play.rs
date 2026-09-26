@@ -130,6 +130,10 @@ pub struct Play {
 }
 
 /// What plays a game: a connector script AP64 runs, or a client AP64 answers itself.
+///
+/// The window calls every game's Archipelago client "the AP client": someone playing opens it
+/// from the Archipelago Launcher and has no reason to know which one it is underneath. The
+/// session log, which is for finding out, names it ([`Kind::client`]).
 #[derive(Clone, Copy)]
 enum Kind {
     Script(Script),
@@ -165,15 +169,13 @@ fn kind(id: &str) -> Option<Kind> {
         })
 }
 
-/// A game the Play card offers: which connector plays it, and which Archipelago client
-/// goes with that.
+/// A game the Play card offers, and which connector plays it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Game {
     pub id: String,
     pub name: String,
     pub connector: String,
-    pub client: String,
 }
 
 pub fn games(bundles: &[Bundle]) -> Vec<Game> {
@@ -188,7 +190,6 @@ pub fn games(bundles: &[Bundle]) -> Vec<Game> {
                 // between. It stays on the profile for the header check to fail on.
                 name: b.profile.name.clone(),
                 connector: k.name().to_string(),
-                client: k.client().to_string(),
             })
         })
         .collect()
@@ -212,18 +213,17 @@ pub struct ClientSetup {
     pub technical: String,
 }
 
-fn client_fix(bundles: &[Bundle], game_id: &str) -> Option<(Native, ap64_connector::ClientFix)> {
+fn client_fix(bundles: &[Bundle], game_id: &str) -> Option<ap64_connector::ClientFix> {
     let b = bundles.iter().find(|b| b.profile.id == game_id)?;
     match kind(&b.profile.connector)? {
-        Kind::Native(n) => n.client_fix.map(|f| (n, f)),
+        Kind::Native(n) => n.client_fix,
         Kind::Script(_) => None,
     }
 }
 
 pub fn client_setup(bundles: &[Bundle], game_id: &str) -> Option<ClientSetup> {
     use ap64_connector::ClientState;
-    let (native, fix) = client_fix(bundles, game_id)?;
-    let client = native.client;
+    let fix = client_fix(bundles, game_id)?;
     let setup = |state: &str, message: String, path: String, technical: String| ClientSetup {
         state: state.into(),
         message,
@@ -258,7 +258,7 @@ pub fn client_setup(bundles: &[Bundle], game_id: &str) -> Option<ClientSetup> {
     Some(match (fix.state)(&bytes) {
         ClientState::Ready => setup(
             "ready",
-            format!("{client} is ready for AP64"),
+            "The AP client is ready for AP64".into(),
             shown,
             String::new(),
         ),
@@ -274,7 +274,7 @@ pub fn client_setup(bundles: &[Bundle], game_id: &str) -> Option<ClientSetup> {
         ClientState::Unrecognized(why) => setup(
             "unknown",
             format!(
-                "This version of {} is not one AP64 knows, so {client} may not connect",
+                "This version of {} is not one AP64 knows, so the AP client may not connect",
                 fix.file
             ),
             shown,
@@ -290,7 +290,7 @@ pub fn fix_client(
     game_id: &str,
     backups: &std::path::Path,
 ) -> Result<String, String> {
-    let (native, fix) = client_fix(bundles, game_id).ok_or("this game's client needs no fix")?;
+    let fix = client_fix(bundles, game_id).ok_or("this game's client needs no fix")?;
     let path =
         (fix.find)().ok_or_else(|| format!("{} is not installed in Archipelago", fix.file))?;
     let original = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
@@ -308,13 +308,13 @@ pub fn fix_client(
     if let Err(e) = std::fs::rename(&staged, &path) {
         let _ = std::fs::remove_file(&staged);
         return Err(format!(
-            "{} is in use; close {} and the Archipelago Launcher, then try again ({e})",
-            fix.file, native.client
+            "{} is in use; close the AP client and the Archipelago Launcher, then try again ({e})",
+            fix.file
         ));
     }
     Ok(format!(
-        "Fixed. Restart the Archipelago Launcher before opening {}. The original is saved as {}",
-        native.client,
+        "Fixed. Restart the Archipelago Launcher before opening the AP client. The original is \
+         saved as {}",
         backup.display()
     ))
 }
@@ -977,7 +977,6 @@ fn run(
             let app = app.clone();
             let client_here = client_here.clone();
             let console_up = console_up.clone();
-            let client = kind.client();
             let log = log.clone();
             cart.set_health(Rc::new(move |answering: bool| {
                 if console_up.replace(answering) == answering {
@@ -998,10 +997,11 @@ fn run(
                     }
                     .into();
                     s.detail = if client_here.get() {
-                        format!("{client} connected")
+                        "AP client connected"
                     } else {
-                        format!("open {client} from the Archipelago Launcher")
-                    };
+                        "open the AP client from the Archipelago Launcher"
+                    }
+                    .into();
                 } else {
                     s.state = "waiting-console".into();
                     s.detail = "the ROM stopped answering; load it again on the console".into();
@@ -1034,6 +1034,7 @@ fn run(
             }
         };
 
+        // Which client, for the log; the window says "the AP client" (see [`Kind`]).
         let client = kind.client();
         // Where the client finds AP64, for the log: scripts are TCP, native connectors UDP.
         let transport = match kind {
@@ -1067,7 +1068,7 @@ fn run(
                     set(&|s| {
                         s.state = "waiting-client".into();
                         s.port = Some(port);
-                        s.detail = format!("open {client} from the Archipelago Launcher");
+                        s.detail = "open the AP client from the Archipelago Launcher".into();
                         s.detail_dev = format!("listening on 127.0.0.1:{port}");
                         s.client = WAITING.into();
                     });
@@ -1077,7 +1078,7 @@ fn run(
                     log(format!("{client} connected from {addr}"));
                     set(&|s| {
                         s.state = "playing".into();
-                        s.detail = format!("{client} connected");
+                        s.detail = "AP client connected".into();
                         s.detail_dev = format!("from {addr}");
                         s.client = OK.into();
                     });
@@ -1087,7 +1088,7 @@ fn run(
                     log(format!("{client} disconnected: {why}"));
                     set(&|s| {
                         s.state = "waiting-client".into();
-                        s.detail = format!("{client} disconnected; waiting for it");
+                        s.detail = "AP client disconnected; waiting for it".into();
                         s.detail_dev = why.clone();
                         s.client = WAITING.into();
                     });

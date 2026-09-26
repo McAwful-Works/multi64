@@ -424,7 +424,7 @@ function renderGames() {
 function renderPlay() {
   const game = selectedGame();
   $("play-connector").textContent = game ? game.connector : "—";
-  // The link rows name the game and the client, so a chosen game changes what they say.
+  // A pending client hint is dropped by choosing another game, which changes what they say.
   renderLinks(lastStatus);
   $("btn-play-start").disabled = playRunning || !game;
   $("btn-play-stop").disabled = !playRunning;
@@ -441,15 +441,11 @@ function renderLinks(s) {
   ]) {
     const state = LINK_TEXT[key][s[key]] ? s[key] : "idle";
     $(id).dataset.state = state;
-    // The console row names the game, and the client row the client, once one is chosen.
     // A link that is up says so in a word: the interesting rows are the ones that are not,
-    // and those say what to do about it. Which client to open is worth naming before a session
-    // as well as during one.
-    const game = selectedGame();
+    // and the status line says what to do about them. Every game's client is "the AP client"
+    // here; which one it is underneath is the session log's business, not the player's.
     let text = LINK_TEXT[key][state];
-    if (game && key === "client") {
-      if (state === "idle") text = `${game.client} — not connected`;
-      if (state === "waiting") text = `Open ${game.client} to connect`;
+    if (key === "client") {
       // Once it has connected, the fix is behind it.
       if (state === "ok") clientHint = "";
       if (clientHint && (state === "idle" || state === "waiting")) text = clientHint;
@@ -531,7 +527,6 @@ async function startPlay() {
     return;
   }
   if (setup?.state === "needed") {
-    $("client-fix-title").textContent = `${game.client} needs a one-time fix`;
     $("client-fix-text").textContent = sentence(setup.message);
     $("client-fix-path").textContent = setup.path || "";
     openDialog("clientFix");
@@ -549,7 +544,7 @@ async function fixAndStart() {
   try {
     await invoke("play_client_fix", { game: game.id });
     closeDialog();
-    clientHint = `Restart the Archipelago Launcher, then open ${game.client}`;
+    clientHint = "Restart the Archipelago Launcher, then open the AP client";
     renderLinks(lastStatus);
     await beginSession();
   } catch (e) {
