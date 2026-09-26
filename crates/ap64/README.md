@@ -14,7 +14,9 @@ Play Archipelago N64 seeds on a real console, from Windows. AP64 does two jobs:
 2. **Play.** It runs a connector for that game against the cart, through
    [Multi64](../multi64/README.md)'s bridge, so Archipelago's own client can talk to the console
    as it would to an emulator. The ROM is read from the cart itself (M64P `PEEKROM`),
-   so there is no file to choose: pick the game, press Start, open the client.
+   so there is no file to choose: pick the game, press Start, open the client. The window
+   calls every game's client "the AP client"; the list below says which entry in the
+   Archipelago Launcher that is, and the session log names it too.
 
 Supported today, each patched and played on a SummerCart64 with checks sent and items
 received (the first three on 2026-09-18, Kirby 64 on 2026-09-21, Banjo-Tooie and Mario Kart 64
