@@ -11,7 +11,10 @@ mod play;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use ap64_core::{apply, builds_for, builtin, default_output, detect, Bundle, Cart, Detection};
+use ap64_core::{
+    adjust_pending, apply, builds_for, builtin, default_output, detect, needs_adjusting, Bundle,
+    Cart, Detection,
+};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
@@ -26,7 +29,17 @@ struct Loaded {
 struct AppState {
     bundles: Vec<Bundle>,
     loaded: Mutex<Option<Loaded>>,
+    /// The last seed AP64 ran its world's adjuster on ([`ap64_core::adjust`]), so loading it
+    /// again, as a cart change does, takes the result rather than another half minute.
+    adjusted: Mutex<Option<AdjustedSeed>>,
     play: play::Play,
+}
+
+struct AdjustedSeed {
+    /// The seed as loaded, big-endian: the key.
+    original: Vec<u8>,
+    rom: Vec<u8>,
+    note: String,
 }
 
 #[derive(Serialize)]
@@ -53,7 +66,11 @@ struct LoadResult {
     default_output: String,
     /// How this seed, or the world installed here, differs from the release the chosen profile
     /// was measured against. Notes, not refusals ([`ap64_core::installed::release_notes`]).
+    /// Also that AP64 ran the world's ROM adjuster on it, when it did.
     notes: Vec<String>,
+    /// The game whose world's ROM adjuster this seed still needs before it can pass: the page
+    /// says so and calls `adjust_rom`, which takes a while ([`ap64_core::adjust`]).
+    adjust: Option<String>,
 }
 
 /// A flash cart the patch can build the agent for.
@@ -154,27 +171,22 @@ fn load_rom(path: String, cart: String, state: State<'_, AppState>) -> Result<Lo
         ));
     }
     let mut rom = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let detection = detect(&bundles, &mut rom).map_err(|e| e.to_string())?;
-    let notes = detection
-        .chosen()
-        .and_then(|r| bundles.iter().find(|b| b.profile.id == r.profile_id))
-        .map(|b| {
-            let name = detection.header.as_ref().map_or("", |h| h.name.as_str());
-            ap64_core::installed::release_notes(&b.profile, name.trim())
-        })
-        .unwrap_or_default();
-    let result = LoadResult {
-        notes,
-        path: path.display().to_string(),
-        file_name: path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        size: rom.len(),
-        chosen: detection.chosen().map(|r| r.profile_id.clone()),
-        default_output: default_output(&path).display().to_string(),
-        detection: detection.clone(),
-    };
+    let mut detection = detect(&bundles, &mut rom).map_err(|e| e.to_string())?;
+    let mut adjusted_note = None;
+    let mut adjust = None;
+    if detection.chosen().is_none() {
+        let cached = state.adjusted.lock().unwrap();
+        if let Some(a) = cached.as_ref().filter(|a| a.original == rom) {
+            rom = a.rom.clone();
+            adjusted_note = Some(a.note.clone());
+        } else {
+            adjust = pending_game(&bundles, &detection, &rom);
+        }
+    }
+    if adjusted_note.is_some() {
+        detection = redetect(&bundles, &mut rom, &detection)?;
+    }
+    let result = load_result(&path, &rom, &detection, &bundles, adjusted_note, adjust);
     *state.loaded.lock().unwrap() = Some(Loaded {
         path,
         rom,
@@ -182,6 +194,88 @@ fn load_rom(path: String, cart: String, state: State<'_, AppState>) -> Result<Lo
         detection,
     });
     Ok(result)
+}
+
+/// The game whose world's ROM adjuster this seed needs before any profile can pass.
+fn pending_game(bundles: &[Bundle], detection: &Detection, rom: &[u8]) -> Option<String> {
+    needs_adjusting(bundles, detection, rom).map(|p| p.name.clone())
+}
+
+/// Detect again on adjusted bytes, keeping the byte order the file itself was in.
+fn redetect(bundles: &[Bundle], rom: &mut [u8], first: &Detection) -> Result<Detection, String> {
+    let mut d = detect(bundles, rom).map_err(|e| e.to_string())?;
+    d.byte_order = first.byte_order.clone();
+    Ok(d)
+}
+
+fn load_result(
+    path: &Path,
+    rom: &[u8],
+    detection: &Detection,
+    bundles: &[Bundle],
+    adjusted_note: Option<String>,
+    adjust: Option<String>,
+) -> LoadResult {
+    let mut notes: Vec<String> = adjusted_note.into_iter().collect();
+    if let Some(b) = detection
+        .chosen()
+        .and_then(|r| bundles.iter().find(|b| b.profile.id == r.profile_id))
+    {
+        let name = detection.header.as_ref().map_or("", |h| h.name.as_str());
+        notes.extend(ap64_core::installed::release_notes(&b.profile, name.trim()));
+    }
+    LoadResult {
+        notes,
+        adjust,
+        path: path.display().to_string(),
+        file_name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        size: rom.len(),
+        chosen: detection.chosen().map(|r| r.profile_id.clone()),
+        default_output: default_output(path).display().to_string(),
+        detection: detection.clone(),
+    }
+}
+
+/// Run the loaded seed's world's ROM adjuster ([`ap64_core::adjust`]) and check the result.
+/// It runs the world's own pack.exe and takes about half a minute, so it is its own command,
+/// off the main thread, called when `load_rom` says the seed needs it.
+#[tauri::command(async)]
+fn adjust_rom(state: State<'_, AppState>) -> Result<LoadResult, String> {
+    let (path, original, cart, first) = {
+        let guard = state.loaded.lock().unwrap();
+        let l = guard.as_ref().ok_or("no seed loaded")?;
+        (l.path.clone(), l.rom.clone(), l.cart, l.detection.clone())
+    };
+    let bundles = builds_for(&state.bundles, cart);
+    let adjusted = adjust_pending(&bundles, &first, &original)
+        .ok_or("this seed does not need adjusting")??;
+    let mut rom = adjusted.rom;
+    let detection = redetect(&bundles, &mut rom, &first)?;
+    *state.adjusted.lock().unwrap() = Some(AdjustedSeed {
+        original: original.clone(),
+        rom: rom.clone(),
+        note: adjusted.note.clone(),
+    });
+    let result = load_result(&path, &rom, &detection, &bundles, Some(adjusted.note), None);
+    let mut guard = state.loaded.lock().unwrap();
+    // Replaced only if it is still the seed this began with: another may have been loaded.
+    if guard
+        .as_ref()
+        .is_some_and(|l| l.path == path && l.cart == cart && l.rom == original)
+    {
+        *guard = Some(Loaded {
+            path,
+            rom,
+            cart,
+            detection,
+        });
+        Ok(result)
+    } else {
+        Err("another seed was loaded while this one was being adjusted".into())
+    }
 }
 
 #[tauri::command]
@@ -351,6 +445,7 @@ pub fn run() {
         .manage(AppState {
             bundles,
             loaded: Mutex::new(None),
+            adjusted: Mutex::new(None),
             play: play::Play::default(),
         })
         .invoke_handler(tauri::generate_handler![
@@ -364,6 +459,7 @@ pub fn run() {
             pick_rom,
             pick_output,
             load_rom,
+            adjust_rom,
             patch_rom,
             play_games,
             play_start,
