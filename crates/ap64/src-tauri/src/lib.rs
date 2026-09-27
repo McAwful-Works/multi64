@@ -11,13 +11,15 @@ mod play;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use ap64_core::{apply, builtin, default_output, detect, Bundle, Detection};
+use ap64_core::{apply, builds_for, builtin, default_output, detect, Bundle, Cart, Detection};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
 struct Loaded {
     path: PathBuf,
     rom: Vec<u8>,
+    /// The cart it was checked for, and will be patched for.
+    cart: Cart,
     detection: Detection,
 }
 
@@ -54,6 +56,16 @@ struct LoadResult {
     notes: Vec<String>,
 }
 
+/// A flash cart the patch can build the agent for.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CartInfo {
+    id: &'static str,
+    name: &'static str,
+    /// Whether its agent has run on a cart; the others are offered as experimental.
+    tested: bool,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PatchResult {
@@ -75,6 +87,25 @@ fn profiles(state: State<'_, AppState>) -> Vec<ProfileInfo> {
             randomizer: b.profile.randomizer.clone(),
         })
         .collect()
+}
+
+#[tauri::command]
+fn carts() -> Vec<CartInfo> {
+    Cart::ALL
+        .into_iter()
+        .map(|c| CartInfo {
+            id: c.id(),
+            name: c.name(),
+            tested: c.tested(),
+        })
+        .collect()
+}
+
+/// The cart Multi64's daemon at `url` was started for, or `None` when it is not running: what
+/// the patch defaults to, so the agent in the ROM talks to the cart Multi64 is set up for.
+#[tauri::command]
+fn multi64_cart(url: String) -> Option<String> {
+    ap64_cart::transport::daemon_cart(&url).filter(|c| Cart::parse(c).is_some())
 }
 
 #[tauri::command]
@@ -106,7 +137,11 @@ fn pick_output(suggested: String) -> Option<String> {
 const MAX_ROM: u64 = 80 << 20;
 
 #[tauri::command]
-fn load_rom(path: String, state: State<'_, AppState>) -> Result<LoadResult, String> {
+fn load_rom(path: String, cart: String, state: State<'_, AppState>) -> Result<LoadResult, String> {
+    let cart = Cart::parse(&cart).ok_or_else(|| format!("unknown cart {cart:?}"))?;
+    // Checked as that cart's build: builds differ in size, so a seed can fit one and not
+    // another, and the checks shown are the ones the patch will pass or fail.
+    let bundles = builds_for(&state.bundles, cart);
     let path = PathBuf::from(path);
     let len = std::fs::metadata(&path)
         .map_err(|e| format!("{}: {e}", path.display()))?
@@ -119,10 +154,10 @@ fn load_rom(path: String, state: State<'_, AppState>) -> Result<LoadResult, Stri
         ));
     }
     let mut rom = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let detection = detect(&state.bundles, &mut rom).map_err(|e| e.to_string())?;
+    let detection = detect(&bundles, &mut rom).map_err(|e| e.to_string())?;
     let notes = detection
         .chosen()
-        .and_then(|r| state.bundles.iter().find(|b| b.profile.id == r.profile_id))
+        .and_then(|r| bundles.iter().find(|b| b.profile.id == r.profile_id))
         .map(|b| {
             let name = detection.header.as_ref().map_or("", |h| h.name.as_str());
             ap64_core::installed::release_notes(&b.profile, name.trim())
@@ -143,6 +178,7 @@ fn load_rom(path: String, state: State<'_, AppState>) -> Result<LoadResult, Stri
     *state.loaded.lock().unwrap() = Some(Loaded {
         path,
         rom,
+        cart,
         detection,
     });
     Ok(result)
@@ -160,6 +196,7 @@ fn patch_rom(output: String, state: State<'_, AppState>) -> Result<PatchResult, 
         .bundles
         .iter()
         .find(|b| b.profile.id == chosen.profile_id)
+        .and_then(|b| b.for_cart(loaded.cart))
         .ok_or("profile missing")?;
     let output = PathBuf::from(output);
     if output == loaded.path {
@@ -322,6 +359,8 @@ pub fn run() {
             play_log,
             play_log_file,
             profiles,
+            carts,
+            multi64_cart,
             pick_rom,
             pick_output,
             load_rom,

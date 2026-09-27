@@ -95,14 +95,7 @@ fn other(msg: impl Into<String>) -> io::Error {
 /// it is the one thing that distinguishes "Multi64 is not running" from "the cart has not
 /// answered yet", and a caller reporting those separately needs it.
 pub fn serial_active(ws_url: &str) -> Option<bool> {
-    let hostport = ws_url.strip_prefix("ws://")?.split('/').next()?.to_string();
-    let mut s = TcpStream::connect(&hostport).ok()?;
-    s.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    let req = format!("GET / HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n");
-    s.write_all(req.as_bytes()).ok()?;
-    let mut body = String::new();
-    s.read_to_string(&mut body).ok()?;
-
+    let body = daemon_root(ws_url)?;
     if body.contains("\"serialActive\":true") {
         Some(true)
     } else if body.contains("\"serialActive\":false") {
@@ -110,6 +103,27 @@ pub fn serial_active(ws_url: &str) -> Option<bool> {
     } else {
         None
     }
+}
+
+/// Which cart the daemon was started for (`sc64`, `ed64` or `ed64pro`: `multi64d --cart`), or
+/// `None` when it does not answer. AP64 defaults its patch to it, so the agent in the ROM talks
+/// to the cart Multi64 is set up for.
+pub fn daemon_cart(ws_url: &str) -> Option<String> {
+    let body = daemon_root(ws_url)?;
+    let rest = &body[body.find("\"cart\":\"")? + "\"cart\":\"".len()..];
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+/// The daemon's `GET /`, response and all.
+fn daemon_root(ws_url: &str) -> Option<String> {
+    let hostport = ws_url.strip_prefix("ws://")?.split('/').next()?.to_string();
+    let mut s = TcpStream::connect(&hostport).ok()?;
+    s.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    let req = format!("GET / HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n");
+    s.write_all(req.as_bytes()).ok()?;
+    let mut body = String::new();
+    s.read_to_string(&mut body).ok()?;
+    Some(body)
 }
 
 impl Multi64Transport {

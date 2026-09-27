@@ -4,6 +4,7 @@
 //! code the agent hooks into must be exactly what the profile was measured against, and
 //! nothing of the seed may lie where the agent goes. Only then is anything written.
 
+pub mod cart;
 pub mod crc;
 pub mod installed;
 pub mod patch;
@@ -15,19 +16,41 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
+pub use cart::Cart;
 pub use patch::{apply, has_agent, verify, ApplyError, Bundle, Check, Patched, Report};
 pub use profile::Profile;
 
+/// One cart's build of a profile: its layout.env and blobs, from `$sub` of the profile's
+/// directory (`""` for the SummerCart64's, which is the directory itself).
+macro_rules! build {
+    ($cart:expr, $dir:literal, $sub:literal, [$($blob:literal),*]) => {{
+        let mut blobs = HashMap::new();
+        $(blobs.insert(
+            $blob.to_string(),
+            include_bytes!(concat!("../profiles/", $dir, "/", $sub, $blob)).to_vec(),
+        );)*
+        (
+            $cart,
+            include_str!(concat!("../profiles/", $dir, "/", $sub, "layout.env")).to_string(),
+            blobs,
+        )
+    }};
+}
+
+/// A profile with its build for every cart (`agent/build.sh`), in [`Cart::ALL`] order.
 macro_rules! builtin {
     ($dir:literal, [$($blob:literal),*]) => {{
         let text = include_str!(concat!("../profiles/", $dir, "/profile.toml"));
         let profile = Profile::parse(text).map_err(|e| format!("profiles/{}: {e}", $dir))?;
-        let mut blobs = HashMap::new();
-        $(blobs.insert(
-            $blob.to_string(),
-            include_bytes!(concat!("../profiles/", $dir, "/", $blob)).to_vec(),
-        );)*
-        Bundle::new(profile, blobs)?
+        Bundle::with_builds(
+            profile,
+            vec![
+                build!(Cart::Sc64, $dir, "", [$($blob),*]),
+                build!(Cart::Ed64, $dir, "ed64/", [$($blob),*]),
+                build!(Cart::Ed64pro, $dir, "ed64pro/", [$($blob),*]),
+            ],
+        )
+        .map_err(|e| format!("profiles/{}: {e}", $dir))?
     }};
 }
 
@@ -139,13 +162,23 @@ pub fn detect(bundles: &[Bundle], data: &mut [u8]) -> Result<Detection, LoadErro
     })
 }
 
-/// The profile whose agent a patched ROM (big-endian) carries, if any.
+/// The build whose agent a patched ROM (big-endian) carries, if any, for whichever cart.
 pub fn patched_with<'a>(bundles: &'a [Bundle], rom: &[u8]) -> Option<&'a Bundle> {
     let h = rom::header(rom)?;
     bundles
         .iter()
         .filter(|b| b.profile.game_code == h.game_code && b.profile.version == h.version)
+        .flat_map(Bundle::builds)
         .find(|b| has_agent(b, rom))
+}
+
+/// Every game's build for `cart`, in the same order: what the patcher uses once the player has
+/// said which cart the ROM is for.
+pub fn builds_for(bundles: &[Bundle], cart: Cart) -> Vec<Bundle> {
+    bundles
+        .iter()
+        .filter_map(|b| b.for_cart(cart).cloned())
+        .collect()
 }
 
 /// Where the output goes by default: beside the input, `<stem>-agent.z64`.
@@ -158,27 +191,17 @@ pub fn default_output(input: &std::path::Path) -> std::path::PathBuf {
 mod tests {
     use super::*;
 
-    /// Every profile's layout.env, by id. `layout_for` is how a test reaches one, so a
-    /// profile added to `builtin` or `withheld` without a row here fails by name rather
-    /// than by being silently paired with the next profile's numbers.
-    const LAYOUTS: &[(&str, &str)] = &[
-        ("cv64", include_str!("../profiles/cv64/layout.env")),
-        ("pmr", include_str!("../profiles/pmr/layout.env")),
-        ("oot", include_str!("../profiles/oot/layout.env")),
-        ("k64", include_str!("../profiles/k64/layout.env")),
-        ("bt", include_str!("../profiles/bt/layout.env")),
-        ("mk64", include_str!("../profiles/mk64/layout.env")),
-        ("dk64", include_str!("../profiles/dk64/layout.env")),
-        ("bm64", include_str!("../profiles/bm64/layout.env")),
-        ("cvlod", include_str!("../profiles/cvlod/layout.env")),
-    ];
+    /// Every build of every profile, offered or withheld, one per cart. A test about the blobs
+    /// AP64 writes holds for each cart's, each read against the layout.env its own build wrote.
+    fn every_build() -> Vec<Bundle> {
+        let mut bundles = builtin().unwrap();
+        bundles.extend(withheld().unwrap());
+        bundles.iter().flat_map(|b| b.builds().cloned()).collect()
+    }
 
-    fn layout_for(id: &str) -> &'static str {
-        LAYOUTS
-            .iter()
-            .find(|(name, _)| *name == id)
-            .map(|(_, env)| *env)
-            .unwrap_or_else(|| panic!("profiles/{id} has no row in LAYOUTS"))
+    /// A build's name in a failure: the profile and the cart.
+    fn build_id(b: &Bundle) -> String {
+        format!("{} ({})", b.profile.id, b.cart.id())
     }
 
     fn layout(text: &str, key: &str) -> u32 {
@@ -251,12 +274,10 @@ mod tests {
     #[test]
     fn every_stub_reads_the_load_marker_before_running_the_agent() {
         const M64P: u32 = 0x4D36_3450;
-        let mut bundles = builtin().unwrap();
-        bundles.extend(withheld().unwrap());
-        for b in bundles.iter() {
-            let id = &b.profile.id;
+        for b in &every_build() {
+            let id = build_id(b);
             let w = stub_words(b);
-            let magic = layout(layout_for(id), "AGENT_MAGIC_ADDR");
+            let magic = layout(&b.layout, "AGENT_MAGIC_ADDR");
             assert!(
                 loads_word_at(&w, magic),
                 "{id}: the stub never reads the marker at 0x{magic:X}"
@@ -273,10 +294,8 @@ mod tests {
     /// some other instruction and leave the stub loading from the old place.
     #[test]
     fn a_moving_agent_rewrites_the_pair_the_stub_loads_it_by() {
-        let mut bundles = builtin().unwrap();
-        bundles.extend(withheld().unwrap());
         let mut seen = 0;
-        for b in bundles.iter() {
+        for b in &every_build() {
             let p = &b.profile;
             let Some((profile::Addr::Rom(hi), Some(profile::Addr::Rom(lo)))) = p.agent_rom_imm()
             else {
@@ -302,15 +321,16 @@ mod tests {
             let word = |at: u32| w[((at - stub_at) / 4) as usize];
             assert_eq!(
                 profile::imm_value(word(*hi), word(*lo)),
-                layout(layout_for(&p.id), "AGENT_ROM"),
+                layout(&b.layout, "AGENT_ROM"),
                 "{}: the pair at 0x{hi:X} does not load AGENT_ROM",
-                p.id
+                build_id(b)
             );
             seen += 1;
         }
         assert_eq!(
-            seen, 7,
-            "every profile whose stub copies the agent lets it move"
+            seen,
+            7 * Cart::ALL.len(),
+            "every profile whose stub copies the agent lets it move, for every cart"
         );
     }
 
@@ -344,6 +364,23 @@ mod tests {
         .needs_expansion_pak());
     }
 
+    /// Each cart's build ends in a different place, and DK64 is where that matters: its agent
+    /// lives under the randomizer's own code, which v1.5.8 starts at 0x805C1040. The
+    /// SummerCart64's and the PRO's builds end below it; the X7's does not, so its heap-top
+    /// check (`min = "agent_end"`) refuses a v1.5.8 seed rather than overlap the two.
+    #[test]
+    fn dk64_has_room_for_every_agent_but_the_x7s() {
+        let dk64 = builtin()
+            .unwrap()
+            .into_iter()
+            .find(|b| b.profile.id == "dk64")
+            .unwrap();
+        let end = |cart| dk64.for_cart(cart).unwrap().agent_ram_end().unwrap();
+        assert!(end(Cart::Sc64) <= 0x805C_1040);
+        assert!(end(Cart::Ed64pro) <= 0x805C_1040);
+        assert!(end(Cart::Ed64) > 0x805C_1040);
+    }
+
     /// Every profile says which randomizer release it was measured against, so a seed from
     /// another can be pointed out (#292). Paper Mario's world declares no version and its ROM
     /// carries none, so it is the one that cannot, and its profile says so.
@@ -363,10 +400,8 @@ mod tests {
     /// to each other here: the sum is right for agent.bin, and the stub loads it.
     #[test]
     fn every_stub_checks_the_agent_that_ships_with_it() {
-        let mut bundles = builtin().unwrap();
-        bundles.extend(withheld().unwrap());
-        for b in &bundles {
-            let (id, env) = (&b.profile.id, layout_for(&b.profile.id));
+        for b in &every_build() {
+            let (id, env) = (build_id(b), b.layout.as_str());
             let (vram, end) = (layout(env, "AGENT_VRAM"), layout(env, "AGENT_CHECK_END"));
             let sum = layout(env, "AGENT_CHECK_SUM");
             assert!(end > vram && (end - vram) % 4 == 0, "{id}: check range");
@@ -439,15 +474,14 @@ mod tests {
     fn builtin_profiles_match_the_build_that_made_their_blobs() {
         let mut bundles = builtin().unwrap();
         bundles.extend(withheld().unwrap());
-        assert_eq!(
-            bundles.len(),
-            LAYOUTS.len(),
-            "LAYOUTS has a row per profile, and one of them is missing or spare"
-        );
-        for b in bundles.iter() {
+        for b in &bundles {
+            let carts: Vec<Cart> = b.builds().map(|b| b.cart).collect();
+            assert_eq!(carts, Cart::ALL, "{}: a build for every cart", b.profile.id);
+        }
+        for b in &every_build() {
             let p = &b.profile;
-            let id = p.id.as_str();
-            let env = layout_for(id);
+            let id = build_id(b);
+            let env = b.layout.as_str();
             assert_eq!(p.agent.rom, layout(env, "AGENT_ROM"), "{id} AGENT_ROM");
             assert_eq!(p.agent.vram, layout(env, "AGENT_VRAM"), "{id} AGENT_VRAM");
             assert_eq!(
