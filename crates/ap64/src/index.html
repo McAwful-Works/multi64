@@ -123,6 +123,16 @@
         </div>
         <div class="dialog-body">
           <div id="pane-seed">
+            <!-- The agent drives one cart, so the ROM is built for the one it will run on. First,
+                 and outside the patch controls: the checks below are this cart's, and a seed one
+                 cart's agent does not fit must still leave the choice to change it. -->
+            <label class="field">
+              <span>Flash cart</span>
+              <select id="patch-cart" class="input"></select>
+            </label>
+            <p class="hint hint-warning" id="cart-note" hidden>
+              Experimental: AP64's agent for this cart has never run on one.
+            </p>
             <dl class="status-grid">
               <dt>File</dt>
               <dd id="seed-file">—</dd>
@@ -295,7 +305,9 @@
           <ul class="steps">
             <li>An N64 with an <strong>Expansion Pak</strong>. AP64's agent runs in its memory, and
               without one it never starts.</li>
-            <li>A <strong>SummerCart64</strong>, connected to this PC by USB.</li>
+            <li>A <strong>SummerCart64</strong>, connected to this PC by USB. EverDrive-64 X7
+              and PRO support is experimental: AP64 can build the agent for them, but it has
+              never run on one.</li>
             <li>The <strong>Multi64</strong> app, the bridge to the cart. AP64 starts it when you
               press Start.</li>
             <li><strong>Archipelago</strong>, with your game's world installed, and a seed it

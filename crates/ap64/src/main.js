@@ -213,7 +213,67 @@ function renderSeedChecks() {
       : "Ready for the agent";
 }
 
+/*
+ * The flash cart the patch builds the agent for. Multi64's, when its daemon is running, since
+ * that is the cart the ROM will be played through; otherwise the last one chosen here. A seed is
+ * checked as that cart's build, so changing it checks the seed again.
+ */
+const CART_KEY = "ap64.cart";
+let carts = [];
+let loadedPath = null;
+
+function readCart() {
+  try {
+    return localStorage.getItem(CART_KEY) || "sc64";
+  } catch {
+    return "sc64";
+  }
+}
+
+function saveCart(id) {
+  try {
+    localStorage.setItem(CART_KEY, id);
+  } catch {
+    // Not remembered; Multi64's cart or the SummerCart64 next time.
+  }
+}
+
+function selectedCart() {
+  return $("patch-cart").value || "sc64";
+}
+
+function setCart(id) {
+  if (!carts.some((c) => c.id === id)) return;
+  $("patch-cart").value = id;
+  const cart = carts.find((c) => c.id === id);
+  show($("cart-note"), !cart.tested);
+}
+
+async function initCarts() {
+  carts = (await invoke("carts")) || [];
+  for (const c of carts) {
+    const o = document.createElement("option");
+    o.value = c.id;
+    o.textContent = c.tested ? c.name : `${c.name} (experimental)`;
+    $("patch-cart").append(o);
+  }
+  setCart(readCart());
+  $("patch-cart").addEventListener("change", () => {
+    setCart($("patch-cart").value);
+    saveCart(selectedCart());
+    if (loadedPath) loadSeed(loadedPath);
+  });
+  // Multi64's cart wins when it answers: it is the cart the ROM will be played through.
+  try {
+    const running = await invoke("multi64_cart", { url: $("play-url").value.trim() });
+    if (running) setCart(running);
+  } catch {
+    // Not running: the last choice stands.
+  }
+}
+
 async function loadSeed(path) {
+  loadedPath = path;
   resetResults();
   setError($("load-error"), "");
   $("release-notes").textContent = "";
@@ -222,7 +282,7 @@ async function loadSeed(path) {
   $("btn-open-patch").disabled = true;
   $("drop-zone").dataset.state = "busy";
   try {
-    const r = await invoke("load_rom", { path });
+    const r = await invoke("load_rom", { path, cart: selectedCart() });
     const d = r.detection;
     $("seed-file").textContent = `${r.fileName} (${(r.size / 1048576).toFixed(1)} MiB)`;
     const h = d.header;
@@ -638,6 +698,8 @@ async function initPlay() {
   }
   listen("play://status", (event) => renderStatus(event.payload || {}));
   $("play-url").value = readUrl((await invoke("play_default_url")) || "");
+  // Needs the Multi64 address, to ask which cart it is set up for.
+  initCarts();
   $("play-game-select").addEventListener("change", () => {
     clientHint = "";
     renderPlay();

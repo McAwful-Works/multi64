@@ -471,7 +471,13 @@ fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<OnCart, Issue> {
         _ => None,
     };
     if found_hooks {
-        let image = &bundle.blobs[&p.agent.image];
+        // Any cart's build: the seed was patched for the cart it is on, which is Multi64's
+        // business, not this check's.
+        let images: Vec<&[u8]> = bundle
+            .builds()
+            .map(|b| b.blobs[&b.profile.agent.image].as_slice())
+            .collect();
+        let len = images.iter().map(|i| i.len()).max().unwrap_or(0);
         let at = match &table {
             None => agent_rom.unwrap_or(p.agent.rom),
             Some(t) => rom_address(t, p.agent.rom).ok_or_else(|| {
@@ -482,9 +488,9 @@ fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<OnCart, Issue> {
             })?,
         };
         let got = cart
-            .read_rom_many(&[(at, image.len())])
+            .read_rom_many(&[(at, len)])
             .map_err(|e| Issue::plain(e.to_string()))?;
-        if got[0] != *image {
+        if !images.iter().any(|i| got[0].starts_with(i)) {
             // The hook is AP64's, so the seed was patched: by another version of AP64, whose
             // agent or stub differs from this one's. Its stub may even say the agent is
             // somewhere else, which is why the address can look strange.

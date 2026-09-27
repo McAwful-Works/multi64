@@ -194,8 +194,8 @@ pub enum Require {
         lo: Addr,
         hi_word: u32,
         lo_word: u32,
-        min: u32,
-        max: u32,
+        min: Bound,
+        max: Bound,
         #[serde(default)]
         hint: String,
     },
@@ -216,6 +216,32 @@ impl Require {
             Require::Word { at, .. } => vec![(at, 4)],
             Require::Sha1 { at, len, .. } => vec![(at, *len)],
             Require::Imm { hi, lo, .. } => vec![(hi, 4), (lo, 4)],
+        }
+    }
+}
+
+/// One end of an `imm` check's range: a number, or `"agent_end"`, where the agent being patched
+/// ends in RAM, code through BSS. That differs by cart, so a range that has to clear the agent
+/// says so rather than naming one build's end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum Bound {
+    Value(u32),
+    Named(BoundName),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundName {
+    AgentEnd,
+}
+
+impl Bound {
+    /// The number, given where the agent ends.
+    pub fn value(self, agent_end: u32) -> u32 {
+        match self {
+            Bound::Value(v) => v,
+            Bound::Named(BoundName::AgentEnd) => agent_end,
         }
     }
 }
@@ -338,7 +364,9 @@ impl Profile {
                 let shape = hi_word >> 26 == 0x0F
                     && matches!(lo_word >> 26, 0x09 | 0x0D)
                     && (hi_word | lo_word) & 0xFFFF == 0;
-                if !shape || min > max {
+                // A named end is only known per build, so only two numbers can be out of order.
+                let reversed = matches!((min, max), (Bound::Value(a), Bound::Value(b)) if a > b);
+                if !shape || reversed {
                     return Err(format!(
                         "imm check {:?} needs a lui, an addiu or ori, both with the immediate \
                          zeroed, and min <= max",

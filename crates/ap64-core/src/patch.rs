@@ -15,6 +15,7 @@ use std::ops::Range;
 use serde::Serialize;
 use sha1::{Digest, Sha1};
 
+use crate::cart::Cart;
 use crate::crc::{self, CRC_END, CRC_OFFSET};
 use crate::profile::{imm_value, parse_hex, Addr, ImmValue, Profile, Require, Transform, Write};
 use crate::rom;
@@ -23,16 +24,29 @@ use crate::rom;
 /// located, or was located more than once, is absent.
 type Found = HashMap<String, u32>;
 
-/// A profile together with the blobs its writes reference.
+/// A profile together with the blobs its writes reference, built for one cart.
 #[derive(Debug, Clone)]
 pub struct Bundle {
     pub profile: Profile,
     pub blobs: HashMap<String, Vec<u8>>,
+    /// The cart this bundle's agent and stub drive.
+    pub cart: Cart,
+    /// The layout.env `build.sh` wrote with these blobs, or empty for a bundle not built there.
+    pub layout: String,
+    /// The same game built for the other carts. Empty on those builds themselves.
+    pub others: Vec<Bundle>,
 }
 
 impl Bundle {
+    /// A SummerCart64 build with no layout and no others: what a test makes by hand.
     pub fn new(profile: Profile, blobs: HashMap<String, Vec<u8>>) -> Result<Self, String> {
-        let bundle = Bundle { profile, blobs };
+        let bundle = Bundle {
+            profile,
+            blobs,
+            cart: Cart::Sc64,
+            layout: String::new(),
+            others: Vec::new(),
+        };
         bundle.blob(&bundle.profile.agent.image)?;
         for w in &bundle.profile.write {
             if let Write::Blob { file, .. } = w {
@@ -40,6 +54,46 @@ impl Bundle {
             }
         }
         Ok(bundle)
+    }
+
+    /// One game built for several carts, each with its layout.env and blobs. The first becomes
+    /// this bundle and the rest its [`Bundle::others`]. A profile whose loader zeroes the
+    /// agent's BSS (`agent.bss`) gets each build's own size: the builds' BSS differ.
+    pub fn with_builds(
+        profile: Profile,
+        builds: Vec<(Cart, String, HashMap<String, Vec<u8>>)>,
+    ) -> Result<Self, String> {
+        let mut made = Vec::with_capacity(builds.len());
+        for (cart, layout, blobs) in builds {
+            let mut p = profile.clone();
+            if p.agent.bss > 0 {
+                p.agent.bss = layout_value(&layout, "AGENT_BSS_END")?
+                    - layout_value(&layout, "AGENT_BSS_START")?;
+            }
+            let mut b = Bundle::new(p, blobs).map_err(|e| format!("{}: {e}", cart.id()))?;
+            b.cart = cart;
+            b.layout = layout;
+            made.push(b);
+        }
+        let mut made = made.into_iter();
+        let mut first = made.next().ok_or("a profile with no builds")?;
+        first.others = made.collect();
+        Ok(first)
+    }
+
+    /// This build, then the others.
+    pub fn builds(&self) -> impl Iterator<Item = &Bundle> {
+        std::iter::once(self).chain(&self.others)
+    }
+
+    /// The build for `cart`, if this game has one.
+    pub fn for_cart(&self, cart: Cart) -> Option<&Bundle> {
+        self.builds().find(|b| b.cart == cart)
+    }
+
+    /// Where the agent's RAM ends, code through BSS, from the build's layout.
+    pub fn agent_ram_end(&self) -> Option<u32> {
+        layout_value(&self.layout, "AGENT_BSS_END").ok()
     }
 
     fn blob(&self, name: &str) -> Result<&[u8], String> {
@@ -50,6 +104,20 @@ impl Bundle {
             )
         })
     }
+}
+
+/// A `KEY=0x...` value from a layout.env.
+fn layout_value(layout: &str, key: &str) -> Result<u32, String> {
+    let v = layout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(key)?.strip_prefix('='))
+        .ok_or_else(|| format!("layout.env has no {key}"))?
+        .trim();
+    match v.strip_prefix("0x") {
+        Some(hex) => u32::from_str_radix(hex, 16),
+        None => v.parse(),
+    }
+    .map_err(|e| format!("layout.env {key}={v}: {e}"))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -287,7 +355,13 @@ fn verify_prepared(bundle: &Bundle, rom: &[u8]) -> (Report, Found) {
                     ),
                     Some((h, l)) => {
                         let v = imm_value(h, l);
-                        let ok = (*min..=*max).contains(&v);
+                        let end = bundle.agent_ram_end().unwrap_or_else(|| {
+                            // A bundle made by hand has no layout: its image and BSS are all
+                            // there is to go on.
+                            p.agent.vram + bundle.blobs[&p.agent.image].len() as u32 + p.agent.bss
+                        });
+                        let (min, max) = (min.value(end), max.value(end));
+                        let ok = (min..=max).contains(&v);
                         (
                             ok,
                             format!(
@@ -562,7 +636,8 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
     let align = if p.agent.dma_slot.is_some() { 16 } else { 4 };
     out.resize(out.len().next_multiple_of(align), 0);
     summary.push(format!(
-        "Agent: {} bytes at {} 0x{agent_rom:X}{}{}, runs at 0x{:08X}{}",
+        "Agent for the {}: {} bytes at {} 0x{agent_rom:X}{}{}, runs at 0x{:08X}{}",
+        bundle.cart.name(),
         agent.len(),
         if p.transform.is_some() { "vrom" } else { "ROM" },
         if agent_rom == p.agent.rom as usize {
@@ -1105,6 +1180,28 @@ sha1 = "{sha}"
         let (mut rom, b) = ranged(0x805C_1040);
         rom::write_u32(&mut rom, 0x4004, 0x35AC_1040);
         assert_eq!(refused(&b, &rom), ["Top"]);
+    }
+
+    /// A range that has to clear the agent names its end, not one build's number: each cart's
+    /// build ends in a different place, so the same seed can fit one and not another. DK64's
+    /// heap top is the case, where the EverDrive-64 X7's agent runs past v1.5.8's 0x805C1040.
+    #[test]
+    fn an_imm_check_can_start_where_this_builds_agent_ends() {
+        let mut rom = seed();
+        rom::write_u32(&mut rom, 0x4000, 0x3C0D_805C);
+        rom::write_u32(&mut rom, 0x4004, 0x35AD_1040);
+        let extra = "[[require]]\nkind = \"imm\"\nlabel = \"Top\"\nhi = 0x4000\nlo = 0x4004\n\
+                     hi_word = 0x3C0D0000\nlo_word = 0x35AD0000\nmin = \"agent_end\"\nmax = 0x805FAE00\n\
+                     [[write]]\nkind = \"imm\"\nlabel = \"Lowered\"\nhi = 0x4000\nlo = 0x4004\n\
+                     value = 0x805B9040\n";
+        let mut b = bundle_with(4, &rom, extra);
+        b.layout = "AGENT_BSS_END=0x805C0520\n".into();
+        assert!(
+            apply(&b, &rom).is_ok(),
+            "an agent ending below the top fits"
+        );
+        b.layout = "AGENT_BSS_END=0x805C12C0\n".into();
+        assert_eq!(refused(&b, &rom), ["Top"], "one ending past it does not");
     }
 
     #[test]

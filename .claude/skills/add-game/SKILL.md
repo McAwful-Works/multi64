@@ -282,6 +282,13 @@ mips64-ultra-elf toolchain in WSL), then `profiles/<game>/profile.toml` by hand,
 register it in `ap64-core::builtin()`. Comment `game.env` with *why* each address is safe
 — that comment is the evidence for a decision nobody will remember.
 
+`build.sh` builds the agent once per flash cart: the SummerCart64's into `profiles/<game>/`,
+and the experimental EverDrive-64 X7's and PRO's into its `ed64/` and `ed64pro/`. They differ
+in size, and the X7's is the largest, about 29.4 KB of RAM to the SummerCart64's 25.9 KB, so
+measure room for that one. Where an `imm` check bounds the agent from below, write
+`min = "agent_end"` rather than one build's end, as DK64's heap top does: the X7's agent does
+not fit there, and the check is what refuses it.
+
 Start `stub.S` from an existing one and keep its two image-check lines
 (`agent/common/image_check.inc`): `IMAGE_STOOD_DOWN done` before anything that touches
 the agent's RAM, including a reload, and `IMAGE_CHECK done` just before `agent_tick`, with

@@ -45,6 +45,7 @@ async function serveFrontend() {
 /**
  * Stand in for the Tauri bridge. `scenario`:
  * - `load`: what `load_rom` resolves to, or `{ error }` to reject
+ * - `multi64Cart`: the cart Multi64's daemon reports (`multi64_cart`), or none when not given
  * - `patch`: what `patch_rom` resolves to, or `{ error }` to reject
  * - `pick`: what `pick_rom` resolves to
  * - `clientSetup`, `clientSetupAfter`: what `play_client_setup` answers per game id, before and
@@ -71,6 +72,12 @@ function installTauriStub(scenario) {
       { id: "g2", name: "Game Two: The Subtitle", release: "EU 1.1", randomizer: "Game Two Randomizer" },
     ]),
     load_rom: () => answer(sc.load),
+    carts: () => answer([
+      { id: "sc64", name: "SummerCart64", tested: true },
+      { id: "ed64", name: "EverDrive-64 X7", tested: false },
+      { id: "ed64pro", name: "EverDrive-64 PRO", tested: false },
+    ]),
+    multi64_cart: () => answer(sc.multi64Cart ?? null),
     patch_rom: () => answer(sc.patch),
     pick_rom: () => answer(sc.pick ?? null),
     pick_output: () => answer(null),
@@ -236,6 +243,8 @@ const setDev = async (p, on) => {
   await until(p, () => !document.getElementById("patch-dialog").hidden);
   const loads = await callsOf(p, "load_rom");
   check("a drop loads the first file dropped", loads.length === 1 && loads[0].args.path === "C:\\seeds\\seed.z64", JSON.stringify(loads));
+  check("for the SummerCart64 when nothing says otherwise", loads[0].args.cart === "sc64", JSON.stringify(loads));
+  check("which needs no warning", !(await visible(p, "cart-note")));
   check("a drop opens the dialog rather than growing the card", (await cardHeights(p)).join() === idle.join(), `${idle} then ${await cardHeights(p)}`);
   check("the card names the seed and its game", (await text(p, "seed-line")).includes("seed.z64") && (await text(p, "seed-line")).includes("Game One"));
   const marks = await p.evaluate(() => [...document.querySelectorAll(".check-item")].map((li) => li.dataset.ok));
@@ -632,6 +641,24 @@ const setDev = async (p, on) => {
   await p.click("#btn-notes-go");
   await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_start"));
   check("then the game starts", (await callsOf(p, "play_start"))[0]?.args?.game === "g2");
+  await p.close();
+}
+
+// The agent is built for one flash cart: Multi64's when it answers, and a change checks again.
+{
+  const p = await openScenario({ load: loadOk, multi64Cart: "ed64pro" });
+  await until(p, () => document.getElementById("patch-cart").value === "ed64pro");
+  check("the cart follows Multi64's when it is running", (await p.inputValue("#patch-cart")) === "ed64pro");
+  await drop(p, ["C:\\seeds\\seed.z64"]);
+  await until(p, () => !document.getElementById("patch-dialog").hidden);
+  check("and the seed is checked for it", (await callsOf(p, "load_rom"))[0]?.args?.cart === "ed64pro");
+  check("an untested cart says so", await visible(p, "cart-note"));
+  await p.selectOption("#patch-cart", "sc64");
+  await until(p, () => window.__TAURI_CALLS__.filter((c) => c.cmd === "load_rom").length === 2);
+  const loads = await callsOf(p, "load_rom");
+  check("choosing another cart checks the seed again for it", loads[1]?.args?.cart === "sc64" && loads[1]?.args?.path === "C:\\seeds\\seed.z64", JSON.stringify(loads));
+  check("the tested one without the warning", !(await visible(p, "cart-note")));
+  check("and the choice is remembered", (await p.evaluate(() => localStorage.getItem("ap64.cart"))) === "sc64");
   await p.close();
 }
 

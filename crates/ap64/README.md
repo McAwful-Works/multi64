@@ -202,7 +202,18 @@ the AP64 window or run:
 ```sh
 cargo run -p ap64-cli -- <seed.z64>            # writes <seed>-agent.z64 beside it
 cargo run -p ap64-cli -- <seed.z64> --check    # verify only
+cargo run -p ap64-cli -- <seed.z64> --cart ed64    # for an EverDrive-64 X7 (experimental)
 ```
+
+**The agent is built for one flash cart**, because it drives one: the SummerCart64, the
+EverDrive-64 X7 or the EverDrive-64 PRO. The Patch dialog asks which, as **Flash cart**. It
+defaults to the cart Multi64 is set up for when Multi64 is running, and otherwise to the last
+one chosen. The command line takes `--cart sc64|ed64|ed64pro`, SummerCart64 by default. Only
+the SummerCart64's agent has run on a cart. The EverDrive builds are **experimental**: they
+build, fit, and load in an emulator, but no one has played through one yet, so the dialog
+marks them. They differ in size, so a seed is checked for the cart chosen, and changing the
+cart checks it again. Donkey Kong 64 is where that shows: the X7's agent, the largest, does
+not fit under the randomizer's code, so that pairing is refused.
 
 The seed is checked before anything is written. AP64 refuses it if any of these fail:
 
@@ -254,7 +265,7 @@ agent and the specs name no game; everything that does lives in these crates.
 |---|---|
 | [`crates/ap64`](.) | The Tauri 2 app (`src-tauri/` + plain-JS `src/`, no bundler), `e2e/` headless checks |
 | [`crates/ap64-core`](../ap64-core) | ROM byte orders, the CIC-6102/6103/6105 header checksum, profiles, verify/apply |
-| `crates/ap64-core/profiles/<game>/` | `profile.toml` plus the agent image and hook stub it writes, with the build's `layout.env` |
+| `crates/ap64-core/profiles/<game>/` | `profile.toml` plus the agent image and hook stub it writes, with the build's `layout.env`: the SummerCart64's build here, the EverDrives' in `ed64/` and `ed64pro/` |
 | `crates/ap64-core/agent/` | `build.sh <game>`, and per game a `game.env` and hand-written `stub.S` |
 | `crates/ap64-core/tools/<game>/` | BizHawk probe scripts for checking a patched ROM before it goes on a cart |
 | [`crates/ap64-cli`](../ap64-cli) | `ap64-patch`, a thin command line over the core |
@@ -264,10 +275,10 @@ agent and the specs name no game; everything that does lives in these crates.
 
 A profile's blobs are this repository's own cart agent ([`n64/agent`](../../n64/agent/README.md),
 with the M64P handler from `n64/test-rom`), built flat at the profile's addresses with the
-N64 toolchain (`crates/ap64-core/agent/build.sh <game>`, in WSL). CI has no N64 toolchain,
-so the blobs are committed, and `BUILD_REV` records the revision they were built from.
-Rebuild them after any change to the agent. `layout.env` is written by that build, and a
-test checks that the hand-typed profile agrees with it.
+N64 toolchain (`crates/ap64-core/agent/build.sh <game>`, in WSL), once for each cart. CI has
+no N64 toolchain, so the blobs are committed, and `BUILD_REV` records the revision they were
+built from. Rebuild them after any change to the agent. `layout.env` is written by that build,
+and tests check that the hand-typed profile agrees with every cart's.
 
 ## Checks
 
