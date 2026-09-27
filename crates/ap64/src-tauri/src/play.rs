@@ -169,13 +169,17 @@ fn kind(id: &str) -> Option<Kind> {
         })
 }
 
-/// A game the Play card offers, and which connector plays it.
+/// A game the Play card offers, which connector plays it, and what to know before playing it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Game {
     pub id: String,
     pub name: String,
     pub connector: String,
+    /// What to know before playing it on a console, shown at Start ([`Profile::notes`]).
+    ///
+    /// [`Profile::notes`]: ap64_core::profile::Profile::notes
+    pub notes: Vec<String>,
 }
 
 pub fn games(bundles: &[Bundle]) -> Vec<Game> {
@@ -190,6 +194,7 @@ pub fn games(bundles: &[Bundle]) -> Vec<Game> {
                 // between. It stays on the profile for the header check to fail on.
                 name: b.profile.name.clone(),
                 connector: k.name().to_string(),
+                notes: b.profile.notes.clone(),
             })
         })
         .collect()

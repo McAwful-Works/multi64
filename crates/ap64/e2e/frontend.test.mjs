@@ -50,6 +50,7 @@ async function serveFrontend() {
  * - `clientSetup`, `clientSetupAfter`: what `play_client_setup` answers per game id, before and
  *   after a successful `play_client_fix`; a game not listed answers null, as most do
  * - `clientFix`: what `play_client_fix` resolves to, or `{ error }` to reject
+ * - `notes`: a game's notes, per game id; a game not listed has none, as most do
  * - `firstRun`: open as if for the first time, so the Before you start window shows; every
  *   other scenario has already seen it
  */
@@ -76,8 +77,8 @@ function installTauriStub(scenario) {
     play_default_url: () => answer("ws://127.0.0.1:38765/ws"),
     play_status: () => answer({ state: "idle", detail: "", port: null, requests: 0, reconnects: 0, stalls: 0, handled: 0 }),
     play_games: () => answer([
-      { id: "g1", name: "Game One", connector: "Generic (BizHawk Client games)" },
-      { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector" },
+      { id: "g1", name: "Game One", connector: "Generic (BizHawk Client games)", notes: (sc.notes || {}).g1 || [] },
+      { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector", notes: (sc.notes || {}).g2 || [] },
     ]),
     play_start: () => answer(sc.start ?? null),
     play_client_setup: (a) =>
@@ -573,6 +574,64 @@ const setDev = async (p, on) => {
   await until(p, () => !document.getElementById("play-error").hidden);
   check("a fix that fails says why", (await text(p, "play-error")).includes("is in use"));
   check("and does not start", (await callsOf(p, "play_start")).length === 0);
+  await p.close();
+}
+
+// A game's notes are shown at Start, until put away for that game.
+{
+  const p = await openScenario({ notes: { g1: ["The demo freezes.", "Items arrive without a message."] } });
+  const starts = () => callsOf(p, "play_start");
+  await p.selectOption("#play-game-select", "g1");
+  await p.click("#btn-play-start");
+  await until(p, () => !document.getElementById("notes-dialog").hidden);
+  check("a game with notes shows them at Start", (await p.locator("#notes-list li").count()) === 2);
+  check("titled with the game", (await text(p, "notes-title")) === "Before you play Game One", await text(p, "notes-title"));
+  check("and nothing starts until they are answered", (await starts()).length === 0);
+  await p.click("#btn-notes-cancel");
+  check("Cancel closes them and starts nothing", !(await visible(p, "notes-dialog")) && (await starts()).length === 0);
+
+  await p.click("#btn-play-start");
+  await until(p, () => !document.getElementById("notes-dialog").hidden);
+  await p.click("#btn-notes-go");
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_start"));
+  check("Start in the notes starts the game", (await starts())[0]?.args?.game === "g1");
+  await p.click("#btn-play-start");
+  await until(p, () => !document.getElementById("notes-dialog").hidden);
+  check("they show again at the next Start", (await starts()).length === 1);
+  await p.check("#notes-hide");
+  await p.click("#btn-notes-go");
+  await until(p, () => window.__TAURI_CALLS__.filter((c) => c.cmd === "play_start").length === 2);
+  await p.click("#btn-play-start");
+  await until(p, () => window.__TAURI_CALLS__.filter((c) => c.cmd === "play_start").length === 3);
+  check("until put away for that game", !(await visible(p, "notes-dialog")));
+
+  await p.selectOption("#play-game-select", "g2");
+  await p.click("#btn-play-start");
+  await until(p, () => window.__TAURI_CALLS__.filter((c) => c.cmd === "play_start").length === 4);
+  check("a game with none just starts", !(await visible(p, "notes-dialog")));
+  await p.close();
+}
+
+// A client fix comes first; the notes follow it, never over it.
+{
+  const needed = { state: "needed", message: "It is missing a method", path: "", technical: "" };
+  const p = await openScenario({
+    notes: { g2: ["Something to know."] },
+    clientSetup: { g2: needed },
+    clientSetupAfter: { g2: { ...needed, state: "ready", message: "The AP client is ready for AP64" } },
+    clientFix: "Fixed",
+  });
+  await p.selectOption("#play-game-select", "g2");
+  await p.click("#btn-play-start");
+  await until(p, () => !document.getElementById("client-fix-dialog").hidden);
+  check("the client fix is asked about first", !(await visible(p, "notes-dialog")));
+  await p.click("#btn-client-fix-go");
+  await until(p, () => !document.getElementById("notes-dialog").hidden);
+  check("then the notes, with the fix dialog closed", !(await visible(p, "client-fix-dialog")) && (await callsOf(p, "play_client_fix")).length === 1);
+  check("and nothing started yet", (await callsOf(p, "play_start")).length === 0);
+  await p.click("#btn-notes-go");
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_start"));
+  check("then the game starts", (await callsOf(p, "play_start"))[0]?.args?.game === "g2");
   await p.close();
 }
 
