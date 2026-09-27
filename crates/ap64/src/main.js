@@ -221,6 +221,8 @@ function renderSeedChecks() {
 const CART_KEY = "ap64.cart";
 let carts = [];
 let loadedPath = null;
+// Bumped by every load, so a load that finishes after a newer one began changes nothing.
+let loadToken = 0;
 
 function readCart() {
   try {
@@ -274,7 +276,10 @@ async function initCarts() {
 
 async function loadSeed(path) {
   loadedPath = path;
+  const token = ++loadToken;
   resetResults();
+  show($("adjusting"), false);
+  $("patch-cart").disabled = false;
   setError($("load-error"), "");
   $("release-notes").textContent = "";
   show($("release-notes"), false);
@@ -282,7 +287,22 @@ async function loadSeed(path) {
   $("btn-open-patch").disabled = true;
   $("drop-zone").dataset.state = "busy";
   try {
-    const r = await invoke("load_rom", { path, cart: selectedCart() });
+    let r = await invoke("load_rom", { path, cart: selectedCart() });
+    if (token !== loadToken) return;
+    // A seed its world finishes after the patch: AP64 runs the world's ROM adjuster first. It
+    // takes a while, so say so; if it cannot run, the failed checks and the reason show below.
+    let adjustError = "";
+    if (r.adjust) {
+      showAdjusting(r);
+      try {
+        r = await invoke("adjust_rom");
+      } catch (e) {
+        adjustError = `AP64 could not run the world's ROM adjuster: ${e}`;
+      }
+      if (token !== loadToken) return;
+      show($("adjusting"), false);
+      $("patch-cart").disabled = false;
+    }
     const d = r.detection;
     $("seed-file").textContent = `${r.fileName} (${(r.size / 1048576).toFixed(1)} MiB)`;
     const h = d.header;
@@ -291,7 +311,7 @@ async function loadSeed(path) {
       : "unreadable";
     const report = renderChecks(d);
     // A different randomizer release: worth knowing before the console, never a refusal.
-    const notes = r.notes || [];
+    const notes = [adjustError, ...(r.notes || [])].filter(Boolean);
     $("release-notes").textContent = notes.join(" ");
     show($("release-notes"), notes.length > 0);
     if (!report) {
@@ -316,15 +336,39 @@ async function loadSeed(path) {
     $("btn-reveal").disabled = true;
     lastOutput = null;
     // Straight into the dialog: dropping a seed is the ask, and everything it needs is there.
-    if (report) openDialog("patch");
+    // It is already open when the seed was adjusted first.
+    if (report && openDialogName !== "patch") openDialog("patch");
     // The game this seed is for is the one Play will most likely want.
     if (ready && !playRunning) selectPlayGame(r.chosen);
   } catch (e) {
+    if (token !== loadToken) return;
     setError($("load-error"), String(e));
     setSeedLine("No seed chosen");
   } finally {
-    $("drop-zone").dataset.state = "idle";
+    if (token === loadToken) $("drop-zone").dataset.state = "idle";
   }
+}
+
+/*
+ * The seed needs its world's ROM adjuster before it can be checked (ap64-core's adjust.rs), which
+ * takes about half a minute. The dialog opens on it straight away and says what is happening; the
+ * checks fill in when it is done. The cart cannot change meanwhile: that would load it again.
+ */
+function showAdjusting(r) {
+  const report = r.detection.candidates[0];
+  $("seed-file").textContent = `${r.fileName} (${(r.size / 1048576).toFixed(1)} MiB)`;
+  $("seed-game").textContent = report ? `${report.game} · ${report.randomizer}` : "—";
+  $("seed-checks").textContent = "Waiting for the adjuster";
+  $("adjusting").textContent =
+    `This seed is finished by the ${r.adjust} world's ROM adjuster, which BizHawk Client runs ` +
+    "the first time it connects. On a console that is too late, so AP64 is running it now, with " +
+    "the world's own files. This takes about half a minute.";
+  show($("adjusting"), true);
+  for (const id of ["failed-checks", "release-notes", "checks-more", "patch-controls"]) show($(id), false);
+  $("btn-patch").disabled = true;
+  $("patch-cart").disabled = true;
+  setSeedLine(`${r.fileName} — adjusting`);
+  if (openDialogName !== "patch") openDialog("patch");
 }
 
 async function patch() {

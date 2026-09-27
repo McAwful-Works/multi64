@@ -41,6 +41,10 @@ pub struct Profile {
     /// Applied to the seed before any check or write.
     #[serde(default)]
     pub transform: Option<Transform>,
+    /// A step the world's own client performs on the ROM file after the patch, which AP64
+    /// performs before the checks when a seed has not had it ([`crate::adjust`]).
+    #[serde(default)]
+    pub adjust: Option<Adjust>,
     pub agent: Agent,
     #[serde(default)]
     pub find: Vec<Find>,
@@ -71,6 +75,14 @@ pub struct Measured {
 pub enum Transform {
     /// Decompress every Yaz0 file listed in the file table at `table`.
     Yaz0Dmadata { table: u32 },
+}
+
+/// A world's post-patch ROM step that AP64 reproduces (see `adjust.rs`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
+pub enum Adjust {
+    /// Bomberman 64: The Second Attack's `adjust.py`, run with the installed world's `pack.exe`.
+    BmtsaRomAdjuster,
 }
 
 /// The agent image, appended to the ROM and copied to RAM at boot.

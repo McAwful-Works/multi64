@@ -118,8 +118,8 @@ Bomberman 64: The Second Attack on 2026-09-27):
   seed is not finished when its patch is applied: BizHawk Client runs the world's ROM adjuster
   the first time it connects, which sets up the doors, three power-ups and the chosen models
   and repacks the ROM. On a console that comes too late, and adjusting a ROM AP64 has already
-  patched breaks it, so Patch accepts only an adjusted seed and says how to adjust one; AP64
-  doing the adjusting itself is #331. Played for 12 checks across Alcatraz and Thantos,
+  patched breaks it, so AP64 runs the adjuster itself before the checks (see
+  [Patching a seed](#patching-a-seed)). Played for 12 checks across Alcatraz and Thantos,
   power-ups, a boss and a Pommy transformation among them, with the Thantos Coordinates that
   open the next planet arriving and working, and traps and power-ups landing.
 
@@ -241,6 +241,18 @@ build, fit, and load in an emulator, but no one has played through one yet, so t
 marks them. They differ in size, so a seed is checked for the cart chosen, and changing the
 cart checks it again. Donkey Kong 64 is where that shows: the X7's agent, the largest, does
 not fit under the randomizer's code, so that pairing is refused.
+
+**A seed some worlds finish after the patch is finished first.** Bomberman 64: The Second
+Attack's world leaves its seed for BizHawk Client to adjust the first time it connects: the
+world's own `pack.exe` unpacks the ROM, the doors, three power-ups and the chosen models are set
+up, and it is repacked. That is too late for a console, so when a seed has not had it, AP64 runs
+the same steps itself, with the `pack.exe` from the world installed in Archipelago, and says so
+in the Patch dialog, or as a line from `ap64-patch`. It takes about half a minute; a seed already adjusted, in BizHawk or by
+AP64, is patched as it is. AP64 only runs the adjuster it was written against: every file it
+takes from the apworld (the adjuster's source, whose steps it follows, and the program it runs)
+must hash to world 1.0.2's. A world whose adjuster differs, a world that is not installed, or a
+PC that is not running Windows leaves the seed unadjusted, and the dialog says why. The result
+is byte for byte what the world's own adjuster makes of the same seed.
 
 The seed is checked before anything is written. AP64 refuses it if any of these fail:
 

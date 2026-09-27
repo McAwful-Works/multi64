@@ -16,26 +16,32 @@ connector = "generic"     # Archipelago's BizHawk Client
 world = "bomberman_tsa.apworld"
 version = "1.0.2"
 
+# The world's seed is not finished until its ROM adjuster has run: BizHawk Client does it
+# the first time it connects, unpacking the ROM with the world's pack.exe, rewriting the
+# door data in every stage's map, replacing three power-up files and the chosen models,
+# repacking, and setting the flag checked below (and one at 0x99FDA). On a console the client
+# reads the flag off the cart and offers to adjust a file on the PC, which is too late for
+# the ROM already running. Worse, adjusting a ROM AP64 has patched cuts it back to 16 MB,
+# taking the agent with it, and leaves a header checksum that no longer matches, so it will
+# not boot. So AP64 runs the adjuster itself, with the installed world's pack.exe, before
+# the checks (src/adjust.rs).
+[adjust]
+kind = "bmtsa_rom_adjuster"
+
 [agent]
 image = "agent.bin"
 rom = 0x1000000         # past the retail 16 MB, which the world keeps
 vram = 0x80480000       # Expansion Pak, which the game never touches
 min_ram = 0x800000      # the stub skips the agent without an Expansion Pak
 
-# The world's seed is not finished until its ROM adjuster has run: BizHawk Client does it
-# the first time it connects, unpacking the ROM with the world's pack.exe, rewriting the
-# door data in every stage's map, replacing three power-up files and the chosen models,
-# repacking, and setting this flag (and one at 0x99FDA). On a console the client reads the
-# flag off the cart and offers to adjust a file on the PC, which is too late for the ROM
-# already running. Worse, adjusting a ROM AP64 has patched cuts it back to 16 MB, taking the
-# agent with it, and leaves a header checksum that no longer matches, so it will not boot.
-# So only an adjusted seed is accepted.
+# Only an adjusted seed is patched: one adjusted in BizHawk, or by AP64 via [adjust] above.
+# This fails only when AP64 could not run the adjuster, and the Patch dialog says why.
 [[require]]
 kind = "word"
 label = "Seed adjusted by the world's ROM adjuster"
 at = 0xF8000            # the adjuster's flag byte, then three zeros
 equals = 0x01000000
-hint = "This seed has not been through the world's ROM adjuster, which sets up its doors, power-ups and models. AP64 cannot run it yet. Open this .z64 once in BizHawk with BizHawk Client connected, choose this same file in the window the client opens, then patch the adjusted file here. Never let the client adjust a ROM AP64 has already patched: that breaks it."
+hint = "This seed has not been through the world's ROM adjuster, which sets up its doors, power-ups and models, and AP64 could not run it (see why above). Either fix that, or adjust the seed once in BizHawk: open this .z64 with BizHawk Client connected, choose this same file in the window the client opens, then add the agent to the adjusted file here. Never let the client adjust a ROM AP64 has already patched: that breaks it."
 
 [[require]]
 kind = "word"

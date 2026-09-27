@@ -8,7 +8,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use ap64_core::{apply, builds_for, builtin, default_output, detect, ApplyError, Cart, Report};
+use ap64_core::{
+    apply, builds_for, builtin, default_output, detect, needs_adjusting, ApplyError, Cart, Report,
+};
 
 fn print_report(r: &Report) {
     println!("{} ({}) — {}", r.game, r.release, r.randomizer);
@@ -56,7 +58,25 @@ fn run() -> Result<(), String> {
 
     let bundles = builds_for(&builtin()?, cart);
     let mut rom = std::fs::read(&input).map_err(|e| format!("{}: {e}", input.display()))?;
-    let d = detect(&bundles, &mut rom).map_err(|e| format!("{}: {e}", input.display()))?;
+    let mut d = detect(&bundles, &mut rom).map_err(|e| format!("{}: {e}", input.display()))?;
+    // A seed its world finishes after the patch (ap64_core::adjust) is finished here first.
+    let mut adjusted = None;
+    if let Some(profile) = needs_adjusting(&bundles, &d, &rom) {
+        println!(
+            "running the {} world's ROM adjuster on this seed (about half a minute)...",
+            profile.name
+        );
+        match ap64_core::adjust::run(profile, &rom) {
+            Ok(a) => {
+                let order = d.byte_order.clone();
+                rom = a.rom;
+                d = detect(&bundles, &mut rom).map_err(|e| format!("{}: {e}", input.display()))?;
+                d.byte_order = order;
+                adjusted = Some(a.note);
+            }
+            Err(e) => println!("  [warn] AP64 could not run the world's ROM adjuster: {e}"),
+        }
+    }
     let h = d.header.as_ref();
     println!(
         "{}: {} [{} v{}], {}, boot code {}",
@@ -84,6 +104,9 @@ fn run() -> Result<(), String> {
             "no profile for this game (supported: {})",
             known.join(", ")
         ));
+    }
+    if let Some(note) = &adjusted {
+        println!("  [note] {note}");
     }
     for r in &d.candidates {
         print_report(r);
