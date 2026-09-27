@@ -20,7 +20,7 @@ Play Archipelago N64 seeds on a real console, from Windows. AP64 does two jobs:
 
 Supported today, each patched and played on a SummerCart64 with checks sent and items
 received (the first three on 2026-09-18, Kirby 64 on 2026-09-21, Banjo-Tooie and Mario Kart 64
-on 2026-09-22, Donkey Kong 64 on 2026-09-23):
+on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26):
 
 - **Castlevania 64 (US 1.0)**, through Archipelago's BizHawk Client.
 - **Paper Mario (US 1.0)** with the Paper Mario Randomizer, through BizHawk Client.
@@ -81,6 +81,17 @@ on 2026-09-22, Donkey Kong 64 on 2026-09-23):
   functions AP64 hooks or the heap setup is refused until it has been measured again (#309,
   #312). Played with checks going out and items arriving, among them a
   Golden Banana and the Donkey kong.
+- **Bomberman 64 (US)**, Happyhappyism's Bomberman 64 world, through BizHawk Client. Addresses
+  come from the bomberhackers/bm64 decomp, whose mapping the world's own patch uses too. The
+  hook is the game loop's call to `HuPrcCall`, which runs every Hudson process once a pass, and
+  the stub goes over `memalign` in the game's copy of GNU malloc, which nothing calls: 0 calls
+  over 41,940 frames of play while `malloc` ran 167,420 times. The agent lives in the Expansion
+  Pak, which the game never touches, and stays out of the way without one. The world's optional
+  enemy shuffle needs its companion Lua script, which runs inside BizHawk, so it cannot work on a
+  console. That script also shows the name of each item received, so on a console items arrive
+  without that text. Played for 13 checks across four stages, with the keys that open new
+  stages arriving and working. The game loop pauses for a second or two when a stage loads,
+  which the link rides out.
 
 Written and working, but **not offered in the app**, because the game cannot be played
 through for a reason outside AP64. Kept in the tree and checked by the same tests as the
