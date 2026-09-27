@@ -69,8 +69,8 @@ python n64/agent/tools/ram-bounds.py seed.z64 0x80480000 0x80482400 --code 0x100
 ```
 
 Give `--code` for each ROM range that really holds instructions, and treat every hit as a
-thing to go and disassemble rather than a verdict. Castlevania 64, Paper Mario, Kirby 64 and
-Bomberman 64 come back clean. Mario Kart 64 did not: its largest untouched region, 2.3 MB of Expansion Pak, has
+thing to go and disassemble rather than a verdict. Castlevania 64, Paper Mario, Kirby 64,
+Bomberman 64 and Bomberman Hero come back clean. Mario Kart 64 did not: its largest untouched region, 2.3 MB of Expansion Pak, has
 both of its bounds built in code, so the agent went above it instead, where nothing brackets
 it. And Legacy of Darkness is the game that shows why a bracket matters.
 

@@ -20,7 +20,8 @@ Play Archipelago N64 seeds on a real console, from Windows. AP64 does two jobs:
 
 Supported today, each patched and played on a SummerCart64 with checks sent and items
 received (the first three on 2026-09-18, Kirby 64 on 2026-09-21, Banjo-Tooie and Mario Kart 64
-on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26):
+on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26, Bomberman Hero on
+2026-09-27):
 
 - **Castlevania 64 (US 1.0)**, through Archipelago's BizHawk Client.
 - **Paper Mario (US 1.0)** with the Paper Mario Randomizer, through BizHawk Client.
@@ -95,6 +96,18 @@ on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26):
   cutscene, with or without the agent (seen with the world's own ROM); skipping past it avoids
   the freeze, and play is unaffected. Start says so, along with the two Lua limits, before the
   first session.
+- **Bomberman Hero (US)**, Happyhappyism's Bomberman Hero world, through BizHawk Client.
+  Addresses come from the Bomberhackers/bmhero decomp. Every screen, from the title to a level,
+  builds its frames through one loop, and the hook is that loop's call to the function that
+  builds each frame. The stub goes over `Debug_BackupMemTest`, a leftover test screen nothing in
+  the ROM refers to: 0 calls over 57,210 frames of play, and its bytes never changed. The game
+  keeps all of its code uncompressed, so that was checked against every instruction in the ROM,
+  not a shortlist. The agent lives in the Expansion Pak, which the game never touches, and stays
+  out of the way without one. The world's companion Lua script runs inside BizHawk and does no
+  game logic, but it is what shows each item received and the stage tracker on D-pad Down, so
+  on a console neither appears; Start says so before the first session. Played for 6 checks
+  (radios and stage clears), with the stages, Adok Bomb and Gold Heart received arriving and
+  working. The link rides out the second or two the frame loop pauses while a stage loads.
 
 Written and working, but **not offered in the app**, because the game cannot be played
 through for a reason outside AP64. Kept in the tree and checked by the same tests as the

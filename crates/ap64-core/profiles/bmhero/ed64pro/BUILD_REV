@@ -1,0 +1,4 @@
+n64/agent from 4887f0c
+built by crates/ap64-core/agent/build.sh bmhero, cart ed64pro (mips64-ultra-elf-gcc (GCC) 15.2.0)
+agent.bin sha1 c1c00e373c89ceb75633d3d8f32e266b85baa219
+stub.bin  sha1 5405e9ae883cbdd9f93e83a8392ecf1c6aaffa01

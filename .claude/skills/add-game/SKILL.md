@@ -5,8 +5,9 @@ description: Add a new game to AP64 - checking its Archipelago world is one the 
 
 # Adding a game to AP64
 
-Eight games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
-Mario Kart 64, Donkey Kong 64 and Bomberman 64, with Legacy of Darkness written and held back in
+Nine games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
+Mario Kart 64, Donkey Kong 64, Bomberman 64 and Bomberman Hero, with Legacy of Darkness written
+and held back in
 `ap64_core::withheld()`.
 Each took a day or two, and most of that was spent on things this file now answers.
 
@@ -34,7 +35,7 @@ print([l for l in z.read('GAME/client.py').decode('utf8','replace').split(chr(10
 
 `from worlds._bizhawk.client import BizHawkClient` means **generic**: stock Archipelago's
 BizHawk Client runs the world's own logic, and AP64 needs no connector work. Paper Mario,
-CV64, CVLoD, Kirby 64, Mario Kart 64 and Bomberman 64 all look like this.
+CV64, CVLoD, Kirby 64, Mario Kart 64 and both Bombermans all look like this.
 
 No such import, or a world that ships its own client (Ocarina of Time's OoT Client), means a
 **forked** connector. Say so and stop; that is a separate piece of work, not a profile.
@@ -275,6 +276,14 @@ address, but know that the scan cannot see code the game keeps compressed: most 
 Bomberman 64's overlays are packed, so the scan could only shortlist, and the zero count
 over a long play session is what cleared it.
 
+**So is a debug screen the game shipped without a way in.** Bomberman Hero links only
+`malloc`, `free` and `realloc`, so there was no `memalign`; its stub went over
+`Debug_BackupMemTest`, a leftover backup-memory test screen with 756 bytes and no reference
+anywhere in the ROM: no `jal` or `j`, no `lui`/`addiu` pair, and no stored word, which also
+rules out a function-pointer table. A decomp marking a function `UNUSED` is where to start,
+not the proof. Hero's ROM keeps every segment and overlay uncompressed, so the scan saw all
+of its code, and the zero count over 57,210 frames confirmed it.
+
 ## 6. Write it
 
 `agent/<game>/game.env` and `stub.S`, then `agent/build.sh <game>` (needs the
@@ -325,7 +334,7 @@ stay at their RAM addresses. Choose a region the randomizer never patches (DK64 
 copy routine its stub already needed pinned), and no write may land inside it, or a
 patched ROM has nothing left to find. `Addr` in `ap64-core`'s `profile.rs` lists the
 forms. Where the code is the game's own and the randomizer leaves its offsets alone
-(CV64, Paper Mario, Kirby 64, Mario Kart 64, Bomberman 64), fixed offsets are simpler and just as safe.
+(CV64, Paper Mario, Kirby 64, Mario Kart 64, both Bombermans), fixed offsets are simpler and just as safe.
 
 ## 7. Verify before hardware
 
