@@ -169,15 +169,13 @@ fn kind(id: &str) -> Option<Kind> {
         })
 }
 
-/// A game the Play card offers, which connector plays it, and whether the console needs an
-/// Expansion Pak for it.
+/// A game the Play card offers, and which connector plays it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Game {
     pub id: String,
     pub name: String,
     pub connector: String,
-    pub needs_expansion_pak: bool,
 }
 
 pub fn games(bundles: &[Bundle]) -> Vec<Game> {
@@ -192,7 +190,6 @@ pub fn games(bundles: &[Bundle]) -> Vec<Game> {
                 // between. It stays on the profile for the header check to fail on.
                 name: b.profile.name.clone(),
                 connector: k.name().to_string(),
-                needs_expansion_pak: b.profile.agent.needs_expansion_pak(),
             })
         })
         .collect()

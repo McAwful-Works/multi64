@@ -61,9 +61,6 @@ struct PatchResult {
     size: usize,
     sha1: String,
     summary: Vec<String>,
-    /// The console needs an Expansion Pak for the agent: said with the result, since a
-    /// console without one gives AP64 nothing to answer and no way to say why.
-    needs_expansion_pak: bool,
 }
 
 #[tauri::command]
@@ -175,7 +172,6 @@ fn patch_rom(output: String, state: State<'_, AppState>) -> Result<PatchResult, 
         size: patched.rom.len(),
         sha1: patched.sha1,
         summary: patched.summary,
-        needs_expansion_pak: bundle.profile.agent.needs_expansion_pak(),
     })
 }
 

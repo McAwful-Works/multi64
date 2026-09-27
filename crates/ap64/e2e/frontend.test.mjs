@@ -50,9 +50,16 @@ async function serveFrontend() {
  * - `clientSetup`, `clientSetupAfter`: what `play_client_setup` answers per game id, before and
  *   after a successful `play_client_fix`; a game not listed answers null, as most do
  * - `clientFix`: what `play_client_fix` resolves to, or `{ error }` to reject
+ * - `firstRun`: open as if for the first time, so the Before you start window shows; every
+ *   other scenario has already seen it
  */
 function installTauriStub(scenario) {
   const sc = scenario || {};
+  if (!sc.firstRun) {
+    try {
+      localStorage.setItem("ap64.welcomed", "1");
+    } catch {}
+  }
   const calls = [];
   window.__TAURI_CALLS__ = calls;
   window.__TAURI_LISTENERS__ = {};
@@ -69,8 +76,8 @@ function installTauriStub(scenario) {
     play_default_url: () => answer("ws://127.0.0.1:38765/ws"),
     play_status: () => answer({ state: "idle", detail: "", port: null, requests: 0, reconnects: 0, stalls: 0, handled: 0 }),
     play_games: () => answer([
-      { id: "g1", name: "Game One", connector: "Generic (BizHawk Client games)", needsExpansionPak: true },
-      { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector", needsExpansionPak: false },
+      { id: "g1", name: "Game One", connector: "Generic (BizHawk Client games)" },
+      { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector" },
     ]),
     play_start: () => answer(sc.start ?? null),
     play_client_setup: (a) =>
@@ -181,7 +188,7 @@ const setDev = async (p, on) => {
 };
 
 {
-  const p = await openScenario({ load: loadOk, patch: { output: "C:\\seeds\\seed-agent.z64", size: 12587268, sha1: "66B5", summary: ["Frame hook: jal", "Agent: 4356 bytes"], needsExpansionPak: true } });
+  const p = await openScenario({ load: loadOk, patch: { output: "C:\\seeds\\seed-agent.z64", size: 12587268, sha1: "66B5", summary: ["Frame hook: jal", "Agent: 4356 bytes"] } });
   // The supported games are a window, not a sentence under the drop zone: the list grows
   // with every profile added, and the card may not.
   check("the games are not listed on the card", !(await visible(p, "games-dialog")));
@@ -249,7 +256,6 @@ const setDev = async (p, on) => {
   check("the result shows the SHA-1", (await text(p, "result-sha1")).includes("66B5"));
   check("the result names the file, with the path on hover", (await text(p, "result-path")).startsWith("seed-agent.z64") && (await p.getAttribute("#result-path", "title")) === "C:\\seeds\\seed-agent.z64");
   check("the seed pane gives way to the result", !(await visible(p, "pane-seed")));
-  check("the result says the console needs an Expansion Pak", (await text(p, "result-next")).includes("with an Expansion Pak"), await text(p, "result-next"));
   await p.click("#btn-patch-close");
   check("patching leaves the cards where they were", (await cardHeights(p)).join() === idle.join(), `${idle} then ${await cardHeights(p)}`);
   check("the card says the ROM is ready", (await text(p, "seed-line")).includes("ready for the console"));
@@ -272,10 +278,7 @@ const setDev = async (p, on) => {
   check("choosing a game does not name its client", (await text(p, "link-client")) === "Not connected", await text(p, "link-client"));
   check("choosing a game does not move the card", (await cardHeights(p)).join() === before.join(), `${before} then ${await cardHeights(p)}`);
   check("and enables Start", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
-  check("a game that runs without a Pak says nothing of one", (await text(p, "link-console")) === "Not running", await text(p, "link-console"));
-  await p.selectOption("#play-game-select", "g1");
-  check("a game that needs an Expansion Pak says so on the Console row", (await text(p, "link-console")) === "Needs an Expansion Pak", await text(p, "link-console"));
-  check("without moving the card", (await cardHeights(p)).join() === before.join(), `${before} then ${await cardHeights(p)}`);
+  check("the Console row says only what the console is doing", (await text(p, "link-console")) === "Not running", await text(p, "link-console"));
   await p.close();
 }
 
@@ -570,6 +573,24 @@ const setDev = async (p, on) => {
   await until(p, () => !document.getElementById("play-error").hidden);
   check("a fix that fails says why", (await text(p, "play-error")).includes("is in use"));
   check("and does not start", (await callsOf(p, "play_start")).length === 0);
+  await p.close();
+}
+
+// The first time AP64 opens, one window says what has to be in place, and never again.
+{
+  const p = await openScenario({ firstRun: true });
+  await until(p, () => !document.getElementById("welcome-dialog").hidden);
+  check("the first launch says what is needed", (await text(p, "welcome-dialog")).includes("Expansion Pak"));
+  await p.click("#btn-welcome-close");
+  check("Got it closes it", !(await visible(p, "welcome-dialog")));
+  await p.reload();
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_status"));
+  check("and it does not come back", !(await visible(p, "welcome-dialog")));
+  await p.close();
+}
+{
+  const p = await openScenario({});
+  check("an app that has been opened before goes straight to its cards", !(await visible(p, "welcome-dialog")));
   await p.close();
 }
 

@@ -165,7 +165,7 @@
               </dl>
               <ul id="result-summary" class="summary scroll-box"></ul>
             </details>
-            <p class="hint" id="result-next">Load this ROM on the console, then come back to Play.</p>
+            <p class="hint">Load this ROM on the console, then come back to Play.</p>
           </div>
         </div>
         <div class="dialog-footer">
@@ -255,6 +255,33 @@
         <div class="dialog-footer">
           <button type="button" id="btn-client-fix-cancel" class="btn">Cancel</button>
           <button type="button" id="btn-client-fix-go" class="btn primary">Fix and start</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Opens once, the first time AP64 is opened: what has to be in place before any of it can
+         work. The Expansion Pak most of all, since a console without one gives AP64 nothing to
+         answer and no way to say why. -->
+    <div class="dialog-backdrop" id="welcome-backdrop" hidden></div>
+    <div class="dialog" id="welcome-dialog" role="dialog" aria-modal="true" aria-labelledby="welcome-title" hidden>
+      <div class="dialog-panel">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="welcome-title">Before you start</h2>
+        </div>
+        <div class="dialog-body">
+          <p class="hint">To play Archipelago on a real N64, AP64 needs:</p>
+          <ul class="steps">
+            <li>An N64 with an <strong>Expansion Pak</strong>. AP64's agent runs in its memory, and
+              without one it never starts.</li>
+            <li>A <strong>SummerCart64</strong>, connected to this PC by USB.</li>
+            <li>The <strong>Multi64</strong> app, the bridge to the cart. AP64 starts it when you
+              press Start.</li>
+            <li><strong>Archipelago</strong>, with your game's world installed, and a seed it
+              patched for you.</li>
+          </ul>
+        </div>
+        <div class="dialog-footer">
+          <button type="button" id="btn-welcome-close" class="btn primary">Got it</button>
         </div>
       </div>
     </div>

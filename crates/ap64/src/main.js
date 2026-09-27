@@ -30,7 +30,31 @@ const DIALOGS = {
   helpPatch: { panel: "help-patch-dialog", backdrop: "help-patch-backdrop", focus: "btn-help-patch" },
   helpPlay: { panel: "help-play-dialog", backdrop: "help-play-backdrop", focus: "btn-help-play" },
   clientFix: { panel: "client-fix-dialog", backdrop: "client-fix-backdrop", focus: "btn-play-start" },
+  welcome: { panel: "welcome-dialog", backdrop: "welcome-backdrop", focus: "btn-browse" },
 };
+
+/*
+ * The first time AP64 is opened, one window saying what has to be in place. Remembered once it
+ * is closed, however it is closed; a browser that cannot remember shows it again, which is the
+ * safe way to fail.
+ */
+const WELCOMED_KEY = "ap64.welcomed";
+
+function welcomed() {
+  try {
+    return localStorage.getItem(WELCOMED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberWelcomed() {
+  try {
+    localStorage.setItem(WELCOMED_KEY, "1");
+  } catch {
+    // Shown again next time.
+  }
+}
 let openDialogName = null;
 let dialogReturnFocus = null;
 
@@ -80,6 +104,7 @@ function openDialog(name) {
 
 function closeDialog() {
   if (!openDialogName) return;
+  if (openDialogName === "welcome") rememberWelcomed();
   const d = DIALOGS[openDialogName];
   show($(d.backdrop), false);
   show($(d.panel), false);
@@ -265,9 +290,6 @@ async function patch() {
       }),
     );
     $("result-sha1").textContent = r.sha1;
-    $("result-next").textContent = r.needsExpansionPak
-      ? "Load this ROM on a console with an Expansion Pak, then come back to Play."
-      : "Load this ROM on the console, then come back to Play.";
     // The dialog becomes the receipt: same window, so nothing behind it moves.
     show($("pane-seed"), false);
     show($("pane-result"), true);
@@ -448,11 +470,6 @@ function renderLinks(s) {
     // and the status line says what to do about them. Every game's client is "the AP client"
     // here; which one it is underneath is the session log's business, not the player's.
     let text = LINK_TEXT[key][state];
-    // Before a session, the one thing about the console worth saying is what it needs: without
-    // an Expansion Pak nothing on it answers, and nothing can say why once a session is waiting.
-    if (key === "console" && state === "idle" && selectedGame()?.needsExpansionPak) {
-      text = "Needs an Expansion Pak";
-    }
     if (key === "client") {
       // Once it has connected, the fix is behind it.
       if (state === "ok") clientHint = "";
@@ -636,6 +653,9 @@ async function init() {
   $("btn-games").addEventListener("click", () => openDialog("games"));
   $("btn-games-close").addEventListener("click", closeDialog);
   $("games-backdrop").addEventListener("click", closeDialog);
+  $("btn-welcome-close").addEventListener("click", closeDialog);
+  $("welcome-backdrop").addEventListener("click", closeDialog);
+  if (!welcomed()) openDialog("welcome");
   initPlay();
   try {
     profiles = (await invoke("profiles")) || [];

@@ -151,10 +151,10 @@ cart, says which link is down, and picks up where it left off when the console r
 
 Every game here needs an **Expansion Pak**, because the agent runs in its memory. Without one
 the stub stands the agent down and nothing on the console can answer, so AP64 cannot tell a
-missing Pak from a console that is off or running another ROM. It says so where it can instead:
-the Console row reads "Needs an Expansion Pak" before a session, the patch window says it with
-the result, and when the cart is connected but the ROM has been silent for 15 seconds, the
-status names the Pak as the likely cause and the session log says so once.
+missing Pak from a console that is off or running another ROM. So it says what is needed once,
+in a **Before you start** window the first time AP64 opens (and in the Playing help), and when
+the cart is connected but the ROM has been silent for 15 seconds, the status names the Pak as
+the likely cause and the session log says so once.
 
 Each time the link goes, the Archipelago client's connection is reset rather than closed
 politely. That is deliberate: these clients read a line and hand it to `json.loads`, and a clean
