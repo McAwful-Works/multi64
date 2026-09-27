@@ -551,6 +551,178 @@ function renderGames() {
   }
 }
 
+/*
+ * The game menu: a button and a listbox in place of the select they drive (index.html). The select
+ * keeps the value, the options and the disabled state, and the rest of the page reads and sets it
+ * as before; `sync` brings the button up to date after any of that. Choosing here sets its value
+ * and fires its `change`, exactly as choosing in the select would.
+ */
+const gameMenu = {
+  select: null,
+  button: null,
+  list: null,
+  active: -1,
+  typed: "",
+  typedAt: 0,
+
+  init() {
+    this.select = $("play-game-select");
+    this.button = $("play-game-button");
+    this.list = $("play-game-list");
+    this.button.addEventListener("click", () => (this.isOpen() ? this.close(true) : this.open()));
+    this.button.addEventListener("keydown", (e) => {
+      if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) {
+        e.preventDefault();
+        this.open();
+      }
+    });
+    this.list.addEventListener("keydown", (e) => this.key(e));
+    this.list.addEventListener("click", (e) => {
+      const li = e.target.closest("li");
+      if (li) this.choose(li.dataset.value);
+    });
+    this.list.addEventListener("mousemove", (e) => {
+      const li = e.target.closest("li");
+      if (li) this.activate(this.items().indexOf(li), false);
+    });
+    // A click anywhere else closes it without choosing, as a select's list does.
+    document.addEventListener("pointerdown", (e) => {
+      if (this.isOpen() && !e.target.closest(".menu")) this.close(false);
+    });
+    this.list.addEventListener("focusout", (e) => {
+      if (this.isOpen() && !this.list.contains(e.relatedTarget) && e.relatedTarget !== this.button) {
+        this.close(false);
+      }
+    });
+  },
+
+  /** One row per game, from the select's options; the "Choose a game…" placeholder is the button's. */
+  build() {
+    const rows = [...this.select.options]
+      .filter((o) => o.value)
+      .map((o, i) => {
+        const li = document.createElement("li");
+        li.id = `play-game-option-${i}`;
+        li.setAttribute("role", "option");
+        li.dataset.value = o.value;
+        li.textContent = o.textContent;
+        return li;
+      });
+    this.list.replaceChildren(...rows);
+    this.sync();
+  },
+
+  sync() {
+    // renderPlay can run before initPlay has set the menu up; build() syncs it then.
+    if (!this.select) return;
+    const chosen = this.select.selectedOptions[0];
+    $("play-game-text").textContent = chosen ? chosen.textContent : "";
+    this.button.disabled = this.select.disabled;
+    for (const li of this.items()) {
+      li.setAttribute("aria-selected", String(li.dataset.value === this.select.value));
+    }
+    if (this.select.disabled && this.isOpen()) this.close(false);
+  },
+
+  items() {
+    return [...this.list.children];
+  },
+
+  isOpen() {
+    return !this.list.hidden;
+  },
+
+  open() {
+    if (this.button.disabled || !this.items().length) return;
+    const items = this.items();
+    show(this.list, true);
+    this.button.setAttribute("aria-expanded", "true");
+    // Downward unless the window has no room for it there and more above.
+    this.list.classList.remove("up");
+    const room = this.list.getBoundingClientRect();
+    const button = this.button.getBoundingClientRect();
+    if (room.bottom > window.innerHeight && button.top > window.innerHeight - button.bottom) {
+      this.list.classList.add("up");
+    }
+    const current = items.findIndex((li) => li.dataset.value === this.select.value);
+    this.activate(Math.max(current, 0), true);
+    this.list.focus();
+  },
+
+  /** `refocus`: back to the button, as after choosing or Escape. */
+  close(refocus) {
+    show(this.list, false);
+    this.button.setAttribute("aria-expanded", "false");
+    this.list.removeAttribute("aria-activedescendant");
+    if (refocus) this.button.focus();
+  },
+
+  activate(i, scroll) {
+    const items = this.items();
+    if (!items.length) return;
+    this.active = Math.min(Math.max(i, 0), items.length - 1);
+    items.forEach((li, n) => li.classList.toggle("active", n === this.active));
+    const li = items[this.active];
+    this.list.setAttribute("aria-activedescendant", li.id);
+    if (scroll) li.scrollIntoView({ block: "nearest" });
+  },
+
+  choose(value) {
+    this.close(true);
+    if (value === this.select.value) return;
+    this.select.value = value;
+    this.select.dispatchEvent(new Event("change"));
+    this.sync();
+  },
+
+  key(e) {
+    const page = 6;
+    const last = this.items().length - 1;
+    // A space in the middle of typing a name is part of it, not a choice.
+    const typing = e.key === " " && this.typed && Date.now() - this.typedAt < 700;
+    const moves = {
+      ArrowDown: this.active + 1,
+      ArrowUp: this.active - 1,
+      PageDown: this.active + page,
+      PageUp: this.active - page,
+      Home: 0,
+      End: last,
+    };
+    if (e.key in moves) {
+      e.preventDefault();
+      this.activate(moves[e.key], true);
+    } else if (e.key === "Enter" || (e.key === " " && !typing)) {
+      e.preventDefault();
+      const li = this.items()[this.active];
+      if (li) this.choose(li.dataset.value);
+    } else if (e.key === "Escape") {
+      // Its own: the page's Escape closes dialogs, and this is not one.
+      e.preventDefault();
+      e.stopPropagation();
+      this.close(true);
+    } else if (e.key === "Tab") {
+      this.close(false);
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      // Type to jump: letters typed together name a game; one letter again moves to the next.
+      const now = Date.now();
+      this.typed = now - this.typedAt < 700 ? this.typed + e.key.toLowerCase() : e.key.toLowerCase();
+      this.typedAt = now;
+      const items = this.items();
+      const same = [...this.typed].every((c) => c === this.typed[0]);
+      const needle = same ? this.typed[0] : this.typed;
+      const from = same ? this.active + 1 : this.active;
+      for (let n = 0; n < items.length; n++) {
+        const i = (from + n) % items.length;
+        if (items[i].textContent.toLowerCase().startsWith(needle)) {
+          this.activate(i, true);
+          break;
+        }
+      }
+    }
+  },
+};
+
 function renderPlay() {
   const game = selectedGame();
   $("play-connector").textContent = game ? game.connector : "—";
@@ -560,6 +732,7 @@ function renderPlay() {
   $("btn-play-stop").disabled = !playRunning;
   $("play-game-select").disabled = playRunning;
   $("play-url").disabled = playRunning;
+  gameMenu.sync();
 }
 
 /** One row per link: the state drives both the words and the dot's color (app.css). */
@@ -732,6 +905,7 @@ async function fixAndStart() {
 }
 
 async function initPlay() {
+  gameMenu.init();
   // The game list first: choosing a ROM selects its game, which needs the options there.
   games = (await invoke("play_games")) || [];
   for (const g of games) {
@@ -740,6 +914,7 @@ async function initPlay() {
     o.textContent = g.name;
     $("play-game-select").append(o);
   }
+  gameMenu.build();
   listen("play://status", (event) => renderStatus(event.payload || {}));
   $("play-url").value = readUrl((await invoke("play_default_url")) || "");
   // Needs the Multi64 address, to ask which cart it is set up for.
