@@ -30,6 +30,7 @@ const DIALOGS = {
   helpPatch: { panel: "help-patch-dialog", backdrop: "help-patch-backdrop", focus: "btn-help-patch" },
   helpPlay: { panel: "help-play-dialog", backdrop: "help-play-backdrop", focus: "btn-help-play" },
   clientFix: { panel: "client-fix-dialog", backdrop: "client-fix-backdrop", focus: "btn-play-start" },
+  notes: { panel: "notes-dialog", backdrop: "notes-backdrop", focus: "btn-play-start" },
 };
 let openDialogName = null;
 let dialogReturnFocus = null;
@@ -534,6 +535,52 @@ async function startPlay() {
   }
   // A version AP64 does not recognize may still connect: say so, and start anyway.
   if (setup?.state === "unknown") setError($("play-error"), sentence(setup.message));
+  await startAfterNotes();
+}
+
+/*
+ * A game's notes: what to know about its randomizer on a console, which AP64 cannot change.
+ * Shown at Start, after the client fix and never over it, until put away for that game. What
+ * was put away is the notes' text, so a game whose notes change shows them again.
+ */
+const NOTES_KEY = "ap64.notesSeen.";
+
+function notesSeen(game) {
+  try {
+    return localStorage.getItem(NOTES_KEY + game.id) === game.notes.join("\n");
+  } catch {
+    return false;
+  }
+}
+
+async function startAfterNotes() {
+  const game = selectedGame();
+  if (game?.notes?.length && !notesSeen(game)) {
+    $("notes-title").textContent = `Before you play ${game.name}`;
+    $("notes-list").replaceChildren(
+      ...game.notes.map((note) => {
+        const li = document.createElement("li");
+        li.textContent = note;
+        return li;
+      }),
+    );
+    $("notes-hide").checked = false;
+    openDialog("notes");
+    return; // The dialog's buttons carry on from here.
+  }
+  await beginSession();
+}
+
+async function startFromNotes() {
+  const game = selectedGame();
+  if (game && $("notes-hide").checked) {
+    try {
+      localStorage.setItem(NOTES_KEY + game.id, game.notes.join("\n"));
+    } catch {
+      // Not remembered: they show again next time, which is the safe way to fail.
+    }
+  }
+  closeDialog();
   await beginSession();
 }
 
@@ -546,7 +593,7 @@ async function fixAndStart() {
     closeDialog();
     clientHint = "Restart the Archipelago Launcher, then open the AP client";
     renderLinks(lastStatus);
-    await beginSession();
+    await startAfterNotes();
   } catch (e) {
     closeDialog();
     setError($("play-error"), String(e));
@@ -573,6 +620,9 @@ async function initPlay() {
   $("btn-client-fix-go").addEventListener("click", fixAndStart);
   $("btn-client-fix-cancel").addEventListener("click", closeDialog);
   $("client-fix-backdrop").addEventListener("click", closeDialog);
+  $("btn-notes-go").addEventListener("click", startFromNotes);
+  $("btn-notes-cancel").addEventListener("click", closeDialog);
+  $("notes-backdrop").addEventListener("click", closeDialog);
   $("btn-play-start").addEventListener("click", startPlay);
   $("btn-play-stop").addEventListener("click", () => invoke("play_stop"));
   renderStatus((await invoke("play_status")) || { state: "idle" });

@@ -91,7 +91,10 @@ on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26):
   console. That script also shows the name of each item received, so on a console items arrive
   without that text. Played for 13 checks across four stages, with the keys that open new
   stages arriving and working. The game loop pauses for a second or two when a stage loads,
-  which the link rides out.
+  which the link rides out. On a console the world's ROM freezes during the title screen
+  cutscene, with or without the agent (seen with the world's own ROM); skipping past it avoids
+  the freeze, and play is unaffected. Start says so, along with the two Lua limits, before the
+  first session.
 
 Written and working, but **not offered in the app**, because the game cannot be played
 through for a reason outside AP64. Kept in the tree and checked by the same tests as the
@@ -159,6 +162,12 @@ What it says:
 game loaded, Multi64 restarted — none of those end a session. It goes back to waiting for the
 cart, says which link is down, and picks up where it left off when the console returns. Only
 **Stop** ends a session, because only you know whether you are done playing.
+
+Before a session begins, Start may ask about two things, one at a time. First, a fix the game's
+Archipelago client needs (Donkey Kong 64 and Banjo-Tooie, above). Then the game's notes: what
+to know about its randomizer on a console that AP64 cannot change, such as Bomberman 64's title screen
+freeze. They come from the game's profile (`notes`), show at every Start until **Don't show
+these again for this game** is ticked, and show again if they change.
 
 Each time the link goes, the Archipelago client's connection is reset rather than closed
 politely. That is deliberate: these clients read a line and hand it to `json.loads`, and a clean

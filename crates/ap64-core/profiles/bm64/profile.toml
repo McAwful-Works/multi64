@@ -11,10 +11,18 @@ cic = "6102"
 randomizer = "Happyhappyism's Bomberman 64 world"
 connector = "generic"     # Archipelago's BizHawk Client
 
+# Shown at Start. The title screen cutscene froze on a console with the world's own ROM, no
+# agent in it (2026-09-26): it is the world's, and play is unaffected.
+#
 # The world's optional enemy shuffle needs its companion Bomberman_64.lua, which runs
 # inside BizHawk and cannot follow the game to a console. With it off (the default) the
 # Lua only draws a received item's name from 0x800BD006 and clears it after 180 frames;
 # no code in the ROM reads that byte, so on a console it simply stays set.
+notes = [
+    "This game is known to freeze on a console during the title screen cutscene. Skip past it by pressing Start, and play is unaffected. If it has already frozen, reset the console. The freeze is in the randomizer's ROM, not AP64.",
+    "Items arrive without the on-screen message BizHawk shows: that message comes from a script only BizHawk can run.",
+    "Enemy shuffle needs that same script, so it can't work on a console. Generate seeds with it off.",
+]
 [measured]
 world = "bomberman_64.apworld"
 version = "0.1.5"

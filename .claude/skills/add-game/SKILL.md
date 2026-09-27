@@ -302,6 +302,12 @@ that ships with Archipelago. Give `header_name` if the randomizer stamps its rel
 header, as MK64's does. AP64 then notes a seed from another release (§8). If there is nothing
 to record, say why in a comment, as Paper Mario's profile does.
 
+Put what a player must know about the randomizer on a console in `notes`: AP64 shows them at
+Start, after any client fix. Bomberman 64's are the kind: its world's title screen cutscene freezes on a console
+with or without the agent, and its companion Lua (item messages, enemy shuffle) cannot follow
+it there. Before writing one about a fault, boot the world's own ROM, with no agent in it, to
+be sure it is the world's.
+
 **When the randomizer moves the code between releases, find it instead of pinning its
 offset.** A `[[find]]` names a region by its first word and a sha1, and the seed is refused
 unless exactly one word-aligned place matches. Give it the `vram` the region runs at, and
