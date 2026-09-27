@@ -5,9 +5,9 @@ description: Add a new game to AP64 - checking its Archipelago world is one the 
 
 # Adding a game to AP64
 
-Nine games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
-Mario Kart 64, Donkey Kong 64, Bomberman 64 and Bomberman Hero, with Legacy of Darkness written
-and held back in
+Ten games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
+Mario Kart 64, Donkey Kong 64 and all three Bombermans (64, The Second Attack and Hero), with
+Legacy of Darkness written and held back in
 `ap64_core::withheld()`.
 Each took a day or two, and most of that was spent on things this file now answers.
 
@@ -35,7 +35,7 @@ print([l for l in z.read('GAME/client.py').decode('utf8','replace').split(chr(10
 
 `from worlds._bizhawk.client import BizHawkClient` means **generic**: stock Archipelago's
 BizHawk Client runs the world's own logic, and AP64 needs no connector work. Paper Mario,
-CV64, CVLoD, Kirby 64, Mario Kart 64 and both Bombermans all look like this.
+CV64, CVLoD, Kirby 64, Mario Kart 64 and all three Bombermans look like this.
 
 No such import, or a world that ships its own client (Ocarina of Time's OoT Client), means a
 **forked** connector. Say so and stop; that is a separate piece of work, not a profile.
@@ -121,6 +121,16 @@ applies one static bsdiff to vanilla and asserts a *fixed* output md5, with ever
 made at runtime over the socket. One ROM serves every seed, so the profile's pins are
 measured once and can never drift per seed. The tell is a `patched_rom_md5` constant in
 the world, or a generator output with no `.apXX` in it.
+
+**Check whether the seed is finished when the patch has been applied.** Bomberman 64: The
+Second Attack's is not: its client runs a ROM adjuster the first time it connects, unpacking
+the ROM with a bundled `pack.exe`, rewriting door data and swapping files, then repacking it
+and setting a flag. On a console the client reads that flag off the cart and offers to
+adjust a file on the PC, too late for the ROM already running, and adjusting a ROM AP64 has
+patched cut it back to 16 MB and broke its checksum. So its profile refuses an unadjusted
+seed with a `word` check on the flag (#331 is AP64 doing the adjusting itself). Search the
+client for `subprocess`, file dialogs and writes to the ROM file: anything that edits the
+`.z64` after it exists is a step the patched ROM must already have had.
 
 ## 3. Boot the unmodified seed on the console, before measuring anything
 
@@ -284,6 +294,18 @@ rules out a function-pointer table. A decomp marking a function `UNUSED` is wher
 not the proof. Hero's ROM keeps every segment and overlay uncompressed, so the scan saw all
 of its code, and the zero count over 57,210 frames confirmed it.
 
+**A game that links its overlays by name can reach anything its symbol map lists.** The
+Second Attack keeps a map of 2,644 function addresses and names at ROM `0x280000`, loaded to
+`0x803E0000`, and its compressed overlays import boot-code functions through it. Every
+exported function has a word pointing at it there, so a scan that counts words found
+nothing unreferenced at all; leaving the map out of the scan, and treating any
+`addiu`/`ori` with the candidate's low half as a reference (IDO hoists the `lui` far from
+its pair), left three. One turned out to be a two-instruction stub followed by a function
+a data table points at. The stub went over `bmLoadBitmapTile`, cleared only by 0 calls
+over 45,420 frames. Two things that looked free and were not: zero runs after
+`rspbootTextEnd` are inside the graphics microcode, and the world's own
+`FREE_ROUTINE_SPACE` is too.
+
 ## 6. Write it
 
 `agent/<game>/game.env` and `stub.S`, then `agent/build.sh <game>` (needs the
@@ -334,7 +356,7 @@ stay at their RAM addresses. Choose a region the randomizer never patches (DK64 
 copy routine its stub already needed pinned), and no write may land inside it, or a
 patched ROM has nothing left to find. `Addr` in `ap64-core`'s `profile.rs` lists the
 forms. Where the code is the game's own and the randomizer leaves its offsets alone
-(CV64, Paper Mario, Kirby 64, Mario Kart 64, both Bombermans), fixed offsets are simpler and just as safe.
+(CV64, Paper Mario, Kirby 64, Mario Kart 64, the Bombermans), fixed offsets are simpler and just as safe.
 
 ## 7. Verify before hardware
 
