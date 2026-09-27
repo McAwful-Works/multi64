@@ -1,0 +1,101 @@
+# Bomberman Hero (US). Addresses from the Bomberhackers/bmhero decomp: boot_code is ROM
+# 0x1000 at 0x80000400, and nothing in the ROM is compressed on its way to RAM.
+# Blobs: crates/ap64-core/agent/build.sh bmhero (see BUILD_REV).
+
+id = "bmhero"
+name = "Bomberman Hero"
+release = "US"
+game_code = "NBDE"
+version = 0
+cic = "6102"
+randomizer = "Happyhappyism's Bomberman Hero world"
+connector = "generic"     # Archipelago's BizHawk Client
+
+# Shown at Start. The world's companion Bomberman_Hero.lua runs inside BizHawk and cannot
+# follow the game to a console. It does no game logic: it draws a received item's text from
+# 0x8005749A, clearing it after 180 frames, and a stage-clear table while D-pad Down is held.
+# No code in the ROM reads that byte, so on a console it simply stays set.
+notes = [
+    "Items arrive without the on-screen message BizHawk shows, and holding D-pad Down shows no stage tracker: both come from a script only BizHawk can run.",
+]
+
+[measured]
+world = "bomberman_hero.apworld"
+version = "0.2.4"
+
+[agent]
+image = "agent.bin"
+rom = 0xC00000          # past the retail 12 MB, which the world's tokens keep
+vram = 0x80480000       # Expansion Pak, which the game never touches
+min_ram = 0x800000      # the stub skips the agent without an Expansion Pak
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0x16CC             # the frame loop: jal func_8001D9E4 at 0x80000ACC
+equals = 0x0C007679
+hint = "The randomizer changed the frame loop, so the hook has nowhere to go."
+
+[[require]]
+kind = "sha1"
+label = "Space for the hook stub"
+at = 0x21150            # Debug_BackupMemTest (cont_pak.c, 0x80020550), which nothing calls
+len = 0x2F4
+sha1 = "fea913f6b14906d40e7aaeb5c4b2422bce0f988a"
+hint = "Something now occupies the dead code the stub goes in. Re-run the dead-space measurement before moving it."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0x1E5E4            # func_8001D9E4, which builds each frame
+len = 0x294
+sha1 = "7a875b13dc339c619400902dd79bc2fe944dd3b3"
+hint = "The randomizer changed the code the hook passes each frame through to."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine"
+at = 0x128C             # load_from_rom_to_addr, 0x8000068C, in the resident boot code
+len = 0x168
+sha1 = "a67d4e15f8d73516131c6c4f1def383c505eb190"
+hint = "The randomizer changed the routine the stub loads the agent with."
+
+# Archipelago's patch NOPs IPL3's two checksum-mismatch branches so an unfixed checksum
+# still boots, exactly as the CV64 world does. Put them back; the output gets a correct
+# checksum instead.
+[[write]]
+kind = "restore"
+label = "Boot checksum check (1 of 2)"
+at = 0x66C
+bytes = "14e80006"
+accept = ["00000000"]
+
+[[write]]
+kind = "restore"
+label = "Boot checksum check (2 of 2)"
+at = 0x678
+bytes = "16080003"
+accept = ["00000000"]
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0x21150
+file = "stub.bin"
+max_len = 0x2F4
+
+# The stub's lui/addiu of AGENT_ROM (stub + 0x5C). It keeps agent.rom when the seed
+# leaves room there; when the seed's data reaches it, the agent goes past the data and
+# this tells the stub where.
+[[write]]
+kind = "imm"
+label = "Where the agent is, for the stub"
+hi = 0x211AC
+lo = 0x211B0
+value = "agent_rom"
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0x16CC
+target = 0x80020550

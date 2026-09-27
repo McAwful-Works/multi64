@@ -85,6 +85,7 @@ pub fn builtin() -> Result<Vec<Bundle>, String> {
         builtin!("mk64", ["agent.bin", "stub.bin"]),
         builtin!("dk64", ["agent.bin", "stub.bin"]),
         builtin!("bm64", ["agent.bin", "stub.bin"]),
+        builtin!("bmhero", ["agent.bin", "stub.bin"]),
     ];
     bundles.sort_by_key(|b| library_key(&b.profile.name));
     Ok(bundles)
@@ -329,7 +330,7 @@ mod tests {
         }
         assert_eq!(
             seen,
-            7 * Cart::ALL.len(),
+            8 * Cart::ALL.len(),
             "every profile whose stub copies the agent lets it move, for every cart"
         );
     }
@@ -444,6 +445,7 @@ mod tests {
             [
                 "Banjo-Tooie",
                 "Bomberman 64",
+                "Bomberman Hero",
                 "Castlevania 64",
                 "Donkey Kong 64",
                 "Kirby 64 - The Crystal Shards",
