@@ -422,3 +422,98 @@ body {
 #play-status[data-state="connecting"] {
   color: var(--warning-text);
 }
+
+/* ---------------------------------------------------------------------------
+   The Play card's game menu (main.js, initGameMenu): a button that looks like the other fields
+   and a list that shows six games at a time and scrolls, rather than a native select, whose
+   list the system draws at its own length. The select it drives is kept, out of sight.
+   --------------------------------------------------------------------------- */
+
+/* Out of sight but still laid out, so it keeps its value and events like any select. */
+.offscreen {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.menu {
+  position: relative;
+  --menu-row: 2rem;
+}
+
+.menu-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.menu-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-chevron {
+  flex: none;
+  width: 1em;
+  height: 1em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.menu-list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 0.25rem);
+  z-index: 5;
+  margin: 0;
+  padding: 0.25rem 0;
+  list-style: none;
+  max-height: calc(6 * var(--menu-row) + 0.5rem);
+  overflow-y: auto;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0.4rem 1rem rgba(var(--shadow-rgb), 0.45);
+}
+
+/* Opened upward where the window has no room below it. */
+.menu-list.up {
+  top: auto;
+  bottom: calc(100% + 0.25rem);
+}
+
+.menu-list li {
+  line-height: var(--menu-row);
+  padding: 0 0.6rem;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-list li[aria-selected="true"] {
+  color: var(--accent);
+}
+
+.menu-list li.active {
+  background: rgba(var(--accent-rgb), 0.18);
+}

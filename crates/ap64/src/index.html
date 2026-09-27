@@ -70,12 +70,27 @@
         </button>
       </div>
       <p class="hint">Load the ROM with the agent on the console, then press Start.</p>
-      <label class="field">
-        <span>Game</span>
-        <select id="play-game-select" class="input">
-          <option value="">Choose a game…</option>
-        </select>
-      </label>
+      <!-- The game menu is AP64's own: a native select's list is drawn by the system, grows to
+           about twenty rows before it scrolls, and cannot be styled. The select stays as the
+           value's home, which the rest of the page reads and sets, but out of sight and out of
+           the tab order; the button and list below drive it (main.js, gameMenu). It sits outside
+           the .field, whose `.field select` rule would size it back to full width. -->
+      <select id="play-game-select" class="offscreen" tabindex="-1" aria-hidden="true">
+        <option value="">Choose a game…</option>
+      </select>
+      <div class="field">
+        <span id="play-game-label">Game</span>
+        <div class="menu">
+          <button type="button" id="play-game-button" class="input menu-button" aria-haspopup="listbox"
+                  aria-expanded="false" aria-controls="play-game-list" aria-labelledby="play-game-label play-game-button">
+            <span id="play-game-text" class="menu-text">Choose a game…</span>
+            <svg class="menu-chevron" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+          <ul id="play-game-list" class="menu-list" role="listbox" tabindex="-1" aria-labelledby="play-game-label" hidden></ul>
+        </div>
+      </div>
       <p class="hint hint-error card-error line-2" id="play-error" role="alert" hidden></p>
 
       <!-- The three things that have to be up. One status line can only say what is

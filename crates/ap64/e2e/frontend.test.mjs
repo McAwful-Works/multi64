@@ -52,6 +52,7 @@ async function serveFrontend() {
  *   after a successful `play_client_fix`; a game not listed answers null, as most do
  * - `clientFix`: what `play_client_fix` resolves to, or `{ error }` to reject
  * - `notes`: a game's notes, per game id; a game not listed has none, as most do
+ * - `moreGames`: that many extra games after the two every scenario has, for a long game list
  * - `firstRun`: open as if for the first time, so the Before you start window shows; every
  *   other scenario has already seen it
  */
@@ -86,6 +87,7 @@ function installTauriStub(scenario) {
     play_games: () => answer([
       { id: "g1", name: "Game One", connector: "Generic (BizHawk Client games)", notes: (sc.notes || {}).g1 || [] },
       { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector", notes: (sc.notes || {}).g2 || [] },
+      ...Array.from({ length: sc.moreGames || 0 }, (_, i) => ({ id: `x${i}`, name: `Extra ${i}`, connector: "Generic", notes: [] })),
     ]),
     play_start: () => answer(sc.start ?? null),
     play_client_setup: (a) =>
@@ -271,6 +273,7 @@ const setDev = async (p, on) => {
   check("the card says the ROM is ready", (await text(p, "seed-line")).includes("ready for the console"));
   check("Show in folder is offered on the card", !(await p.evaluate(() => document.getElementById("btn-reveal").disabled)));
   check("a loaded seed picks its game for Play", (await p.inputValue("#play-game-select")) === "g1");
+  check("and the game menu shows it", (await text(p, "play-game-text")) === "Game One");
   check("Play calls the client the AP client", (await p.textContent("#play-facts")).includes("AP client") && (await text(p, "link-client")) === "Not connected", await text(p, "link-client"));
   check("Start is enabled once a game is chosen", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
   check("Play asks for no ROM file", (await p.locator("#play-rom, #btn-play-rom").count()) === 0);
@@ -320,10 +323,12 @@ const setDev = async (p, on) => {
     start: document.getElementById("btn-play-start").disabled,
     stop: document.getElementById("btn-play-stop").disabled,
     game: document.getElementById("play-game-select").disabled,
+    menu: document.getElementById("play-game-button").disabled,
     url: document.getElementById("play-url").disabled,
   }));
   check("running disables Start and enables Stop", await p.evaluate(() => document.getElementById("btn-play-start").disabled && !document.getElementById("btn-play-stop").disabled));
   check("running locks the game", (await buttons()).game);
+  check("and the game menu with it", (await buttons()).menu);
   check("running locks the URL", (await buttons()).url);
   await emit("play://status", { ...live, state: "playing", detail: "AP client connected", requests: 120, reconnects: 1, stalls: 2, handled: 40, bridge: "ok", console: "ok", client: "ok" });
   check("playing shows the counters", (await text(p, "play-counters")).includes("120 cart round trips") && (await text(p, "play-counters")).includes("1 reconnects"));
@@ -483,6 +488,53 @@ const setDev = async (p, on) => {
   check("a failing seed counts its failures", (await text(p, "seed-checks")) === "1 of 3 failed");
   check("only the failures are listed open", (await p.locator("#failed-checks li").count()) === 1);
   check("a failed check shows its hint", failed === "Generate with the option off.", String(failed));
+  await p.close();
+}
+
+{
+  const p = await openScenario({ load: loadOk, moreGames: 10 });
+  check("the game menu starts on the choice to make", (await text(p, "play-game-text")) === "Choose a game…");
+  await p.click("#play-game-button");
+  check("clicking the game menu opens its list", await visible(p, "play-game-list"));
+  const rows = await p.locator("#play-game-list li").count();
+  check("the list has every game and no placeholder", rows === 12, String(rows));
+  const box = await p.evaluate(() => {
+    const l = document.getElementById("play-game-list");
+    return { client: l.clientHeight, scroll: l.scrollHeight, row: l.querySelector("li").getBoundingClientRect().height };
+  });
+  check("the list shows six games and scrolls to the rest", box.scroll > box.client && Math.round(box.client / box.row) === 6, JSON.stringify(box));
+  await p.keyboard.press("ArrowDown");
+  await p.keyboard.press("Enter");
+  check("Enter chooses the game under the highlight", (await p.inputValue("#play-game-select")) === "g2");
+  check("and the menu shows it", (await text(p, "play-game-text")) === "Game Two: The Subtitle");
+  check("choosing closes the list and returns to the menu", !(await visible(p, "play-game-list")) && (await p.evaluate(() => document.activeElement.id === "play-game-button")));
+  await p.keyboard.press("ArrowDown");
+  const active = () => p.evaluate(() => document.querySelector("#play-game-list li.active")?.textContent);
+  check("the keyboard opens it on the chosen game", (await active()) === "Game Two: The Subtitle", await active());
+  await p.keyboard.press("e");
+  check("typing a letter jumps to a game starting with it", (await active()) === "Extra 0", await active());
+  await p.keyboard.press("e");
+  check("the same letter again moves to the next", (await active()) === "Extra 1", await active());
+  await p.keyboard.press("End");
+  check("End goes to the last game, scrolled into view", (await active()) === "Extra 9" && (await p.evaluate(() => {
+    const l = document.getElementById("play-game-list");
+    const li = l.querySelector("li.active");
+    return li.offsetTop + li.offsetHeight <= l.scrollTop + l.clientHeight + 1;
+  })));
+  await p.keyboard.press("Escape");
+  check("Escape closes it without choosing", !(await visible(p, "play-game-list")) && (await p.inputValue("#play-game-select")) === "g2");
+  await p.click("#play-game-button");
+  await p.click("#play-game-list li >> text=Extra 3");
+  check("clicking a game chooses it", (await p.inputValue("#play-game-select")) === "x3" && (await text(p, "play-game-text")) === "Extra 3", await text(p, "play-game-text"));
+  await p.click("#play-game-button");
+  await p.mouse.click(5, 5);
+  check("a click elsewhere closes it", !(await visible(p, "play-game-list")));
+  check("the select it drives is out of the tab order", await p.evaluate(() => document.getElementById("play-game-select").tabIndex === -1));
+  // Its hidden select once kept a field's full width while taken out of the flow, and pushed the
+  // window into scrolling sideways.
+  await p.setViewportSize({ width: 546, height: 840 });
+  const wide = await p.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  check("the page never scrolls sideways", wide <= 0, `${wide}px too wide`);
   await p.close();
 }
 
