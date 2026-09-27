@@ -17,14 +17,18 @@ local out = here .. "ram-usage.txt"
 local DOMAIN = "RDRAM"
 local PAGE = 0x1000
 local SAMPLE_EVERY = 60
--- What the agent actually occupies: AGENT_BSS_END - AGENT_VRAM from any profile's
--- layout.env, which is 25,888 B for every current build (code + data + bss). This was
--- 21 KB, from an older and smaller agent, so it marked runs the agent does not fit in.
+-- Sized for the largest cart build, because one placement has to hold every build: each
+-- game is built once per flash cart, all at the same AGENT_VRAM, and the patcher picks
+-- one. What each occupies is AGENT_BSS_END - AGENT_VRAM from a profile's layout.env
+-- (code + data + bss): 29,376 B for the EverDrive-64 X7 (ed64/), 25,888 B for the
+-- SummerCart64 (the profile's own), 25,404 B for the PRO (ed64pro/). Sizing this for the
+-- SummerCart64 alone, as it once was, marked runs that the X7 build does not fit in.
 --
--- Rounded up rather than exact on purpose: the agent's size moves with the driver -- it
--- was 25,968 B until the PI fix dropped a spin loop and took 80 bytes with it -- and a
--- candidate region that only just fits is not one to report as free anyway.
-local NEED = 26 * 1024
+-- Rounded up rather than exact on purpose: the agent's size moves with the driver -- the
+-- SummerCart64 build was 25,968 B until the PI fix dropped a spin loop and took 80 bytes
+-- with it -- and a candidate region that only just fits is not one to report as free
+-- anyway. Runs are whole 4 KB pages, so anything from 28 KB up to 32 KB asks for 8 pages.
+local NEED = 30 * 1024
 
 local function u32(addr) return memory.read_u32_be(addr, DOMAIN) end
 
