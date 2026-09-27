@@ -4,6 +4,7 @@
 //! code the agent hooks into must be exactly what the profile was measured against, and
 //! nothing of the seed may lie where the agent goes. Only then is anything written.
 
+pub mod adjust;
 pub mod cart;
 pub mod crc;
 pub mod installed;
@@ -125,6 +126,32 @@ impl Detection {
             _ => None,
         }
     }
+}
+
+/// The profile whose world's post-patch step ([`adjust`]) this seed still needs, when no
+/// profile passes without it. `rom` is big-endian, as [`detect`] leaves it.
+pub fn needs_adjusting<'a>(
+    bundles: &'a [Bundle],
+    detection: &Detection,
+    rom: &[u8],
+) -> Option<&'a profile::Profile> {
+    if detection.chosen().is_some() {
+        return None;
+    }
+    detection.candidates.iter().find_map(|r| {
+        let b = bundles.iter().find(|b| b.profile.id == r.profile_id)?;
+        adjust::pending(&b.profile, rom).then_some(&b.profile)
+    })
+}
+
+/// Run that step ([`needs_adjusting`]) on a copy of `rom`. The caller then detects again on
+/// the adjusted bytes. `None` when nothing needs adjusting.
+pub fn adjust_pending(
+    bundles: &[Bundle],
+    detection: &Detection,
+    rom: &[u8],
+) -> Option<Result<adjust::Adjusted, String>> {
+    needs_adjusting(bundles, detection, rom).map(|p| adjust::run(p, rom))
 }
 
 #[derive(Debug)]

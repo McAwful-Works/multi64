@@ -127,8 +127,10 @@ Second Attack's is not: its client runs a ROM adjuster the first time it connect
 the ROM with a bundled `pack.exe`, rewriting door data and swapping files, then repacking it
 and setting a flag. On a console the client reads that flag off the cart and offers to
 adjust a file on the PC, too late for the ROM already running, and adjusting a ROM AP64 has
-patched cut it back to 16 MB and broke its checksum. So its profile refuses an unadjusted
-seed with a `word` check on the flag (#331 is AP64 doing the adjusting itself). Search the
+patched cut it back to 16 MB and broke its checksum. So AP64 runs the adjuster itself
+before the checks (`[adjust]` in the profile, `src/adjust.rs`), with the installed world's
+`pack.exe` pinned by hash, and a `word` check on the flag refuses any seed it could not
+adjust. Search the
 client for `subprocess`, file dialogs and writes to the ROM file: anything that edits the
 `.z64` after it exists is a step the patched ROM must already have had.
 

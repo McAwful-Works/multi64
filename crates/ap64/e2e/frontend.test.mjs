@@ -45,6 +45,8 @@ async function serveFrontend() {
 /**
  * Stand in for the Tauri bridge. `scenario`:
  * - `load`: what `load_rom` resolves to, or `{ error }` to reject
+ * - `adjust`: what `adjust_rom` resolves to, or `{ error }` to reject (called when `load` has `adjust`)
+ * - `adjustDelay`: milliseconds `adjust_rom` takes to answer, to catch the page while it runs
  * - `multi64Cart`: the cart Multi64's daemon reports (`multi64_cart`), or none when not given
  * - `patch`: what `patch_rom` resolves to, or `{ error }` to reject
  * - `pick`: what `pick_rom` resolves to
@@ -72,6 +74,8 @@ function installTauriStub(scenario) {
       { id: "g2", name: "Game Two: The Subtitle", release: "EU 1.1", randomizer: "Game Two Randomizer" },
     ]),
     load_rom: () => answer(sc.load),
+    adjust_rom: () =>
+      new Promise((resolve) => setTimeout(resolve, sc.adjustDelay || 0)).then(() => answer(sc.adjust)),
     carts: () => answer([
       { id: "sc64", name: "SummerCart64", tested: true },
       { id: "ed64", name: "EverDrive-64 X7", tested: false },
@@ -149,6 +153,17 @@ loadFailing.detection.candidates[0].checks[1] = {
   detail: "0x1601C holds 0x00000000",
   hint: "Generate with the option off.",
 };
+// A seed its world finishes after the patch: load says so, and adjusting it makes it pass.
+const loadUnadjusted = structuredClone(loadFailing);
+loadUnadjusted.adjust = "Game One";
+loadUnadjusted.detection.candidates[0].checks[1] = {
+  label: "Seed adjusted by the world's ROM adjuster",
+  ok: false,
+  detail: "0xF8000 holds 0x00000000 (expected 0x01000000)",
+  hint: "AP64 could not run it (see why above).",
+};
+const loadAdjusted = structuredClone(loadOk);
+loadAdjusted.notes = ["AP64 ran the world's ROM adjuster on this seed, from g1.apworld 1.0.2."];
 const loadUnknown = structuredClone(loadOk);
 loadUnknown.chosen = null;
 loadUnknown.detection.candidates = [];
@@ -483,6 +498,36 @@ const setDev = async (p, on) => {
   check("a failing seed counts its failures", (await text(p, "seed-checks")) === "1 of 3 failed");
   check("only the failures are listed open", (await p.locator("#failed-checks li").count()) === 1);
   check("a failed check shows its hint", failed === "Generate with the option off.", String(failed));
+  await p.close();
+}
+
+{
+  const p = await openScenario({ load: loadUnadjusted, adjust: loadAdjusted, adjustDelay: 600 });
+  await drop(p, ["C:\seeds\tsa.z64"]);
+  await until(p, () => !document.getElementById("adjusting").hidden);
+  check("the dialog opens while the seed is adjusted", await visible(p, "patch-dialog"));
+  check("and says what is happening", (await text(p, "adjusting")).includes("ROM adjuster"));
+  check("with nothing to patch yet", !(await visible(p, "patch-controls")) && (await p.evaluate(() => document.getElementById("btn-patch").disabled)));
+  check("and the cart held still", await p.evaluate(() => document.getElementById("patch-cart").disabled));
+  await until(p, () => document.getElementById("adjusting").hidden);
+  check("a seed that needs adjusting is adjusted once", (await callsOf(p, "adjust_rom")).length === 1);
+  check("an adjusted seed can be patched", await visible(p, "patch-controls"));
+  check("the cart can change again", await p.evaluate(() => !document.getElementById("patch-cart").disabled));
+  check("an adjusted seed says it was adjusted", (await text(p, "release-notes")).includes("ROM adjuster"));
+  await p.close();
+}
+
+{
+  const p = await openScenario({ load: loadUnadjusted, adjust: { error: "bomberman_tsa.apworld is not installed here" } });
+  await drop(p, ["C:\seeds\tsa.z64"]);
+  await until(p, () => !document.getElementById("patch-dialog").hidden);
+  check("a seed AP64 could not adjust does not offer to patch", !(await visible(p, "patch-controls")));
+  check(
+    "a seed AP64 could not adjust says why",
+    (await text(p, "release-notes")).includes("could not run the world's ROM adjuster: bomberman_tsa.apworld is not installed"),
+    await text(p, "release-notes"),
+  );
+  check("and shows the check that failed", (await p.locator("#failed-checks li").count()) === 1);
   await p.close();
 }
 
