@@ -20,8 +20,8 @@ Play Archipelago N64 seeds on a real console, from Windows. AP64 does two jobs:
 
 Supported today, each patched and played on a SummerCart64 with checks sent and items
 received (the first three on 2026-09-18, Kirby 64 on 2026-09-21, Banjo-Tooie and Mario Kart 64
-on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26, Bomberman Hero on
-2026-09-27):
+on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26, Bomberman Hero and
+Bomberman 64: The Second Attack on 2026-09-27):
 
 - **Castlevania 64 (US 1.0)**, through Archipelago's BizHawk Client.
 - **Paper Mario (US 1.0)** with the Paper Mario Randomizer, through BizHawk Client.
@@ -108,6 +108,20 @@ on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26, Bomberm
   on a console neither appears; Start says so before the first session. Played for 6 checks
   (radios and stage clears), with the stages, Adok Bomb and Gold Heart received arriving and
   working. The link rides out the second or two the frame loop pauses while a stage loads.
+- **Bomberman 64: The Second Attack! (US)**, Happyhappyism and SavageWizzrobe's Bomberman The
+  Second Attack world, through BizHawk Client. Addresses come from the Bomberhackers/bm64tsa
+  decomp's symbols. Like Bomberman 64, the hook is the main loop's call to the function that
+  runs every Hudson process, here once per game frame at 30 Hz, and the agent lives in the
+  Expansion Pak, which the game never touches. The stub goes over `bmLoadBitmapTile`, which no
+  resident code calls; the compressed overlays link to the boot code by name, so that could
+  only be settled by play: 0 calls over 45,420 frames, and its bytes never changed. The world's
+  seed is not finished when its patch is applied: BizHawk Client runs the world's ROM adjuster
+  the first time it connects, which sets up the doors, three power-ups and the chosen models
+  and repacks the ROM. On a console that comes too late, and adjusting a ROM AP64 has already
+  patched breaks it, so Patch accepts only an adjusted seed and says how to adjust one; AP64
+  doing the adjusting itself is #331. Played for 12 checks across Alcatraz and Thantos,
+  power-ups, a boss and a Pommy transformation among them, with the Thantos Coordinates that
+  open the next planet arriving and working, and traps and power-ups landing.
 
 Written and working, but **not offered in the app**, because the game cannot be played
 through for a reason outside AP64. Kept in the tree and checked by the same tests as the
