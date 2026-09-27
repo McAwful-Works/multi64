@@ -34,6 +34,10 @@ pub struct Profile {
     pub measured: Option<Measured>,
     /// Which connector script plays this game (`connectors/<id>/`).
     pub connector: String,
+    /// What someone should know before playing this game on a console, shown when Start is
+    /// pressed: things about the randomizer AP64 cannot change, each a sentence or two.
+    #[serde(default)]
+    pub notes: Vec<String>,
     /// Applied to the seed before any check or write.
     #[serde(default)]
     pub transform: Option<Transform>,

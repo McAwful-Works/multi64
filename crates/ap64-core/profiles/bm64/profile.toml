@@ -1,0 +1,105 @@
+# Bomberman 64 (US). Addresses from the bomberhackers/bm64 decomp: main_code is ROM
+# 0x40000 at 0x80225800, uncompressed in the retail ROM and in a seed.
+# Blobs: crates/ap64-core/agent/build.sh bm64 (see BUILD_REV).
+
+id = "bm64"
+name = "Bomberman 64"
+release = "US"
+game_code = "NBME"
+version = 0
+cic = "6102"
+randomizer = "Happyhappyism's Bomberman 64 world"
+connector = "generic"     # Archipelago's BizHawk Client
+
+# Shown at Start. The title screen cutscene froze on a console with the world's own ROM, no
+# agent in it (2026-09-26): it is the world's, and play is unaffected.
+#
+# The world's optional enemy shuffle needs its companion Bomberman_64.lua, which runs
+# inside BizHawk and cannot follow the game to a console. With it off (the default) the
+# Lua only draws a received item's name from 0x800BD006 and clears it after 180 frames;
+# no code in the ROM reads that byte, so on a console it simply stays set.
+notes = [
+    "This game is known to freeze on a console during the title screen cutscene. Skip past it by pressing Start, and play is unaffected. If it has already frozen, reset the console. The freeze is in the randomizer's ROM, not AP64.",
+    "Items arrive without the on-screen message BizHawk shows: that message comes from a script only BizHawk can run.",
+    "Enemy shuffle needs that same script, so it can't work on a console. Generate seeds with it off.",
+]
+[measured]
+world = "bomberman_64.apworld"
+version = "0.1.5"
+
+[agent]
+image = "agent.bin"
+rom = 0x800000          # past the 0x7B7668-byte image the world's bsdiff produces
+vram = 0x80480000       # Expansion Pak, which the game never touches
+min_ram = 0x800000      # the stub skips the agent without an Expansion Pak
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0x40214            # the game loop: jal HuPrcCall (0x802392F8) at 0x80225A14
+equals = 0x0C08E4BE
+hint = "The randomizer changed the game loop, so the hook has nowhere to go."
+
+[[require]]
+kind = "sha1"
+label = "Space for the hook stub"
+at = 0xB5C68            # memalign (gmalloc.c, 0x8029B468), which nothing calls
+len = 0x1E8
+sha1 = "7fb21a586d75863398f1e16b2827b7245da12b78"
+hint = "Something now occupies the dead code the stub goes in. Re-run the dead-space measurement before moving it."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0x53AF8            # HuPrcCall, 0x802392F8
+len = 0x80
+sha1 = "923b5c668be4f9b668824a7b8a5ee3ed81db3df3"
+hint = "The randomizer changed the code the hook passes each frame through to."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine"
+at = 0x1298             # load_from_rom_to_addr, 0x80000698, in the resident boot code
+len = 0xD8
+sha1 = "b46cd863bf562e2b51fc545c2ebb1f7921220b87"
+hint = "The randomizer changed the routine the stub loads the agent with."
+
+# Archipelago's patch NOPs IPL3's two checksum-mismatch branches so an unfixed checksum
+# still boots, exactly as the CV64 world does. Put them back; the output gets a correct
+# checksum instead.
+[[write]]
+kind = "restore"
+label = "Boot checksum check (1 of 2)"
+at = 0x66C
+bytes = "14e80006"
+accept = ["00000000"]
+
+[[write]]
+kind = "restore"
+label = "Boot checksum check (2 of 2)"
+at = 0x678
+bytes = "16080003"
+accept = ["00000000"]
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0xB5C68
+file = "stub.bin"
+max_len = 0x1E8
+
+# The stub's lui/addiu of AGENT_ROM (stub + 0x6C). It keeps agent.rom when the seed
+# leaves room there; when the seed's data reaches it, the agent goes past the data and
+# this tells the stub where.
+[[write]]
+kind = "imm"
+label = "Where the agent is, for the stub"
+hi = 0xB5CD4
+lo = 0xB5CD8
+value = "agent_rom"
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0x40214
+target = 0x8029B468
