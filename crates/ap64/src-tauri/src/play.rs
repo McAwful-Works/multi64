@@ -169,13 +169,15 @@ fn kind(id: &str) -> Option<Kind> {
         })
 }
 
-/// A game the Play card offers, and which connector plays it.
+/// A game the Play card offers, which connector plays it, and whether the console needs an
+/// Expansion Pak for it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Game {
     pub id: String,
     pub name: String,
     pub connector: String,
+    pub needs_expansion_pak: bool,
 }
 
 pub fn games(bundles: &[Bundle]) -> Vec<Game> {
@@ -190,6 +192,7 @@ pub fn games(bundles: &[Bundle]) -> Vec<Game> {
                 // between. It stays on the profile for the header check to fail on.
                 name: b.profile.name.clone(),
                 connector: k.name().to_string(),
+                needs_expansion_pak: b.profile.agent.needs_expansion_pak(),
             })
         })
         .collect()
@@ -712,6 +715,15 @@ fn multi64_app_running() -> bool {
 
 /// How often counters are pushed to the page while playing.
 const STATS_EVERY: Duration = Duration::from_secs(1);
+/// How long the cart may be there with its ROM silent before the status names the Expansion
+/// Pak. Longer than a reset or a ROM swap usually takes, so it does not appear for those.
+const PAK_HINT_AFTER: Duration = Duration::from_secs(15);
+
+/// What the status says then. A hint, not a finding: a console that is off, or running
+/// another ROM, is silent the same way.
+const PAK_HINT: &str = "the ROM is not answering. If it is running, check the console has an \
+                        Expansion Pak: AP64 needs one for this game";
+
 /// Between attempts to reach a cart that is not answering yet.
 const CART_RETRY: Duration = Duration::from_secs(2);
 /// How long a session keeps trying to reach a cart that stopped answering before it ends.
@@ -837,6 +849,9 @@ fn run(
             pause();
         }
         // Wait for the cart: the console may not be on yet, or the daemon not started.
+        // Since when the cart has been there and the ROM silent, for the Expansion Pak hint.
+        let mut rom_silent_since: Option<Instant> = None;
+        let mut pak_logged = false;
         let cart = loop {
             if stop.load(Ordering::Relaxed) {
                 break 'session;
@@ -852,6 +867,25 @@ fn run(
                     let daemon = ap64_cart::transport::serial_active(&url);
                     // Only when the bridge is silent is the app's own state worth the look.
                     let app = daemon.is_none() && multi64_app_running();
+                    // A ROM that stays silent with the cart there is most often one whose stub found
+                    // no Expansion Pak and stood the agent down, and nothing on the console can say
+                    // so. After long enough for a reset or a ROM swap, name it as the likely cause.
+                    let silent = match daemon {
+                        Some(true) => *rom_silent_since.get_or_insert_with(Instant::now),
+                        _ => {
+                            rom_silent_since = None;
+                            Instant::now()
+                        }
+                    };
+                    let pak_hint = game.profile.agent.needs_expansion_pak()
+                        && silent.elapsed() >= PAK_HINT_AFTER;
+                    if pak_hint && !std::mem::replace(&mut pak_logged, true) {
+                        log(format!(
+                            "the cart is connected but the ROM has not answered for {} s; \
+                             without an Expansion Pak the agent stands down and never answers",
+                            PAK_HINT_AFTER.as_secs()
+                        ));
+                    }
                     set(&|s| {
                         s.state = "connecting".into();
                         s.detail_dev = msg.clone();
@@ -877,7 +911,11 @@ fn run(
                                 // Say so rather than "starting": this is also where a session waits
                                 // after a console was reset, and it is not starting then.
                                 s.state = "waiting-console".into();
-                                s.detail = "waiting for the ROM on the console".into();
+                                s.detail = if pak_hint {
+                                    PAK_HINT.into()
+                                } else {
+                                    "waiting for the ROM on the console".into()
+                                };
                                 s.bridge = OK.into();
                                 s.console = WAITING.into();
                             }

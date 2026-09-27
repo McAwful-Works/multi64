@@ -69,8 +69,8 @@ function installTauriStub(scenario) {
     play_default_url: () => answer("ws://127.0.0.1:38765/ws"),
     play_status: () => answer({ state: "idle", detail: "", port: null, requests: 0, reconnects: 0, stalls: 0, handled: 0 }),
     play_games: () => answer([
-      { id: "g1", name: "Game One", connector: "Generic (BizHawk Client games)" },
-      { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector" },
+      { id: "g1", name: "Game One", connector: "Generic (BizHawk Client games)", needsExpansionPak: true },
+      { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector", needsExpansionPak: false },
     ]),
     play_start: () => answer(sc.start ?? null),
     play_client_setup: (a) =>
@@ -181,7 +181,7 @@ const setDev = async (p, on) => {
 };
 
 {
-  const p = await openScenario({ load: loadOk, patch: { output: "C:\\seeds\\seed-agent.z64", size: 12587268, sha1: "66B5", summary: ["Frame hook: jal", "Agent: 4356 bytes"] } });
+  const p = await openScenario({ load: loadOk, patch: { output: "C:\\seeds\\seed-agent.z64", size: 12587268, sha1: "66B5", summary: ["Frame hook: jal", "Agent: 4356 bytes"], needsExpansionPak: true } });
   // The supported games are a window, not a sentence under the drop zone: the list grows
   // with every profile added, and the card may not.
   check("the games are not listed on the card", !(await visible(p, "games-dialog")));
@@ -249,6 +249,7 @@ const setDev = async (p, on) => {
   check("the result shows the SHA-1", (await text(p, "result-sha1")).includes("66B5"));
   check("the result names the file, with the path on hover", (await text(p, "result-path")).startsWith("seed-agent.z64") && (await p.getAttribute("#result-path", "title")) === "C:\\seeds\\seed-agent.z64");
   check("the seed pane gives way to the result", !(await visible(p, "pane-seed")));
+  check("the result says the console needs an Expansion Pak", (await text(p, "result-next")).includes("with an Expansion Pak"), await text(p, "result-next"));
   await p.click("#btn-patch-close");
   check("patching leaves the cards where they were", (await cardHeights(p)).join() === idle.join(), `${idle} then ${await cardHeights(p)}`);
   check("the card says the ROM is ready", (await text(p, "seed-line")).includes("ready for the console"));
@@ -271,6 +272,10 @@ const setDev = async (p, on) => {
   check("choosing a game does not name its client", (await text(p, "link-client")) === "Not connected", await text(p, "link-client"));
   check("choosing a game does not move the card", (await cardHeights(p)).join() === before.join(), `${before} then ${await cardHeights(p)}`);
   check("and enables Start", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
+  check("a game that runs without a Pak says nothing of one", (await text(p, "link-console")) === "Not running", await text(p, "link-console"));
+  await p.selectOption("#play-game-select", "g1");
+  check("a game that needs an Expansion Pak says so on the Console row", (await text(p, "link-console")) === "Needs an Expansion Pak", await text(p, "link-console"));
+  check("without moving the card", (await cardHeights(p)).join() === before.join(), `${before} then ${await cardHeights(p)}`);
   await p.close();
 }
 

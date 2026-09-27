@@ -165,7 +165,7 @@
               </dl>
               <ul id="result-summary" class="summary scroll-box"></ul>
             </details>
-            <p class="hint">Load this ROM on the console, then come back to Play.</p>
+            <p class="hint" id="result-next">Load this ROM on the console, then come back to Play.</p>
           </div>
         </div>
         <div class="dialog-footer">
@@ -218,7 +218,9 @@
             <li>Plug the cart in and start the <strong>Multi64</strong> app. AP64 starts it for you
               if it is not already running.</li>
             <li>Load the ROM with the agent on the console and let it run. AP64 reads it from the
-              cart, so there is no file to choose here.</li>
+              cart, so there is no file to choose here. The console needs an
+              <strong>Expansion Pak</strong>: the agent runs in its memory, and without one it
+              never starts, so AP64 waits with nothing to tell it why.</li>
             <li>Press <strong>Start</strong>.</li>
             <li>Open the AP client from the Archipelago Launcher and connect it to your room.</li>
           </ol>

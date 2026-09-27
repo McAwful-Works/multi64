@@ -99,6 +99,13 @@ impl Agent {
     pub fn region(&self) -> u32 {
         self.region.unwrap_or(self.rom)
     }
+
+    /// Whether the console needs an Expansion Pak for the agent to run: it is linked above
+    /// the base 4 MB, or its stub skips it below 8 MB. Either way nothing on the console
+    /// answers AP64 without one, and nothing can say why, so the app says so up front.
+    pub fn needs_expansion_pak(&self) -> bool {
+        self.vram >= 0x8040_0000 || self.min_ram > 0x40_0000
+    }
 }
 
 /// A region located in each seed instead of at a fixed offset: the one word-aligned place

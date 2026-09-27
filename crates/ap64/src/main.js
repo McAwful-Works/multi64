@@ -265,6 +265,9 @@ async function patch() {
       }),
     );
     $("result-sha1").textContent = r.sha1;
+    $("result-next").textContent = r.needsExpansionPak
+      ? "Load this ROM on a console with an Expansion Pak, then come back to Play."
+      : "Load this ROM on the console, then come back to Play.";
     // The dialog becomes the receipt: same window, so nothing behind it moves.
     show($("pane-seed"), false);
     show($("pane-result"), true);
@@ -445,6 +448,11 @@ function renderLinks(s) {
     // and the status line says what to do about them. Every game's client is "the AP client"
     // here; which one it is underneath is the session log's business, not the player's.
     let text = LINK_TEXT[key][state];
+    // Before a session, the one thing about the console worth saying is what it needs: without
+    // an Expansion Pak nothing on it answers, and nothing can say why once a session is waiting.
+    if (key === "console" && state === "idle" && selectedGame()?.needsExpansionPak) {
+      text = "Needs an Expansion Pak";
+    }
     if (key === "client") {
       // Once it has connected, the fix is behind it.
       if (state === "ok") clientHint = "";
