@@ -163,6 +163,13 @@ game loaded, Multi64 restarted — none of those end a session. It goes back to 
 cart, says which link is down, and picks up where it left off when the console returns. Only
 **Stop** ends a session, because only you know whether you are done playing.
 
+Every game here needs an **Expansion Pak**, because the agent runs in its memory. Without one
+the stub stands the agent down and nothing on the console can answer, so AP64 cannot tell a
+missing Pak from a console that is off or running another ROM. So it says what is needed once,
+in a **Before you start** window the first time AP64 opens (and in the Playing help), and when
+the cart is connected but the ROM has been silent for 15 seconds, the status names the Pak as
+the likely cause and the session log says so once.
+
 Before a session begins, Start may ask about two things, one at a time. First, a fix the game's
 Archipelago client needs (Donkey Kong 64 and Banjo-Tooie, above). Then the game's notes: what
 to know about its randomizer on a console that AP64 cannot change, such as Bomberman 64's title screen

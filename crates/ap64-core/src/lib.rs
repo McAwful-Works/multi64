@@ -314,6 +314,36 @@ mod tests {
         );
     }
 
+    /// AP64's help says the console needs an Expansion Pak, as a fact about every game it
+    /// offers. A profile whose agent runs in the base 4 MB makes that false, and the help
+    /// (`crates/ap64/src/index.html`, Playing) has to change with it.
+    #[test]
+    fn every_offered_game_needs_the_expansion_pak() {
+        for b in builtin().unwrap() {
+            assert!(
+                b.profile.agent.needs_expansion_pak(),
+                "{}: runs without an Expansion Pak; update the Playing help",
+                b.profile.id
+            );
+        }
+        // And the rule itself: an agent in the base 4 MB with no RAM floor needs nothing.
+        let base = profile::Agent {
+            image: String::new(),
+            rom: 0,
+            region: None,
+            bss: 0,
+            dma_slot: None,
+            vram: 0x803C_9000,
+            min_ram: 0,
+        };
+        assert!(!base.needs_expansion_pak());
+        assert!(profile::Agent {
+            min_ram: 0x80_0000,
+            ..base.clone()
+        }
+        .needs_expansion_pak());
+    }
+
     /// Every profile says which randomizer release it was measured against, so a seed from
     /// another can be pointed out (#292). Paper Mario's world declares no version and its ROM
     /// carries none, so it is the one that cannot, and its profile says so.

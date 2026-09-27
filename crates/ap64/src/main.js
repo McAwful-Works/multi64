@@ -31,7 +31,31 @@ const DIALOGS = {
   helpPlay: { panel: "help-play-dialog", backdrop: "help-play-backdrop", focus: "btn-help-play" },
   clientFix: { panel: "client-fix-dialog", backdrop: "client-fix-backdrop", focus: "btn-play-start" },
   notes: { panel: "notes-dialog", backdrop: "notes-backdrop", focus: "btn-play-start" },
+  welcome: { panel: "welcome-dialog", backdrop: "welcome-backdrop", focus: "btn-browse" },
 };
+
+/*
+ * The first time AP64 is opened, one window saying what has to be in place. Remembered once it
+ * is closed, however it is closed; a browser that cannot remember shows it again, which is the
+ * safe way to fail.
+ */
+const WELCOMED_KEY = "ap64.welcomed";
+
+function welcomed() {
+  try {
+    return localStorage.getItem(WELCOMED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberWelcomed() {
+  try {
+    localStorage.setItem(WELCOMED_KEY, "1");
+  } catch {
+    // Shown again next time.
+  }
+}
 let openDialogName = null;
 let dialogReturnFocus = null;
 
@@ -81,6 +105,7 @@ function openDialog(name) {
 
 function closeDialog() {
   if (!openDialogName) return;
+  if (openDialogName === "welcome") rememberWelcomed();
   const d = DIALOGS[openDialogName];
   show($(d.backdrop), false);
   show($(d.panel), false);
@@ -678,6 +703,9 @@ async function init() {
   $("btn-games").addEventListener("click", () => openDialog("games"));
   $("btn-games-close").addEventListener("click", closeDialog);
   $("games-backdrop").addEventListener("click", closeDialog);
+  $("btn-welcome-close").addEventListener("click", closeDialog);
+  $("welcome-backdrop").addEventListener("click", closeDialog);
+  if (!welcomed()) openDialog("welcome");
   initPlay();
   try {
     profiles = (await invoke("profiles")) || [];

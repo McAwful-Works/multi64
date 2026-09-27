@@ -51,9 +51,16 @@ async function serveFrontend() {
  *   after a successful `play_client_fix`; a game not listed answers null, as most do
  * - `clientFix`: what `play_client_fix` resolves to, or `{ error }` to reject
  * - `notes`: a game's notes, per game id; a game not listed has none, as most do
+ * - `firstRun`: open as if for the first time, so the Before you start window shows; every
+ *   other scenario has already seen it
  */
 function installTauriStub(scenario) {
   const sc = scenario || {};
+  if (!sc.firstRun) {
+    try {
+      localStorage.setItem("ap64.welcomed", "1");
+    } catch {}
+  }
   const calls = [];
   window.__TAURI_CALLS__ = calls;
   window.__TAURI_LISTENERS__ = {};
@@ -272,6 +279,7 @@ const setDev = async (p, on) => {
   check("choosing a game does not name its client", (await text(p, "link-client")) === "Not connected", await text(p, "link-client"));
   check("choosing a game does not move the card", (await cardHeights(p)).join() === before.join(), `${before} then ${await cardHeights(p)}`);
   check("and enables Start", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
+  check("the Console row says only what the console is doing", (await text(p, "link-console")) === "Not running", await text(p, "link-console"));
   await p.close();
 }
 
@@ -624,6 +632,24 @@ const setDev = async (p, on) => {
   await p.click("#btn-notes-go");
   await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_start"));
   check("then the game starts", (await callsOf(p, "play_start"))[0]?.args?.game === "g2");
+  await p.close();
+}
+
+// The first time AP64 opens, one window says what has to be in place, and never again.
+{
+  const p = await openScenario({ firstRun: true });
+  await until(p, () => !document.getElementById("welcome-dialog").hidden);
+  check("the first launch says what is needed", (await text(p, "welcome-dialog")).includes("Expansion Pak"));
+  await p.click("#btn-welcome-close");
+  check("Got it closes it", !(await visible(p, "welcome-dialog")));
+  await p.reload();
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_status"));
+  check("and it does not come back", !(await visible(p, "welcome-dialog")));
+  await p.close();
+}
+{
+  const p = await openScenario({});
+  check("an app that has been opened before goes straight to its cards", !(await visible(p, "welcome-dialog")));
   await p.close();
 }
 
