@@ -1,0 +1,113 @@
+# Star Fox 64 (US 1.1), as patched by Auztin's Archipelago world. Addresses from the
+# inspectredc/sf64 decomp: the main segment is ROM 0x1050 at 0x80000450, loaded by the boot
+# code as it is. One patched ROM serves every seed: the world patches the retail ROM with a
+# single bsdiff and asserts the output's md5, and the seed arrives at run time.
+# Blobs: crates/ap64-core/agent/build.sh sf64 (see BUILD_REV).
+
+id = "sf64"
+name = "Star Fox 64"
+release = "US 1.1"
+# The world rewrites the header's game code to "NEDE": N, then "ED" (the advanced header
+# EverDrive and SummerCart64 menus read for the save type), then the region.
+game_code = "NEDE"
+version = 0x30
+cic = "6101"
+randomizer = "Auztin's Star Fox 64 world"
+# The world's own client, which AP64 connects to as its BizHawk Lua would: the ROM does all
+# of the game's work, and the connector only relays its packets (ap64-connector, relay.rs).
+connector = "sf64"
+
+# No [measured]: the apworld declares no version (it ships no archipelago.json), and the header
+# name is the same in every release. Measured against 0.4.1. The ROM and the world's client
+# check each other's version in their own handshake, and refuse a mismatch.
+
+[agent]
+image = "agent.bin"
+rom = 0xC10000          # past the world's ROM, which is always 0xC0DD70 bytes
+vram = 0x80700000       # Expansion Pak, above the 2 MB the world reserves at 0x80400000
+min_ram = 0x800000      # the stub skips the agent without an Expansion Pak
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0x4EDC             # Graphics_ThreadEntry: jal Controller_UpdateInput (0x800029A8) at 0x800042DC
+equals = 0x0C000A6A
+hint = "The randomizer changed the graphics loop, so the hook has nowhere to go."
+
+[[require]]
+kind = "sha1"
+label = "Space for the hook stub"
+at = 0x2CA38            # __rmonGetThreadStatus (libultra's rmon, 0x8002BE38), which nothing starts
+len = 0x2F4
+sha1 = "028a1ec310368fe523826d7f051f4e6b55a40908"
+hint = "Something now occupies the dead code the stub goes in. Re-run the dead-space measurement before moving it."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0x35A8             # Controller_UpdateInput, 0x800029A8
+len = 0x14C
+sha1 = "af26b9070a371d60428fa930eaabfd075d535d3f"
+hint = "The randomizer changed the code the hook passes each frame through to."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine"
+at = 0x3FE0             # Lib_DmaRead, 0x800033E0
+len = 0x108
+sha1 = "2782a50ca1ce2c8b60cc4083347d29eb823e511c"
+hint = "The randomizer changed the routine the stub loads the agent with."
+
+# The world's loader, which copies its payload to 0x80400000 and installs its hooks at run
+# time. Those hooks, and the two buffer pointers the connector reads at 0x80400000, are the
+# world's; a release that changes the loader is one AP64 has not been measured against.
+[[require]]
+kind = "sha1"
+label = "The world's loader"
+at = 0x59A8
+len = 0x64
+sha1 = "7f2de6267c06b128a47da2a187c3a52cb91106b2"
+hint = "This release of the world loads its code differently from the one AP64 was measured against."
+
+# The world's ROM picks its transport at boot, in main_init (0x80400220): in an emulator
+# (0xA4100010 reads zero) its packets wait in the two buffers for BizHawk's Lua, which is
+# the protocol the relay speaks; on a console it also polls an EverDrive's USB registers every
+# frame, reads a packet from them when they say one is waiting, and sends and clears its own
+# when they say they are ready. On a SummerCart64 those registers are not there, and the
+# connection dropped every few seconds with the ROM restarting its handshake. So it is told it
+# is in an emulator: `main.is_emulator` (0x8040C4B0) is set to 1 and usb_init skipped. Nothing
+# else in the world reads that flag (src/main.c).
+[[write]]
+kind = "replace"
+label = "The world's transport: its buffers (1 of 2)"
+at = 0xC00234           # sltiu a0,v0,1  ->  li a0,1: main.is_emulator = 1
+from = "2c440001"
+bytes = "24040001"
+
+[[write]]
+kind = "replace"
+label = "The world's transport: its buffers (2 of 2)"
+at = 0xC0023C           # beqz v0,+3  ->  b +3: skip usb_init
+from = "10400003"
+bytes = "10000003"
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0x2CA38
+file = "stub.bin"
+max_len = 0x2F4
+
+# The stub's lui/addiu of AGENT_ROM (stub + 0x5C).
+[[write]]
+kind = "imm"
+label = "Where the agent is, for the stub"
+hi = 0x2CA94
+lo = 0x2CA98
+value = "agent_rom"
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0x4EDC
+target = 0x8002BE38

@@ -17,6 +17,9 @@ pub const IPL3: std::ops::Range<usize> = 0x40..0x1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cic {
+    /// Star Fox 64's. Its IPL3 differs from 6102's, but checks the same sum with the same
+    /// seed.
+    Cic6101,
     Cic6102,
     Cic6103,
     Cic6105,
@@ -25,6 +28,7 @@ pub enum Cic {
 impl fmt::Display for Cic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Cic::Cic6101 => "CIC-6101",
             Cic::Cic6102 => "CIC-6102",
             Cic::Cic6103 => "CIC-6103",
             Cic::Cic6105 => "CIC-6105",
@@ -36,16 +40,20 @@ impl std::str::FromStr for Cic {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, String> {
         match s {
+            "6101" => Ok(Cic::Cic6101),
             "6102" => Ok(Cic::Cic6102),
             "6103" => Ok(Cic::Cic6103),
             "6105" => Ok(Cic::Cic6105),
-            _ => Err(format!("unsupported CIC {s:?} (known: 6102, 6103, 6105)")),
+            _ => Err(format!(
+                "unsupported CIC {s:?} (known: 6101, 6102, 6103, 6105)"
+            )),
         }
     }
 }
 
 /// SHA-1 of the retail IPL3 (ROM 0x40..0x1000) that goes with each CIC.
-const KNOWN_IPL3: [(&str, Cic); 3] = [
+const KNOWN_IPL3: [(&str, Cic); 4] = [
+    ("eaadcb8cca9c6ba1445f98f1727bf4adbabb88b2", Cic::Cic6101),
     ("b2afae246e1dab746bfb28cb346e2911965eefa1", Cic::Cic6102),
     ("3f7347aa0426ee97d96721b09b918d4c9cddb69b", Cic::Cic6103),
     ("4159269055e8a5be2e5c8e3e0f5e0d552f1e85ad", Cic::Cic6105),
@@ -68,7 +76,8 @@ pub fn identify(rom: &[u8]) -> Option<Cic> {
 /// The two checksum words for `rom`, which must be at least `CRC_END` bytes long.
 pub fn compute(rom: &[u8], cic: Cic) -> (u32, u32) {
     let seed: u32 = match cic {
-        Cic::Cic6102 => 0xF8CA_4DDC,
+        // 6101 and 6102: the same sum, verified against Star Fox 64 (US 1.1)'s stored header.
+        Cic::Cic6101 | Cic::Cic6102 => 0xF8CA_4DDC,
         Cic::Cic6103 => 0xA388_6759,
         Cic::Cic6105 => 0xDF26_F436,
     };
@@ -148,6 +157,7 @@ mod tests {
         assert_eq!(compute(&rom, Cic::Cic6102), (0xDF8E_4DDE, 0x88E9_B9BE));
         assert_eq!(compute(&rom, Cic::Cic6103), (0xCD0C_675C, 0xDAFE_B563));
         assert_eq!(compute(&rom, Cic::Cic6105), (0xF522_F438, 0x6BBF_A42F));
+        assert_eq!(compute(&rom, Cic::Cic6101), compute(&rom, Cic::Cic6102));
     }
 
     #[test]

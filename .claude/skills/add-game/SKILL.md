@@ -5,9 +5,9 @@ description: Add a new game to AP64 - checking its Archipelago world is one the 
 
 # Adding a game to AP64
 
-Ten games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
-Mario Kart 64, Donkey Kong 64 and all three Bombermans (64, The Second Attack and Hero), with
-Legacy of Darkness written and held back in
+Eleven games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
+Mario Kart 64, Donkey Kong 64, all three Bombermans (64, The Second Attack and Hero) and Star
+Fox 64, with Legacy of Darkness written and held back in
 `ap64_core::withheld()`.
 Each took a day or two, and most of that was spent on things this file now answers.
 
@@ -44,6 +44,21 @@ A client with no Lua at all -- one that reads emulator memory itself -- may stil
 Donkey Kong 64's and Banjo-Tooie's clients do that through EmuLoader, which falls back to
 RetroArch's Network Commands over UDP when no emulator is running, and AP64 answers those
 natively (`ap64-connector`'s `retroarch` module). Look for that path before forking anything.
+
+A world whose client ships its own Lua is worth reading before calling it a fork. Star Fox
+64's world compiles all of the game's work into the ROM, and its 127-line Lua only moves
+framed packets between the client's TCP port and two buffers in RAM; AP64 does that from the
+cart (`ap64-connector`'s `relay` module, [host-connector.md §11](../../../docs/integration/host-connector.md#11-relaying-a-rom-that-speaks-for-itself)).
+The tell is a Lua with no game addresses in it, only a pair of pointers, and a ROM-side
+source tree (`n64/src`) with a command enum. A Lua thousands of lines long, reading and
+writing the game's own state every frame, is the opposite case (Glover, GoldenEye).
+
+Read that ROM source for how it picks its transport, too. Star Fox 64's switches to an
+EverDrive's USB registers when it decides it is on a console, and on a SummerCart64 that
+dropped the connection every few seconds; the profile changes two instructions of the
+world's startup code (a `replace` write, which only changes bytes it knows) to keep it on
+the buffers. The world's own code is fair to change this way when the alternative is a
+connection that cannot hold, but pin exactly what is changed, and say why beside it.
 Banjo-Tooie was first played through a fork of a connector script its released world had
 already stopped shipping, and the fork broke on every release until it was replaced by the
 path the client already had (#319). Find out which emulator protocols the client can
@@ -100,7 +115,7 @@ blocks after a 32-byte header, and Python has `bz2`). Custom procedures like CV6
 those, run `ArchipelagoLauncher.exe <patch>` and let it write the `.z64`.
 
 Fix the header CRC with [`n64/agent/tools/n64crc.py`](../../../n64/agent/tools/n64crc.py)
-rather than your own; only CIC-6102 and 6103 are implemented, and it refuses rather than
+rather than your own; only CIC-6101, 6102 and 6103 are implemented, and it refuses rather than
 guessing.
 
 **Two static reads worth taking before any emulator.** They settled Paper Mario's RAM

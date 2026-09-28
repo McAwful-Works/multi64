@@ -32,6 +32,9 @@ const IDLE_EVENT_EVERY: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Listening(u16),
+    /// The connector calls the client, rather than waiting for it, on this localhost port
+    /// ([`crate::relay`]).
+    Dialing(u16),
     ClientConnected(SocketAddr),
     ClientDisconnected(String),
     /// A request line was answered.

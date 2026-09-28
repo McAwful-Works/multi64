@@ -20,8 +20,8 @@ Play Archipelago N64 seeds on a real console, from Windows. AP64 does two jobs:
 
 Supported today, each patched and played on a SummerCart64 with checks sent and items
 received (the first three on 2026-09-18, Kirby 64 on 2026-09-21, Banjo-Tooie and Mario Kart 64
-on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26, Bomberman Hero and
-Bomberman 64: The Second Attack on 2026-09-27):
+on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26, Bomberman Hero,
+Bomberman 64: The Second Attack and Star Fox 64 on 2026-09-27):
 
 - **Castlevania 64 (US 1.0)**, through Archipelago's BizHawk Client.
 - **Paper Mario (US 1.0)** with the Paper Mario Randomizer, through BizHawk Client.
@@ -122,6 +122,22 @@ Bomberman 64: The Second Attack on 2026-09-27):
   [Patching a seed](#patching-a-seed)). Played for 12 checks across Alcatraz and Thantos,
   power-ups, a boss and a Pommy transformation among them, with the Thantos Coordinates that
   open the next planet arriving and working, and traps and power-ups landing.
+- **Star Fox 64 (US 1.1)**, Auztin's Star Fox 64 world, through its Star Fox 64 Client. The
+  world compiles all of the game's work into the ROM, which speaks a protocol of its own through
+  two buffers in RAM, and its BizHawk Lua only relays packets between them and the client's TCP
+  port. AP64 does that relay itself, from the cart: at Start it calls the client rather than
+  waiting for it (`ap64-connector`'s `relay`,
+  [host-connector.md §11](../../docs/integration/host-connector.md#11-relaying-a-rom-that-speaks-for-itself)).
+  One patched ROM serves every seed. Star Fox 64 boots with CIC-6101, the only game that does,
+  whose checksum AP64 computes as 6102's. The hook is the graphics loop's call to
+  `Controller_UpdateInput`, once per game frame at 30 Hz; the stub goes over a function of
+  libultra's remote debugger, which the game never starts (0 calls over 29,040 frames); and the
+  agent lives in the Expansion Pak above the 2 MB the world reserves there. On a console the
+  world's ROM also polls an EverDrive's USB registers, and on a SummerCart64 that dropped the
+  connection every few seconds, so AP64 changes two instructions in the world's startup code to
+  keep it on the buffers the relay reads. Played for 8 checks across Sector X, among them both
+  Mission Accomplished and Mission Complete, with laser upgrades, rings and bombs received and
+  landing, over one connection that held for the whole session.
 
 Written and working, but **not offered in the app**, because the game cannot be played
 through for a reason outside AP64. Kept in the tree and checked by the same tests as the
@@ -203,14 +219,18 @@ to know about its randomizer on a console that AP64 cannot change, such as Bombe
 freeze. They come from the game's profile (`notes`), show at every Start until **Don't show
 these again for this game** is ticked, and show again if they change.
 
-Each time the link goes, the Archipelago client's connection is reset rather than closed
-politely. That is deliberate: these clients read a line and hand it to `json.loads`, and a clean
-close gives them an empty string whose decode error their socket task does not catch — it dies
-without a word and the client goes on showing itself connected. A reset is the one ending they
-recover from on their own, so the client reconnects by itself once the console is back.
+Each time the link goes, a client that connects to AP64 (the games played through a connector
+script) has its connection reset rather than closed politely. That is deliberate: these clients
+read a line and hand it to `json.loads`, and a clean close gives them an empty string whose decode
+error their socket task does not catch — it dies without a word and the client goes on showing
+itself connected. A reset is the one ending they recover from on their own, so the client
+reconnects by itself once the console is back.
 A client AP64 answers over UDP (Donkey Kong 64's and Banjo-Tooie's) has no connection to reset:
 its requests go unanswered while the console is away, and it tries again by itself until they
 are answered.
+A client AP64 calls (Star Fox 64's) is simply let go: its client takes the closed connection as
+the game going away and waits for another, and AP64 calls it again once the console is back and
+the game has something to say.
 
 Before anything else, Start checks that the ROM on the cart is one this version of AP64 patched.
 A new version can change the agent or the stub that loads it, so a ROM patched by another
@@ -303,13 +323,13 @@ agent and the specs name no game; everything that does lives in these crates.
 | Path | What |
 |---|---|
 | [`crates/ap64`](.) | The Tauri 2 app (`src-tauri/` + plain-JS `src/`, no bundler), `e2e/` headless checks |
-| [`crates/ap64-core`](../ap64-core) | ROM byte orders, the CIC-6102/6103/6105 header checksum, profiles, verify/apply |
+| [`crates/ap64-core`](../ap64-core) | ROM byte orders, the CIC-6101/6102/6103/6105 header checksum, profiles, verify/apply |
 | `crates/ap64-core/profiles/<game>/` | `profile.toml` plus the agent image and hook stub it writes, with the build's `layout.env`: the SummerCart64's build here, the EverDrives' in `ed64/` and `ed64pro/` |
 | `crates/ap64-core/agent/` | `build.sh <game>`, and per game a `game.env` and hand-written `stub.S` |
 | `crates/ap64-core/tools/<game>/` | BizHawk probe scripts for checking a patched ROM before it goes on a cart |
 | [`crates/ap64-cli`](../ap64-cli) | `ap64-patch`, a thin command line over the core |
 | [`crates/ap64-cart`](../ap64-cart) | M64P over multi64d: RDRAM reads and writes, cart ROM reads (cached), retry and reconnect |
-| [`crates/ap64-connector`](../ap64-connector) | Embedded Lua running a connector script, the `ap64` API it calls, the TCP side the client connects to; and the native connector AP64 answers itself (RetroArch Network Commands over UDP, for Donkey Kong 64 and Banjo-Tooie) |
+| [`crates/ap64-connector`](../ap64-connector) | Embedded Lua running a connector script, the `ap64` API it calls, the TCP side the client connects to; and the native connectors AP64 runs itself (RetroArch Network Commands over UDP, for Donkey Kong 64 and Banjo-Tooie; a TCP relay to a ROM that speaks for itself, for Star Fox 64) |
 | `crates/ap64-connector/connectors/<id>/` | Forked Archipelago connector scripts (MIT, with `UPSTREAM` provenance) |
 
 A profile's blobs are this repository's own cart agent ([`n64/agent`](../../n64/agent/README.md),

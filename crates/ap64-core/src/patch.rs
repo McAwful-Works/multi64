@@ -411,6 +411,28 @@ fn verify_prepared(bundle: &Bundle, rom: &[u8]) -> (Report, Found) {
                     "the patch changed these bytes in a way this profile does not know how to undo",
                 ));
             }
+            Write::Replace {
+                label,
+                at,
+                from,
+                bytes,
+            } => {
+                let want = parse_hex(bytes).unwrap_or_default();
+                let known = parse_hex(from).unwrap_or_default();
+                let found = region(rom, *at, want.len()).map(<[u8]>::to_vec);
+                let accepted = found.as_ref().is_some_and(|f| *f == want || *f == known);
+                checks.push(check(
+                    label,
+                    accepted,
+                    match found {
+                        Some(f) if f == want => format!("0x{at:X} already holds {bytes}"),
+                        Some(_) if accepted => format!("0x{at:X} holds {from}; replacing it with {bytes}"),
+                        Some(f) => format!("0x{at:X} holds {} (expected {from})", crc::hex(&f)),
+                        None => format!("0x{at:X} is past the end"),
+                    },
+                    "the randomizer changed the code this profile changes; it has not been measured against this release",
+                ));
+            }
             Write::Blob {
                 label,
                 file,
@@ -595,7 +617,7 @@ pub fn apply(bundle: &Bundle, rom: &[u8]) -> Result<Patched, ApplyError> {
                 bundle.blob(file).map_err(ApplyError::Internal)?.to_vec(),
             ),
             Write::Jal { at: a, target, .. } => (at(a)?, jal(*target).to_be_bytes().to_vec()),
-            Write::Restore { at, bytes, .. } => {
+            Write::Restore { at, bytes, .. } | Write::Replace { at, bytes, .. } => {
                 (*at, parse_hex(bytes).map_err(ApplyError::Internal)?)
             }
             Write::Copy { at, from, len, .. } => (
@@ -844,6 +866,9 @@ pub fn has_agent(bundle: &Bundle, rom: &[u8]) -> bool {
             }),
             _ => false,
         },
+        Write::Replace { at, bytes, .. } => parse_hex(bytes)
+            .ok()
+            .is_some_and(|b| region(rom, *at, b.len()) == Some(b.as_slice())),
         Write::Restore { .. } | Write::Copy { .. } | Write::Imm { .. } => true,
     });
     // An agent that can move is wherever the stub was told it is.
@@ -1438,6 +1463,56 @@ target = 0x80019C00
         rom[0x66D] = 0x12;
         // Unrestorable, so the boot code also stays unknown.
         assert_eq!(refused(&b, &rom), ["IPL3", "Boot code (IPL3)"]);
+    }
+
+    /// A `replace` makes one known change: over the bytes it expects, or over its own result,
+    /// and never over anything else.
+    #[test]
+    fn a_replace_changes_only_the_bytes_it_knows() {
+        const AT: usize = 0x1_8000;
+        let replace = format!(
+            "[[write]]\nkind = \"replace\"\nlabel = \"Transport\"\nat = {AT}\nfrom = \"2c440001\"\nbytes = \"24040001\"\n"
+        );
+        let mut rom = seed();
+        rom[AT..AT + 4].copy_from_slice(&[0x2C, 0x44, 0x00, 0x01]);
+        let b = bundle_with(4, &rom, &replace);
+        let out = apply(&b, &rom).unwrap().rom;
+        assert_eq!(out[AT..AT + 4], [0x24, 0x04, 0x00, 0x01]);
+        assert!(has_agent(&b, &out), "the output holds what it wrote");
+
+        // Already changed: accepted, and written the same.
+        rom[AT..AT + 4].copy_from_slice(&[0x24, 0x04, 0x00, 0x01]);
+        assert!(apply(&b, &rom).is_ok());
+
+        // Anything else: refused, not overwritten.
+        rom[AT..AT + 4].copy_from_slice(&[0x2C, 0x44, 0x00, 0x02]);
+        assert_eq!(refused(&b, &rom), ["Transport"]);
+    }
+
+    #[test]
+    fn a_replace_of_two_lengths_is_a_profile_error() {
+        let text = r#"id = "t"
+name = "T"
+release = "US"
+game_code = "NTSE"
+version = 0
+cic = "6102"
+randomizer = "none"
+connector = "generic"
+[agent]
+image = "agent.bin"
+rom = 0x100000
+vram = 0x80480000
+min_ram = 0
+[[write]]
+kind = "replace"
+label = "R"
+at = 0x10000
+from = "2c44"
+bytes = "24040001"
+"#;
+        let err = Profile::parse(text).unwrap_err();
+        assert!(err.contains("same length"), "{err}");
     }
 
     #[test]

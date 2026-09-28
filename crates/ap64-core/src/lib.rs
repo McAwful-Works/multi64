@@ -88,6 +88,7 @@ pub fn builtin() -> Result<Vec<Bundle>, String> {
         builtin!("bm64", ["agent.bin", "stub.bin"]),
         builtin!("bmhero", ["agent.bin", "stub.bin"]),
         builtin!("bmtsa", ["agent.bin", "stub.bin"]),
+        builtin!("sf64", ["agent.bin", "stub.bin"]),
     ];
     bundles.sort_by_key(|b| library_key(&b.profile.name));
     Ok(bundles)
@@ -358,7 +359,7 @@ mod tests {
         }
         assert_eq!(
             seen,
-            9 * Cart::ALL.len(),
+            10 * Cart::ALL.len(),
             "every profile whose stub copies the agent lets it move, for every cart"
         );
     }
@@ -411,15 +412,18 @@ mod tests {
     }
 
     /// Every profile says which randomizer release it was measured against, so a seed from
-    /// another can be pointed out (#292). Paper Mario's world declares no version and its ROM
-    /// carries none, so it is the one that cannot, and its profile says so.
+    /// another can be pointed out (#292). Two cannot, and their profiles say so: Paper Mario's
+    /// world declares no version and its ROM carries none, and Star Fox 64's declares none
+    /// either and keeps its version in its payload, where the ROM and its client check each
+    /// other's in their handshake.
     #[test]
     fn every_profile_records_the_release_it_was_measured_against() {
         let mut bundles = builtin().unwrap();
         bundles.extend(withheld().unwrap());
         for b in &bundles {
             let p = &b.profile;
-            assert_eq!(p.measured.is_some(), p.id != "pmr", "{}", p.id);
+            let cannot = ["pmr", "sf64"].contains(&p.id.as_str());
+            assert_eq!(p.measured.is_some(), !cannot, "{}", p.id);
         }
     }
 
@@ -481,6 +485,7 @@ mod tests {
                 "The Legend of Zelda: Ocarina of Time",
                 "Mario Kart 64",
                 "Paper Mario",
+                "Star Fox 64",
             ]
         );
     }
