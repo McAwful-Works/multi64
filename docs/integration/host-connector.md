@@ -37,6 +37,10 @@ for that before ruling it out. EmuLoader, which some Archipelago clients read em
 through, falls back to RetroArch's Network Commands over UDP when it finds no emulator process,
 and a stand-in can answer those. §10 covers what changes.
 
+And a script that does no game logic at all, only moving packets between the client and buffers
+in the game's RAM, needs no stand-in: the stand-in's job is the script's, done from the cart. §11
+covers that.
+
 ## 2. Be the emulator, not correct
 
 **The stand-in's job is to be indistinguishable from the emulator the connector was written
@@ -188,3 +192,44 @@ Most of the sections above still apply. What changes:
   exercise least. Both clients AP64 serves this way needed a fix to their own installed files before
   they could reach it at all: one called a method its RetroArch backend lacked, the other read an
   attribute that backend does not have. Neither showed up from reading the code.
+
+## 11. Relaying a ROM that speaks for itself
+
+Some worlds compile all of the game's work into the ROM, and give it a protocol of its own. Their
+emulator script then does nothing but move packets: read what the ROM left in a buffer and send it
+to the client, write what the client sent into another buffer. There is nothing to stand in for,
+and nothing to fork: AP64 does the script's job from the cart ([`relay.rs`](../../crates/ap64-connector/src/relay.rs)).
+Star Fox 64's world is the one it was written for. Its client listens on a TCP port and the script
+connects to it; the ROM keeps the addresses of its two buffers at a fixed place in RAM, and each
+buffer holds one framed packet, whose `cmd` word the reader sets back to zero when it has taken it.
+
+What matters here:
+
+- **Read the ROM's side, not only the script's.** The script says how packets move; the ROM's
+  source says how large a buffer is. Star Fox 64's script writes whatever arrives into the input
+  buffer, and its client would let through 4 bytes more than the buffer holds, into the output
+  buffer beside it. The relay refuses a packet larger than the buffer and drops the client instead.
+- **A packet is written whole, in one request.** The agent applies a request at the game's own
+  hook, between frames, so a packet written with its `cmd` in one `POKEV` is whole when the ROM
+  looks. Write the body and the `cmd` separately and the ROM can read a `cmd` whose body is not
+  there yet.
+- **Take the next packet only when the last one is gone.** The ROM writes its output buffer only
+  when `cmd` is zero, and reads its input buffer only when `cmd` is not: one packet each way at a
+  time, which the relay keeps to by checking both `cmd` words in the same read as the packet.
+- **Dial the way the script does.** The script connects once the ROM has something to say, which
+  is its handshake, and tries again every few seconds while nobody listens. Connecting before the
+  ROM is ready gives the client a silent peer, and its ping timer drops it.
+- **Check what the ROM does on a console, not only in an emulator.** Star Fox 64's ROM picks its
+  transport at boot: in an emulator the script's buffers, on a console an EverDrive's USB
+  registers as well. On a console it reads a packet from those registers whenever they say one is
+  waiting, and sends its own and clears it whenever they say they are ready. On a SummerCart64,
+  which has no such registers, the connection dropped every few seconds with the ROM restarting
+  its handshake, as it does when it reads a command it does not know or its ping goes unanswered.
+  So the profile tells the ROM it is in an emulator (two instructions in its startup code, a
+  `replace` write), and one connection then held for a whole session. A ROM that picks its
+  transport by what it detects has to be put on the one the relay speaks.
+- **Pace passes by the agent, not the socket.** The agent answers one request per game frame,
+  and Star Fox 64's ROM drops a handshake that takes more than a second. A pass that made four
+  requests (the pointers, the buffers, the clear, the write) lost every handshake; one read of
+  everything and at most one write, with the client's reply to a packet riding in the write that
+  clears it, connects in about 130 ms.

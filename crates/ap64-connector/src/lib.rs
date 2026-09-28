@@ -5,10 +5,11 @@
 //! [`ap64`](#the-ap64-table) for memory. AP64 owns the TCP socket the client connects
 //! to ([`server`]) and hands each line to the script.
 //!
-//! A client with no connector script to fork, one that reads emulator memory itself, is
-//! answered by AP64 directly instead: a [`Native`] connector, which answers RetroArch's
-//! Network Commands from the cart ([`retroarch`]). Donkey Kong 64 ([`dk64`]) and Banjo-Tooie
-//! ([`bt`]) are answered this way.
+//! A client with no connector script to fork is answered by AP64 directly instead: a
+//! [`Native`] connector. One that reads emulator memory itself gets RetroArch's Network
+//! Commands answered from the cart ([`retroarch`]): Donkey Kong 64 ([`dk64`]) and Banjo-Tooie
+//! ([`bt`]). One whose script only relays packets between the client and buffers in the
+//! game's RAM, the ROM doing all of the game's work, gets that relay ([`relay`]): Star Fox 64.
 //!
 //! # The `ap64` table
 //!
@@ -30,6 +31,7 @@
 
 pub mod bt;
 pub mod dk64;
+pub mod relay;
 pub mod retroarch;
 pub mod server;
 
@@ -113,9 +115,18 @@ pub struct Native {
     pub name: &'static str,
     /// The Archipelago client to run alongside it.
     pub client: &'static str,
-    pub options: retroarch::Options,
+    pub protocol: Protocol,
     /// A change the installed client needs before it can reach AP64, if any.
     pub client_fix: Option<ClientFix>,
+}
+
+/// How a [`Native`] connector reaches its client.
+#[derive(Debug, Clone, Copy)]
+pub enum Protocol {
+    /// AP64 answers RetroArch's Network Commands over UDP, and the client asks.
+    RetroArch(retroarch::Options),
+    /// AP64 connects to the client over TCP and relays packets to and from the game's RAM.
+    Relay(relay::Options),
 }
 
 /// Whether an installed Archipelago client can reach AP64.
@@ -149,7 +160,7 @@ pub const DK64: Native = Native {
     id: "dk64",
     name: "Donkey Kong 64 (RetroArch Network Commands)",
     client: "DK64 Client",
-    options: dk64::OPTIONS,
+    protocol: Protocol::RetroArch(dk64::OPTIONS),
     client_fix: Some(ClientFix {
         file: dk64::APWORLD,
         why: "Its copy of EmuLoader is missing a method it calls on every loop, so it cannot reach AP64",
@@ -164,7 +175,7 @@ pub const BT: Native = Native {
     id: "bt",
     name: "Banjo-Tooie (RetroArch Network Commands)",
     client: "Banjo-Tooie Client",
-    options: bt::OPTIONS,
+    protocol: Protocol::RetroArch(bt::OPTIONS),
     client_fix: Some(ClientFix {
         file: bt::APWORLD,
         why: "Its copy of EmuLoader stops it as soon as it attaches to anything but an emulator, so it cannot reach AP64",
@@ -174,7 +185,24 @@ pub const BT: Native = Native {
     }),
 };
 
-pub const NATIVES: &[Native] = &[DK64, BT];
+/// Star Fox 64's client, relayed to ([`relay`]). Its world's ROM keeps the addresses of its
+/// two packet buffers at 0x80400000, and its client listens on port 0x5F64 (24420). Each
+/// buffer is 512 bytes, header included (`ap_packet_t`, `PACKET_SIZE` 508 in its `ap.h`); the
+/// client splits what it sends to fit, and anything larger is refused rather than written
+/// past the input buffer into the output one.
+pub const SF64: Native = Native {
+    id: "sf64",
+    name: "Star Fox 64 (relayed)",
+    client: "Star Fox 64 Client",
+    protocol: Protocol::Relay(relay::Options {
+        port: 0x5F64,
+        pointers: 0x8040_0000,
+        max_packet: 512,
+    }),
+    client_fix: None,
+};
+
+pub const NATIVES: &[Native] = &[DK64, BT, SF64];
 
 pub use ap64_core::installed::installed_apworld;
 

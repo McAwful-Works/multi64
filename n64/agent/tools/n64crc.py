@@ -8,8 +8,8 @@ change there -- a retargeted jal, a hook stub -- invalidates it, and a console w
 IPL3 checks it will not boot. The boot chip is identified from a CRC32 of IPL3
 (0x40-0x1000).
 
-Only CIC-6102 and CIC-6103 are implemented, because only those have been checked
-against real ROMs here. A ROM with another boot chip, or an IPL3 that matches none
+Only CIC-6101, CIC-6102 and CIC-6103 are implemented, because only those have been
+checked against real ROMs here. 6101 (Star Fox 64's) sums exactly as 6102 does. A ROM with another boot chip, or an IPL3 that matches none
 (for example one a patch has modified), is refused rather than guessed at.
 """
 import struct
@@ -17,8 +17,8 @@ import sys
 import zlib
 
 M = 0xFFFFFFFF
-IPL3_CRC32 = {0x90BB6CB5: "6102", 0x0B050EE0: "6103"}
-SEEDS = {"6102": 0xF8CA4DDC, "6103": 0xA3886759}
+IPL3_CRC32 = {0x6170A4A1: "6101", 0x90BB6CB5: "6102", 0x0B050EE0: "6103"}
+SEEDS = {"6101": 0xF8CA4DDC, "6102": 0xF8CA4DDC, "6103": 0xA3886759}
 
 
 def crc(rom, cic):
@@ -54,7 +54,7 @@ def main():
     ipl3 = zlib.crc32(bytes(rom[0x40:0x1000]))
     cic = IPL3_CRC32.get(ipl3)
     if cic is None:
-        sys.exit(f"IPL3 CRC32 0x{ipl3:08X} matches no supported boot chip (6102, 6103); "
+        sys.exit(f"IPL3 CRC32 0x{ipl3:08X} matches no supported boot chip (6101, 6102, 6103); "
                  "restore the retail IPL3 or compute the CRC another way")
 
     want = crc(rom, cic)

@@ -310,6 +310,15 @@ pub enum Write {
         bytes: String,
         accept: Vec<String>,
     },
+    /// Change known bytes to new ones: the seed must hold `from`, or `bytes` already, so this
+    /// can only make one known change, never overwrite an unknown one. For code a randomizer
+    /// ships that AP64 needs to behave otherwise on a console.
+    Replace {
+        label: String,
+        at: u32,
+        from: String,
+        bytes: String,
+    },
 }
 
 impl Write {
@@ -318,6 +327,7 @@ impl Write {
             Write::Blob { label, .. }
             | Write::Jal { label, .. }
             | Write::Restore { label, .. }
+            | Write::Replace { label, .. }
             | Write::Copy { label, .. }
             | Write::Imm { label, .. } => label,
         }
@@ -425,6 +435,14 @@ impl Profile {
         }
         for w in &profile.write {
             match w {
+                Write::Replace { from, bytes, .. } => {
+                    if parse_hex(from)?.len() != parse_hex(bytes)?.len() {
+                        return Err(format!(
+                            "replace {:?}: from and bytes are not the same length",
+                            w.label()
+                        ));
+                    }
+                }
                 Write::Restore { bytes, accept, .. } => {
                     let len = parse_hex(bytes)?.len();
                     for a in accept {

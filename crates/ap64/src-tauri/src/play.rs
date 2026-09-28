@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use ap64_cart::backend::{Backend, Multi64, Stats};
 use ap64_cart::Log;
 use ap64_connector::server::{self, Event};
-use ap64_connector::{retroarch, Connector, Native, Script, NATIVES, SCRIPTS};
+use ap64_connector::{relay, retroarch, Connector, Native, Protocol, Script, NATIVES, SCRIPTS};
 use ap64_core::profile::{Addr, Transform, Write};
 use ap64_core::transform::{dma_entries, rom_address, DmaEntry};
 use ap64_core::{rom as rom_fmt, Bundle};
@@ -129,7 +129,8 @@ pub struct Play {
     log_file: Mutex<Option<PathBuf>>,
 }
 
-/// What plays a game: a connector script AP64 runs, or a client AP64 answers itself.
+/// What plays a game: a connector script AP64 runs, or a client AP64 serves itself, by
+/// answering it ([`Protocol::RetroArch`]) or by calling it and relaying ([`Protocol::Relay`]).
 ///
 /// The window calls every game's Archipelago client "the AP client": someone playing opens it
 /// from the Archipelago Launcher and has no reason to know which one it is underneath. The
@@ -1082,10 +1083,18 @@ fn run(
 
         // Which client, for the log; the window says "the AP client" (see [`Kind`]).
         let client = kind.client();
-        // Where the client finds AP64, for the log: scripts are TCP, native connectors UDP.
+        // Where the client finds AP64, for the log: scripts are TCP, RetroArch's commands UDP. A
+        // relay calls the client instead, and says so with Event::Dialing.
         let transport = match kind {
             Kind::Script(_) => "localhost",
-            Kind::Native(_) => "UDP localhost",
+            Kind::Native(Native {
+                protocol: Protocol::RetroArch(_),
+                ..
+            }) => "UDP localhost",
+            Kind::Native(Native {
+                protocol: Protocol::Relay(_),
+                ..
+            }) => "localhost",
         };
         let mut last_stats = Instant::now();
         // A check the game showed only between two polls, handed to the client by the watch
@@ -1116,6 +1125,18 @@ fn run(
                         s.port = Some(port);
                         s.detail = "open the AP client from the Archipelago Launcher".into();
                         s.detail_dev = format!("listening on 127.0.0.1:{port}");
+                        s.client = WAITING.into();
+                    });
+                }
+                Event::Dialing(port) => {
+                    log(format!(
+                        "calling {client} on {transport}:{port}; open it from the Archipelago Launcher"
+                    ));
+                    set(&|s| {
+                        s.state = "waiting-client".into();
+                        s.port = Some(port);
+                        s.detail = "open the AP client from the Archipelago Launcher".into();
+                        s.detail_dev = format!("calling 127.0.0.1:{port}");
                         s.client = WAITING.into();
                     });
                 }
@@ -1210,12 +1231,14 @@ fn run(
             }
             // The cart stays on this thread, and each call borrows it only for its length, so
             // the handler's own borrows above never overlap one of these.
-            (Kind::Native(native), _) => retroarch::serve(
-                &mut SharedCart(cart.clone()),
-                &native.options,
-                &stop,
-                &mut on_event,
-            ),
+            (Kind::Native(native), _) => match &native.protocol {
+                Protocol::RetroArch(opts) => {
+                    retroarch::serve(&mut SharedCart(cart.clone()), opts, &stop, &mut on_event)
+                }
+                Protocol::Relay(opts) => {
+                    relay::serve(&mut SharedCart(cart.clone()), opts, &stop, &mut on_event)
+                }
+            },
             (Kind::Script(_), None) => unreachable!("a script session loads its script first"),
         };
         // Whatever stalls were being counted belong before what happens next.

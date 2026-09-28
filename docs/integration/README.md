@@ -59,8 +59,11 @@ goes and **what calls it**, and that is almost all of the work.
    RetroArch's Network Commands when no emulator is running, which is how AP64 serves
    Donkey Kong 64's and Banjo-Tooie's clients
    ([host-connector.md §10](host-connector.md#10-serving-a-network-protocol-instead-of-a-script)).
-   A tool with neither cannot be served this way. Check this first; it decides whether the
-   rest is worth doing.
+   And a script that does no game logic, only moving packets between the tool and buffers
+   in the game's RAM, can be replaced outright by a relay, which is how AP64 serves Star Fox
+   64's client ([host-connector.md §11](host-connector.md#11-relaying-a-rom-that-speaks-for-itself)).
+   A tool with none of these cannot be served this way. Check this first; it decides whether
+   the rest is worth doing.
 
 ---
 

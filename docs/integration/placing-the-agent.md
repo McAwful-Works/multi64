@@ -72,7 +72,7 @@ python n64/agent/tools/ram-bounds.py seed.z64 0x80480000 0x80482400 --code 0x100
 
 Give `--code` for each ROM range that really holds instructions, and treat every hit as a
 thing to go and disassemble rather than a verdict. Castlevania 64, Paper Mario, Kirby 64,
-Bomberman 64, Bomberman 64: The Second Attack and Bomberman Hero come back clean. Mario Kart 64 did not: its largest untouched region, 2.3 MB of Expansion Pak, has
+Bomberman 64, Bomberman 64: The Second Attack, Bomberman Hero and Star Fox 64 come back clean. Mario Kart 64 did not: its largest untouched region, 2.3 MB of Expansion Pak, has
 both of its bounds built in code, so the agent went above it instead, where nothing brackets
 it. And Legacy of Darkness is the game that shows why a bracket matters.
 
@@ -357,7 +357,7 @@ is one implementation: about 150 bytes of stub, shared by every AP64 stub.
 
 The header CRC covers ROM `0x1000`–`0x101000`; retargeting a `jal` or writing a stub there
 invalidates it, and IPL3 on a console checks it. Recompute it for the ROM's boot chip with
-[`tools/n64crc.py`](../../n64/agent/tools/n64crc.py) (`--fix`), which supports CIC-6102 and CIC-6103.
+[`tools/n64crc.py`](../../n64/agent/tools/n64crc.py) (`--fix`), which supports CIC-6101, CIC-6102 and CIC-6103.
 
 **A patch may have disabled the check instead.** One randomizer's patch replaced IPL3's two
 checksum branches with NOPs and left the header CRC stale. Emulators do not care. Rather than ship
