@@ -19,4 +19,4 @@ sha1 = "0.11"
 # Reads and rewrites dk64.apworld to add the EmuLoader methods DK64's client lacks (see
 # src/dk64.rs). Deflate only, in pure Rust. Held at 4.2: 4.6 needs Rust 1.82, past the
 # workspace's 1.80.
-zip = { version = "~4.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "~8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
