@@ -446,6 +446,8 @@ const LINK_TEXT = {
     idle: "Not connected",
     // Not "looking for it": AP64 asked the app's process and it is not there.
     waiting: "Not running",
+    // Nor anywhere it is installed: the one state no amount of waiting fixes.
+    notinstalled: "Not installed",
     nobridge: "Running, but its bridge is silent",
     nocart: "Running, but no cart connected",
     ok: "Connected",

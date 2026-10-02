@@ -334,6 +334,22 @@ const setDev = async (p, on) => {
   }));
   check("waiting has the cart up and the client not", (await links()).join(" | ") === "ok: Connected | ok: Running | waiting: Waiting for it to connect", (await links()).join(" | "));
   check("a link that is up says so in one word", (await links()).filter((l) => l.startsWith("ok:")).every((l) => l.split(": ")[1].split(" ").length === 1), (await links()).join(" | "));
+  // Multi64 missing altogether is not "Not running": starting it is not the fix, installing it is.
+  await emit("play://status", { ...live, state: "connecting", detail: "AP64 needs the Multi64 app, which is installed separately: install it from the same place as AP64", bridge: "notinstalled", console: "waiting", client: "waiting" });
+  check("a Multi64 that is not installed says so", (await links())[0] === "notinstalled: Not installed", (await links()).join(" | "));
+  check("and the status says to install it", (await text(p, "play-status")).includes("install it"), await text(p, "play-status"));
+  check("and its row is colored as a fault, not a wait", await p.evaluate(() => {
+    const color = (state) => {
+      const el = document.getElementById("link-bridge");
+      el.dataset.state = state;
+      return getComputedStyle(el).color;
+    };
+    const missing = color("notinstalled");
+    const waiting = color("waiting");
+    const failed = color("failed");
+    color("notinstalled");
+    return missing === failed && missing !== waiting;
+  }));
   const buttons = () => p.evaluate(() => ({
     start: document.getElementById("btn-play-start").disabled,
     stop: document.getElementById("btn-play-stop").disabled,

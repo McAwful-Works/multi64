@@ -608,20 +608,23 @@ mod tests {
             (hello, ping, s)
         });
         // The pass that dialed already sent the handshake. Each pass from here is one read and
-        // one write, and the client's answer to a packet goes in with the clear of it.
-        let (reads, writes) = (cart.reads, cart.writes);
-        for _ in 0..3 {
+        // at most one write, and the client's answer to a packet goes in with the clear of it.
+        // Passed until both answers are in rather than a fixed count: how many passes that
+        // takes depends on the answering thread being scheduled within a pass's wait for a
+        // reply, which a loaded test run does not promise. The budget per pass is the claim.
+        let t = Instant::now();
+        while cart.rom.received.len() < 2 && t.elapsed() < Duration::from_secs(5) {
+            let (reads, writes) = (cart.reads, cart.writes);
             pass(&mut cart, &opts, &mut link, &mut |_| {}).unwrap();
+            assert_eq!(cart.reads - reads, 1, "one read per pass");
+            assert!(cart.writes - writes <= 1, "at most one write per pass");
         }
         let (hello, ping, _s) = answering.join().unwrap();
         assert_eq!((hello, ping), (packet(1, b"HELO"), packet(2, &[])));
-        assert_eq!(cart.reads - reads, 3, "one read per pass");
-        assert!(cart.writes - writes <= 3, "at most one write per pass");
-        cart.rom.frame();
         assert_eq!(
             cart.rom.received,
             vec![packet(1, b"'LO!"), packet(3, &[])],
-            "both answers delivered within those passes"
+            "both answers delivered"
         );
     }
 }

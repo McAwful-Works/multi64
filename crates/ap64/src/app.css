@@ -240,11 +240,13 @@ body[data-dev="on"] .dev-only {
   background: var(--warning-text);
 }
 
-.link[data-state="failed"] {
+.link[data-state="failed"],
+.link[data-state="notinstalled"] {
   color: var(--danger-text);
 }
 
-.link[data-state="failed"]::before {
+.link[data-state="failed"]::before,
+.link[data-state="notinstalled"]::before {
   background: var(--danger-text);
 }
 
