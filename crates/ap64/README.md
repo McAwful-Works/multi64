@@ -206,6 +206,13 @@ game loaded, Multi64 restarted — none of those end a session. It goes back to 
 cart, says which link is down, and picks up where it left off when the console returns. Only
 **Stop** ends a session, because only you know whether you are done playing.
 
+A session needs the Multi64 app, which has its own installer. If it is not running, Start
+starts it, looking beside AP64's own folder and then in the installer's default places
+(`MULTI64_APP` names its `multi64.exe` if it is anywhere else). If it is not running and can't
+be found, the Multi64 row says **Not installed** and the status says to install it, since that
+is the one thing waiting won't fix. The session still keeps trying, so Multi64 started from
+wherever it is gets picked up.
+
 Every game here needs an **Expansion Pak**, because the agent runs in its memory. Without one
 the stub stands the agent down and nothing on the console can answer, so AP64 cannot tell a
 missing Pak from a console that is off or running another ROM. So it says what is needed once,

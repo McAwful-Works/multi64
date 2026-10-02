@@ -91,7 +91,8 @@ pub struct Status {
     /// The part of `detail` only a developer needs; empty when there is none.
     pub detail_dev: String,
     /// The three things that have to be up, each as the session last saw it: `idle`, `waiting`,
-    /// `ok` or `failed`.
+    /// `ok` or `failed`. The bridge alone can also be `nobridge`, `nocart` or `notinstalled`,
+    /// which say which part of Multi64 is missing (`LINK_TEXT` in `main.js` has the words).
     ///
     /// A single status line can only say what is happening now, which leaves the question a
     /// player actually has -- which part is not working -- to be inferred from it. These are
@@ -645,6 +646,9 @@ const FAILED: &str = "failed";
 const NO_CART: &str = "nocart";
 /// The Multi64 app is running, but nothing answers on its bridge.
 const NO_BRIDGE: &str = "nobridge";
+/// Nothing answers, the Multi64 app is not running, and it is not where it gets installed:
+/// waiting will not fix this one, so it is not "waiting".
+const NOT_INSTALLED: &str = "notinstalled";
 
 /// The Multi64 app's process, which is what a player installed and started.
 const MULTI64_PROCESS: &str = if cfg!(windows) {
@@ -685,7 +689,11 @@ fn multi64_exe() -> Option<PathBuf> {
 /// cannot guess.
 fn start_multi64(log: &Log) {
     let Some(exe) = multi64_exe() else {
-        log("Multi64 is not running, and AP64 cannot find it to start it".into());
+        log(
+            "Multi64 is not running, and AP64 cannot find it installed to start it; \
+             set MULTI64_APP to its multi64.exe if it is somewhere else"
+                .into(),
+        );
         return;
     };
     let mut cmd = Command::new(&exe);
@@ -876,6 +884,11 @@ fn run(
                     let daemon = ap64_cart::transport::serial_active(&url);
                     // Only when the bridge is silent is the app's own state worth the look.
                     let app = daemon.is_none() && multi64_app_running();
+                    // And when it is not running either, whether there is one to start: asked
+                    // each time, so installing it mid-session moves the status on. Found means
+                    // only found -- someone running it from elsewhere sees "not installed" until
+                    // it is up, and then its bridge answers and none of this is asked.
+                    let installed = daemon.is_some() || app || multi64_exe().is_some();
                     // A ROM that stays silent with the cart there is most often one whose stub found
                     // no Expansion Pak and stood the agent down, and nothing on the console can say
                     // so. After long enough for a reset or a ROM swap, name it as the likely cause.
@@ -903,6 +916,13 @@ fn run(
                                 s.detail =
                                     format!("Multi64 is running, but nothing answers at {url}");
                                 s.bridge = NO_BRIDGE.into();
+                                s.console = WAITING.into();
+                            }
+                            None if !installed => {
+                                s.detail = "AP64 needs the Multi64 app, which is installed \
+                                            separately: install it from the same place as AP64"
+                                    .into();
+                                s.bridge = NOT_INSTALLED.into();
                                 s.console = WAITING.into();
                             }
                             None => {
