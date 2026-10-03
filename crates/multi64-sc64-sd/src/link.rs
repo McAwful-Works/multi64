@@ -179,7 +179,7 @@ impl Sc64Link {
 
     /// Read contiguous 512-byte sectors starting at `start_lba` into `buf` (length must be a multiple of 512, ≤ [`SD_CARD_BUFFER_MAX_BYTES`]).
     pub fn read_sd_sectors(&mut self, start_lba: u64, buf: &mut [u8]) -> io::Result<()> {
-        if buf.len() % SECTOR_BYTES != 0 {
+        if !buf.len().is_multiple_of(SECTOR_BYTES) {
             return Err(io::Error::other("SD read length must be a multiple of 512"));
         }
         if buf.is_empty() {
@@ -234,7 +234,7 @@ impl Sc64Link {
 
     /// Write contiguous 512-byte sectors starting at `start_lba` from `buf`.
     pub fn write_sd_sectors(&mut self, start_lba: u64, buf: &[u8]) -> io::Result<()> {
-        if buf.is_empty() || buf.len() % SECTOR_BYTES != 0 {
+        if buf.is_empty() || !buf.len().is_multiple_of(SECTOR_BYTES) {
             return Err(io::Error::other(
                 "SD write length must be a non-zero multiple of 512",
             ));

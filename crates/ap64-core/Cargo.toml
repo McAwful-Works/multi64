@@ -12,5 +12,5 @@ sha1 = "0.11"
 toml = "1.1"
 serde_json = "1"
 # Reads an installed apworld's archipelago.json (src/installed.rs). Deflate only, in pure
-# Rust, held at 4.2 like ap64-connector's: 4.6 needs Rust 1.82, past the workspace's 1.80.
+# Rust, at the same version as ap64-connector's.
 zip = { version = "~8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }

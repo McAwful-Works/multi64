@@ -275,7 +275,7 @@ fn parse_hex_body(s: &str) -> Result<Vec<u8>> {
     if let Some(bad) = h.chars().find(|c| !c.is_ascii_hexdigit()) {
         anyhow::bail!("invalid hex: {bad:?} is not a hex digit");
     }
-    if h.len() % 2 != 0 {
+    if !h.len().is_multiple_of(2) {
         anyhow::bail!("--hex must have an even number of hex digits");
     }
     (0..h.len())
