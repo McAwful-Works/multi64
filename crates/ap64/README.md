@@ -80,8 +80,11 @@ Bomberman 64: The Second Attack and Star Fox 64 on 2026-09-27):
   code begins, is read from each seed too: any top that keeps that code clear of the agent is
   accepted, and the game gets the same heap it was measured with. A release that changes the
   functions AP64 hooks or the heap setup is refused until it has been measured again (#309,
-  #312). Played with checks going out and items arriving, among them a
-  Golden Banana and the Donkey kong.
+  #312). The hook is in the game's main loop rather than in the frame it runs for ordinary
+  play, because the DK arcade and Jetpac run their own code in that frame's place: hooked in
+  the ordinary frame, the agent went silent in Jetpac and the link dropped until the player
+  left it. Played with checks going out and items arriving, among them a Golden Banana and the
+  Donkey kong, and through a session in Jetpac with no drop.
 - **Bomberman 64 (US)**, Happyhappyism's Bomberman 64 world, through BizHawk Client. Addresses
   come from the bomberhackers/bm64 decomp, whose mapping the world's own patch uses too. The
   hook is the game loop's call to `HuPrcCall`, which runs every Hudson process once a pass, and
