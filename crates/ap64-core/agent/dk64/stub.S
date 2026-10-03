@@ -3,15 +3,23 @@
  * into dead Controller Pak code at 0x8000D180 and reached by retargeting one existing jal.
  * Measurements and the full record: #309.
  *
- * Hook site: func_global_asm_805FC2B0 (the frame loop; the randomizer calls it
- * regularframeloop) calls func_global_asm_8070DD44 at 0x805FC4CC. It takes no arguments,
- * and the caller overwrites v0 before reading it, so a stub in front of it has nothing to
- * forward and nothing to preserve. Counted over 37,800 video frames on the interpreter:
- * 18,113 calls against the loop entry's 18,113, so it is unconditional. The loop runs at
- * ~0.48 per video frame (about 29 Hz), like Mario Kart 64's and Diddy Kong Racing's.
+ * Hook site: the game's main loop, func_global_asm_805FBFF4, calls
+ * func_global_asm_80600B10 at 0x805FC16C. The loop first runs one thing chosen by the game
+ * mode at 0x807444EC -- the DK arcade's or Jetpac's overlay at 0x80024000 (modes 3 and 4),
+ * 0x8070A934 (mode 6), or the regular frame, func_global_asm_805FC2B0, through the
+ * randomizer's 0x805CCEEC -- and then this call, in straight-line code every mode reaches
+ * once a loop. 0x80600B10 takes no arguments (it runs a list of deferred calls kept at
+ * 0x807652A0), and the loop never reads v0 after it, so a stub in front of it has nothing
+ * to forward and nothing to preserve.
  *
- * The randomizer hooks this same loop at 0x805FC3FC (jal 0x805FC668 -> j 0x805C2070, its
- * earlyframecode). Do not hook there.
+ * The first site was in the regular frame (func_global_asm_8070DD44 at 0x805FC4CC). It ran
+ * on 18,113 of 18,113 loop entries over 37,800 video frames, about 29 Hz, but not at all in
+ * the arcade or Jetpac, which do not run the regular frame: the agent went silent there
+ * and the link dropped until the player left. In ordinary play the two sites run equally
+ * often, since the regular frame runs once a loop.
+ *
+ * The randomizer hooks the regular frame at 0x805FC3FC (jal 0x805FC668 -> j 0x805C2070,
+ * its earlyframecode). Do not hook there.
  *
  * ROM copy: func_global_asm_805FB750 is the game's synchronous DMA, (romOffset, size,
  * dest). It writes back D-cache, runs osPiStartDma through the PI manager, blocks on its
@@ -47,7 +55,7 @@
 agent_hook_stub:
         addiu   $sp, $sp, -24
         sw      $ra, 20($sp)
-        CALL    0x8070DD44              /* the call this jal replaced */
+        CALL    0x80600B10              /* the call this jal replaced */
         nop
 
         /* Expansion Pak guard: skip entirely below AGENT_MIN_RAM. */

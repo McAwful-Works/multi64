@@ -50,12 +50,19 @@ sha1 = "f24e90c61c47065d95239f95d6001b92ef37200f"
 vram = 0x805FB750       # func_global_asm_805FB750 -- (romOffset, size, dest), base at 0x8000DDCC
 hint = "The randomizer changed the routine the stub loads the agent with, which is also what locates the game's main code in the seed."
 
+# The hook is in the game's main loop (func_global_asm_805FBFF4), not in the frame it runs
+# for ordinary play. That loop picks what to run from the game mode at 0x807444EC: modes 3
+# and 4, the DK arcade and Jetpac, run their overlay at 0x80024000; mode 6 runs
+# 0x8070A934; anything else runs the regular frame through the randomizer's 0x805CCEEC.
+# A hook in the regular frame (0x805FC4CC, as this profile first had it) never ran in the
+# arcade or Jetpac, and the link dropped for as long as either was played. The site here
+# is the first call after that choice, which every mode reaches once a loop.
 [[require]]
 kind = "word"
 label = "Frame hook site"
-at = "main@0x805FC4CC"  # in the frame loop: jal func_global_asm_8070DD44
-equals = 0x0C1C3751
-hint = "The randomizer changed DK64's frame loop. It already hooks the same loop at 0x805FC3FC (that is expected); this pin is the call five instructions after it."
+at = "main@0x805FC16C"  # in the main loop, after the game-mode switch: jal func_global_asm_80600B10
+equals = 0x0C1802C4
+hint = "The randomizer changed DK64's main loop, where the hook goes."
 
 # The heap's top, in the heap setup (func_global_asm_80610350, 0x80610350..0x806109EC):
 # lui t5 / ori t5 build it, and the fixed buffers are carved downward from it before the
@@ -121,9 +128,9 @@ hint = "Something now occupies the dead Controller Pak code the stub goes in. Re
 [[require]]
 kind = "sha1"
 label = "Function the hook calls first"
-at = "main@0x8070DD44"  # func_global_asm_8070DD44
-len = 0x98
-sha1 = "305d22d293fa8e18a92e49a99731e2d18e5b0d76"
+at = "main@0x80600B10"  # func_global_asm_80600B10, which takes no arguments
+len = 0xAC
+sha1 = "a2d33c3c8886f67d857f66e492a4af58374110d7"
 hint = "The randomizer changed the code the hook passes each frame through to."
 
 [[require]]
@@ -172,5 +179,5 @@ value = "agent_rom"
 [[write]]
 kind = "jal"
 label = "Frame hook"
-at = "main@0x805FC4CC"
+at = "main@0x805FC16C"
 target = 0x8000D180
