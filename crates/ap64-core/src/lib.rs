@@ -258,8 +258,10 @@ mod tests {
             })
             .expect("the profile writes a stub");
         bundle.blobs[file]
-            .chunks_exact(4)
-            .map(|c| u32::from_be_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_be_bytes(*c))
             .collect()
     }
 
@@ -444,10 +446,10 @@ mod tests {
             );
             let agent = &b.blobs["agent.bin"];
             let taken = agent[..(end - vram) as usize]
-                .chunks_exact(4)
-                .fold(0u32, |s, c| {
-                    s.wrapping_add(u32::from_be_bytes(c.try_into().unwrap()))
-                });
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .fold(0u32, |s, c| s.wrapping_add(u32::from_be_bytes(*c)));
             assert_eq!(taken, sum, "{id}: AGENT_CHECK_SUM is not agent.bin's");
             let w = stub_words(b);
             let loads = w.windows(2).any(|p| {

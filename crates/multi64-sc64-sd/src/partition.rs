@@ -1330,7 +1330,12 @@ fn exfat_find_entry_set(
                 matched = false;
                 break;
             }
-            for unit in entry[2..].chunks_exact(2).take(name.len() - units) {
+            for unit in entry[2..]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .take(name.len() - units)
+            {
                 if u16::from_le_bytes([unit[0], unit[1]]) != name[units] {
                     matched = false;
                     break;
@@ -1363,7 +1368,7 @@ impl<'d, R: FnMut(u64, &mut [u8]) -> io::Result<()>> ExfatSlotReader<'d, R> {
     const MAX_CHUNK_SLOTS: u64 = 256;
 
     fn new(dir: &'d ExfatDirSlots, read_at: R) -> Self {
-        let chunk_slots = if dir.slots_per_cluster % Self::MAX_CHUNK_SLOTS == 0 {
+        let chunk_slots = if dir.slots_per_cluster.is_multiple_of(Self::MAX_CHUNK_SLOTS) {
             Self::MAX_CHUNK_SLOTS
         } else {
             dir.slots_per_cluster
@@ -1610,7 +1615,9 @@ impl ExfatDirSlots {
     fn slot_at(&self, abs: u64) -> Option<u64> {
         let cluster_bytes = self.slots_per_cluster * Self::SLOT_BYTES;
         let i = self.cluster_offsets.iter().position(|&base| {
-            abs >= base && abs - base < cluster_bytes && (abs - base) % Self::SLOT_BYTES == 0
+            abs >= base
+                && abs - base < cluster_bytes
+                && (abs - base).is_multiple_of(Self::SLOT_BYTES)
         })?;
         Some(i as u64 * self.slots_per_cluster + (abs - self.cluster_offsets[i]) / Self::SLOT_BYTES)
     }
@@ -3425,7 +3432,7 @@ fn exfat_decode_entry_set<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
         if entry[0] != EXFAT_ENTRY_FILE_NAME {
             return Ok(None);
         }
-        for unit in entry[2..].chunks_exact(2) {
+        for unit in entry[2..].as_chunks::<2>().0 {
             if units.len() >= name_len {
                 break;
             }
@@ -3741,7 +3748,7 @@ fn exfat_partition_byte_length(sector: &[u8]) -> io::Result<u64> {
 
 fn fat_partition_byte_length(bpb: &[u8]) -> io::Result<u64> {
     let bps = u16::from_le_bytes([bpb[0x0B], bpb[0x0C]]) as u64;
-    if bps == 0 || bps % 512 != 0 {
+    if bps == 0 || !bps.is_multiple_of(512) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid bytes per sector in BPB (expected FAT12/16/32 volume; wrong partition offset?)",
@@ -6291,7 +6298,7 @@ mod fs_tests {
     ) -> impl FnMut(u64, &mut [u8]) -> io::Result<()> + 'a {
         move |at, buf| {
             reads.borrow_mut().push((at, buf.len()));
-            for (k, b) in buf.chunks_exact_mut(32).enumerate() {
+            for (k, b) in buf.as_chunks_mut::<32>().0.iter_mut().enumerate() {
                 let slot = dir
                     .slot_at(at + k as u64 * 32)
                     .expect("a read inside the directory");

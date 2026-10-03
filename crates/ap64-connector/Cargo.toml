@@ -16,7 +16,6 @@ base64 = "0.23"
 # politely -- see `Client::close`. std has no stable way to ask for that.
 socket2 = "0.6"
 sha1 = "0.11"
-# Reads and rewrites dk64.apworld to add the EmuLoader methods DK64's client lacks (see
-# src/dk64.rs). Deflate only, in pure Rust. Held at 4.2: 4.6 needs Rust 1.82, past the
-# workspace's 1.80.
+# Reads and rewrites an installed apworld to apply a client fix (src/dk64.rs, src/bt.rs).
+# Deflate only, in pure Rust.
 zip = { version = "~8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }

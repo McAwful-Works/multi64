@@ -142,7 +142,7 @@ The **EverDrive-64 PRO** has its own pipe, `Ed64ProL2Pipe` (`multi64-ed64pro-l2`
   `.claude/skills/check-docs/british-spellings.txt`; add to that list rather than loosening how
   it matches. `aria-labelledby` is an ARIA attribute, not a word, and is exempt.
 - `hadris-fat` is pinned to a git rev in the workspace `[patch.crates-io]` because the 1.1.0 release fails to build with `--features exfat`. Do not unpin it to resolve a dependency conflict.
-- MSRV is 1.80 and edition 2021, set once in `[workspace.package]`.
+- MSRV is 1.95 and edition 2021, set once in `[workspace.package]`.
 - Licensing is `MIT OR Apache-2.0`; new crates should inherit `license.workspace = true`.
 
 ## Repo tooling

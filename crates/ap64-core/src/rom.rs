@@ -37,8 +37,16 @@ pub fn byte_order(data: &[u8]) -> Option<ByteOrder> {
 pub fn to_big_endian(data: &mut [u8], order: ByteOrder) {
     match order {
         ByteOrder::Z64 => {}
-        ByteOrder::V64 => data.chunks_exact_mut(2).for_each(|c| c.swap(0, 1)),
-        ByteOrder::N64 => data.chunks_exact_mut(4).for_each(|c| c.reverse()),
+        ByteOrder::V64 => data
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .for_each(|c| c.swap(0, 1)),
+        ByteOrder::N64 => data
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .for_each(|c| c.reverse()),
     }
 }
 

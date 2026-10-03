@@ -310,7 +310,7 @@ impl Snapshot {
         let lock = &self.inner.0;
         let fresh: Vec<u32> = {
             let mut s = lock.lock().unwrap();
-            if s.last_request.map_or(true, |t| t.elapsed() >= CLIENT_GONE) {
+            if s.last_request.is_none_or(|t| t.elapsed() >= CLIENT_GONE) {
                 // Nothing to keep current, and nothing to serve from once the client is back.
                 s.windows.clear();
             }

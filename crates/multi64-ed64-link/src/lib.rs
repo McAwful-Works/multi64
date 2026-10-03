@@ -120,7 +120,7 @@ impl Ed64Link {
 
     /// **RomRead** — read `length_bytes` from cart ROM at `address` (see [`ROM_BASE_ADDRESS`]).
     pub fn rom_read(&mut self, address: u32, length_bytes: usize) -> io::Result<Vec<u8>> {
-        if length_bytes % SECTOR_BYTES != 0 {
+        if !length_bytes.is_multiple_of(SECTOR_BYTES) {
             return Err(io_other("RomRead length must be a multiple of 512"));
         }
         if length_bytes > ED64_READ_MAX_BYTES {

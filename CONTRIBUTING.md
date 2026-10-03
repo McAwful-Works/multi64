@@ -6,7 +6,7 @@ Thanks for helping improve the bridge stack. This document is for **developers**
 
 | | |
 | --- | --- |
-| **Rust** | `rust-version` in the workspace [Cargo.toml](Cargo.toml) (currently **1.80+**). Install via [rustup](https://rustup.rs/). |
+| **Rust** | `rust-version` in the workspace [Cargo.toml](Cargo.toml) (currently **1.95+**). Install via [rustup](https://rustup.rs/). |
 | **SummerCart64** (optional) | Hardware runs: USB serial, [vendor USB docs](https://github.com/Polprzewodnikowy/SummerCart64). |
 | **EverDrive-64 X7** (optional) | `multi64-ed64-l2` / [docs/spec/l3-over-everdrive-x7.md](docs/spec/l3-over-everdrive-x7.md): USB model differs from SC64; see [Krikzz dev files](https://krikzz.com/pub/support/everdrive-64/x-series/dev/) and [N64brew ED64 X7](https://n64brew.dev/wiki/EverDrive-64_X7). **CI does not** exercise ED64 hardware. |
 | **EverDrive-64 PRO** (optional) | `multi64-ed64pro-l2` / [docs/spec/l3-over-everdrive-pro.md](docs/spec/l3-over-everdrive-pro.md): edlink Gen3, unrelated to the X7's USB model; start from spec §9. **CI does not** exercise it either. |

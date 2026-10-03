@@ -43,7 +43,7 @@ Use Settings → Scan for SD base or enter a new address (see docs/spec/ed64-sd-
 
 impl SdCardTransport for Ed64RomLinear {
     fn read_sd_sectors(&mut self, start_lba: u64, buf: &mut [u8]) -> io::Result<()> {
-        if buf.is_empty() || buf.len() % SECTOR_BYTES != 0 {
+        if buf.is_empty() || !buf.len().is_multiple_of(SECTOR_BYTES) {
             return Err(io::Error::other(
                 "ED64 read length must be a non-zero multiple of 512",
             ));

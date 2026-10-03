@@ -175,9 +175,9 @@ fn locate(p: &Profile, rom: &[u8]) -> (Vec<Check>, Found) {
         let len = f.len as usize;
         let word = f.word.to_be_bytes();
         let mut hits = Vec::new();
-        for (i, w) in rom.chunks_exact(4).enumerate() {
+        for (i, w) in rom.as_chunks::<4>().0.iter().enumerate() {
             let at = i * 4;
-            if w == word
+            if *w == word
                 && rom
                     .get(at..at + len)
                     .is_some_and(|r| crc::hex(&Sha1::digest(r)) == f.sha1)
@@ -1569,7 +1569,10 @@ target = 0x80000400
         let rom = seed();
         let b = bundle(4, &rom);
         let mut v64 = rom.clone();
-        v64.chunks_exact_mut(2).for_each(|c| c.swap(0, 1));
+        v64.as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .for_each(|c| c.swap(0, 1));
         let d = crate::detect(std::slice::from_ref(&b), &mut v64).unwrap();
         assert_eq!(v64, rom);
         assert_eq!(d.byte_order, "v64 (byte-swapped)");
