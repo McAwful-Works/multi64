@@ -189,10 +189,13 @@ each tool's output, each phase's `multi64d` log, the daemon's `GET /` before and
 the machine's serial ports and FTDI driver versions, Windows' version, the cart OS version the
 tester types in, the bring-up JSON files and the photos. That one zip is what comes back.
 
-The script picks the cart's port by the USB IDs in `crates/cart-probe` when exactly one port
-matches, and asks otherwise. `-Cart ed64pro|sc64`, `-Port COMn` and `-SkipControl` pass through
-`diagnose.bat`; running it with `-Cart sc64` on the maintainer's cart checks the bundle itself
-before it goes out.
+The script picks the cart and its port by the USB IDs in `crates/cart-probe` (X7 `0403:6001`,
+SummerCart64 `0403:6014`) when exactly one such port is plugged in, and asks otherwise; the PRO's
+IDs are not known, so a PRO is always asked for. `-Cart ed64|ed64pro|sc64`, `-Port COMn` and
+`-SkipControl` pass through `diagnose.bat`. Every `multi64d` it starts is put in a Windows job
+object that kills it when the script exits, so closing the window mid-run does not leave the port
+held, and a daemon from an earlier run of the same bundle is stopped at the start. Running it on
+the maintainer's SummerCart64 checks the bundle itself before it goes out.
 
 ### 3. What the results say
 

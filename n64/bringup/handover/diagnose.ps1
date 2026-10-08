@@ -15,8 +15,8 @@
 # zipped at the end. Written for Windows PowerShell 5.1, which every Windows 10/11 has.
 
 param(
-    # multi64d's --cart: ed64 (X7), ed64pro or sc64.
-    [string]$Cart = 'ed64',
+    # multi64d's --cart: ed64 (X7), ed64pro or sc64. Empty: the only X7 or SC64 plugged in, else ask.
+    [string]$Cart = '',
     # Serial port. Empty: the only port with the cart's USB IDs, else ask.
     [string]$Port = '',
     # Skip phase 1, for a rerun of the bring-up alone.
@@ -33,6 +33,49 @@ $base = 'http://127.0.0.1:38765'
 $daemon = Join-Path $here 'multi64d.exe'
 $tool = Join-Path $here 'multi64-test-connector.exe'
 $baseline = Join-Path $here 'sc64-2026-10-08.json'
+
+# Every multi64d this script starts goes into a Windows job that kills it when the job's last handle
+# closes. The script holds that handle, so closing its window mid-run, or Ctrl+C, cannot leave a
+# daemon holding the cart's port.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class Multi64Job {
+    [StructLayout(LayoutKind.Sequential)]
+    struct BasicLimits {
+        public long PerProcessUserTimeLimit, PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize, MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass, SchedulingClass;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct IoCounters { public ulong a, b, c, d, e, f; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ExtendedLimits {
+        public BasicLimits Basic;
+        public IoCounters Io;
+        public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetInformationJobObject(IntPtr job, int infoClass, ref ExtendedLimits info, uint length);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    static IntPtr job = IntPtr.Zero;
+    public static bool Adopt(IntPtr process) {
+        if (job == IntPtr.Zero) {
+            job = CreateJobObject(IntPtr.Zero, null);
+            ExtendedLimits info = new ExtendedLimits();
+            info.Basic.LimitFlags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            SetInformationJobObject(job, 9, ref info, (uint)Marshal.SizeOf(typeof(ExtendedLimits)));
+        }
+        return AssignProcessToJobObject(job, process);
+    }
+}
+'@
 
 function Say([string]$text) {
     Write-Host $text
@@ -95,6 +138,9 @@ function Start-Daemon([string]$phase) {
     $p = Start-Process -FilePath $daemon -ArgumentList $dargs -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $out "$phase-multi64d.log") `
         -RedirectStandardError (Join-Path $out "$phase-multi64d.err.log")
+    if (-not [Multi64Job]::Adopt($p.Handle)) {
+        Say 'note: could not tie multi64d to this window; if you close it mid-run, end multi64d in Task Manager'
+    }
     for ($i = 0; $i -lt 40; $i++) {
         Start-Sleep -Milliseconds 250
         if ($p.HasExited) {
@@ -130,7 +176,7 @@ Section 'Multi64 cart diagnostics'
 if (Test-Path (Join-Path $here 'VERSION.txt')) {
     Get-Content (Join-Path $here 'VERSION.txt') | ForEach-Object { Say $_ }
 }
-Say ("started " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz') + ", cart " + $Cart)
+Say ("started " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
 $os = Get-CimInstance Win32_OperatingSystem
 Say ("Windows: " + $os.Caption + " " + $os.Version + " (build " + $os.BuildNumber + "), PowerShell " + $PSVersionTable.PSVersion)
 
@@ -139,6 +185,13 @@ foreach ($f in @($daemon, $tool, $baseline)) {
 }
 
 Section 'Other programs using the cart'
+# A daemon from this bundle is one an earlier run left behind (before the job above existed, or
+# from a crash): not the tester's to close, so stop it here.
+Get-Process multi64d -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $daemon } | ForEach-Object {
+    Say "stopping multi64d $($_.Id), left over from an earlier run of this script"
+    Stop-Process -Id $_.Id -Force
+    Start-Sleep -Milliseconds 500
+}
 while ($true) {
     $busy = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -in @('multi64d', 'multi64', 'ap64', 'xfer64') }
     if (-not $busy) { Say 'none running'; break }
@@ -153,9 +206,24 @@ Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceClass -eq 'PORTS
     ForEach-Object { Say ("driver: " + $_.DeviceName + "  " + $_.Manufacturer + "  " + $_.DriverVersion + "  " + $_.DriverDate) }
 Run-Logged 'ports.txt' $daemon @('--list-ports') | Out-Null
 
+# USB IDs from crates/cart-probe: the X7's FT245R is 0403:6001, the SummerCart64 0403:6014. Both
+# are stock FTDI parts, so a match only picks a default; the PRO's is not known, so it is asked for.
+if (-not $Cart) {
+    $x7 = @($ports | Where-Object { $_.DeviceID -match 'VID_0403.PID_6001' })
+    $sc = @($ports | Where-Object { $_.DeviceID -match 'VID_0403.PID_6014' })
+    if ($x7.Count + $sc.Count -eq 1) {
+        $Cart = if ($x7.Count -eq 1) { 'ed64' } else { 'sc64' }
+        Say "cart: $Cart, from the only X7 or SummerCart64 USB port plugged in"
+    } else {
+        $pick = (Ask 'Which cart is this: x7, pro or sc64?').Trim().ToLower()
+        $Cart = switch ($pick) { 'x7' { 'ed64' } 'pro' { 'ed64pro' } default { $pick } }
+    }
+} else {
+    Say "cart: $Cart (given)"
+}
+if ($Cart -notin @('ed64', 'ed64pro', 'sc64')) { Say "unknown cart '$Cart'; use x7, pro or sc64"; exit 1 }
+
 if (-not $Port) {
-    # USB IDs from crates/cart-probe: the X7's FT245R is 0403:6001, the SummerCart64 0403:6014.
-    # Both are stock FTDI parts, so a match only picks the port; the PRO's is not known, so ask.
     $id = switch ($Cart) { 'ed64' { 'VID_0403.PID_6001' } 'sc64' { 'VID_0403.PID_6014' } default { 'no match' } }
     $match = @($ports | Where-Object { $_.DeviceID -match $id })
     if ($match.Count -eq 1) {

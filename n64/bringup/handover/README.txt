@@ -54,6 +54,8 @@ If something goes wrong
 For the maintainer
 ------------------
 
-diagnose.bat passes its arguments to diagnose.ps1: -Cart ed64|ed64pro|sc64 (default ed64),
--Port COMn (default: the only matching USB serial port, else it asks), -SkipControl.
+diagnose.bat passes its arguments to diagnose.ps1: -Cart ed64|ed64pro|sc64 (default: the only
+X7 or SummerCart64 plugged in, by USB IDs, else it asks), -Port COMn (default: the only port with
+that cart's USB IDs, else it asks), -SkipControl. The bridge it starts is tied to its window, so
+closing the window mid-run stops it too.
 VERSION.txt records the commit this bundle was built from and every file's SHA-256.
