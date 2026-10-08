@@ -14,8 +14,8 @@ The console side of an RDRAM peek/poke integration: libdragon- and libultra-free
 the cart, measures what the drivers' waits cost, writes and reads the cart's buffer by CPU words
 and by PI DMA, and drives the link under background ROM DMA. Results go on screen and into a report
 `multi64-test-connector bringup` reads. A SummerCart64 run is the baseline other carts are compared
-with. A build of it has run on one SummerCart64, whose run is that baseline; the committed binary,
-built by the pinned compiler, has not run on a cart yet. See [`bringup/README.md`](bringup/README.md).
+with. It has run on one SummerCart64: the baseline is a build of the same source by a different
+compiler, and the committed binary matched it on the same cart. See [`bringup/README.md`](bringup/README.md).
 
 ## `test-rom/` — all-in-one hardware test ROM
 

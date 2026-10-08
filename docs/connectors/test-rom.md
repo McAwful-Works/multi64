@@ -148,11 +148,9 @@ latest hardware run is recorded in [`n64/README.md`](../../n64/README.md#hardwar
 ## Cart bring-up
 
 Two more subcommands drive a different ROM: [`n64/bringup`](../../n64/bringup/README.md)'s
-`multi64_bringup.z64`, which runs the cart agent's own drivers on a cart outside any game. A
-build of the ROM and these subcommands have run on one SummerCart64, whose run is the committed
-baseline ([`n64/bringup/baselines`](../../n64/bringup/baselines/)); the committed
-`multi64_bringup.z64`, built by the pinned toolchain, has not run on a cart, and neither has run on
-an EverDrive.
+`multi64_bringup.z64`, which runs the cart agent's own drivers on a cart outside any game. Both
+have run on one SummerCart64, whose run is the committed baseline
+([`n64/bringup/baselines`](../../n64/bringup/baselines/)); neither has run on an EverDrive.
 
 ```sh
 cargo run -p multi64-test-connector --release -- bringup --out bringup-sc64-baseline.json
