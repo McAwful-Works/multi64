@@ -22,7 +22,7 @@ need() { command -v "$1" >/dev/null || { echo "required tool not found: $1" >&2;
 need curl; need git; need make; need sha256sum; need dpkg-deb
 
 if [ -f "$STAMP" ] && grep -qx "LIBDRAGON_COMMIT=$LIBDRAGON_COMMIT" "$STAMP" \
-   && grep -qx "TOOLCHAIN_ASSET_ID=$TOOLCHAIN_ASSET_ID" "$STAMP"; then
+   && grep -qx "TOOLCHAIN_SHA256=$TOOLCHAIN_SHA256" "$STAMP"; then
   echo "Already at the pinned versions. N64_INST=$PREFIX"
   exit 0
 fi
@@ -32,12 +32,16 @@ mkdir -p "$WORK"
 # --- 1. toolchain ------------------------------------------------------------
 DEB="$WORK/$TOOLCHAIN_ASSET_NAME"
 if [ ! -f "$DEB" ] || ! echo "$TOOLCHAIN_SHA256  $DEB" | sha256sum -c - >/dev/null 2>&1; then
-  echo "==> downloading toolchain asset $TOOLCHAIN_ASSET_ID"
-  # By asset id: the release tag is rolling, ids are immutable. See toolchain.lock.
-  curl -fL --retry 3 \
-    -H "Accept: application/octet-stream" \
-    "https://api.github.com/repos/DragonMinded/libdragon/releases/assets/$TOOLCHAIN_ASSET_ID" \
-    -o "$DEB"
+  # This repo's copy first: libdragon deletes old assets when it replaces them.
+  # The checksum below is the pin, wherever the file came from. See toolchain.lock.
+  echo "==> downloading toolchain from $TOOLCHAIN_URL"
+  if ! curl -fL --retry 3 "$TOOLCHAIN_URL" -o "$DEB"; then
+    echo "==> not available; trying libdragon's asset $TOOLCHAIN_ASSET_ID"
+    curl -fL --retry 3 \
+      -H "Accept: application/octet-stream" \
+      "https://api.github.com/repos/DragonMinded/libdragon/releases/assets/$TOOLCHAIN_ASSET_ID" \
+      -o "$DEB"
+  fi
 fi
 
 echo "==> verifying checksum"
@@ -80,6 +84,7 @@ echo "==> building libdragon (this takes a few minutes)"
   echo "# Written by n64/setup-toolchain.sh -- do not edit."
   echo "LIBDRAGON_COMMIT=$LIBDRAGON_COMMIT"
   echo "TOOLCHAIN_ASSET_ID=$TOOLCHAIN_ASSET_ID"
+  echo "TOOLCHAIN_SHA256=$TOOLCHAIN_SHA256"
   echo "TOOLCHAIN_GCC_VERSION=$GOT_GCC"
   echo "INSTALLED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$STAMP"

@@ -3,12 +3,15 @@
 # Read by setup-toolchain.sh; verified by `make check-toolchain` in test-rom/.
 # These are the exact versions the committed multi64_test.z64 was built with.
 #
-# WHY THE ASSET ID AND CHECKSUM, NOT THE TAG:
+# WHY THIS REPO HOSTS THE TOOLCHAIN ITSELF:
 # libdragon's toolchain release tag `toolchain-continuous-prerelease` is ROLLING.
-# It was created 2023-01-26, but its assets are replaced in place -- the one
-# pinned here was uploaded 2026-08-29. Downloading "the latest asset from that
-# tag" therefore gives a DIFFERENT compiler over time, which is not a pin at all.
-# GitHub asset ids are immutable, so we fetch by id and verify the checksum.
+# It was created 2023-01-26, but its assets are replaced in place, and the old
+# ones are deleted. Pinning the tag gives a different compiler over time, and
+# pinning an asset id only lasts until the next replacement: the id first pinned
+# here, 534541635, went on 2026-09-15 and now returns 404. So the pinned .deb is
+# copied byte for byte into a release of this repo, with the source GPL requires
+# alongside it, and setup-toolchain.sh downloads it from there. The checksum is
+# the pin; where the file comes from is not.
 
 # --- libdragon (library, headers, n64.mk) ---
 # Nothing in libdragon records its own version at install time, so there is no
@@ -18,9 +21,11 @@ LIBDRAGON_REPO=https://github.com/DragonMinded/libdragon.git
 LIBDRAGON_COMMIT=c4a7e119eff1cfad07adcfa892a2910c40d8bdb8
 
 # --- mips64-elf GCC toolchain (prebuilt by the libdragon project) ---
-# NO LONGER DOWNLOADS: libdragon replaced these assets on 2026-09-15 and this id returns 404.
-# The current asset (564528689) builds the test ROM, but to different bytes. See n64/README.md.
-TOOLCHAIN_ASSET_ID=534541635
+# Built by libdragon commit e356bf3f, uploaded there 2026-09-15 as asset 564528689.
+# TOOLCHAIN_URL is this repo's copy; the asset id is libdragon's, tried only when
+# the copy cannot be reached, and gone the next time libdragon replaces its assets.
+TOOLCHAIN_URL=https://github.com/McAwful-Works/multi64/releases/download/n64-toolchain-16.2.0-564528689/gcc-toolchain-mips64-x86_64.deb
+TOOLCHAIN_ASSET_ID=564528689
 TOOLCHAIN_ASSET_NAME=gcc-toolchain-mips64-x86_64.deb
-TOOLCHAIN_SHA256=1d624e3bd991087301aa3163e0c7084f699d7f40ab7269adb5231df08359810b
+TOOLCHAIN_SHA256=fac8e6572493a66468b7d45df41b042f90b1a630ec96aa218bd5fb1f320a0a4d
 TOOLCHAIN_GCC_VERSION=16.2.0

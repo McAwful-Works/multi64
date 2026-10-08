@@ -21,7 +21,7 @@ INST="${1:-${N64_INST:-}}"
 STAMP="$INST/.multi64-toolchain-stamp"
 
 printf 'lock:      libdragon %s\n' "$LIBDRAGON_COMMIT"
-printf '           gcc %s (asset %s)\n' "$TOOLCHAIN_GCC_VERSION" "$TOOLCHAIN_ASSET_ID"
+printf '           gcc %s (sha256 %s)\n' "$TOOLCHAIN_GCC_VERSION" "$TOOLCHAIN_SHA256"
 
 if [ ! -x "$INST/bin/mips64-elf-gcc" ]; then
   echo "installed:  no mips64-elf-gcc under $INST" >&2
@@ -40,6 +40,20 @@ if [ -f "$STAMP" ]; then
   printf '           libdragon %s\n' "$GOT_COMMIT"
   [ "$GOT_COMMIT" = "$LIBDRAGON_COMMIT" ] || {
     echo "MISMATCH: libdragon $GOT_COMMIT != pinned $LIBDRAGON_COMMIT" >&2; rc=1; }
+  # The gcc version alone cannot tell two builds of 16.2.0 apart, and they emit
+  # different code. Stamps written before the checksum was recorded name the
+  # asset id instead, which identified the same file while it existed.
+  GOT_SHA="$(sed -n 's/^TOOLCHAIN_SHA256=//p' "$STAMP")"
+  if [ -n "$GOT_SHA" ]; then
+    printf '           gcc sha256 %s\n' "$GOT_SHA"
+    [ "$GOT_SHA" = "$TOOLCHAIN_SHA256" ] || {
+      echo "MISMATCH: toolchain sha256 $GOT_SHA != pinned $TOOLCHAIN_SHA256" >&2; rc=1; }
+  else
+    GOT_ASSET="$(sed -n 's/^TOOLCHAIN_ASSET_ID=//p' "$STAMP")"
+    printf '           gcc asset %s\n' "$GOT_ASSET"
+    [ "$GOT_ASSET" = "$TOOLCHAIN_ASSET_ID" ] || {
+      echo "MISMATCH: toolchain asset $GOT_ASSET != pinned $TOOLCHAIN_ASSET_ID" >&2; rc=1; }
+  fi
 else
   proven=0
   echo "           libdragon unknown (no stamp; prefix not installed by setup-toolchain.sh)"
@@ -51,7 +65,7 @@ elif [ "$proven" -eq 1 ]; then
   echo "OK: matches the pin."
 else
   # Do not claim the pin is satisfied when half of it could not be checked.
-  echo "PARTIAL: gcc matches, libdragon version unverified."
+  echo "PARTIAL: gcc version matches; which gcc build, and libdragon's version, unverified."
   echo "  A rebuild may not reproduce the committed multi64_test.z64."
   echo "  Run ./setup-toolchain.sh for a prefix that can be verified."
 fi

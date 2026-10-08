@@ -79,12 +79,10 @@ make
 ```
 
 It needs `N64_INST`, like the test ROM ([n64/README.md](../README.md#toolchain)), and builds the
-agent sources from `../agent` itself. The committed `multi64_bringup.z64` was built with libdragon
-`c4a7e11` and mips64-elf GCC 16.2.0 from toolchain asset **564528689** (SHA-256
-`fac8e6572493a66468b7d45df41b042f90b1a630ec96aa218bd5fb1f320a0a4d`). That is not the asset
-[`toolchain.lock`](../toolchain.lock) pins: libdragon's rolling release replaced it on 2026-09-15,
-and the pinned one no longer downloads. Two builds in a row from the same toolchain give the same
-bytes: SHA-256 `c07c2c89e8605b901064526f930787a644cc82c44fc2ff266288a79aa9d6941f`.
+agent sources from `../agent` itself. The committed `multi64_bringup.z64` was built with the
+toolchain [`toolchain.lock`](../toolchain.lock) pins, libdragon `c4a7e11` and mips64-elf GCC 16.2.0
+from toolchain asset **564528689**, and a prefix installed by `setup-toolchain.sh` rebuilds it byte
+for byte: SHA-256 `c07c2c89e8605b901064526f930787a644cc82c44fc2ff266288a79aa9d6941f`.
 
 ## Reading the screen
 

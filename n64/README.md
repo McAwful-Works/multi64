@@ -22,7 +22,7 @@ with. It has not yet run on a cart. See [`bringup/README.md`](bringup/README.md)
 
 The committed binary is built from the current source and accepts SummerCart64, EverDrive X7 and EverDrive-64 PRO.
 
-> **Built with the versions pinned in [`toolchain.lock`](toolchain.lock)** — libdragon `c4a7e11`, mips64-elf GCC **16.2.0**. `./setup-toolchain.sh` installed exactly those, until the pinned asset stopped downloading; see *Toolchain* below.
+> **Built with the versions pinned in [`toolchain.lock`](toolchain.lock)** — libdragon `c4a7e11`, mips64-elf GCC **16.2.0** from libdragon's toolchain asset `564528689`. `./setup-toolchain.sh` installs exactly those; see *Toolchain* below.
 
 > Note the ROM is **compressed** (`N64_ROM_ELFCOMPRESS` defaults to 1 in `n64.mk`), so searching `multi64_test.z64` for strings will give misleading results — LZ back-references replace repeated substrings. Inspect `build/multi64_test.elf` from your own `make` instead; `build/` is not tracked.
 
@@ -48,22 +48,18 @@ export N64_INST="$HOME/n64inst"
 export PATH="$N64_INST/bin:$PATH"
 ```
 
-> **The pinned toolchain asset no longer downloads.** libdragon replaced the rolling release's
-> assets on 2026-09-15, and asset `534541635` now returns 404, so `setup-toolchain.sh` fails on a
-> machine that does not already have it. The current asset, `564528689` (GCC 16.2.0), builds the
-> test ROM, but not byte for byte: the committed `multi64_test.z64` can no longer be reproduced from
-> a clean machine. [`bringup/`](bringup/README.md) was built with `564528689`.
-
 Two things the lock works around, both of which would otherwise defeat the pin:
 
-- **libdragon's toolchain release tag is rolling.** `toolchain-continuous-prerelease` dates from 2023, but its assets are replaced in place. Pinning the tag gives a different compiler over time, so the lock pins the immutable **asset id** and verifies a **SHA-256**; a mismatch aborts the install.
+- **libdragon's toolchain release tag is rolling, and old assets are deleted.** `toolchain-continuous-prerelease` dates from 2023, but its assets are replaced in place. Pinning the tag gives a different compiler over time, and pinning an asset id only lasts until the next replacement: the asset this repo first pinned, `534541635`, was deleted on 2026-09-15. So the pinned `.deb` is copied, byte for byte, into this repo's release [`n64-toolchain-16.2.0-564528689`](https://github.com/McAwful-Works/multi64/releases/tag/n64-toolchain-16.2.0-564528689), alongside the GCC, binutils, GDB and newlib source it was built from. `setup-toolchain.sh` downloads that copy, falls back to libdragon's asset id while it still exists, and verifies the **SHA-256** either way; a mismatch aborts the install.
 - **libdragon records no version of its own** once installed, so drift cannot be detected from the tree. `setup-toolchain.sh` writes a stamp, and `make check-toolchain` compares it against the lock:
 
 ```sh
 cd n64/test-rom && make check-toolchain
 ```
 
-It reports `OK` (both verified), `PARTIAL` (gcc matches but libdragon came from elsewhere, so it cannot be proven), or a non-zero `MISMATCH`. Nothing runs this automatically — CI does not build the ROM, so drift is only ever caught by a human.
+It reports `OK` (libdragon and the toolchain's checksum both verified), `PARTIAL` (the gcc version matches, but the prefix was installed some other way, so which build of it and which libdragon cannot be proven), or a non-zero `MISMATCH`. A stamp from before the checksum was recorded is checked by asset id instead.
+
+Moving the pin to a new toolchain means a new release here with its source, a new lock, and a rebuilt `multi64_test.z64`: the same source builds to different bytes under a different compiler. Nothing runs this automatically — CI does not build the ROM, so drift is only ever caught by a human.
 
 ### Build
 
@@ -97,6 +93,13 @@ cargo run -p multi64-test-connector -- listen   # print what the ROM sends
 ### Hardware record
 
 Runs of the committed `multi64_test.z64` on real carts, newest first. Add one when the ROM changes or a cart is tried for the first time, with the cart's firmware and the host OS.
+
+The committed binary is `multi64-test-rom 1.14`, SHA-256
+`bf20c574cb9f48569d5bb5bc1996cbce6f3bede08a2e62c7562f10af00fa26ae`. It was rebuilt on 2026-10-08
+when the pin moved to toolchain asset `564528689`, from the same source as the 1.14 committed
+before it (SHA-256 `382f7b55dd1bd7d4cf738e2f274f8a657dec9ed032a62b8473f2c4b2745591a7`, built with
+the deleted asset `534541635`): the compiler changed, the source and version did not. Neither 1.14
+binary has run on a cart; the newest run below is 1.12.
 
 | Date | Cart | ROM | Host | Result |
 |------|------|-----|------|--------|
