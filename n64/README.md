@@ -207,7 +207,9 @@ zeroes the video timings but leaves the video interface on, so libdragon's `disp
 for a vertical blank that never comes. That cart's `sc64menu.n64` is the 0.3.4 release, byte for
 byte (SHA-256 `042b4831…`, matching the release's published digest), and the libdragon pinned in
 [`toolchain.lock`](toolchain.lock) has that wait in `display_init`. The fix is on the menu's
-`main` and `develop` branches but in no tagged release as of 2026-10-08.
+`main` and `develop` branches but in no tagged release as of 2026-10-08. With the menu's rolling
+pre-release on the card instead (built 2026-10-07 from `develop`, SHA-256 `e8f53076…`), the
+bring-up ROM boots from the menu.
 
 `--boot-rom` was first run on 2026-10-08 on that SC64 (firmware 2.20 rev 2), with the console
 off: it wrote and verified `multi64_bringup.z64`, the console's next power-on started the
