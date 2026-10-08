@@ -15,6 +15,7 @@ version = 0
 cic = "6105"
 randomizer = "Archipelago's Ocarina of Time world"
 connector = "oot"         # Archipelago's OoT Client
+game_needs_expansion_pak = true   # OoTR's payload runs at 0x80400000
 
 [transform]
 kind = "yaz0_dmadata"

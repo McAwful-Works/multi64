@@ -28,7 +28,7 @@ use ap64_connector::server::{self, Event};
 use ap64_connector::{relay, retroarch, Connector, Native, Protocol, Script, NATIVES, SCRIPTS};
 use ap64_core::profile::{Addr, Transform, Write};
 use ap64_core::transform::{dma_entries, rom_address, DmaEntry};
-use ap64_core::{rom as rom_fmt, Bundle};
+use ap64_core::{rom as rom_fmt, Bundle, Cart, Profile};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -732,14 +732,77 @@ fn multi64_app_running() -> bool {
 
 /// How often counters are pushed to the page while playing.
 const STATS_EVERY: Duration = Duration::from_secs(1);
-/// How long the cart may be there with its ROM silent before the status names the Expansion
-/// Pak. Longer than a reset or a ROM swap usually takes, so it does not appear for those.
-const PAK_HINT_AFTER: Duration = Duration::from_secs(15);
+/// How long the cart may be there with its ROM silent before the status suggests why. Longer
+/// than a reset or a ROM swap usually takes, so it does not appear for those.
+const HINT_AFTER: Duration = Duration::from_secs(15);
 
-/// What the status says then. A hint, not a finding: a console that is off, or running
-/// another ROM, is silent the same way.
-const PAK_HINT: &str = "the ROM is not answering. If it is running, check the console has an \
-                        Expansion Pak: AP64 needs one for this game";
+/// What a ROM silent for [`HINT_AFTER`] with the cart there most likely means, as far as AP64
+/// can tell. A hint, not a finding: a console that is off, or running another ROM, is silent
+/// the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Silence {
+    /// A cart whose agent has never been shown to work: an EverDrive. Its port is open whether
+    /// or not anything runs on the console, so a connected cart says nothing about the ROM.
+    /// `pak` is whether a missing Expansion Pak is possible too, as for [`Silence::Pak`].
+    Untested { cart: Cart, pak: bool },
+    /// The stub may have found no Expansion Pak and skipped the agent.
+    Pak,
+    /// Neither: the game itself needs the Pak, so a game that runs has one.
+    Other,
+}
+
+impl Silence {
+    /// `cart` is the one the daemon was started for, when it says.
+    fn of(profile: &Profile, cart: Option<Cart>) -> Self {
+        let pak = profile.silence_may_be_the_pak();
+        match cart {
+            Some(cart) if !cart.tested() => Silence::Untested { cart, pak },
+            _ if pak => Silence::Pak,
+            _ => Silence::Other,
+        }
+    }
+
+    /// What the status says.
+    fn detail(self) -> String {
+        match self {
+            Silence::Untested { cart, .. } => format!(
+                "the ROM is not answering. AP64's agent for the {cart} is experimental and has \
+                 never been shown to work on a cart: check the ROM was patched for the {cart}"
+            ),
+            Silence::Pak => "the ROM is not answering. If it is running, check the console has \
+                             an Expansion Pak: AP64 needs one for this game"
+                .into(),
+            Silence::Other => "the ROM is not answering. If it is running, check it is the one \
+                               AP64 added the agent to"
+                .into(),
+        }
+    }
+
+    /// What the session log says, once a wait.
+    fn log_line(self) -> String {
+        let after = HINT_AFTER.as_secs();
+        match self {
+            Silence::Untested { cart, pak } => format!(
+                "the {cart}'s port is open but the ROM has not answered for {after} s; an open \
+                 port does not mean a ROM is running, and AP64's agent for the {cart} has never \
+                 been shown to work on a cart{}",
+                if pak {
+                    "; without an Expansion Pak the stub also skips the agent"
+                } else {
+                    ""
+                }
+            ),
+            Silence::Pak => format!(
+                "the cart is connected but the ROM has not answered for {after} s; without an \
+                 Expansion Pak the stub skips the agent and nothing answers"
+            ),
+            Silence::Other => format!(
+                "the cart is connected but the ROM has not answered for {after} s; this game \
+                 does not run without an Expansion Pak, so a missing one is not why"
+            ),
+        }
+    }
+}
 
 /// Between attempts to reach a cart that is not answering yet.
 const CART_RETRY: Duration = Duration::from_secs(2);
@@ -866,9 +929,9 @@ fn run(
             pause();
         }
         // Wait for the cart: the console may not be on yet, or the daemon not started.
-        // Since when the cart has been there and the ROM silent, for the Expansion Pak hint.
+        // Since when the cart has been there and the ROM silent, for the hint at why.
         let mut rom_silent_since: Option<Instant> = None;
-        let mut pak_logged = false;
+        let mut hint_logged = false;
         let cart = loop {
             if stop.load(Ordering::Relaxed) {
                 break 'session;
@@ -889,9 +952,9 @@ fn run(
                     // only found -- someone running it from elsewhere sees "not installed" until
                     // it is up, and then its bridge answers and none of this is asked.
                     let installed = daemon.is_some() || app || multi64_exe().is_some();
-                    // A ROM that stays silent with the cart there is most often one whose stub found
-                    // no Expansion Pak and stood the agent down, and nothing on the console can say
-                    // so. After long enough for a reset or a ROM swap, name it as the likely cause.
+                    // Nothing on the console can say why a ROM stays silent with the cart there.
+                    // After long enough for a reset or a ROM swap, suggest the likely cause, which
+                    // depends on the game and on the cart the daemon was started for.
                     let silent = match daemon {
                         Some(true) => *rom_silent_since.get_or_insert_with(Instant::now),
                         _ => {
@@ -899,14 +962,14 @@ fn run(
                             Instant::now()
                         }
                     };
-                    let pak_hint = game.profile.agent.needs_expansion_pak()
-                        && silent.elapsed() >= PAK_HINT_AFTER;
-                    if pak_hint && !std::mem::replace(&mut pak_logged, true) {
-                        log(format!(
-                            "the cart is connected but the ROM has not answered for {} s; \
-                             without an Expansion Pak the agent stands down and never answers",
-                            PAK_HINT_AFTER.as_secs()
-                        ));
+                    let hint = (silent.elapsed() >= HINT_AFTER).then(|| {
+                        let cart = ap64_cart::transport::daemon_cart(&url);
+                        Silence::of(&game.profile, cart.as_deref().and_then(Cart::parse))
+                    });
+                    if let Some(hint) = hint {
+                        if !std::mem::replace(&mut hint_logged, true) {
+                            log(hint.log_line());
+                        }
                     }
                     set(&|s| {
                         s.state = "connecting".into();
@@ -940,10 +1003,9 @@ fn run(
                                 // Say so rather than "starting": this is also where a session waits
                                 // after a console was reset, and it is not starting then.
                                 s.state = "waiting-console".into();
-                                s.detail = if pak_hint {
-                                    PAK_HINT.into()
-                                } else {
-                                    "waiting for the ROM on the console".into()
+                                s.detail = match hint {
+                                    Some(hint) => hint.detail(),
+                                    None => "waiting for the ROM on the console".into(),
                                 };
                                 s.bridge = OK.into();
                                 s.console = WAITING.into();
@@ -1310,6 +1372,41 @@ mod tests {
         }
         let bt = bundles.iter().find(|b| b.profile.id == "bt").unwrap();
         assert!(matches!(kind(&bt.profile.connector), Some(Kind::Native(_))));
+    }
+
+    /// A silent ROM on an EverDrive is put down to the EverDrive, whose open port proves nothing
+    /// and whose agent is unproven, and not to the Pak; on the SummerCart64 the Pak is named
+    /// only for a game that runs without one. Seen first as OoT on an X7, told to check a Pak
+    /// that OoT's randomizer had already needed in order to boot.
+    #[test]
+    fn a_silent_rom_is_put_down_to_what_could_cause_it() {
+        let bundles = ap64_core::builtin().unwrap();
+        let profile = |id: &str| &bundles.iter().find(|b| b.profile.id == id).unwrap().profile;
+        let (oot, cv64) = (profile("oot"), profile("cv64"));
+
+        for cart in [Cart::Ed64, Cart::Ed64pro] {
+            let on = Silence::of(oot, Some(cart));
+            assert_eq!(on, Silence::Untested { cart, pak: false });
+            let (detail, line) = (on.detail(), on.log_line());
+            assert!(detail.contains("experimental") && detail.contains(cart.name()));
+            assert!(detail.contains("patched for"));
+            assert!(
+                !detail.contains("Pak") && !line.contains("Pak"),
+                "{detail} / {line}"
+            );
+            // A game that runs without the Pak may be missing it as well, which the log says.
+            let on = Silence::of(cv64, Some(cart));
+            assert_eq!(on, Silence::Untested { cart, pak: true });
+            assert!(!on.detail().contains("Pak") && on.log_line().contains("Expansion Pak"));
+        }
+
+        // A daemon that does not say which cart is taken for one whose port means something.
+        for cart in [Some(Cart::Sc64), None] {
+            assert_eq!(Silence::of(cv64, cart), Silence::Pak);
+            assert!(Silence::Pak.detail().contains("Expansion Pak"));
+            assert_eq!(Silence::of(oot, cart), Silence::Other);
+            assert!(!Silence::Other.detail().contains("Pak"));
+        }
     }
 
     /// `MULTI64_PROCESS` is compared against what sysinfo reports, which is the executable's

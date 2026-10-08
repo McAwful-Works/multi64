@@ -396,6 +396,43 @@ mod tests {
         .needs_expansion_pak());
     }
 
+    /// A silent ROM is blamed on a missing Expansion Pak only where a stub could have skipped
+    /// the agent for want of one in a game that runs without it. Where the game itself needs the
+    /// Pak, a game that runs has one, and naming it sent an OoT player on an EverDrive looking
+    /// for a Pak that was there. An agent linked in the Pak with no RAM floor must be in such a
+    /// game, or a console without one would jump into memory that is not there.
+    #[test]
+    fn a_silent_rom_names_the_pak_only_where_the_game_runs_without_one() {
+        let bundles = builtin().unwrap();
+        for b in &bundles {
+            let p = &b.profile;
+            if p.agent.min_ram == 0 && p.agent.vram >= 0x8040_0000 {
+                assert!(
+                    p.game_needs_expansion_pak,
+                    "{}: agent in the Pak with no floor",
+                    p.id
+                );
+            }
+        }
+        let silent_pak = |id: &str| {
+            bundles
+                .iter()
+                .find(|b| b.profile.id == id)
+                .unwrap()
+                .profile
+                .silence_may_be_the_pak()
+        };
+        for id in ["oot", "bt", "dk64"] {
+            assert!(!silent_pak(id), "{id} does not run without a Pak");
+        }
+        for id in ["cv64", "mk64", "bm64", "sf64"] {
+            assert!(
+                silent_pak(id),
+                "{id} runs without a Pak; its stub skips the agent"
+            );
+        }
+    }
+
     /// Each cart's build ends in a different place, and DK64 is where that matters: its agent
     /// lives under the randomizer's own code, which v1.5.8 starts at 0x805C1040. The
     /// SummerCart64's and the PRO's builds end below it; the X7's does not, so its heap-top

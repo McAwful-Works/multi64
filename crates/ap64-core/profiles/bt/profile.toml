@@ -22,6 +22,7 @@ version = 48
 cic = "6105"
 randomizer = "jjjj12212's Banjo-Tooie world"
 connector = "bt"          # native: AP64 answers Banjo-Tooie Client as RetroArch (ap64-connector bt)
+game_needs_expansion_pak = true   # the retail game requires one
 
 # The release this was measured against; a different one installed is noted, not refused.
 [measured]
