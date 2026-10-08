@@ -275,6 +275,7 @@ impl Ed64L2Pipe {
                     tracing::trace!(
                         target: "multi64_ed64_l2",
                         raw_bytes = n,
+                        bytes = %hex(&scratch[..n]),
                         "serial read from cart"
                     );
                     self.wire.push_bytes(&scratch[..n]);
@@ -311,6 +312,18 @@ impl Ed64L2Pipe {
     }
 }
 
+/// `bytes` as lowercase hex, for the `--serial-trace` line: what the cart actually sent, so a
+/// garbled message can be read back from a log.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
 #[cfg(test)]
 #[path = "../../l2-test-support/scripted_port.rs"]
 mod scripted_port;
@@ -319,6 +332,12 @@ mod scripted_port;
 mod tests {
     use super::*;
     use crate::scripted_port::ScriptedPort;
+
+    #[test]
+    fn serial_trace_hex_is_lowercase_and_padded() {
+        assert_eq!(hex(&[0x00, 0xab, 0x10, 0xff]), "00ab10ff");
+        assert_eq!(hex(&[]), "");
+    }
 
     /// The two backends must tag L3 payloads identically or the shared codec breaks on one of them.
     #[test]

@@ -126,6 +126,7 @@ impl Sc64L2Pipe {
                         tracing::trace!(
                             target: "multi64_sc64_l2",
                             raw_bytes = n,
+                            bytes = %hex(&scratch[..n]),
                             "serial read from cart"
                         );
                     }
@@ -163,6 +164,18 @@ impl Sc64L2Pipe {
     }
 }
 
+/// `bytes` as lowercase hex, for the `--serial-trace` line: what the cart actually sent, so a
+/// garbled message can be read back from a log.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
 #[cfg(test)]
 #[path = "../../l2-test-support/scripted_port.rs"]
 mod scripted_port;
@@ -172,6 +185,12 @@ mod tests {
     use super::*;
     use crate::scripted_port::ScriptedPort;
     use multi64_sc64_link::MULTI64_L3_TYPE;
+
+    #[test]
+    fn serial_trace_hex_is_lowercase_and_padded() {
+        assert_eq!(hex(&[0x00, 0xab, 0x10, 0xff]), "00ab10ff");
+        assert_eq!(hex(&[]), "");
+    }
 
     fn encode_fake_pkt_u(l3: &[u8]) -> Vec<u8> {
         let mut inner = Vec::with_capacity(4 + l3.len());

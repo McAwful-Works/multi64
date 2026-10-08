@@ -24,6 +24,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# The tools print UTF-8. Windows PowerShell decodes a native program's output with the console's
+# code page unless told otherwise, which turned an em dash into three junk characters in the log.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $here = $PSScriptRoot
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $out = Join-Path $here "results-$stamp"

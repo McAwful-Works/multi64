@@ -218,6 +218,21 @@ the maintainer's SummerCart64 checks the bundle itself before it goes out.
 
 ## Hardware record
 
+**2026-10-08, SummerCart64, through the remote tester's bundle** (`cart-diagnostics-fe8ff00`;
+`SCv2`, firmware 2.20 rev 2), ROM SHA-256
+`58b347db7fbc97d21e00f1fc82a4444eeec9ece4d74ddf9916f0a587e7049126`, Windows 11 Pro 10.0.26300, FTDI
+driver 2.12.36.20. `diagnose.bat` with no arguments: it found Multi64 running and waited for it to
+be closed, then picked the SC64 and COM4 by USB IDs.
+
+- **Phase 1, test ROM 1.14:** 34 passed, 0 failed, 3 skipped (HUD text, rumble, and the ROM
+  version, which the script does not supply).
+- **Phase 2, against the baseline:** 0 checks failed. Moderate-load traffic went Pass to Info, 1
+  timeout in 35, inside the 0 to 2 the earlier runs saw. Every identify and buffer check passed.
+- **Round trips:** with no load 60/117/481 ms (min/median/max), against a 67 ms median in the
+  baseline; 79 and 109 ms medians under moderate and heavy load, against 67 and 64. This run had
+  `multi64d` at debug level with `--serial-trace` writing to a file, and the baseline run did not.
+  That is a difference between the runs, not a measured cause.
+
 **2026-10-08, SummerCart64, the previous pin's build** (`SCv2`, firmware 2.20 rev 2), ROM SHA-256
 `33a8e7ec7013b21cac1159971efb8d4113dcf74fe6ed8d5ac1f0d82dfdb6e17e`, Windows 11. This is the same
 source as the run below, built by the toolchain [`toolchain.lock`](../toolchain.lock) pinned for a

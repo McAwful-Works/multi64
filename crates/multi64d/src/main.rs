@@ -79,8 +79,8 @@ struct Args {
     #[arg(long, default_value_t = false)]
     list_ports: bool,
 
-    /// Log every non-empty serial read from the cart (`trace!` in `multi64-sc64-l2`,
-    /// `multi64-ed64-l2` or `multi64-ed64pro-l2`, depending on `--cart`).
+    /// Log every non-empty serial read from the cart, with its bytes in hex (`trace!` in
+    /// `multi64-sc64-l2`, `multi64-ed64-l2` or `multi64-ed64pro-l2`, depending on `--cart`).
     /// Also set env `MULTI64D_SERIAL_TRACE=1` (see `build_env_filter`).
     #[arg(long, default_value_t = false)]
     serial_trace: bool,
@@ -138,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
     if args.serial_trace || env_multi64d_serial_trace() {
         tracing::info!(
             target: "multi64d",
-            "serial trace on (stderr): non-empty reads from cart emit TRACE on target multi64_sc64_l2, multi64_ed64_l2 or multi64_ed64pro_l2"
+            "serial trace on (stdout, with the log): non-empty reads from cart emit TRACE, bytes in hex, on target multi64_sc64_l2, multi64_ed64_l2 or multi64_ed64pro_l2"
         );
     }
 
