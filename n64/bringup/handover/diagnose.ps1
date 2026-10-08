@@ -305,6 +305,8 @@ if ($p -ne $null) {
 Section 'Cart'
 $cartOs = Ask 'Your cart menu/OS version, from the cart menu (or leave empty)'
 Say ("cart OS: " + $cartOs)
+$screen = Ask 'Did either ROM stay on a black screen, or stop partway? Describe it (or leave empty)'
+Say ("screen: " + $screen)
 
 Section 'Done'
 Say ("finished " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
