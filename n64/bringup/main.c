@@ -310,21 +310,26 @@ static void draw(void)
 
 int main(void)
 {
+    /* Until the main loop, every line reaches the screen as it is printed (RENDER_AUTOMATIC), so a
+       ROM that hangs on the way up shows the step it hung in as its last line. */
     console_init();
-    console_set_render_mode(RENDER_MANUAL);
+    console_set_render_mode(RENDER_AUTOMATIC);
+    printf("multi64 bring-up %lu.%lu\n", (unsigned long)(BRINGUP_ROM_VERSION >> 16),
+           (unsigned long)(BRINGUP_ROM_VERSION & 0xFFFFu));
+    printf("boot: timer\n");
     timer_init();
+    printf("boot: joypad\n");
     joypad_init();
-
+    printf("boot: report\n");
     report_init();
+    printf("boot: load timer\n");
     load_init();
-
-    console_clear();
-    printf("multi64 bring-up\nidentifying the cart...\n");
-    console_render();
 
     stage_identify();
     stage_blocks(0u);
     stage_conditions();
+    printf("boot: link\n");
+    console_set_render_mode(RENDER_MANUAL);
 
     s_variant = default_variant(g_report.cart);
     g_report.variant = s_variant;

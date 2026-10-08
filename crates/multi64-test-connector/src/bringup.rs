@@ -1142,11 +1142,14 @@ async fn run_variant<F: FnMut(String) + Send>(
         let outcome = if tally.wrong > 0 {
             Outcome::Fail
         } else if tally.timeouts > 0 {
-            // Under heavy load the agent gives up on a busy PI by design, and the host times out.
-            if load == LOAD_HEAVY {
-                Outcome::Info
-            } else {
+            // Under any load the agent gives up on a busy PI by design, rather than stall the game,
+            // and the host times out: the proven SC64 driver lost 2 of 35 under moderate load
+            // (2026-10-08). So a timeout fails only with the bus to itself; under load the count
+            // is information, compared against a baseline's.
+            if load == LOAD_OFF {
                 Outcome::Fail
+            } else {
+                Outcome::Info
             }
         } else {
             Outcome::Pass

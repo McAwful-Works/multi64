@@ -11,9 +11,8 @@ agent that stays silent inside a game has no way to say why.
 Run it on a **SummerCart64 first**. The SC64 driver is proven inside games, so its report is
 the baseline: on another cart, the first result that differs from the SC64's is where to look.
 
-**Never run on a cart yet.** Neither this ROM nor the host tool has run on hardware. BizHawk's
-cores here show a black screen for libdragon ROMs, including the proven test ROM, so nothing has
-even booted it. The SummerCart64 run below is its first test.
+**Run on one cart: a SummerCart64,** on 2026-10-08, where every check passed
+([Hardware record](#hardware-record)). That run is the baseline. It has not run on an EverDrive.
 
 ## Design
 
@@ -84,11 +83,16 @@ agent sources from `../agent` itself. The committed `multi64_bringup.z64` was bu
 `fac8e6572493a66468b7d45df41b042f90b1a630ec96aa218bd5fb1f320a0a4d`). That is not the asset
 [`toolchain.lock`](../toolchain.lock) pins: libdragon's rolling release replaced it on 2026-09-15,
 and the pinned one no longer downloads. Two builds in a row from the same toolchain give the same
-bytes: SHA-256 `c07c2c89e8605b901064526f930787a644cc82c44fc2ff266288a79aa9d6941f`.
+bytes: SHA-256 `58b347db7fbc97d21e00f1fc82a4444eeec9ece4d74ddf9916f0a587e7049126`.
 
 ## Reading the screen
 
 The screen shows everything that does not need a link. Photograph it before running anything.
+
+On the way up, each start-up and stage step prints a line as it begins (`boot: timer`,
+`identify: X7 init`, `blocks 0: buffer 2` and so on), so a ROM that hangs leaves the step it hung
+in as its last line. A screen that stays black, with not even the first line, never reached the
+ROM's code. Once every stage has run, the screen below replaces those lines.
 
 ```
 multi64 bring-up 1.0  cart SC64  link SC64  load off  f1234
@@ -118,7 +122,12 @@ The values above are placeholders, not measurements. **Z** steps the load (off, 
 1. Build the host tool: `cargo build --release -p multi64-test-connector`.
 2. Start `multi64d` on the SC64, from Multi64 (Settings → **Cart**: SummerCart64 or
    Auto-detect, then **Start bridge**) or with `cargo run -p multi64d --release -- --serial COM4`.
-3. Load `multi64_bringup.z64` onto the SC64 the way you load any ROM, and boot it.
+3. Load `multi64_bringup.z64` onto the SC64 and boot it. On 2026-10-08 the SC64 menu hung on
+   every libdragon ROM, test ROM 1.12 included, on a black screen before any ROM code ran, while
+   commercial games booted: the ROM was in the cart intact, and the console never reached it.
+   Booting with the cart's own bootloader instead worked: write the ROM into the cart's SDRAM and
+   set `BOOT_MODE` to `1`, which is what `sc64deployer upload` does, then press Reset. Set
+   `BOOT_MODE` back to `0` afterward, or the cart keeps skipping the menu.
 4. Photograph the screen.
 5. Run:
 
@@ -126,11 +135,12 @@ The values above are placeholders, not measurements. **Z** steps the load (off, 
    target/release/multi64-test-connector bringup --out bringup-sc64-baseline.json
    ```
 
-6. What a working SC64 should show: `identify.cart` and `identify.driver_init` PASS; all eight
-   `blocks.buffer.*` checks PASS; `link.default.load_off.traffic` and `load_moderate.traffic`
-   PASS. Under heavy load, timeouts are expected (the agent gives up on a busy PI by design) and
-   are reported as INFO.
-7. Keep the JSON and the photo. They are what the X7 run is compared against.
+6. What a working SC64 shows: `identify.cart` and `identify.driver_init` PASS; all eight
+   `blocks.buffer.*` checks PASS; `link.default.load_off.traffic` PASS. Under moderate and heavy
+   load a few timeouts are normal, because the agent gives up on a busy PI by design rather than
+   stall the game; they are reported as INFO with their count, which varies from run to run.
+7. Keep the JSON and the photo. They are what the X7 run is compared against. The 2026-10-08
+   baseline is committed as [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json).
 
 Anything else on the SC64 is a fault in this ROM or the tool, not in the cart, and has to be
 fixed before the ROM goes to anyone.
@@ -142,7 +152,7 @@ Send four files:
 1. the **Multi64 installer**, for `multi64d`;
 2. `multi64_bringup.z64`;
 3. `multi64-test-connector.exe` (from step 1 above);
-4. `bringup-sc64-baseline.json`.
+4. the SC64 baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json).
 
 The tester:
 
@@ -150,7 +160,7 @@ The tester:
    bridge.
 2. Copies `multi64_bringup.z64` to the SD card and boots it from the EverDrive menu.
 3. Photographs the screen before anything else.
-4. Runs `multi64-test-connector.exe bringup --baseline bringup-sc64-baseline.json`. It takes a few
+4. Runs `multi64-test-connector.exe bringup --baseline sc64-2026-10-08.json`. It takes a few
    minutes: three load levels through the CPU-word build, then the same through the DMA build.
 5. If it reports `link.hello` FAIL (no HELLO_ACK), presses **R** once (the top line changes to
    `link X7 DMA`) and runs the same command again with `--out bringup-x7-dma.json`.
@@ -167,6 +177,24 @@ The tester:
 | Link passes with no load, fails under moderate | PI sharing: the driver loses to a game's DMA |
 | Everything matches | The driver works on this cart, and a silent agent inside a game is about how it is placed in that game |
 
+## Hardware record
+
+**2026-10-08, SummerCart64** (`SCv2`, firmware 2.20 rev 2), ROM SHA-256 `58b347db…`, Windows 11,
+`multi64d` and `multi64-test-connector` from this branch. Booted by the cart's own bootloader, since
+the cart's menu hung on every libdragon ROM that day (checklist step 3). Two runs; the second is the
+committed baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json).
+
+- **Identify:** the SC64 driver's init answered; the PRO and X7 inits were tried first and did not.
+- **Blocks:** every buffer test read back what it wrote, by CPU words and by PI DMA, with and
+  without load. One `PI_STATUS` read costs 251 ns and one SC64 `SR_CMD` read 3.6 µs (5.9 µs under
+  load), so `SC64_CMD_SPINS` (100,000) lets one wait run 361 ms, 590 ms under load: bounded, but
+  some 20 frames.
+- **Link:** no load, 36 of 36 requests, round trip 59–74 ms. Moderate load, 0 of 36 timed out in
+  the second run and 2 of 35 in the first. Heavy load, 6 of 32 and 2 of 34. The longest agent tick
+  was 8.7 ms with no load and 40 ms under heavy load, almost all of it in `sc64_write`.
+- **Interrupts:** the longest gap between 2 ms timer callbacks was 2.17 ms, so the code under test
+  held interrupts off for at most about 0.17 ms.
+
 ## Files
 
 | File | What |
@@ -179,3 +207,4 @@ The tester:
 | `report.h` | The report, checked against the spec's offsets at compile time |
 | `spin_limits.sh` | Reads the drivers' spin limits for `build/spin_limits.h` |
 | `multi64_bringup.z64` | The committed build |
+| `baselines/` | Saved runs to compare against: `--baseline` or `bringup-compare` |

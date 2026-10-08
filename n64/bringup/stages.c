@@ -1,6 +1,7 @@
 #include "stages.h"
 
 #include <libdragon.h>
+#include <stdio.h>
 
 #include "load.h"
 #include "report.h"
@@ -51,7 +52,9 @@ void stage_identify(void)
     uint32_t tried = 0u;
     uint32_t ok = 0u;
 
-    /* Reads only, before anything is unlocked. */
+    /* Reads only, before anything is unlocked. Each step names itself first: during boot the
+       console shows each line as it is printed, so a hang leaves its step on screen. */
+    printf("identify: raw reads\n");
     if (pio_pi_io_load_words(r->rom_header, ROM_BASE, 16u)) {
         r->probe_ok |= PROBE_ROM_HEADER;
     }
@@ -71,11 +74,13 @@ void stage_identify(void)
         r->cart = CART_OTHER;
     } else {
         tried |= 1u << VARIANT_PRO;
+        printf("identify: PRO init\n");
         if (bpro_ed64pro_init()) {
             ok |= 1u << VARIANT_PRO;
             r->cart = CART_PRO;
         } else {
             tried |= 1u << VARIANT_X7_IO;
+            printf("identify: X7 init\n");
             if (bx7_ed64_init()) {
                 ok |= 1u << VARIANT_X7_IO;
             }
@@ -89,6 +94,7 @@ void stage_identify(void)
                 r->cart = CART_X_SERIES;
             } else {
                 tried |= 1u << VARIANT_SC64;
+                printf("identify: SC64 init\n");
                 if (bsc_sc64_init()) {
                     ok |= 1u << VARIANT_SC64;
                     r->cart = CART_SC64;
@@ -174,6 +180,7 @@ static void timings(unsigned slot)
     for (i = 0u; i < TIMING_SLOTS; i++) {
         t[i].id = 0u;
     }
+    printf("blocks %u: timing\n", slot);
     time_pi_status(&t[0]);
     switch (g_report.cart) {
     case CART_X_SERIES:
@@ -270,6 +277,7 @@ static void buffer_tests(unsigned slot)
             b->result = BUF_NOT_APPLICABLE;
             continue;
         }
+        printf("blocks %u: buffer %u\n", slot, combo);
         for (i = 0u; i < BUF_BYTES / 4u; i++) {
             src[i] = pattern(s_runs, slot, combo, i);
             dst[i] = ~src[i];
@@ -325,6 +333,7 @@ void stage_conditions(void)
 {
     uint32_t was = load_level();
 
+    printf("conditions: load on\n");
     load_set(LOAD_MODERATE);
     g_report.cond_load = LOAD_MODERATE;
     /* Let the load get going before measuring under it. */

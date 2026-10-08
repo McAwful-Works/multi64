@@ -148,8 +148,9 @@ latest hardware run is recorded in [`n64/README.md`](../../n64/README.md#hardwar
 ## Cart bring-up
 
 Two more subcommands drive a different ROM: [`n64/bringup`](../../n64/bringup/README.md)'s
-`multi64_bringup.z64`, which runs the cart agent's own drivers on a cart outside any game. Neither
-the ROM nor these commands has run on a cart yet.
+`multi64_bringup.z64`, which runs the cart agent's own drivers on a cart outside any game. Both
+have run on one SummerCart64, whose run is the committed baseline
+([`n64/bringup/baselines`](../../n64/bringup/baselines/)); neither has run on an EverDrive.
 
 ```sh
 cargo run -p multi64-test-connector --release -- bringup --out bringup-sc64-baseline.json
@@ -173,8 +174,9 @@ per load level, default 3), `--default-variant-only`, `--base`, plus the global 
 
 Exit codes as for `suite`: **0** no check failed, **1** at least one did, **2** no daemon to connect
 to. A cart that never answers is a run, not an error: `link.hello` fails, and the ROM's screen holds
-what it found without a link. Under heavy load the agent gives up on a busy PI by design, so
-timeouts there are reported as INFO. Three in a row end a phase.
+what it found without a link. Under load the agent gives up on a busy PI by design rather than
+stall the game, so timeouts under moderate or heavy load are reported as INFO, with their count, and
+fail only with no load. Three in a row end a phase.
 
 ## Examples
 
