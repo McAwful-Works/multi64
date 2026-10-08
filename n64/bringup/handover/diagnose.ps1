@@ -1,0 +1,213 @@
+# Cart diagnostics for a remote tester: one run, one zip.
+#
+# Runs multi64d itself with full logging (debug, plus every byte read from the cart), so nothing
+# depends on Multi64's in-memory Developer log. Two phases, each against a fresh daemon:
+#
+#   1. Control: multi64_test.z64, which moves USB through libdragon, and `multi64-test-connector
+#      suite`. On an X7 this path passed on 2026-09-18, so a failure here is the tester's setup
+#      (cable, driver, port), not the agent's driver.
+#   2. Bring-up: multi64_bringup.z64 and `multi64-test-connector bringup --baseline`. On an X7,
+#      when the CPU-word build gets no HELLO_ACK, the tester switches to the DMA build and it runs
+#      again.
+#
+# Everything printed, both daemons' logs, the daemon's status before and after each phase, the
+# machine's serial ports and drivers, and the tester's photos go into results-<time>\, which is
+# zipped at the end. Written for Windows PowerShell 5.1, which every Windows 10/11 has.
+
+param(
+    # multi64d's --cart: ed64 (X7), ed64pro or sc64.
+    [string]$Cart = 'ed64',
+    # Serial port. Empty: the only port with the cart's USB IDs, else ask.
+    [string]$Port = '',
+    # Skip phase 1, for a rerun of the bring-up alone.
+    [switch]$SkipControl
+)
+
+$ErrorActionPreference = 'Stop'
+$here = $PSScriptRoot
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$out = Join-Path $here "results-$stamp"
+New-Item -ItemType Directory -Path $out | Out-Null
+$session = Join-Path $out 'session.txt'
+$base = 'http://127.0.0.1:38765'
+$daemon = Join-Path $here 'multi64d.exe'
+$tool = Join-Path $here 'multi64-test-connector.exe'
+$baseline = Join-Path $here 'sc64-2026-10-08.json'
+
+function Say([string]$text) {
+    Write-Host $text
+    Add-Content -Encoding UTF8 -Path $session -Value $text
+}
+
+function Section([string]$title) {
+    Say ''
+    Say ('==== ' + $title + ' ' + ('=' * [Math]::Max(0, 60 - $title.Length)))
+}
+
+function Ask([string]$prompt) {
+    Write-Host ''
+    $answer = Read-Host $prompt
+    Add-Content -Encoding UTF8 -Path $session -Value ("> " + $prompt + " [" + $answer + "]")
+    return $answer
+}
+
+# Runs a native program and keeps what it printed, stderr included, in the session log and in its
+# own file. Returns the exit code.
+function Run-Logged([string]$file, [string]$exe, [string[]]$arguments) {
+    $log = Join-Path $out $file
+    Say ("$ " + (Split-Path $exe -Leaf) + " " + ($arguments -join ' '))
+    $ErrorActionPreference = 'Continue'
+    & $exe @arguments 2>&1 | ForEach-Object {
+        $line = "$_"
+        Write-Host $line
+        Add-Content -Encoding UTF8 -Path $log -Value $line
+        Add-Content -Encoding UTF8 -Path $session -Value $line
+    }
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    Say "(exit code $code)"
+    return $code
+}
+
+function Save-Status([string]$file) {
+    try {
+        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri "$base/"
+        Set-Content -Encoding UTF8 -Path (Join-Path $out $file) -Value $r.Content
+        Say ("daemon status: " + $r.Content)
+    } catch {
+        Say ("daemon status: no answer (" + $_.Exception.Message + ")")
+    }
+}
+
+# 1 when the daemon says it holds the cart's port, from GET / (serialActive).
+function Port-Open {
+    try {
+        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri "$base/"
+        return ($r.Content -match '"serialActive":true')
+    } catch { return $false }
+}
+
+function Start-Daemon([string]$phase) {
+    $env:RUST_LOG = 'debug'
+    $env:MULTI64D_SERIAL_TRACE = '1'
+    $dargs = @('--serial', $script:Port, '--cart', $Cart)
+    Say ("starting multi64d " + ($dargs -join ' ') + " (debug log, serial trace)")
+    $p = Start-Process -FilePath $daemon -ArgumentList $dargs -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput (Join-Path $out "$phase-multi64d.log") `
+        -RedirectStandardError (Join-Path $out "$phase-multi64d.err.log")
+    for ($i = 0; $i -lt 40; $i++) {
+        Start-Sleep -Milliseconds 250
+        if ($p.HasExited) {
+            Say "multi64d exited at once (code $($p.ExitCode)); see $phase-multi64d.err.log"
+            Get-Content (Join-Path $out "$phase-multi64d.err.log") -Tail 15 | ForEach-Object { Say $_ }
+            return $null
+        }
+        try {
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "$base/" | Out-Null
+            Start-Sleep -Seconds 1
+            Save-Status "$phase-status-start.json"
+            if (-not (Port-Open)) {
+                Say "multi64d is running but could not open $($script:Port). Is another program using the cart, or is it the wrong port? Skipping this test; its log is $phase-multi64d.err.log."
+                Stop-Daemon $p $phase
+                return $null
+            }
+            return $p
+        } catch { }
+    }
+    Say 'multi64d did not answer within 10 s; skipping this test'
+    Stop-Daemon $p $phase
+    return $null
+}
+
+function Stop-Daemon($p, [string]$phase) {
+    if ($p -eq $null) { return }
+    Save-Status "$phase-status-end.json"
+    if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+    Start-Sleep -Milliseconds 500
+}
+
+Section 'Multi64 cart diagnostics'
+if (Test-Path (Join-Path $here 'VERSION.txt')) {
+    Get-Content (Join-Path $here 'VERSION.txt') | ForEach-Object { Say $_ }
+}
+Say ("started " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz') + ", cart " + $Cart)
+$os = Get-CimInstance Win32_OperatingSystem
+Say ("Windows: " + $os.Caption + " " + $os.Version + " (build " + $os.BuildNumber + "), PowerShell " + $PSVersionTable.PSVersion)
+
+foreach ($f in @($daemon, $tool, $baseline)) {
+    if (-not (Test-Path $f)) { Say "missing $f; unzip the whole bundle and run this from inside it"; exit 1 }
+}
+
+Section 'Other programs using the cart'
+while ($true) {
+    $busy = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -in @('multi64d', 'multi64', 'ap64', 'xfer64') }
+    if (-not $busy) { Say 'none running'; break }
+    Say ("running: " + (($busy | ForEach-Object { $_.ProcessName }) -join ', '))
+    Ask 'Close Multi64 (Quit from its tray icon), AP64 and Xfer64, then press Enter' | Out-Null
+}
+
+Section 'Serial ports and drivers'
+$ports = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match '\(COM\d+\)' })
+foreach ($d in $ports) { Say ($d.Name + "  " + $d.DeviceID + "  status " + $d.Status) }
+Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceClass -eq 'PORTS' -or $_.DeviceName -match 'USB Serial|FTDI' } |
+    ForEach-Object { Say ("driver: " + $_.DeviceName + "  " + $_.Manufacturer + "  " + $_.DriverVersion + "  " + $_.DriverDate) }
+Run-Logged 'ports.txt' $daemon @('--list-ports') | Out-Null
+
+if (-not $Port) {
+    # USB IDs from crates/cart-probe: the X7's FT245R is 0403:6001, the SummerCart64 0403:6014.
+    # Both are stock FTDI parts, so a match only picks the port; the PRO's is not known, so ask.
+    $id = switch ($Cart) { 'ed64' { 'VID_0403.PID_6001' } 'sc64' { 'VID_0403.PID_6014' } default { 'no match' } }
+    $match = @($ports | Where-Object { $_.DeviceID -match $id })
+    if ($match.Count -eq 1) {
+        $Port = [regex]::Match($match[0].Name, 'COM\d+').Value
+        Say "using $Port, the only matching port"
+    } else {
+        $Port = (Ask 'Which COM port is the cart (for example COM5)?').Trim().ToUpper()
+    }
+}
+$script:Port = $Port
+
+if (-not $SkipControl) {
+    Section 'Phase 1 of 2: control run with multi64_test.z64'
+    Say 'This ROM uses libdragon, which has worked on an X7 before. It checks your cable, driver and port.'
+    Ask 'Boot multi64_test.z64 from the cart menu. When its text is on the TV, take a photo, then press Enter' | Out-Null
+    $p = Start-Daemon 'phase1'
+    if ($p -ne $null) {
+        Run-Logged 'phase1-suite.txt' $tool @('suite', '--port', $Port) | Out-Null
+        Stop-Daemon $p 'phase1'
+    }
+    Ask 'Take another photo of the TV, then press Enter' | Out-Null
+}
+
+Section 'Phase 2 of 2: bring-up run with multi64_bringup.z64'
+Ask 'Power the console off and on, boot multi64_bringup.z64, take a photo of the TV once its text stops changing, then press Enter' | Out-Null
+$p = Start-Daemon 'phase2'
+if ($p -ne $null) {
+    $words = Join-Path $out 'phase2-bringup.json'
+    Run-Logged 'phase2-bringup.txt' $tool @('bringup', '--baseline', $baseline, '--out', $words) | Out-Null
+    $noHello = Select-String -Path (Join-Path $out 'phase2-bringup.txt') -Pattern 'FAIL\s+link\.hello' -Quiet
+    Ask 'Take a photo of the TV, then press Enter' | Out-Null
+    if ($noHello -and $Cart -eq 'ed64') {
+        Section 'Phase 2b: the same with the DMA build'
+        Say 'The ROM never answered through the CPU-word build. Now the DMA build.'
+        Ask 'Press R on the controller once. When the top line on the TV reads "link X7 DMA", press Enter' | Out-Null
+        $dma = Join-Path $out 'phase2b-bringup-dma.json'
+        Run-Logged 'phase2b-bringup-dma.txt' $tool @('bringup', '--baseline', $baseline, '--out', $dma) | Out-Null
+        Ask 'Take a photo of the TV, then press Enter' | Out-Null
+    }
+    Stop-Daemon $p 'phase2'
+}
+
+Section 'Photos'
+Start-Process explorer.exe $out
+Ask "A folder has opened. Copy your photos of the TV into it, then press Enter" | Out-Null
+$cartOs = Ask 'Your cart menu/OS version, from the cart menu (or leave empty)'
+Say ("cart OS: " + $cartOs)
+
+Section 'Done'
+Say ("finished " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+$zip = "$out.zip"
+Compress-Archive -Path $out -DestinationPath $zip -Force
+Write-Host ''
+Write-Host "Send this one file back: $zip" -ForegroundColor Green
+Start-Process explorer.exe "/select,`"$zip`""

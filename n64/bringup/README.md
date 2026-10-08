@@ -152,24 +152,47 @@ fixed before the ROM goes to anyone.
 
 ### 2. X7 handover
 
-Send four files:
+Build the bundle from a clean checkout of a commit, on Windows in Git Bash, with `npm install`
+already run in `crates/multi64`:
 
-1. the **Multi64 installer**, for `multi64d`;
-2. `multi64_bringup.z64`;
-3. `multi64-test-connector.exe` (from step 1 above);
-4. the SC64 baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json).
+```sh
+sh n64/bringup/handover/pack.sh
+```
 
-The tester:
+It writes `target/handover/cart-diagnostics-<commit>/` and a zip of it, holding:
 
-1. Installs Multi64, sets Settings → **Cart** to EverDrive X7 (or Auto-detect), and starts the
-   bridge.
-2. Copies `multi64_bringup.z64` to the SD card and boots it from the EverDrive menu.
-3. Photographs the screen before anything else.
-4. Runs `multi64-test-connector.exe bringup --baseline sc64-2026-10-08.json`. It takes a few
-   minutes: three load levels through the CPU-word build, then the same through the DMA build.
-5. If it reports `link.hello` FAIL (no HELLO_ACK), presses **R** once (the top line changes to
-   `link X7 DMA`) and runs the same command again with `--out bringup-x7-dma.json`.
-6. Sends back the photo(s), every JSON file written, and the console output.
+- the Multi64 installer, built from that commit (optional for the tester);
+- `multi64d.exe`, the same build as the one inside the installer;
+- `multi64-test-connector.exe`;
+- `multi64_test.z64` and `multi64_bringup.z64`, the committed ROMs;
+- the SC64 baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json);
+- [`diagnose.bat`](handover/diagnose.bat), [`diagnose.ps1`](handover/diagnose.ps1) and the tester's
+  [`README.txt`](handover/README.txt);
+- `VERSION.txt`, which records the commit and every file's SHA-256.
+
+The tester copies the two ROMs to the SD card, closes Multi64, AP64 and Xfer64, and double-clicks
+`diagnose.bat`, which walks them through the run and asks for photos at each step. It does not use
+Multi64's bridge, whose log lives only in the app. Instead it runs the bundled `multi64d` itself,
+at debug level with `--serial-trace` (every byte read from the cart), with a fresh daemon for each
+phase:
+
+1. **Control:** `multi64_test.z64` and `multi64-test-connector suite`. That ROM moves USB through
+   libdragon, which passed on an X7 on 2026-09-18, so a failure here is the tester's cable, driver
+   or port rather than the agent's driver.
+2. **Bring-up:** `multi64_bringup.z64` and `bringup --baseline`. If it reports `link.hello` FAIL
+   (no HELLO_ACK), the script has the tester press **R** (the top line changes to `link X7 DMA`)
+   and runs it again.
+
+A phase whose daemon cannot open the port is skipped with the reason, rather than left to time out.
+Everything goes into `results-<time>/` beside the script and is zipped: the session transcript,
+each tool's output, each phase's `multi64d` log, the daemon's `GET /` before and after each phase,
+the machine's serial ports and FTDI driver versions, Windows' version, the cart OS version the
+tester types in, the bring-up JSON files and the photos. That one zip is what comes back.
+
+The script picks the cart's port by the USB IDs in `crates/cart-probe` when exactly one port
+matches, and asks otherwise. `-Cart ed64pro|sc64`, `-Port COMn` and `-SkipControl` pass through
+`diagnose.bat`; running it with `-Cart sc64` on the maintainer's cart checks the bundle itself
+before it goes out.
 
 ### 3. What the results say
 
@@ -234,3 +257,4 @@ committed baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08
 | `spin_limits.sh` | Reads the drivers' spin limits for `build/spin_limits.h` |
 | `multi64_bringup.z64` | The committed build |
 | `baselines/` | Saved runs to compare against: `--baseline` or `bringup-compare` |
+| `handover/` | The remote tester's bundle: `pack.sh` builds it, `diagnose.bat` and `diagnose.ps1` run it |
