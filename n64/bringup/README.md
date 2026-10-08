@@ -12,9 +12,8 @@ Run it on a **SummerCart64 first**. The SC64 driver is proven inside games, so i
 the baseline: on another cart, the first result that differs from the SC64's is where to look.
 
 **Run on one cart: a SummerCart64,** on 2026-10-08, where every check passed
-([Hardware record](#hardware-record)). The baseline is a run of this source built by a different
-compiler; the committed binary then ran on the same cart and matched it. It has not run on an
-EverDrive.
+([Hardware record](#hardware-record)). That run of the committed binary is the baseline. It has not
+run on an EverDrive.
 
 ## Design
 
@@ -80,11 +79,11 @@ make
 ```
 
 It needs `N64_INST`, like the test ROM ([n64/README.md](../README.md#toolchain)), and builds the
-agent sources from `../agent` itself. The committed `multi64_bringup.z64` was built with the
-toolchain [`toolchain.lock`](../toolchain.lock) pins, libdragon `c4a7e11` and mips64-elf GCC 16.2.0
-built by libdragon's toolchain script at that same commit, and a prefix installed by
-`setup-toolchain.sh` rebuilds it byte for byte: SHA-256
-`33a8e7ec7013b21cac1159971efb8d4113dcf74fe6ed8d5ac1f0d82dfdb6e17e`.
+agent sources from `../agent` itself. A prefix installed by `setup-toolchain.sh` with the toolchain
+[`toolchain.lock`](../toolchain.lock) pins rebuilds the committed `multi64_bringup.z64` byte for
+byte: SHA-256 `58b347db7fbc97d21e00f1fc82a4444eeec9ece4d74ddf9916f0a587e7049126`. That toolchain
+is libdragon `e356bf3` with mips64-elf GCC 16.2.0, built by libdragon's toolchain script at that
+same commit.
 
 ## Reading the screen
 
@@ -185,12 +184,14 @@ The tester:
 
 ## Hardware record
 
-**2026-10-08, SummerCart64, the committed binary** (`SCv2`, firmware 2.20 rev 2), ROM SHA-256
-`33a8e7ec7013b21cac1159971efb8d4113dcf74fe6ed8d5ac1f0d82dfdb6e17e`, Windows 11. Booted directly with
-`sc64-smoke --boot-rom` ([#368](https://github.com/McAwful-Works/multi64/pull/368)), then `multi64-test-connector bringup --baseline
-baselines/sc64-2026-10-08.json`. **0 checks failed.** This is the same source as the run below,
-rebuilt when [`toolchain.lock`](../toolchain.lock) moved to its from-source toolchain: only the
-compiler differs.
+**2026-10-08, SummerCart64, the previous pin's build** (`SCv2`, firmware 2.20 rev 2), ROM SHA-256
+`33a8e7ec7013b21cac1159971efb8d4113dcf74fe6ed8d5ac1f0d82dfdb6e17e`, Windows 11. This is the same
+source as the run below, built by the toolchain [`toolchain.lock`](../toolchain.lock) pinned for a
+few hours that day: libdragon's `c4a7e11` script, kept in the release
+[`n64-toolchain-16.2.0-c4a7e119`](https://github.com/McAwful-Works/multi64/releases/tag/n64-toolchain-16.2.0-c4a7e119).
+Only the compiler differs. Booted directly with `sc64-smoke --boot-rom`
+([#368](https://github.com/McAwful-Works/multi64/pull/368)), then `multi64-test-connector bringup
+--baseline baselines/sc64-2026-10-08.json`. **0 checks failed.**
 
 - **Against the baseline:** the only change was moderate-load link traffic, Pass to Info, from 2
   timeouts where the baseline had 0. The run before the baseline also lost 2 of 35 there, so this
@@ -202,11 +203,10 @@ compiler differs.
   heavy load.
 - **Interrupts:** the longest gap between 2 ms timer callbacks was 2.164 ms.
 
-**2026-10-08, SummerCart64, the baseline** (`SCv2`, firmware 2.20 rev 2), ROM SHA-256
-`58b347db7fbc97d21e00f1fc82a4444eeec9ece4d74ddf9916f0a587e7049126`, built with libdragon's toolchain
-asset 564528689, which this repo keeps in its release
-[`n64-toolchain-16.2.0-564528689`](https://github.com/McAwful-Works/multi64/releases/tag/n64-toolchain-16.2.0-564528689).
-Windows 11, `multi64d` and `multi64-test-connector` from this branch. Booted by the cart's own bootloader, since
+**2026-10-08, SummerCart64, the committed binary and the baseline** (`SCv2`, firmware 2.20 rev 2),
+ROM SHA-256 `58b347db7fbc97d21e00f1fc82a4444eeec9ece4d74ddf9916f0a587e7049126`. It was built with
+libdragon's prebuilt toolchain, asset 564528689. The toolchain [`toolchain.lock`](../toolchain.lock)
+pins now builds the same bytes. Windows 11, `multi64d` and `multi64-test-connector` from this branch. Booted by the cart's own bootloader, since
 the cart's menu hung on every libdragon ROM that day (checklist step 3). Two runs; the second is the
 committed baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json).
 

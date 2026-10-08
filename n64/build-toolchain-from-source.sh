@@ -7,7 +7,7 @@
 # This is how the hosted tarball was made, and the way back if it is ever lost.
 # It runs libdragon's own tools/build-toolchain.sh at TOOLCHAIN_BUILD_COMMIT
 # against upstream sources, every one of them checked against a SHA-256 below.
-# Needs a host gcc/g++, make, curl, tar, xz and bzip2; no sudo, nothing from
+# Needs a host gcc/g++, make, curl, tar, xz, bzip2 and patch; no sudo, nothing from
 # the N64 toolchain. Takes 10-30 minutes depending on cores.
 #
 # The tarball's own SHA-256 depends on the host (its gcc and glibc end up in the
@@ -25,7 +25,7 @@ OUT="$(mkdir -p "${1:-$PWD/toolchain-build}" && cd "${1:-$PWD/toolchain-build}" 
 . "$LOCK"
 
 need() { command -v "$1" >/dev/null || { echo "required tool not found: $1" >&2; exit 1; }; }
-need curl; need sha256sum; need make; need gcc; need g++; need tar; need xz; need bzip2
+need curl; need sha256sum; need make; need gcc; need g++; need tar; need xz; need bzip2; need patch
 
 # The versions libdragon's script at TOOLCHAIN_BUILD_COMMIT downloads. Fetching
 # them here first, by checksum, means its own downloads are skipped.

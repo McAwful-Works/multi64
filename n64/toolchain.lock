@@ -7,26 +7,27 @@
 # WHY THIS REPO BUILDS AND HOSTS THE TOOLCHAIN ITSELF:
 # libdragon publishes its prebuilt toolchain under the rolling release
 # `toolchain-continuous-prerelease`, replaces the assets in place, and deletes the
-# old ones. The asset this lock first pinned, 534541635, went on 2026-09-15, and
-# its replacement is built differently and compiles the test ROM to different
-# bytes. So the toolchain is built here, from upstream sources by libdragon's own
-# build script at TOOLCHAIN_BUILD_COMMIT (the script that built 534541635), and
-# the result is hosted in a release of this repo. build-toolchain-from-source.sh
-# is that build; the checksum is the pin.
+# old ones: the asset this lock first pinned, 534541635, went on 2026-09-15. So
+# the toolchain is built here, from upstream sources by libdragon's own build
+# script at TOOLCHAIN_BUILD_COMMIT, and the result is hosted in a release of this
+# repo. build-toolchain-from-source.sh is that build; the checksum is the pin.
+# TOOLCHAIN_BUILD_COMMIT is the commit behind libdragon's prebuilt toolchain as of
+# 2026-10-08 (asset 564528689); this build compiles the test and bring-up ROMs to
+# the same bytes that asset does.
 
 # --- libdragon (library, headers, n64.mk) ---
 # Nothing in libdragon records its own version at install time, so there is no
 # way to detect drift from the installed tree alone. setup-toolchain.sh writes a
 # stamp file instead, and check-toolchain compares it against this lock.
 LIBDRAGON_REPO=https://github.com/DragonMinded/libdragon.git
-LIBDRAGON_COMMIT=c4a7e119eff1cfad07adcfa892a2910c40d8bdb8
+LIBDRAGON_COMMIT=e356bf3f56f7afbf7e5246329562f145965cfdfc
 
 # --- mips64-elf GCC toolchain (GCC 16.2.0, binutils 2.45, newlib 4.4.0.20231231) ---
 # Built on Ubuntu 24.04 x86_64, so it needs glibc 2.38 or newer.
-TOOLCHAIN_NAME=mips64-elf-gcc-16.2.0-libdragon-c4a7e119-x86_64-linux.tar.xz
-TOOLCHAIN_URL=https://github.com/McAwful-Works/multi64/releases/download/n64-toolchain-16.2.0-c4a7e119/mips64-elf-gcc-16.2.0-libdragon-c4a7e119-x86_64-linux.tar.xz
-TOOLCHAIN_SHA256=f86590159ef58ea2c616ca6abf883f984e21036c1eb68bcde026b9a982fb2a8a
+TOOLCHAIN_NAME=mips64-elf-gcc-16.2.0-libdragon-e356bf3f-x86_64-linux.tar.xz
+TOOLCHAIN_URL=https://github.com/McAwful-Works/multi64/releases/download/n64-toolchain-16.2.0-e356bf3f/mips64-elf-gcc-16.2.0-libdragon-e356bf3f-x86_64-linux.tar.xz
+TOOLCHAIN_SHA256=e3c048f5d09eabcde57d0a88af082bd63b0a262c7f47797d5901ac20ff34a366
 TOOLCHAIN_GCC_VERSION=16.2.0
 # libdragon's tools/build-toolchain.sh at this commit, checked by this checksum.
-TOOLCHAIN_BUILD_COMMIT=c4a7e119eff1cfad07adcfa892a2910c40d8bdb8
-TOOLCHAIN_BUILD_SCRIPT_SHA256=24322ed4a3fa65d3f50d6d53812d7cc5459e144ca31e468f2f85c500612a50a6
+TOOLCHAIN_BUILD_COMMIT=e356bf3f56f7afbf7e5246329562f145965cfdfc
+TOOLCHAIN_BUILD_SCRIPT_SHA256=5e1a604d44acd5bf6d92fd0bb5eba0bfaf1b2a8446378227200cf1a9bf2f55de
