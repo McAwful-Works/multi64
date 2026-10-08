@@ -5,7 +5,8 @@
 `multi64_bringup.z64` runs the cart agent's **own drivers** on a cart, outside any game, and
 reports what they do: on screen, and in a report a host reads through the agent itself. It exists
 because the agent's EverDrive drivers are written against libdragon's and Krikzz's code but have
-never run on a cart, and an agent that stays silent inside a game has no way to say why.
+not been shown to work on a cart (one X7 try inside a game got no answer from the ROM), and an
+agent that stays silent inside a game has no way to say why.
 
 Run it on a **SummerCart64 first**. The SC64 driver is proven inside games, so its report is
 the baseline: on another cart, the first result that differs from the SC64's is where to look.
