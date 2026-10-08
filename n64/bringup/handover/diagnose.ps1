@@ -275,7 +275,21 @@ Say ("cart OS: " + $cartOs)
 Section 'Done'
 Say ("finished " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
 $zip = "$out.zip"
-Compress-Archive -Path $out -DestinationPath $zip -Force
+# Not Compress-Archive: Windows PowerShell 5.1's stores paths with backslashes, which unzip tools
+# outside Windows refuse, and so does ZipFile.CreateFromDirectory under powershell.exe. Each entry
+# is named here, with forward slashes.
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+if (Test-Path $zip) { Remove-Item $zip -Force }
+$archive = [System.IO.Compression.ZipFile]::Open($zip, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    $root = Split-Path $out -Parent
+    Get-ChildItem -Path $out -Recurse -File | ForEach-Object {
+        $name = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
+        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, $name) | Out-Null
+    }
+} finally {
+    $archive.Dispose()
+}
 Write-Host ''
 Write-Host "Send this one file back: $zip" -ForegroundColor Green
 Start-Process explorer.exe "/select,`"$zip`""
