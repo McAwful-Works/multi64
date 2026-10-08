@@ -229,9 +229,15 @@ be closed, then picked the SC64 and COM4 by USB IDs.
 - **Phase 2, against the baseline:** 0 checks failed. Moderate-load traffic went Pass to Info, 1
   timeout in 35, inside the 0 to 2 the earlier runs saw. Every identify and buffer check passed.
 - **Round trips:** with no load 60/117/481 ms (min/median/max), against a 67 ms median in the
-  baseline; 79 and 109 ms medians under moderate and heavy load, against 67 and 64. This run had
-  `multi64d` at debug level with `--serial-trace` writing to a file, and the baseline run did not.
-  That is a difference between the runs, not a measured cause.
+  baseline; 79 and 109 ms medians under moderate and heavy load, against 67 and 64.
+
+A second run the same day, with bundle `cart-diagnostics-3c9ffb0` (the one that went to the X7
+tester) and the cart reporting firmware `2.20.2`, matched it: test ROM 34 passed, 0 failed, 3
+skipped; bring-up 0 failed, with 1 timeout in 36 under moderate load and 2 in 35 under heavy. Its
+round trips with no load were 62/81/144 ms, with medians of 81 and 88 ms under moderate and heavy
+load. It also traced every cart read's bytes in hex, so it logged more than the first run did, yet
+was faster. Logging is therefore not what made the first run's round trips slower; the two runs
+differ by run-to-run spread, and every request with no load succeeded in both.
 
 **2026-10-08, SummerCart64, the previous pin's build** (`SCv2`, firmware 2.20 rev 2), ROM SHA-256
 `33a8e7ec7013b21cac1159971efb8d4113dcf74fe6ed8d5ac1f0d82dfdb6e17e`, Windows 11. This is the same
