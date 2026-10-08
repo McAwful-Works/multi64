@@ -1,8 +1,8 @@
 //! End-to-end: build **L3 frames** (`M64B` wire), send the encoded stream over [`Ed64L2Pipe`], read the echoed bytes, decode with [`multi64_l3::Frame::decode`].
 //!
 //! Requires **`multi64_test.z64`** in **RAW_ECHO** mode (default) on hardware with **EverDrive X7** USB + L3 path active.
-//! **`multi64-ed64-l2`** implements the wire mapping in **`docs/spec/l3-over-everdrive-x7.md`** §4, but it has never
-//! been validated against hardware, so a failure here may be the mapping rather than the ROM. See
+//! **`multi64-ed64-l2`** implements the wire mapping in **`docs/spec/l3-over-everdrive-x7.md`** §4, but it has run
+//! on only one X7 and is not validated, so a failure here may be the mapping rather than the ROM. See
 //! [spec §4.5](../../docs/spec/l3-over-everdrive-x7.md).
 //!
 //! Use **`--large`** to exercise a payload larger than one typical host chunk (see spec; SC64 uses ~8192-byte `USB_WRITE` chunks).

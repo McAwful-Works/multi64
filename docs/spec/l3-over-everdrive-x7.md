@@ -154,7 +154,8 @@ Nothing bounds that below the header's own limit.
 The trailer check reads the 4 bytes at `8 + size`, per the cart → host row of §4.2. It previously
 read them at `8 + align(size, 2)`, the host → cart layout, which put every odd-length message from
 a cart on the trailer-mismatch row above and faulted `multi64d`'s link (issue #134). That is fixed
-from the references; it has still never been exercised against a cart.
+from the references. The fixed decoder carried the 2026-09-18 X7 run, but no check there targeted an
+odd-length message from the cart (§4.5).
 
 ### 4.5 Open questions — resolve on hardware before dropping Draft
 

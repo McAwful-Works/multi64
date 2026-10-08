@@ -32,7 +32,7 @@ Normative wire rules live in `spec/`. Each spec file carries its own **Spec-Revi
 
 ## Flash carts (L2 backends)
 
-L3 is cart-agnostic; **L2** is per device. **SC64** is the reference implementation here; **EverDrive X7** and **EverDrive-64 PRO** L2 are implemented but have never been run against a cart.
+L3 is cart-agnostic; **L2** is per device. **SC64** is the reference implementation here; **EverDrive X7** and **EverDrive-64 PRO** L2 are implemented but not validated: the X7's has run on one cart, the PRO's on none.
 
 Krikzz's N64 carts fall into two USB families: the **X-series** (X7, 3.0; X5 has no USB), which speaks `usb64` plus `DMA@` framing, and the **EverDrive-64 PRO** (August 2026), which speaks [edlink](https://github.com/krikzz/edlink) Gen3 — see [ed64-pro-usb-host.md](spec/ed64-pro-usb-host.md). Read [l3-over-everdrive-x7.md §1.1](spec/l3-over-everdrive-x7.md#11-which-everdrives-this-can-apply-to) before starting any EverDrive work.
 
