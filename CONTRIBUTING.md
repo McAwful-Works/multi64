@@ -98,7 +98,7 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [crates/ed64pro-link](crates/ed64pro-link) | `multi64-ed64pro-link` — EverDrive-64 PRO host link over edlink Gen3 ([spec](docs/spec/ed64-pro-usb-host.md)); scripted-transport tests only, **never run against a cart** |
 | [crates/ed64pro-l2](crates/ed64pro-l2) | `multi64-ed64pro-l2` — EverDrive-64 PRO L2 over the cart FIFO and USB link ([spec](docs/spec/l3-over-everdrive-pro.md)); fake-cart tests only, **never run against a cart** |
 | [crates/cart-probe](crates/cart-probe) | `multi64-cart-probe` — tells SC64, EverDrive-64 PRO and X7 apart: USB descriptors first, then identity probes (Multi64 and Xfer64 **Auto**) |
-| [crates/sc64-smoke](crates/sc64-smoke) | `sc64-smoke` — SC64 vendor `IDENTIFIER` / `VERSION` |
+| [crates/sc64-smoke](crates/sc64-smoke) | `sc64-smoke` — SC64 vendor `IDENTIFIER` / `VERSION`; `--boot-rom` boots a ROM with the cart's bootloader instead of its menu ([n64/README.md](n64/README.md#loading-a-rom-onto-a-summercart64)) |
 | [crates/sc64-echo-test](crates/sc64-echo-test) | `sc64-echo-test` — raw L3 loopback e2e over `Sc64L2Pipe` (test ROM **RAW_ECHO**) |
 | [crates/sc64-l3-framing-e2e](crates/sc64-l3-framing-e2e) | `sc64-l3-framing-e2e` — L3 framing e2e over `Sc64L2Pipe` |
 | [crates/sc64-sd-e2e](crates/sc64-sd-e2e) | `sc64-sd-e2e` — SD/FAT e2e over `CartSession`: the only hardware coverage of the stack Xfer64 uses. Writes to the card; read-only `--list` / `--verify` modes do not |

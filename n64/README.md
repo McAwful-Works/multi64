@@ -160,6 +160,64 @@ while the cart was still in RAW_ECHO, which echoes a ping rather than answering 
 
 ---
 
+## Loading a ROM onto a SummerCart64
+
+A ROM gets onto an SC64 one of two ways. Both need the SC64's serial port, so `multi64d` has
+to let go of it first. `sc64-smoke` releases and resumes it itself, if it answers at `--daemon`
+(default `http://127.0.0.1:38765`); for `sc64-sd-e2e`, `POST /v1/serial/release` before and
+`POST /v1/serial/resume` after.
+
+**From the menu.** Copy the ROM to the SD card and pick it in the cart's menu. Writing the card
+needs the console fully off, since the cart will not hand its SD slot to USB while the console
+may be using it. `--verify` reads the file back:
+
+```sh
+cargo run -p sc64-sd-e2e --release -- --port COM4 --upload n64/bringup/multi64_bringup.z64 --to /
+cargo run -p sc64-sd-e2e --release -- --port COM4 --verify /multi64_bringup.z64 --against n64/bringup/multi64_bringup.z64
+```
+
+**With the cart's bootloader, skipping the menu.** `sc64-smoke --boot-rom` writes the ROM into
+the cart's SDRAM, reads it back and compares, then sets the cart's `BOOT_MODE` config to `1`,
+so the next Reset boots that ROM instead of loading the menu. Nothing else in the cart's config
+changes. It takes a `.z64` (big-endian) ROM of at most `0x03FE0000` bytes, since the last
+128 KiB of SDRAM hold saves, and writes nothing if the file is anything else:
+
+```sh
+cargo run -p sc64-smoke --release -- --port COM4 --boot-rom n64/bringup/multi64_bringup.z64
+```
+
+Then press Reset. The cart keeps `BOOT_MODE` across resets, and across power cycles while USB
+powers it (vendor `docs/04_config_options.md`), so it skips the menu until it is set back:
+
+```sh
+cargo run -p sc64-smoke --release -- --port COM4 --boot-menu
+```
+
+`CIC_SEED` is left as it is. At its default, `0xFFFF`, the bootloader works out the CIC from the
+ROM's IPL3; `--config` prints it and the rest of the cart's config without changing anything.
+
+Use the bootloader whenever the menu fails to boot a ROM, before blaming the ROM. On 2026-10-08
+the maintainer's SC64 menu hung on a black screen for every libdragon ROM, test ROM 1.12 and the
+bring-up ROM included, while commercial games booted. The menu had loaded each ROM into SDRAM
+intact, and the bootloader booted the same bytes. N64FlashcartMenu
+[issue #425](https://github.com/Polprzewodnikowy/N64FlashcartMenu/issues/425), open, reports the
+same symptom with its 0.3.4 release, and its reporter's reading of the cause: the menu's boot code
+zeroes the video timings but leaves the video interface on, so libdragon's `display_init` waits
+for a vertical blank that never comes. That cart's `sc64menu.n64` is the 0.3.4 release, byte for
+byte (SHA-256 `042b4831…`, matching the release's published digest), and the libdragon pinned in
+[`toolchain.lock`](toolchain.lock) has that wait in `display_init`. The fix is on the menu's
+`main` and `develop` branches but in no tagged release as of 2026-10-08. With the menu's rolling
+pre-release on the card instead (built 2026-10-07 from `develop`, SHA-256 `e8f53076…`), the
+bring-up ROM boots from the menu.
+
+`--boot-rom` was first run on 2026-10-08 on that SC64 (firmware 2.20 rev 2), with the console
+off: it wrote and verified `multi64_bringup.z64`, the console's next power-on started the
+bring-up ROM, and `--boot-menu` put the menu back. A second run that day, with the console on,
+wrote another build of the bring-up ROM (SHA-256 `33a8e7ec…`); after Reset it booted and passed
+the full bring-up run, and `--boot-menu` put the menu back again.
+
+---
+
 ## Python WebSocket smoke
 
 With `multi64_test.z64` in **RAW_ECHO**, see [`scripts/multi64_ws_test.py`](../scripts/multi64_ws_test.py) and the [root README](../README.md).

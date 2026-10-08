@@ -18,6 +18,10 @@ pub use wire::{PktPacket, WireBuffer, WireEvent};
 pub mod cmd {
     pub const IDENTIFIER_GET: u8 = b'v';
     pub const VERSION_GET: u8 = b'V';
+    /// Read one cart config value (`CONFIG_GET`): `arg0` = config id.
+    pub const CONFIG_GET: u8 = b'c';
+    /// Set one cart config value (`CONFIG_SET`): `arg0` = config id, `arg1` = value.
+    pub const CONFIG_SET: u8 = b'C';
     /// PC → SC64: `USB_WRITE` (see SummerCart64 `docs/03_usb_interface.md`).
     pub const USB_WRITE: u8 = b'U';
     /// Read cart SDRAM/flash buffer from PC (`MEMORY_READ`).

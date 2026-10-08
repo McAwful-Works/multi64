@@ -123,12 +123,17 @@ The values above are placeholders, not measurements. **Z** steps the load (off, 
 1. Build the host tool: `cargo build --release -p multi64-test-connector`.
 2. Start `multi64d` on the SC64, from Multi64 (Settings → **Cart**: SummerCart64 or
    Auto-detect, then **Start bridge**) or with `cargo run -p multi64d --release -- --serial COM4`.
-3. Load `multi64_bringup.z64` onto the SC64 and boot it. On 2026-10-08 the SC64 menu hung on
-   every libdragon ROM, test ROM 1.12 included, on a black screen before any ROM code ran, while
-   commercial games booted: the ROM was in the cart intact, and the console never reached it.
-   Booting with the cart's own bootloader instead worked: write the ROM into the cart's SDRAM and
-   set `BOOT_MODE` to `1`, which is what `sc64deployer upload` does, then press Reset. Set
-   `BOOT_MODE` back to `0` afterward, or the cart keeps skipping the menu.
+3. Load `multi64_bringup.z64` onto the SC64 and boot it with the cart's own bootloader, then
+   press Reset:
+
+   ```sh
+   cargo run -p sc64-smoke --release -- --port COM4 --boot-rom n64/bringup/multi64_bringup.z64
+   ```
+
+   The SC64 menu hung on every libdragon ROM on 2026-10-08, this one included, on a black
+   screen before any ROM code ran. Afterward, `--boot-menu` puts the menu back; until then the
+   cart keeps skipping it. See
+   [Loading a ROM onto a SummerCart64](../README.md#loading-a-rom-onto-a-summercart64).
 4. Photograph the screen.
 5. Run:
 
