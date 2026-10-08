@@ -18,6 +18,8 @@ LIBDRAGON_REPO=https://github.com/DragonMinded/libdragon.git
 LIBDRAGON_COMMIT=c4a7e119eff1cfad07adcfa892a2910c40d8bdb8
 
 # --- mips64-elf GCC toolchain (prebuilt by the libdragon project) ---
+# NO LONGER DOWNLOADS: libdragon replaced these assets on 2026-09-15 and this id returns 404.
+# The current asset (564528689) builds the test ROM, but to different bytes. See n64/README.md.
 TOOLCHAIN_ASSET_ID=534541635
 TOOLCHAIN_ASSET_NAME=gcc-toolchain-mips64-x86_64.deb
 TOOLCHAIN_SHA256=1d624e3bd991087301aa3163e0c7084f699d7f40ab7269adb5231df08359810b

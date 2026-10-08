@@ -1,6 +1,8 @@
 //! Library for **`multi64_test.z64`** over **`multi64d`** WebSocket (L3 APPLICATION / **M64T**).
-//! See [`docs/connectors/test-rom.md`](../../docs/connectors/test-rom.md).
+//! See [`docs/connectors/test-rom.md`](../../docs/connectors/test-rom.md). [`bringup`] drives the
+//! cart bring-up ROM, `n64/bringup/multi64_bringup.z64`, over M64P.
 
+pub mod bringup;
 pub mod suite;
 
 use anyhow::{Context, Result};

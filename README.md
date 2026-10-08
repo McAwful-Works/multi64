@@ -47,7 +47,7 @@ It listens on `http://127.0.0.1:38765/`, with L3 bytes as WebSocket frames at
 | [`docs/spec/`](docs/spec/) | Normative protocols: [L3](docs/spec/l3-bridge-protocol-v1.md), [the L2 contract](docs/spec/l2-link-adapter.md), [the daemon API](docs/spec/daemon-api-v1.md) |
 | [`docs/integration/`](docs/integration/) | Putting the M64P agent into a game ROM |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Building, the crate inventory, and the conventions |
-| [`n64/`](n64/README.md) | The test ROM and the game-resident agent |
+| [`n64/`](n64/README.md) | The test ROM, the game-resident agent, and the cart bring-up ROM that runs the agent's drivers outside a game |
 
 The test ROM is how the stack is exercised without a game. Build
 [`n64/test-rom/`](n64/test-rom/) into `multi64_test.z64`, boot it, and run the whole suite at

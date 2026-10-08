@@ -8,13 +8,21 @@ This folder builds **libdragon** ROMs for on-cart testing, and holds the **M64P 
 
 The console side of an RDRAM peek/poke integration: libdragon- and libultra-free code a game calls once per frame. It shares `test-rom/mem_proto.c` with the test ROM's **MEM_AGENT** mode. See [`agent/README.md`](agent/README.md) and the [ROM integration guides](../docs/integration/README.md).
 
+## `bringup/` — cart bring-up ROM
+
+`multi64_bringup.z64` runs the agent's own cart drivers on a cart, outside any game: it identifies
+the cart, measures what the drivers' waits cost, writes and reads the cart's buffer by CPU words
+and by PI DMA, and drives the link under background ROM DMA. Results go on screen and into a report
+`multi64-test-connector bringup` reads. A SummerCart64 run is the baseline other carts are compared
+with. It has run on one SummerCart64, whose run is that baseline. See [`bringup/README.md`](bringup/README.md).
+
 ## `test-rom/` — all-in-one hardware test ROM
 
 **Single** build output: `multi64_test.z64` — the official **Multi64** e2e ROM for **SummerCart64** + L3, and the same binary for **EverDrive X7** and **EverDrive-64 PRO** (both experimental). Uses libdragon (`N64_INST`).
 
 The committed binary is built from the current source and accepts SummerCart64, EverDrive X7 and EverDrive-64 PRO.
 
-> **Built with the versions pinned in [`toolchain.lock`](toolchain.lock)** — libdragon `c4a7e11`, mips64-elf GCC **16.2.0**. Use `./setup-toolchain.sh` to install exactly those; see *Toolchain* below.
+> **Built with the versions pinned in [`toolchain.lock`](toolchain.lock)** — libdragon `c4a7e11`, mips64-elf GCC **16.2.0**. `./setup-toolchain.sh` installed exactly those, until the pinned asset stopped downloading; see *Toolchain* below.
 
 > Note the ROM is **compressed** (`N64_ROM_ELFCOMPRESS` defaults to 1 in `n64.mk`), so searching `multi64_test.z64` for strings will give misleading results — LZ back-references replace repeated substrings. Inspect `build/multi64_test.elf` from your own `make` instead; `build/` is not tracked.
 
@@ -39,6 +47,12 @@ cd n64
 export N64_INST="$HOME/n64inst"
 export PATH="$N64_INST/bin:$PATH"
 ```
+
+> **The pinned toolchain asset no longer downloads.** libdragon replaced the rolling release's
+> assets on 2026-09-15, and asset `534541635` now returns 404, so `setup-toolchain.sh` fails on a
+> machine that does not already have it. The current asset, `564528689` (GCC 16.2.0), builds the
+> test ROM, but not byte for byte: the committed `multi64_test.z64` can no longer be reproduced from
+> a clean machine. [`bringup/`](bringup/README.md) was built with `564528689`.
 
 Two things the lock works around, both of which would otherwise defeat the pin:
 

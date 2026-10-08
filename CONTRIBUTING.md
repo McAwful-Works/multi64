@@ -10,7 +10,7 @@ Thanks for helping improve the bridge stack. This document is for **developers**
 | **SummerCart64** (optional) | Hardware runs: USB serial, [vendor USB docs](https://github.com/Polprzewodnikowy/SummerCart64). |
 | **EverDrive-64 X7** (optional) | `multi64-ed64-l2` / [docs/spec/l3-over-everdrive-x7.md](docs/spec/l3-over-everdrive-x7.md): USB model differs from SC64; see [Krikzz dev files](https://krikzz.com/pub/support/everdrive-64/x-series/dev/) and [N64brew ED64 X7](https://n64brew.dev/wiki/EverDrive-64_X7). **CI does not** exercise ED64 hardware. |
 | **EverDrive-64 PRO** (optional) | `multi64-ed64pro-l2` / [docs/spec/l3-over-everdrive-pro.md](docs/spec/l3-over-everdrive-pro.md): edlink Gen3, unrelated to the X7's USB model; start from spec §9. **CI does not** exercise it either. |
-| **N64 toolchain** (optional) | Build [n64/test-rom](n64/test-rom) → `multi64_test.z64`: **libdragon** and `N64_INST` per [n64/README.md](n64/README.md). |
+| **N64 toolchain** (optional) | Build [n64/test-rom](n64/test-rom) → `multi64_test.z64`, and [n64/bringup](n64/bringup) → `multi64_bringup.z64`: **libdragon** and `N64_INST` per [n64/README.md](n64/README.md). |
 
 ## Quick checks
 
@@ -85,7 +85,7 @@ With **multi64d** running, `python scripts/multi64_ws_test.py --http-only` check
 | [crates/sc64-l2](crates/sc64-l2) | `multi64-sc64-l2` — L3 byte stream over SC64 serial |
 | [crates/ed64-l2](crates/ed64-l2) | `multi64-ed64-l2` — EverDrive X7 L2 (implemented; **unvalidated on hardware**, see spec §4.0) |
 | [crates/multi64d](crates/multi64d) | Reference daemon (`multi64d`) + library API |
-| [crates/multi64-test-connector](crates/multi64-test-connector) | CLI for test ROM / M64T, and the end-to-end **suite** (`suite.rs`) the test app also runs |
+| [crates/multi64-test-connector](crates/multi64-test-connector) | CLI for test ROM / M64T, the end-to-end **suite** (`suite.rs`) the test app also runs, and `bringup` for the cart bring-up ROM (`bringup.rs`) |
 | [crates/multi64-test-app](crates/multi64-test-app) | **Multi64 Test** — the suite in a window, as one portable exe |
 | [crates/multi64-test-connector-gui](crates/multi64-test-connector-gui) | Optional per-command GUI; same WebSocket contract as the CLI. Developer-only: runs binaries from `target/` |
 | [crates/ap64](crates/ap64) | **AP64** — Archipelago N64 seeds on a console (Tauri app); the only game-specific code in the repo, see its [README](crates/ap64/README.md) |

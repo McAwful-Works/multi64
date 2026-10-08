@@ -24,6 +24,7 @@ those come from is the whole of an integration — see
 | `cart_rom.c` | The cartridge ROM for M64P's `PEEKROM`, the same on every cart |
 | [`../test-rom/mem_proto.c`](../test-rom/mem_proto.c), `mem_proto.h`, `m64p_types.h` | The protocol handler and types header, **shared with the test ROM** — not copied here |
 | `Makefile` | One relocatable object, `build/m64p_agent.o`, for a build you control |
+| `flags.mk` | The compiler flags, shared with [`../bringup`](../bringup/README.md), which builds these sources into its own ROM |
 | `templates/flat.ld`, `templates/segment_magic.c` | Link the agent as a flat image at a fixed address, with a load marker |
 | `templates/hook_stub.S`, `templates/link-flat.sh` | A per-frame hook stub and the script that builds image + stub, for a ROM with no buildable source |
 | `tools/n64crc.py` | Check or fix the header CRC (CIC-6101, CIC-6102, CIC-6103) after changing code in the first MiB |
@@ -41,6 +42,7 @@ make                           # libdragon's mips64-elf, as pinned in ../toolcha
 make PREFIX=mips64-ultra-elf-  # or a libultra toolchain
 make symbols                   # sizes, exports, and undefined symbols (must be none)
 make CART=ed64pro              # an EverDrive build instead: ed64 or ed64pro (experimental)
+make CART=ed64 PI_IO=dma       # pi_io.c moves words by PI DMA: a diagnostic build, see below
 make host-test                 # EverDrive L3 reassembly, SC64 driver failure handling, X7 driver receive, on the PC (CI runs this)
 ```
 
@@ -53,6 +55,14 @@ templates/link-flat.sh AGENT_VRAM AGENT_ROM AGENT_MIN_RAM STUB_VRAM HOOK_ORIGINA
 `CART=ed64` or `CART=ed64pro` in the environment selects an EverDrive driver there too. Both are described, with what each argument means and how to find it, in
 [cart-agent.md](../../docs/integration/cart-agent.md) and
 [placing-the-agent.md](../../docs/integration/placing-the-agent.md).
+
+`PI_IO=dma` builds `pi_io.c` with `PI_IO_DMA`, into `build/<cart>-dma/` (`build/sc64-dma/` for the default cart). Its word copies, the X7
+driver's USB window and every build's `PEEKROM`, then go by PI DMA through a bounce buffer, as
+libdragon moves an X7's window, instead of by CPU load and store. It writes the PI's DMA registers,
+which the agent otherwise never does ([cart-agent.md §3](../../docs/integration/cart-agent.md#3-what-it-does-to-the-machine)),
+so it is for finding out whether a cart needs DMA, not for a game. [`../bringup`](../bringup/README.md)
+runs both forms side by side. The default builds are byte-identical with or without this option
+in the source.
 
 ## What has run on hardware
 

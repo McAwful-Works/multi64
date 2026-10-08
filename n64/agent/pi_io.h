@@ -12,6 +12,10 @@
  *
  * Every function returns 1 on success and 0 when the PI stayed busy; on 0 the caller's data is
  * incomplete and must not be trusted.
+ *
+ * Built with PI_IO_DMA (make PI_IO=dma), pi_io_load_words and pi_io_store_words move data by PI
+ * DMA instead, breaking the first rule above. That build is for n64/bringup, to show whether a cart
+ * needs DMA; see pi_io.c.
  */
 #ifndef MULTI64_AGENT_PI_IO_H
 #define MULTI64_AGENT_PI_IO_H

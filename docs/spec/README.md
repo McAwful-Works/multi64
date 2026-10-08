@@ -21,6 +21,7 @@ Normative **Multi64** wire and behavior. Each spec file carries its own **Spec-R
 | [**daemon-api-v1.md**](daemon-api-v1.md) | `multi64d`: HTTP + WebSocket bridge |
 | [**test-l3-application-v0.md**](test-l3-application-v0.md) | **M64T**: `multi64_test.z64` (`n64/test-rom`) host↔cart messages |
 | [**memory-l3-application-v0.md**](memory-l3-application-v0.md) | **M64P**: RDRAM peek/poke; game-agnostic, serviced from the ROM's per-frame hook |
+| [**cart-bringup-report-v0.md**](cart-bringup-report-v0.md) | **Bring-up report** (Draft): what `n64/bringup`'s ROM measures, laid out in RDRAM for a host to read over M64P; run on one SummerCart64 |
 | [**xfer64-cart-serial.md**](xfer64-cart-serial.md) | **Xfer64**: SD sessions, `multi64d` COM yield, Rust module map (maintainers) |
 
 ---
@@ -38,6 +39,7 @@ Normative **Multi64** wire and behavior. Each spec file carries its own **Spec-R
 | SC64 SD / FAT host (`SD_CARD_OP`, …) | `multi64-sc64-sd` (`crates/multi64-sc64-sd`) — see [`sc64-sd-usb-host.md`](sc64-sd-usb-host.md) |
 | EverDrive `usb64` serial helpers | `multi64-ed64-link` (`crates/multi64-ed64-link`) — see [`ed64-sd-usb-host.md`](ed64-sd-usb-host.md) |
 | EverDrive-64 **PRO** host link (edlink Gen3) | `multi64-ed64pro-link` (`crates/ed64pro-link`) — see [`ed64-pro-usb-host.md`](ed64-pro-usb-host.md); **unvalidated on hardware** |
+| Bring-up report (host) | `multi64-test-connector` `bringup` (`crates/multi64-test-connector/src/bringup.rs`) — see [`cart-bringup-report-v0.md`](cart-bringup-report-v0.md); the ROM side is [`n64/bringup`](../../n64/bringup/README.md) |
 
 ### Host binaries (hardware / CLI)
 

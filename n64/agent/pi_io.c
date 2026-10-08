@@ -102,6 +102,113 @@ int pi_io_write_stored(uint32_t addr, uint32_t value, int *stored)
     return ok;
 }
 
+#ifdef PI_IO_DMA
+/*
+ * PI_IO_DMA (make PI_IO=dma, and n64/bringup's DMA variant): pi_io_load_words and pi_io_store_words
+ * move a run of words by PI DMA through a bounce buffer, the way libdragon and Krikzz's own code move
+ * an EverDrive's USB window, instead of by CPU load and store.
+ *
+ * It breaks the agent's first rule (docs/integration/cart-agent.md section 3): it writes the PI's
+ * DMA registers, which belong to whatever transfer the game has in flight, and the DMA it runs ends
+ * in a PI interrupt that a game's PI manager does not expect. It exists to find out on a cart
+ * whether an X7 needs DMA, not to put in a game. Each transfer starts with the PI idle and
+ * interrupts masked, waits for itself inside that span (a 512-byte transfer is about 0.1 ms), clears
+ * the interrupt it raised, and gives up after PI_WAIT_SPINS like every other wait here.
+ */
+#define PI_DRAM_ADDR 0xA4600000u
+#define PI_CART_ADDR 0xA4600004u
+#define PI_RD_LEN 0xA4600008u /* RDRAM to cart */
+#define PI_WR_LEN 0xA460000Cu /* cart to RDRAM */
+#define PI_STATUS_CLEAR_INTR (1u << 1)
+
+/** Bytes per transfer: one EverDrive USB window. */
+#define PI_DMA_CHUNK 512u
+
+static uint32_t s_bounce[PI_DMA_CHUNK / 4u] __attribute__((aligned(16)));
+
+/** s_bounce through KSEG1. The CPU touches it only there, so the DMA never races a cache line. */
+static volatile uint32_t *bounce(void)
+{
+    return (volatile uint32_t *)((uint32_t)s_bounce | 0xA0000000u);
+}
+
+/* Write back and drop every cache line of s_bounce. Nothing here reads it through KSEG0, but its
+   BSS was zeroed that way at boot, and a dirty line written back later would land on a transfer. */
+static void bounce_flush(void)
+{
+    uint32_t a;
+    for (a = (uint32_t)s_bounce; a < (uint32_t)s_bounce + sizeof s_bounce; a += 16u) {
+        __asm__ __volatile__("cache 0x15, 0(%0)" : : "r"(a)); /* hit writeback invalidate, D */
+    }
+}
+
+/** Move `bytes` (even, at most PI_DMA_CHUNK) between s_bounce and the cart. */
+static int dma_chunk(uint32_t addr, uint32_t bytes, int to_cart)
+{
+    uint32_t sr;
+    int ok;
+
+    if (!begin(&sr)) {
+        return 0;
+    }
+    *io(PI_DRAM_ADDR) = (uint32_t)s_bounce & 0x1FFFFFFFu;
+    *io(PI_CART_ADDR) = addr & 0x1FFFFFFFu;
+    *io(to_cart ? PI_RD_LEN : PI_WR_LEN) = bytes - 1u;
+    ok = wait_bits(PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY);
+    /* Only once the transfer is over: clearing it earlier would not stop a later interrupt. */
+    if (ok) {
+        *io(PI_STATUS) = PI_STATUS_CLEAR_INTR;
+    }
+    int_restore(sr);
+    return ok;
+}
+
+int pi_io_load_words(uint32_t *dst, uint32_t addr, uint32_t words)
+{
+    uint32_t done = 0u;
+
+    bounce_flush();
+    while (done < words) {
+        uint32_t n = words - done;
+        uint32_t i;
+
+        if (n > PI_DMA_CHUNK / 4u) {
+            n = PI_DMA_CHUNK / 4u;
+        }
+        if (!dma_chunk(addr + done * 4u, n * 4u, 0)) {
+            return 0;
+        }
+        for (i = 0u; i < n; i++) {
+            dst[done + i] = bounce()[i];
+        }
+        done += n;
+    }
+    return 1;
+}
+
+int pi_io_store_words(const uint32_t *src, uint32_t addr, uint32_t words)
+{
+    uint32_t done = 0u;
+
+    bounce_flush();
+    while (done < words) {
+        uint32_t n = words - done;
+        uint32_t i;
+
+        if (n > PI_DMA_CHUNK / 4u) {
+            n = PI_DMA_CHUNK / 4u;
+        }
+        for (i = 0u; i < n; i++) {
+            bounce()[i] = src[done + i];
+        }
+        if (!dma_chunk(addr + done * 4u, n * 4u, 1)) {
+            return 0;
+        }
+        done += n;
+    }
+    return 1;
+}
+#else
 int pi_io_load_words(uint32_t *dst, uint32_t addr, uint32_t words)
 {
     uint32_t done = 0u;
@@ -158,6 +265,7 @@ int pi_io_store_words(const uint32_t *src, uint32_t addr, uint32_t words)
     }
     return 1;
 }
+#endif
 
 int pi_io_load_port(uint8_t *dst, uint32_t addr, uint32_t len)
 {
