@@ -10,9 +10,9 @@
 #      when the CPU-word build gets no HELLO_ACK, the tester switches to the DMA build and it runs
 #      again.
 #
-# Everything printed, both daemons' logs, the daemon's status before and after each phase, the
-# machine's serial ports and drivers, and the tester's photos go into results-<time>\, which is
-# zipped at the end. Written for Windows PowerShell 5.1, which every Windows 10/11 has.
+# Everything printed, both daemons' logs, the daemon's status before and after each phase, and the
+# machine's serial ports and drivers go into results-<time>\, which is zipped at the end.
+# Written for Windows PowerShell 5.1, which every Windows 10/11 has.
 
 param(
     # multi64d's --cart: ed64 (X7), ed64pro or sc64. Empty: the only X7 or SC64 plugged in, else ask.
@@ -272,42 +272,37 @@ if (-not $SkipControl) {
         # libdragon has no PRO support, so on a PRO the test ROM's USB goes through this repo's own
         # ed64pro.c: the same unproven mapping as the agent, which makes this no control.
         Section 'Phase 1 of 2: test ROM run with multi64_test.z64'
-        Say 'On a PRO this ROM uses the same untested link design as the bring-up ROM, so it is a second first-time check, not a known-good control. If it shows "usb init failed", photograph that screen.'
+        Say 'On a PRO this ROM uses the same untested link design as the bring-up ROM, so it is a second first-time check, not a known-good control.'
     } else {
         Section 'Phase 1 of 2: control run with multi64_test.z64'
         Say 'This ROM moves USB through libdragon, which has worked on an X7 and on a SummerCart64. It checks your cable, driver and port.'
     }
-    Ask 'Boot multi64_test.z64 from the cart menu. When its text is on the TV, take a photo, then press Enter' | Out-Null
+    Ask 'Boot multi64_test.z64 from the cart menu. When its text is on the TV, press Enter' | Out-Null
     $p = Start-Daemon 'phase1'
     if ($p -ne $null) {
         Run-Logged 'phase1-suite.txt' $tool @('suite', '--port', $Port) | Out-Null
         Stop-Daemon $p 'phase1'
     }
-    Ask 'Take another photo of the TV, then press Enter' | Out-Null
 }
 
 Section 'Phase 2 of 2: bring-up run with multi64_bringup.z64'
-Ask 'Power the console off and on, boot multi64_bringup.z64, take a photo of the TV once its text stops changing, then press Enter' | Out-Null
+Ask 'Power the console off and on, boot multi64_bringup.z64, wait until its text on the TV stops changing, then press Enter' | Out-Null
 $p = Start-Daemon 'phase2'
 if ($p -ne $null) {
     $words = Join-Path $out 'phase2-bringup.json'
     Run-Logged 'phase2-bringup.txt' $tool @('bringup', '--baseline', $baseline, '--out', $words) | Out-Null
     $noHello = Select-String -Path (Join-Path $out 'phase2-bringup.txt') -Pattern 'FAIL\s+link\.hello' -Quiet
-    Ask 'Take a photo of the TV, then press Enter' | Out-Null
     if ($noHello -and $Cart -eq 'ed64') {
         Section 'Phase 2b: the same with the DMA build'
         Say 'The ROM never answered through the CPU-word build. Now the DMA build.'
         Ask 'Press R on the controller once. When the top line on the TV reads "link X7 DMA", press Enter' | Out-Null
         $dma = Join-Path $out 'phase2b-bringup-dma.json'
         Run-Logged 'phase2b-bringup-dma.txt' $tool @('bringup', '--baseline', $baseline, '--out', $dma) | Out-Null
-        Ask 'Take a photo of the TV, then press Enter' | Out-Null
     }
     Stop-Daemon $p 'phase2'
 }
 
-Section 'Photos'
-Start-Process explorer.exe $out
-Ask "A folder has opened. Copy your photos of the TV into it, then press Enter" | Out-Null
+Section 'Cart'
 $cartOs = Ask 'Your cart menu/OS version, from the cart menu (or leave empty)'
 Say ("cart OS: " + $cartOs)
 

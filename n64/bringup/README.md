@@ -171,7 +171,7 @@ It writes `target/handover/cart-diagnostics-<commit>/` and a zip of it, holding:
 - `VERSION.txt`, which records the commit and every file's SHA-256.
 
 The tester copies the two ROMs to the SD card, closes Multi64, AP64 and Xfer64, and double-clicks
-`diagnose.bat`, which walks them through the run and asks for photos at each step. It does not use
+`diagnose.bat`, which walks them through the run. It does not use
 Multi64's bridge, whose log lives only in the app. Instead it runs the bundled `multi64d` itself,
 at debug level with `--serial-trace` (every byte read from the cart), with a fresh daemon for each
 phase:
@@ -192,7 +192,9 @@ check.
 Everything goes into `results-<time>/` beside the script and is zipped: the session transcript,
 each tool's output, each phase's `multi64d` log, the daemon's `GET /` before and after each phase,
 the machine's serial ports and FTDI driver versions, Windows' version, the cart OS version the
-tester types in, the bring-up JSON files and the photos. That one zip is what comes back.
+tester types in and the bring-up JSON files. That one zip is what comes back. It asks for no
+photos of the TV: what a ROM shows on screen only matters when its link never comes up, and the
+tester is asked to mention a black or stuck screen instead.
 
 The script picks the cart and its port by the USB IDs in `crates/cart-probe` (X7 `0403:6001`,
 SummerCart64 `0403:6014`) when exactly one such port is plugged in, and asks otherwise; the PRO's

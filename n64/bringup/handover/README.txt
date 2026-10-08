@@ -2,8 +2,8 @@ Multi64 cart diagnostics
 ========================
 
 Thanks for testing. This runs two short tests on your flash cart and saves everything we need into
-one zip file for you to send back. It takes about 15 minutes, and you'll need your phone's camera
-for a few photos of the TV. Nothing writes to your SD card except the two ROMs you copy onto it.
+one zip file for you to send back. It takes about 15 minutes. Nothing writes to your SD card except
+the two ROMs you copy onto it.
 
 
 Before you start
@@ -25,12 +25,12 @@ Double-click diagnose.bat. It walks you through each step and waits for you to p
   2. Bring-up test: boot multi64_bringup.z64. This runs the code that AP64 puts into games, on
      its own, and measures what works on your cart. On an EverDrive X7 it may ask you to press R
      on the controller and run it a second time.
-  3. Photos: a folder opens. Copy your photos of the TV into it.
+  3. Your cart menu's version: type it in when asked, or leave it empty.
 
 At the end it tells you where the zip is. Send back that one file.
 
-Photos: take one whenever it asks, with all the text on the TV readable. If the screen stays
-black, or stops partway and doesn't move, photograph that too: it shows where it got stuck.
+If a ROM's screen stays black, or stops partway and doesn't move, mention it when you send the
+zip back.
 
 
 Optional: Multi64_..._setup.exe
@@ -49,8 +49,8 @@ Nothing in this bundle has run on a PRO yet, so yours may be the first. Two diff
   and which COM port it is on. Windows Device Manager, under "Ports (COM & LPT)", shows the port
   that appears when you plug the cart in.
 - On a PRO the first test ROM uses the same untested link design as the second, so neither is a
-  known-good check. If either ROM shows "usb init failed" or stops on a line, photograph it: on a
-  PRO that screen is some of the most useful data you can send.
+  known-good check. If either ROM shows "usb init failed" or stops on a line, mention it when you
+  send the zip back.
 
 
 If something goes wrong
@@ -61,7 +61,7 @@ If something goes wrong
 - It says the bridge exited at once, or that its link to the cart did not come up: it prints the
   bridge's last warnings, which say why. Usually another program has the cart (close Multi64 from
   its tray icon) or the COM port is wrong. Fix that and run diagnose.bat again.
-- Anything else: send the results folder or zip anyway, with your photos. A failed run is still
+- Anything else: send the results folder or zip anyway. A failed run is still
   useful data.
 
 
