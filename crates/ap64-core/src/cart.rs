@@ -3,7 +3,8 @@
 //! The agent drives one cart: `n64/agent` builds with one driver, and the drivers do not detect
 //! each other. So every profile carries a build per cart (`crates/ap64-core/agent/build.sh`), and
 //! a seed is patched with the one for the cart it will run on. Only the SummerCart64's driver has
-//! run on hardware; the EverDrives' never have.
+//! been shown to work on hardware. The X7's has been tried once, on an X7 whose ROM never
+//! answered, and the PRO's has never run on a cart.
 
 use serde::{Deserialize, Serialize};
 

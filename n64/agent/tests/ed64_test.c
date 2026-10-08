@@ -21,8 +21,8 @@
  *
  * It checks that a received message is delivered in order and whole, or reported lost, that a sent
  * message carries the framing the host parses, and that every wait is bounded. It says nothing
- * about the cart: the register model is transcribed, not observed, and this driver has never run
- * on an X7.
+ * about the cart: the register model is transcribed, not observed, and this driver has never been
+ * shown to work on an X7.
  */
 #undef NDEBUG
 #include <assert.h>

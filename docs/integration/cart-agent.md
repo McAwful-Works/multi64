@@ -17,7 +17,7 @@ it; this is that code, written to be dropped into a ROM its authors did not desi
 | **Stack** | about 300 bytes at the deepest point, measured |
 | **RAM** | about 24 KB: 6.7–8.3 KB code, 0–1.1 KB data (both depend on compiler, flags and cart), 16.4–19 KB BSS |
 | **Symbols** | none undefined. Nothing from libultra, libdragon, the C library or the game |
-| **Cart** | SummerCart64. EverDrive-64 X7 and PRO builds exist (`CART=ed64`, `CART=ed64pro`) and have **never run on a cart**; see §6 |
+| **Cart** | SummerCart64. EverDrive-64 X7 and PRO builds exist (`CART=ed64`, `CART=ed64pro`) and have **not been shown to work on a cart**; see §6 |
 
 The per-frame rule is not style. M64P promises that every region in one request is read at
 one consistent point in the frame and that a write lands between frames. That property comes
@@ -142,8 +142,11 @@ than edit. A local fix to `mem_proto` is a fork of the protocol.
 
 ## 6. EverDrive builds (experimental)
 
-**Neither has run on a cart.** They exist so that the first person with an EverDrive has something
-to test. Nothing about them counts as support.
+**Neither has been shown to work on a cart.** The PRO build has never run on one. The X7 build has
+been tried once, in an Ocarina of Time seed patched by AP64: the serial port opened, but the ROM
+never answered `HELLO`, and nothing from that run shows whether the agent ever started. They exist
+so that the first person with an EverDrive has something to test. Nothing about them counts as
+support.
 
 | Build | Driver | Wire | RAM, flat image |
 |---|---|---|---|

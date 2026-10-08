@@ -79,7 +79,7 @@ struct LoadResult {
 struct CartInfo {
     id: &'static str,
     name: &'static str,
-    /// Whether its agent has run on a cart; the others are offered as experimental.
+    /// Whether its agent has been shown to work on a cart; the others are offered as experimental.
     tested: bool,
 }
 

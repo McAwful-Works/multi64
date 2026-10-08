@@ -16,8 +16,8 @@
 
 /*
  * The cart driver is chosen at build time (Makefile CART=). SummerCart64 is the default and the
- * only driver that has run on hardware; its build compiles none of the EverDrive code below.
- * The EverDrive drivers are experimental and have never run on a cart.
+ * only driver shown to work on hardware; its build compiles none of the EverDrive code below.
+ * The EverDrive drivers are experimental and have not been shown to work on a cart.
  */
 #if defined(AGENT_CART_ED64) && defined(AGENT_CART_ED64PRO)
 #error "define at most one of AGENT_CART_ED64 and AGENT_CART_ED64PRO"
