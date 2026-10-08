@@ -211,7 +211,9 @@ byte (SHA-256 `042b4831…`, matching the release's published digest), and the l
 
 `--boot-rom` was first run on 2026-10-08 on that SC64 (firmware 2.20 rev 2), with the console
 off: it wrote and verified `multi64_bringup.z64`, the console's next power-on started the
-bring-up ROM, and `--boot-menu` put the menu back.
+bring-up ROM, and `--boot-menu` put the menu back. A second run that day, with the console on,
+wrote another build of the bring-up ROM (SHA-256 `33a8e7ec…`); after Reset it booted and passed
+the full bring-up run, and `--boot-menu` put the menu back again.
 
 ---
 
