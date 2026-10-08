@@ -97,6 +97,7 @@ Multi64, Xfer64 and AP64 are each installed with their own installer; none bundl
 ```sh
 cargo run -p multi64d --release -- --serial COM3        # daemon, 127.0.0.1:38765
 cargo run -p sc64-smoke -- --port COM5                  # vendor IDENTIFIER/VERSION
+cargo run -p sc64-smoke --release -- --port COM4 --boot-rom ROM.z64   # boot without the menu; --boot-menu undoes
 cargo run -p sc64-l3-framing-e2e --release -- --port COM3   # needs ROM in RAW_ECHO
 cargo run -p multi64-test-connector --release -- bringup    # needs n64/bringup's ROM booted
 ```

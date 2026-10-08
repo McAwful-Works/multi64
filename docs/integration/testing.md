@@ -50,7 +50,9 @@ makes the ROM safe on a console without an Expansion Pak.
    port: release `multi64d`'s link first and resume it after
    ([daemon-api-v1.md](../spec/daemon-api-v1.md)).
 2. Boot it. A ROM that does not boot at all has usually failed the CRC or IPL3 check
-   ([placing-the-agent.md §6](placing-the-agent.md#6-the-boot-crc-and-ipl3)).
+   ([placing-the-agent.md §6](placing-the-agent.md#6-the-boot-crc-and-ipl3)). On an SC64, rule
+   out the menu first by booting it with the cart's own bootloader
+   ([Loading a ROM onto a SummerCart64](../../n64/README.md#loading-a-rom-onto-a-summercart64)).
 3. Get into the game, then send `HELLO`. Expect `HELLO_ACK` with the RDRAM size (8192 KiB with the
    Expansion Pak) and writes accepted.
 4. `PEEKV` something you can change by playing — health, a counter — and watch it change. That proves

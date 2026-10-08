@@ -3912,6 +3912,7 @@ dependencies = [
  "clap",
  "multi64-sc64-link",
  "serialport",
+ "ureq",
 ]
 
 [[package]]
