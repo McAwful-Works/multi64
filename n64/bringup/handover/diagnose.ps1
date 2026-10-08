@@ -130,6 +130,28 @@ function Port-Open {
     } catch { return $false }
 }
 
+# multi64d logs to stdout ($phase-multi64d.log); .err.log catches anything else. When the cart
+# never comes up, its last warnings say why better than a guess here can: a port another program
+# holds, a port that does not exist, or (on a PRO) a cart that did not answer its identity check.
+function Show-DaemonErrors([string]$phase) {
+    $lines = @()
+    foreach ($f in @("$phase-multi64d.log", "$phase-multi64d.err.log")) {
+        $path = Join-Path $out $f
+        if (Test-Path $path) { $lines += @(Get-Content $path | Where-Object { $_ -match ' (WARN|ERROR) |error' }) }
+    }
+    if ($lines.Count -eq 0) { Say '(multi64d logged no warning or error)'; return }
+    # The daemon retries once a second, so one cause repeats; each distinct message once, without
+    # its timestamp, newest last.
+    $seen = @{}
+    $distinct = @()
+    for ($k = $lines.Count - 1; $k -ge 0; $k--) {
+        $msg = ($lines[$k] -replace '^\S+\s+', '').Trim()
+        if (-not $seen.ContainsKey($msg)) { $seen[$msg] = $true; $distinct = @($msg) + $distinct }
+    }
+    Say "multi64d's last warnings:"
+    $distinct | Select-Object -Last 6 | ForEach-Object { Say ("  " + $_) }
+}
+
 function Start-Daemon([string]$phase) {
     $env:RUST_LOG = 'debug'
     $env:MULTI64D_SERIAL_TRACE = '1'
@@ -144,16 +166,23 @@ function Start-Daemon([string]$phase) {
     for ($i = 0; $i -lt 40; $i++) {
         Start-Sleep -Milliseconds 250
         if ($p.HasExited) {
-            Say "multi64d exited at once (code $($p.ExitCode)); see $phase-multi64d.err.log"
-            Get-Content (Join-Path $out "$phase-multi64d.err.log") -Tail 15 | ForEach-Object { Say $_ }
+            Say "multi64d exited at once (code $($p.ExitCode)). Is another program using port 38765, such as Multi64's own bridge?"
+            Show-DaemonErrors $phase
             return $null
         }
         try {
             Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "$base/" | Out-Null
-            Start-Sleep -Seconds 1
+            # The link can take a moment: multi64d retries the port once a second, and a PRO's link
+            # comes up only after the cart answers an identity check.
+            $up = $false
+            for ($j = 0; $j -lt 8 -and -not $up; $j++) {
+                Start-Sleep -Seconds 1
+                $up = Port-Open
+            }
             Save-Status "$phase-status-start.json"
-            if (-not (Port-Open)) {
-                Say "multi64d is running but could not open $($script:Port). Is another program using the cart, or is it the wrong port? Skipping this test; its log is $phase-multi64d.err.log."
+            if (-not $up) {
+                Say "multi64d is running, but its link to the cart on $($script:Port) did not come up, so this test is skipped."
+                Show-DaemonErrors $phase
                 Stop-Daemon $p $phase
                 return $null
             }
@@ -209,8 +238,11 @@ Run-Logged 'ports.txt' $daemon @('--list-ports') | Out-Null
 # USB IDs from crates/cart-probe: the X7's FT245R is 0403:6001, the SummerCart64 0403:6014. Both
 # are stock FTDI parts, so a match only picks a default; the PRO's is not known, so it is asked for.
 if (-not $Cart) {
-    $x7 = @($ports | Where-Object { $_.DeviceID -match 'VID_0403.PID_6001' })
-    $sc = @($ports | Where-Object { $_.DeviceID -match 'VID_0403.PID_6014' })
+    # With -Port, only that port can say which cart it is.
+    $candidates = $ports
+    if ($Port) { $candidates = @($ports | Where-Object { $_.Name -match ('\(' + [regex]::Escape($Port) + '\)') }) }
+    $x7 = @($candidates | Where-Object { $_.DeviceID -match 'VID_0403.PID_6001' })
+    $sc = @($candidates | Where-Object { $_.DeviceID -match 'VID_0403.PID_6014' })
     if ($x7.Count + $sc.Count -eq 1) {
         $Cart = if ($x7.Count -eq 1) { 'ed64' } else { 'sc64' }
         Say "cart: $Cart, from the only X7 or SummerCart64 USB port plugged in"
@@ -236,8 +268,15 @@ if (-not $Port) {
 $script:Port = $Port
 
 if (-not $SkipControl) {
-    Section 'Phase 1 of 2: control run with multi64_test.z64'
-    Say 'This ROM uses libdragon, which has worked on an X7 before. It checks your cable, driver and port.'
+    if ($Cart -eq 'ed64pro') {
+        # libdragon has no PRO support, so on a PRO the test ROM's USB goes through this repo's own
+        # ed64pro.c: the same unproven mapping as the agent, which makes this no control.
+        Section 'Phase 1 of 2: test ROM run with multi64_test.z64'
+        Say 'On a PRO this ROM uses the same untested link design as the bring-up ROM, so it is a second first-time check, not a known-good control. If it shows "usb init failed", photograph that screen.'
+    } else {
+        Section 'Phase 1 of 2: control run with multi64_test.z64'
+        Say 'This ROM moves USB through libdragon, which has worked on an X7 and on a SummerCart64. It checks your cable, driver and port.'
+    }
     Ask 'Boot multi64_test.z64 from the cart menu. When its text is on the TV, take a photo, then press Enter' | Out-Null
     $p = Start-Daemon 'phase1'
     if ($p -ne $null) {

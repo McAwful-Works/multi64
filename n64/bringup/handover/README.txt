@@ -40,13 +40,27 @@ The latest Multi64, the same build as the bridge the diagnostics use. You don't 
 tests. Install it if you want the current version for AP64 afterward.
 
 
+If your cart is an EverDrive-64 PRO
+-----------------------------------
+
+Nothing in this bundle has run on a PRO yet, so yours may be the first. Two differences:
+
+- The script can't recognize a PRO by its USB IDs, so it asks which cart you have (answer "pro")
+  and which COM port it is on. Windows Device Manager, under "Ports (COM & LPT)", shows the port
+  that appears when you plug the cart in.
+- On a PRO the first test ROM uses the same untested link design as the second, so neither is a
+  known-good check. If either ROM shows "usb init failed" or stops on a line, photograph it: on a
+  PRO that screen is some of the most useful data you can send.
+
+
 If something goes wrong
 -----------------------
 
 - Windows SmartScreen warns about the files: they aren't code-signed. Choose "More info", then
   "Run anyway".
-- It says the bridge exited at once: another program has the cart's port open. Close it and run
-  diagnose.bat again.
+- It says the bridge exited at once, or that its link to the cart did not come up: it prints the
+  bridge's last warnings, which say why. Usually another program has the cart (close Multi64 from
+  its tray icon) or the COM port is wrong. Fix that and run diagnose.bat again.
 - Anything else: send the results folder or zip anyway, with your photos. A failed run is still
   useful data.
 

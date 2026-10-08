@@ -176,14 +176,19 @@ Multi64's bridge, whose log lives only in the app. Instead it runs the bundled `
 at debug level with `--serial-trace` (every byte read from the cart), with a fresh daemon for each
 phase:
 
-1. **Control:** `multi64_test.z64` and `multi64-test-connector suite`. That ROM moves USB through
-   libdragon, which passed on an X7 on 2026-09-18, so a failure here is the tester's cable, driver
-   or port rather than the agent's driver.
+1. **Control:** `multi64_test.z64` and `multi64-test-connector suite`. On an X7 or SC64 that ROM
+   moves USB through libdragon, which passed on an X7 on 2026-09-18, so a failure here is the
+   tester's cable, driver or port rather than the agent's driver. On a PRO it is no control:
+   libdragon does not support the PRO, so the test ROM uses `n64/test-rom/ed64pro.c`, the same
+   unproven mapping the agent uses, and the script says so.
 2. **Bring-up:** `multi64_bringup.z64` and `bringup --baseline`. If it reports `link.hello` FAIL
    (no HELLO_ACK), the script has the tester press **R** (the top line changes to `link X7 DMA`)
    and runs it again.
 
-A phase whose daemon cannot open the port is skipped with the reason, rather than left to time out.
+A phase whose daemon's link does not come up within about 8 seconds is skipped rather than left to
+time out check by check, and the script prints the daemon's last warnings, which name the cause: a
+port held by another program, a port that does not exist, or a PRO that did not answer its identity
+check.
 Everything goes into `results-<time>/` beside the script and is zipped: the session transcript,
 each tool's output, each phase's `multi64d` log, the daemon's `GET /` before and after each phase,
 the machine's serial ports and FTDI driver versions, Windows' version, the cart OS version the
