@@ -39,7 +39,7 @@ impl Cart {
         }
     }
 
-    /// Whether its agent has run on a cart. Only the SummerCart64's has.
+    /// Whether its agent has been shown to work on a cart. Only the SummerCart64's has.
     pub fn tested(self) -> bool {
         self == Cart::Sc64
     }

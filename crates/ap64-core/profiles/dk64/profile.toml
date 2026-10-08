@@ -25,6 +25,7 @@ version = 0
 cic = "6105"
 randomizer = "the DK64 randomizer's Archipelago world"
 connector = "dk64"        # native: AP64 answers the DK64 Client as RetroArch (ap64-connector dk64)
+game_needs_expansion_pak = true   # DK64 does not boot without one
 
 # The release this was measured against; a different one installed is noted, not refused.
 [measured]

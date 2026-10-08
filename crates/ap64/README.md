@@ -217,11 +217,23 @@ is the one thing waiting won't fix. The session still keeps trying, so Multi64 s
 wherever it is gets picked up.
 
 Every game here needs an **Expansion Pak**, because the agent runs in its memory. Without one
-the stub stands the agent down and nothing on the console can answer, so AP64 cannot tell a
+the agent never starts (the stub skips it, or the game does not boot at all) and nothing on the
+console can answer, so AP64 cannot tell a
 missing Pak from a console that is off or running another ROM. So it says what is needed once,
-in a **Before you start** window the first time AP64 opens (and in the Playing help), and when
-the cart is connected but the ROM has been silent for 15 seconds, the status names the Pak as
-the likely cause and the session log says so once.
+in a **Before you start** window the first time AP64 opens (and in the Playing help).
+
+When the cart is connected but the ROM has been silent for 15 seconds, the status suggests why,
+and the session log says so once:
+
+- On an EverDrive (Multi64 set up for the X7 or the PRO), the port is open whether or not a
+  ROM is running, and AP64's agent for those carts has never been shown to work on one. The
+  status says the agent is experimental and to check the ROM was patched for that cart. For a
+  game that runs without an Expansion Pak, the log adds that a missing Pak would also do it.
+- On the SummerCart64, for a game that runs without an Expansion Pak, it names the Pak as the
+  likely cause.
+- For a game that does not run without one (Ocarina of Time, Banjo-Tooie, Donkey Kong 64:
+  `game_needs_expansion_pak` in its profile), a running game has the Pak, so the status asks
+  instead whether the ROM is the one AP64 added the agent to.
 
 Before a session begins, Start may ask about two things, one at a time. First, a fix the game's
 Archipelago client needs (Donkey Kong 64 and Banjo-Tooie, above). Then the game's notes: what

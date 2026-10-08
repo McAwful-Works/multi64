@@ -200,7 +200,10 @@ problem is real and invisible until a console sees it -- it just was not this.
 one where only the agent does.** `AGENT_MIN_RAM` makes the agent skip itself below 8 MB
 and the seed still plays. When the seed itself needs the Pak, that is a hardware
 requirement for the game, and it belongs in the issue and the profile comment as the
-headline rather than a remark about the agent.
+headline rather than a remark about the agent. Set `game_needs_expansion_pak = true` in the
+profile too: a game like that which is running has the Pak, so AP64's Play status stops
+naming it when the ROM is silent, and a test refuses an agent linked in the Pak with
+`min_ram = 0` in a profile that does not set it.
 
 Record the result on the game's issue either way. A "boots on a console" line is worth
 more than anything else on it, and a game that does not boot comes off the candidate list

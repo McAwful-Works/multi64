@@ -34,6 +34,11 @@ pub struct Profile {
     pub measured: Option<Measured>,
     /// Which connector script plays this game (`connectors/<id>/`).
     pub connector: String,
+    /// Whether the game as patched does not run without an Expansion Pak, whatever the agent
+    /// needs: Donkey Kong 64, Banjo-Tooie, a randomizer whose payload lives there. A game like
+    /// that which is running proves the Pak is there ([`Profile::silence_may_be_the_pak`]).
+    #[serde(default)]
+    pub game_needs_expansion_pak: bool,
     /// What someone should know before playing this game on a console, shown when Start is
     /// pressed: things about the randomizer AP64 cannot change, each a sentence or two.
     #[serde(default)]
@@ -52,6 +57,14 @@ pub struct Profile {
     pub require: Vec<Require>,
     #[serde(default)]
     pub write: Vec<Write>,
+}
+
+impl Profile {
+    /// Whether a ROM that is running but silent may be one whose stub found no Expansion Pak
+    /// and skipped the agent. Not when the game itself needs the Pak: a game that runs has one.
+    pub fn silence_may_be_the_pak(&self) -> bool {
+        self.agent.needs_expansion_pak() && !self.game_needs_expansion_pak
+    }
 }
 
 /// The randomizer release a profile was measured against, so a seed from another release can
