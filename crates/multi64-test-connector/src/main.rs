@@ -1,7 +1,9 @@
 //! CLI for **`multi64_test.z64`** over **`multi64d`** WebSocket — see [`docs/connectors/test-rom.md`](../../docs/connectors/test-rom.md).
+//! `bringup` and `bringup-compare` drive the cart bring-up ROM instead.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use multi64_test_connector::bringup;
 use multi64_test_connector::suite::{run_suite, CheckResult, Outcome, SuiteOptions};
 use multi64_test_connector::{
     run_connector_command, run_controller_poll, run_listen, ConnectorCommand,
@@ -17,7 +19,7 @@ fn note_suffix(note: &Option<String>) -> String {
 #[derive(Parser, Debug)]
 #[command(
     name = "multi64-test-connector",
-    about = "n64/test-rom ↔ multi64d WebSocket (L3 APPLICATION / M64T). Run multi64d with multi64_test.z64 (M64T_PROTO/BENCH, or CTRL_POLL for host-driven REQ_CONTROLLER)."
+    about = "n64/test-rom ↔ multi64d WebSocket (L3 APPLICATION / M64T). Run multi64d with multi64_test.z64 (M64T_PROTO/BENCH, or CTRL_POLL for host-driven REQ_CONTROLLER). `bringup` drives n64/bringup's ROM over M64P instead."
 )]
 struct Args {
     /// WebSocket URL (multi64d `/ws`).
@@ -154,6 +156,51 @@ enum Command {
         #[arg(long, default_value_t = false)]
         skip_serial: bool,
     },
+    /// Drive n64/bringup's multi64_bringup.z64: read its report through the agent it runs, run
+    /// traffic under each load level (and through both X7 builds), and save it all as JSON.
+    ///
+    /// Needs multi64d running against the cart and the bring-up ROM booted. Exits 1 if any check
+    /// failed.
+    Bringup {
+        /// Where to write the JSON. Default: bringup-<cart>-<unix time>.json here.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// An earlier run's JSON to compare against, such as a SummerCart64 baseline.
+        #[arg(long)]
+        baseline: Option<std::path::PathBuf>,
+        /// Echo rounds per load level.
+        #[arg(long, default_value_t = 3)]
+        rounds: u32,
+        /// Only the cart's default agent build, even on an X7.
+        #[arg(long, default_value_t = false)]
+        default_variant_only: bool,
+        /// The daemon's HTTP base, for the port and cart it reports.
+        #[arg(long, default_value = multi64_test_connector::suite::DEFAULT_BASE_URL)]
+        base: String,
+    },
+    /// Compare two saved bring-up runs, check by check, without a cart.
+    BringupCompare {
+        /// The run to look at.
+        report: std::path::PathBuf,
+        /// The run to hold it against.
+        baseline: std::path::PathBuf,
+    },
+}
+
+fn read_run(path: &std::path::Path) -> Result<bringup::BringupRun> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
+}
+
+fn print_compare(run: &bringup::BringupRun, baseline: &bringup::BringupRun, name: &str) {
+    println!("\n== against {name} ==");
+    let lines = bringup::compare(run, baseline);
+    if lines.iter().all(|l| l.starts_with("VALUE")) {
+        println!("every check has the same outcome");
+    }
+    for l in lines {
+        println!("{l}");
+    }
 }
 
 /// Accept `0x80000000` as well as a decimal address: RDRAM addresses are always written in hex.
@@ -197,7 +244,11 @@ fn map_command(cmd: Command) -> ConnectorCommand {
             len,
             expect_hex,
         },
-        Command::Listen { .. } | Command::ControllerPoll { .. } | Command::Suite { .. } => {
+        Command::Listen { .. }
+        | Command::ControllerPoll { .. }
+        | Command::Suite { .. }
+        | Command::Bringup { .. }
+        | Command::BringupCompare { .. } => {
             unreachable!()
         }
     }
@@ -257,6 +308,64 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+        }
+        Command::Bringup {
+            out,
+            baseline,
+            rounds,
+            default_variant_only,
+            base,
+        } => {
+            // Read it first: a bad path should fail before minutes of traffic, not after.
+            let baseline_run = match &baseline {
+                Some(p) => Some(read_run(p)?),
+                None => None,
+            };
+            let opts = bringup::BringupOptions {
+                ws_url: args.url.clone(),
+                base_url: base,
+                recv_timeout_secs: args.recv_timeout_secs,
+                rounds,
+                default_variant_only,
+            };
+            let run = match bringup::run_bringup(&opts, &mut log).await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("\nFATAL: {e:#}");
+                    std::process::exit(2);
+                }
+            };
+            for n in &run.notes {
+                println!("note: {n}");
+            }
+            let cart = run
+                .boot_report
+                .as_ref()
+                .map(|r| match r.cart {
+                    bringup::CART_SC64 => "sc64",
+                    bringup::CART_X_SERIES => "x7",
+                    bringup::CART_PRO => "pro",
+                    _ => "unknown",
+                })
+                .unwrap_or("nolink");
+            let path =
+                out.unwrap_or_else(|| format!("bringup-{cart}-{}.json", run.started_unix).into());
+            std::fs::write(&path, serde_json::to_string_pretty(&run)?)
+                .with_context(|| format!("write {}", path.display()))?;
+            println!("\nsaved {}", path.display());
+            if let (Some(b), Some(p)) = (&baseline_run, &baseline) {
+                print_compare(&run, b, &p.display().to_string());
+            }
+            let failed = run.failed();
+            println!("{failed} check(s) failed");
+            if failed > 0 {
+                std::process::exit(1);
+            }
+        }
+        Command::BringupCompare { report, baseline } => {
+            let run = read_run(&report)?;
+            let base = read_run(&baseline)?;
+            print_compare(&run, &base, &baseline.display().to_string());
         }
         Command::ControllerPoll { interval_ms } => {
             run_controller_poll(

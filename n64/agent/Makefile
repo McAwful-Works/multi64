@@ -5,6 +5,8 @@
 #   make symbols                  exported symbols, and what the object leaves undefined
 #   make CART=ed64                build/ed64/m64p_agent.o, for an EverDrive-64 X7 (experimental)
 #   make CART=ed64pro             build/ed64pro/m64p_agent.o, for an EverDrive-64 PRO (experimental)
+#   make CART=ed64 PI_IO=dma      build/ed64-dma/m64p_agent.o: pi_io.c moves words by PI DMA, a
+#                                 diagnostic build that breaks the agent's PI rules (see pi_io.c)
 #   make host-test                the EverDrive builds' L3 reassembly, the SC64 driver's failure
 #                                 handling, the X7 driver's receive path and PEEKROM, compiled
 #                                 and run on the PC
@@ -47,12 +49,24 @@ else
   $(error CART must be sc64, ed64 or ed64pro)
 endif
 
-# o32, no $gp-relative data, no PIC: the object runs inside a game whose $gp, ABI
-# and relocation model are its own. Override CFLAGS to match a host build whose
+# How pi_io.c moves a run of words: io (the default) by CPU load and store, dma by PI DMA through a
+# bounce buffer. dma programs the PI's DMA registers, which a game-resident agent must not do; it
+# exists so n64/bringup can show whether an EverDrive needs it. It changes pi_io_load_words and
+# pi_io_store_words only: the X7 driver's USB window and every build's PEEKROM, not the SC64
+# driver, which has its own copy loop.
+PI_IO ?= io
+
+ifeq ($(PI_IO),dma)
+  BUILD       := build/$(CART)-dma
+  CART_DEFINE += -DPI_IO_DMA
+else ifneq ($(PI_IO),io)
+  $(error PI_IO must be io or dma)
+endif
+
+# The flags live in flags.mk, which n64/bringup shares. Override CFLAGS to match a host build whose
 # objects this must link beside.
-CFLAGS ?= -O1 -fno-reorder-blocks -march=vr4300 -mtune=vr4300 -mabi=32 -mno-gpopt -G0 \
-          -mno-abicalls -fno-pic -mdivide-breaks -mexplicit-relocs -ffreestanding \
-          -Wall -Wextra
+include $(dir $(lastword $(MAKEFILE_LIST)))flags.mk
+CFLAGS ?= $(AGENT_CFLAGS)
 CPPFLAGS = $(EXTRA_CPPFLAGS) $(CART_DEFINE) -I. -I$(PROTO)
 
 # cart_rom.o (PEEKROM) is the same for every cart, and reads through pi_io.o.

@@ -70,7 +70,9 @@ through [`pi_io.c`](../../n64/agent/pi_io.c), and so does every build's
 
 - **It never writes the PI control registers** (`DRAM_ADDR`, `CART_ADDR`, `RD_LEN`, `WR_LEN`).
   Those belong to whatever DMA the game has in flight. Data moves by CPU load and store through
-  the uncached window instead, so the agent owns no PI state at all.
+  the uncached window instead, so the agent owns no PI state at all. The one exception is a
+  diagnostic build, `make PI_IO=dma` (§4), which [`n64/bringup`](../../n64/bringup/README.md) uses
+  to find out whether a cart needs DMA; it is not for a game.
 - **It masks interrupts around each access**, after checking the PI is idle, so the game's PI
   manager cannot start a transfer underneath it. Bulk copies are chunked at 64 words, so
   interrupts are never masked long enough to glitch audio or video.
@@ -106,9 +108,10 @@ make                           # build/m64p_agent.o with libdragon's mips64-elf
 make PREFIX=mips64-ultra-elf-  # with a libultra toolchain
 make symbols                   # sizes, exports, undefined (must be empty)
 make CART=ed64pro              # an EverDrive build (experimental; see §6)
+make CART=ed64 PI_IO=dma       # word copies by PI DMA: diagnostic only, breaks the rule in §3
 ```
 
-The default flags are `-mabi=32 -G0 -mno-gpopt -mno-abicalls -fno-pic -march=vr4300`: o32, no
+The default flags, in [`flags.mk`](../../n64/agent/flags.mk), are `-mabi=32 -G0 -mno-gpopt -mno-abicalls -fno-pic -march=vr4300`: o32, no
 `$gp`-relative data, no position-independent code. The agent runs inside a game whose `$gp` and
 relocation model are its own, so it must not rely on either.
 

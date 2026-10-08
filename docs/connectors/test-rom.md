@@ -2,7 +2,7 @@
 
 > [Doc map](../README.md) · [Flash carts](../README.md#flash-carts-l2-backends) · [Repo README](../../README.md)
 
-Rust CLI: `multi64_test.z64` ([`n64/test-rom`](../../n64/README.md)) ↔ `multi64d` WebSocket. Payloads follow **[M64T](../spec/test-l3-application-v0.md)** inside L3 **`DATA` / `APPLICATION`**. Use ROM **M64T_PROTO** or **BENCH** (not **RAW_ECHO**).
+Rust CLI: `multi64_test.z64` ([`n64/test-rom`](../../n64/README.md)) ↔ `multi64d` WebSocket. Payloads follow **[M64T](../spec/test-l3-application-v0.md)** inside L3 **`DATA` / `APPLICATION`**. Use ROM **M64T_PROTO** or **BENCH** (not **RAW_ECHO**). It also drives the cart bring-up ROM; see [Cart bring-up](#cart-bring-up).
 
 **L2 today:** `multi64d` uses **SC64** ([`l3-over-sc64.md`](../spec/l3-over-sc64.md)) by default. **EverDrive X7:** `multi64d --cart ed64` selects the [`l3-over-everdrive-x7.md`](../spec/l3-over-everdrive-x7.md) §4 mapping through `ed64-l2`, which is **unvalidated on hardware**. **EverDrive-64 PRO:** `multi64d --cart ed64pro` selects [`l3-over-everdrive-pro.md`](../spec/l3-over-everdrive-pro.md) through `ed64pro-l2`, equally unvalidated; the ROM detects the PRO itself (`n64/test-rom/ed64pro.c`).
 
@@ -144,6 +144,37 @@ Without it `multi64d` would be left holding no port, and Multi64 dead until rest
 
 GitHub **CI** does not run any of this (no cart); it only builds and tests the Rust workspace. The
 latest hardware run is recorded in [`n64/README.md`](../../n64/README.md#hardware-record).
+
+## Cart bring-up
+
+Two more subcommands drive a different ROM: [`n64/bringup`](../../n64/bringup/README.md)'s
+`multi64_bringup.z64`, which runs the cart agent's own drivers on a cart outside any game. Neither
+the ROM nor these commands has run on a cart yet.
+
+```sh
+cargo run -p multi64-test-connector --release -- bringup --out bringup-sc64-baseline.json
+cargo run -p multi64-test-connector --release -- bringup --baseline bringup-sc64-baseline.json
+cargo run -p multi64-test-connector --release -- bringup-compare bringup-x7.json bringup-sc64-baseline.json
+```
+
+`bringup` talks to the ROM through the agent build it is running. It sends `HELLO`, finds the
+ROM's report in RDRAM, and reads it
+([cart-bringup-report-v0.md](../spec/cart-bringup-report-v0.md)). Then, under each background load
+level in turn (off, moderate, heavy), it writes and reads back patterns of 4 B to 4 KiB, reads the
+ROM header with `PEEKROM`, and asks for the largest response M64P allows. On an X7 it does all of
+that again through the PI DMA build. It saves everything as JSON: the report as the ROM booted, one
+phase per build and load level with the report after it, and the checks. Check names do not
+mention the cart, so `--baseline` (or `bringup-compare`, with no cart) lists every check whose
+outcome differs from another run's, and the measured values side by side.
+
+Options: `--out` (default `bringup-<cart>-<unix time>.json`), `--baseline`, `--rounds` (echo rounds
+per load level, default 3), `--default-variant-only`, `--base`, plus the global `--url` and
+`--recv-timeout-secs`.
+
+Exit codes as for `suite`: **0** no check failed, **1** at least one did, **2** no daemon to connect
+to. A cart that never answers is a run, not an error: `link.hello` fails, and the ROM's screen holds
+what it found without a link. Under heavy load the agent gives up on a busy PI by design, so
+timeouts there are reported as INFO. Three in a row end a phase.
 
 ## Examples
 

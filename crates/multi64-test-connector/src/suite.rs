@@ -23,7 +23,7 @@ use multi64_ed64_l2::{Ed64L2Pipe, DEFAULT_ED64_CHUNK};
 use multi64_ed64pro_l2::Ed64ProL2Pipe;
 use multi64_l3::{Channel, Frame, FrameFlags, FrameType};
 use multi64_sc64_l2::Sc64L2Pipe;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_WS_URL: &str = "ws://127.0.0.1:38765/ws";
@@ -199,7 +199,7 @@ fn json_field(body: &str, key: &str) -> Option<String> {
 }
 
 /// What a running `multi64d` reports about itself.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonInfo {
     /// The serial device the daemon was told to use, e.g. `COM4`.

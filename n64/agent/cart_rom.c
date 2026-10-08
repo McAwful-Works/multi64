@@ -7,7 +7,8 @@
  * driver here keeps: never touch the PI control registers, check the PI is idle and mask
  * interrupts around each short burst of loads, and bound every wait. A game streaming from
  * ROM by DMA keeps its bus; a read that finds it busy for too long fails, and the host is
- * told to try again.
+ * told to try again. A diagnostic build with PI_IO_DMA (make PI_IO=dma) reads by PI DMA
+ * instead, breaking the first of those rules; see pi_io.c.
  */
 #include "m64p_types.h"
 #include "mem_proto.h"

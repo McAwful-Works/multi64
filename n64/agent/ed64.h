@@ -6,7 +6,8 @@
  * (trunk c4a7e119), not copied from it. libdragon moves data by DMA and stages received packets
  * at the top of the ROM window; this driver does neither. Bytes go through the cart's 512-byte
  * USB window by CPU load and store (pi_io.c), so it owns no PI state and cannot land inside a
- * running game's ROM.
+ * running game's ROM. A diagnostic build with PI_IO_DMA (make PI_IO=dma) moves the window by PI
+ * DMA instead; see pi_io.c.
  *
  * Registers, PI bus:
  *   0x1F800004 USBCFG   USB mode in, status out

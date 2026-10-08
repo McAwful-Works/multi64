@@ -22,6 +22,7 @@ Normative wire rules live in `spec/`. Each spec file carries its own **Spec-Revi
 | **Xfer64** (SD / COM, maintainers) | [xfer64-cart-serial.md](spec/xfer64-cart-serial.md) |
 | `multi64d` | [daemon-api-v1.md](spec/daemon-api-v1.md), [run-as-service.md](run-as-service.md) |
 | Test ROM + connector | [connectors/test-rom.md](connectors/test-rom.md) |
+| Check the agent's cart drivers on a cart, outside any game | [n64/bringup](../n64/bringup/README.md), [cart-bringup-report-v0.md](spec/cart-bringup-report-v0.md) |
 | Frontend themes / tokens (all four apps) | [frontend-appearance.md](frontend-appearance.md) |
 | Writing documentation here | [documentation-style.md](documentation-style.md) |
 | The app marks, and where they are copied | [branding/README.md](../branding/README.md) |
@@ -66,6 +67,7 @@ Bump L3 **Protocol-Major** / **Protocol-Minor** only when the **byte** contract 
 | [daemon-api-v1.md](spec/daemon-api-v1.md) | `multi64d` HTTP + WebSocket |
 | [test-l3-application-v0.md](spec/test-l3-application-v0.md) | M64T / `multi64_test.z64` |
 | [memory-l3-application-v0.md](spec/memory-l3-application-v0.md) | M64P: RDRAM peek/poke over L3 |
+| [cart-bringup-report-v0.md](spec/cart-bringup-report-v0.md) | The cart bring-up ROM's report in RDRAM, read over M64P (draft) |
 
 **Index:** [spec/README.md](spec/README.md)
 
@@ -102,7 +104,7 @@ Host programs that use `multi64d`’s **WebSocket** for **raw L3**. The cart lin
 
 | Document | Programs |
 |----------|----------|
-| [test-rom.md](connectors/test-rom.md) | `multi64-test-connector` and **Multi64 Test** (`multi64-test-app`) ↔ `multi64_test.z64` ([`n64/test-rom`](../n64/README.md)) — single commands, and the end-to-end suite both run |
+| [test-rom.md](connectors/test-rom.md) | `multi64-test-connector` and **Multi64 Test** (`multi64-test-app`) ↔ `multi64_test.z64` ([`n64/test-rom`](../n64/README.md)) — single commands, and the end-to-end suite both run. `multi64-test-connector bringup` drives the cart bring-up ROM ([`n64/bringup`](../n64/bringup/README.md)) |
 
 WebSocket contract: [daemon-api-v1.md](spec/daemon-api-v1.md). Start `multi64d` before running a connector.
 
