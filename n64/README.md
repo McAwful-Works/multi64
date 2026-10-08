@@ -14,7 +14,8 @@ The console side of an RDRAM peek/poke integration: libdragon- and libultra-free
 the cart, measures what the drivers' waits cost, writes and reads the cart's buffer by CPU words
 and by PI DMA, and drives the link under background ROM DMA. Results go on screen and into a report
 `multi64-test-connector bringup` reads. A SummerCart64 run is the baseline other carts are compared
-with. It has run on one SummerCart64, whose run is that baseline. See [`bringup/README.md`](bringup/README.md).
+with. A build of it has run on one SummerCart64, whose run is that baseline; the committed binary,
+built by the pinned compiler, has not run on a cart yet. See [`bringup/README.md`](bringup/README.md).
 
 ## `test-rom/` — all-in-one hardware test ROM
 
@@ -22,7 +23,7 @@ with. It has run on one SummerCart64, whose run is that baseline. See [`bringup/
 
 The committed binary is built from the current source and accepts SummerCart64, EverDrive X7 and EverDrive-64 PRO.
 
-> **Built with the versions pinned in [`toolchain.lock`](toolchain.lock)** — libdragon `c4a7e11`, mips64-elf GCC **16.2.0**. `./setup-toolchain.sh` installed exactly those, until the pinned asset stopped downloading; see *Toolchain* below.
+> **Built with the versions pinned in [`toolchain.lock`](toolchain.lock)** — libdragon `c4a7e11`, mips64-elf GCC **16.2.0** built by libdragon's toolchain script at that same commit. `./setup-toolchain.sh` installs exactly those; see *Toolchain* below.
 
 > Note the ROM is **compressed** (`N64_ROM_ELFCOMPRESS` defaults to 1 in `n64.mk`), so searching `multi64_test.z64` for strings will give misleading results — LZ back-references replace repeated substrings. Inspect `build/multi64_test.elf` from your own `make` instead; `build/` is not tracked.
 
@@ -48,22 +49,20 @@ export N64_INST="$HOME/n64inst"
 export PATH="$N64_INST/bin:$PATH"
 ```
 
-> **The pinned toolchain asset no longer downloads.** libdragon replaced the rolling release's
-> assets on 2026-09-15, and asset `534541635` now returns 404, so `setup-toolchain.sh` fails on a
-> machine that does not already have it. The current asset, `564528689` (GCC 16.2.0), builds the
-> test ROM, but not byte for byte: the committed `multi64_test.z64` can no longer be reproduced from
-> a clean machine. [`bringup/`](bringup/README.md) was built with `564528689`.
-
 Two things the lock works around, both of which would otherwise defeat the pin:
 
-- **libdragon's toolchain release tag is rolling.** `toolchain-continuous-prerelease` dates from 2023, but its assets are replaced in place. Pinning the tag gives a different compiler over time, so the lock pins the immutable **asset id** and verifies a **SHA-256**; a mismatch aborts the install.
+- **libdragon's prebuilt toolchain does not stay put.** Its release tag `toolchain-continuous-prerelease` dates from 2023, but the assets are replaced in place and the old ones deleted. The asset this repo first pinned, `534541635`, went on 2026-09-15, and its replacement is built differently — a new multilib set and the VR4300 mulmul fix on by default — so it compiles the test ROM to different bytes. So this repo builds the toolchain itself: [`build-toolchain-from-source.sh`](build-toolchain-from-source.sh) runs libdragon's own `tools/build-toolchain.sh` at `c4a7e11`, the script that built `534541635`, against upstream sources checked by SHA-256, and packs the result. That tarball is hosted in the release [`n64-toolchain-16.2.0-c4a7e119`](https://github.com/McAwful-Works/multi64/releases/tag/n64-toolchain-16.2.0-c4a7e119) with its sources. `setup-toolchain.sh` downloads it and verifies its **SHA-256**; a mismatch aborts the install. It was built on Ubuntu 24.04, so it needs glibc 2.38 or newer.
 - **libdragon records no version of its own** once installed, so drift cannot be detected from the tree. `setup-toolchain.sh` writes a stamp, and `make check-toolchain` compares it against the lock:
 
 ```sh
 cd n64/test-rom && make check-toolchain
 ```
 
-It reports `OK` (both verified), `PARTIAL` (gcc matches but libdragon came from elsewhere, so it cannot be proven), or a non-zero `MISMATCH`. Nothing runs this automatically — CI does not build the ROM, so drift is only ever caught by a human.
+It reports `OK` (libdragon and the toolchain's checksum both verified), `PARTIAL` (the gcc version matches, but the prefix was installed some other way, so which build of it and which libdragon cannot be proven), or a non-zero `MISMATCH`. A prefix installed before this pin — from one of libdragon's own toolchain builds — has no checksum in its stamp and reports `MISMATCH`; `setup-toolchain.sh` refuses to unpack over it, so remove it or install into an empty prefix.
+
+If the release is ever lost, `./build-toolchain-from-source.sh` rebuilds the toolchain. The tarball's checksum depends on the host that built it, so a rebuild elsewhere will not match the lock; what proves it is the ROM. With the rebuilt toolchain and libdragon `c4a7e11`, `n64/test-rom` must reproduce the committed `multi64_test.z64` byte for byte, as it did when this pin was made.
+
+Moving the pin to a new toolchain means a new release here with its source, a new lock, and rebuilt `multi64_test.z64` and `bringup/multi64_bringup.z64`: the same source builds to different bytes under a different compiler. Nothing runs this automatically — CI does not build the ROM, so drift is only ever caught by a human.
 
 ### Build
 

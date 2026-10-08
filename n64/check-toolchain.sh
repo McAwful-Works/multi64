@@ -6,7 +6,8 @@
 # libdragon records no version of its own at install time, so this compares the
 # stamp written by setup-toolchain.sh. A prefix installed some other way has no
 # stamp: that is reported as "unknown", not as a failure, because it may well be
-# correct -- it just cannot be proven from here.
+# correct -- it just cannot be proven from here. A stamp without the toolchain's
+# checksum was written before the current pin, and is reported as a mismatch.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -21,7 +22,7 @@ INST="${1:-${N64_INST:-}}"
 STAMP="$INST/.multi64-toolchain-stamp"
 
 printf 'lock:      libdragon %s\n' "$LIBDRAGON_COMMIT"
-printf '           gcc %s (asset %s)\n' "$TOOLCHAIN_GCC_VERSION" "$TOOLCHAIN_ASSET_ID"
+printf '           gcc %s (sha256 %s)\n' "$TOOLCHAIN_GCC_VERSION" "$TOOLCHAIN_SHA256"
 
 if [ ! -x "$INST/bin/mips64-elf-gcc" ]; then
   echo "installed:  no mips64-elf-gcc under $INST" >&2
@@ -40,6 +41,13 @@ if [ -f "$STAMP" ]; then
   printf '           libdragon %s\n' "$GOT_COMMIT"
   [ "$GOT_COMMIT" = "$LIBDRAGON_COMMIT" ] || {
     echo "MISMATCH: libdragon $GOT_COMMIT != pinned $LIBDRAGON_COMMIT" >&2; rc=1; }
+  # The gcc version alone cannot tell two builds of 16.2.0 apart, and they emit
+  # different code. A stamp without a checksum predates this pin, so it names a
+  # libdragon-built toolchain, not the one the lock pins.
+  GOT_SHA="$(sed -n 's/^TOOLCHAIN_SHA256=//p' "$STAMP")"
+  printf '           gcc sha256 %s\n' "${GOT_SHA:-unknown (stamp predates the pin)}"
+  [ "$GOT_SHA" = "$TOOLCHAIN_SHA256" ] || {
+    echo "MISMATCH: toolchain sha256 ${GOT_SHA:-unknown} != pinned $TOOLCHAIN_SHA256" >&2; rc=1; }
 else
   proven=0
   echo "           libdragon unknown (no stamp; prefix not installed by setup-toolchain.sh)"
@@ -51,8 +59,8 @@ elif [ "$proven" -eq 1 ]; then
   echo "OK: matches the pin."
 else
   # Do not claim the pin is satisfied when half of it could not be checked.
-  echo "PARTIAL: gcc matches, libdragon version unverified."
+  echo "PARTIAL: gcc version matches; which gcc build, and libdragon's version, unverified."
   echo "  A rebuild may not reproduce the committed multi64_test.z64."
-  echo "  Run ./setup-toolchain.sh for a prefix that can be verified."
+  echo "  Run ./setup-toolchain.sh into an empty prefix for one that can be verified."
 fi
 exit 0

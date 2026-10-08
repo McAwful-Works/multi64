@@ -12,7 +12,9 @@ Run it on a **SummerCart64 first**. The SC64 driver is proven inside games, so i
 the baseline: on another cart, the first result that differs from the SC64's is where to look.
 
 **Run on one cart: a SummerCart64,** on 2026-10-08, where every check passed
-([Hardware record](#hardware-record)). That run is the baseline. It has not run on an EverDrive.
+([Hardware record](#hardware-record)). That run is the baseline. It used a build of this source by a
+different compiler than the committed binary's, which has not itself run on a cart. It has not run
+on an EverDrive.
 
 ## Design
 
@@ -78,12 +80,11 @@ make
 ```
 
 It needs `N64_INST`, like the test ROM ([n64/README.md](../README.md#toolchain)), and builds the
-agent sources from `../agent` itself. The committed `multi64_bringup.z64` was built with libdragon
-`c4a7e11` and mips64-elf GCC 16.2.0 from toolchain asset **564528689** (SHA-256
-`fac8e6572493a66468b7d45df41b042f90b1a630ec96aa218bd5fb1f320a0a4d`). That is not the asset
-[`toolchain.lock`](../toolchain.lock) pins: libdragon's rolling release replaced it on 2026-09-15,
-and the pinned one no longer downloads. Two builds in a row from the same toolchain give the same
-bytes: SHA-256 `58b347db7fbc97d21e00f1fc82a4444eeec9ece4d74ddf9916f0a587e7049126`.
+agent sources from `../agent` itself. The committed `multi64_bringup.z64` was built with the
+toolchain [`toolchain.lock`](../toolchain.lock) pins, libdragon `c4a7e11` and mips64-elf GCC 16.2.0
+built by libdragon's toolchain script at that same commit, and a prefix installed by
+`setup-toolchain.sh` rebuilds it byte for byte: SHA-256
+`33a8e7ec7013b21cac1159971efb8d4113dcf74fe6ed8d5ac1f0d82dfdb6e17e`.
 
 ## Reading the screen
 
@@ -179,7 +180,13 @@ The tester:
 
 ## Hardware record
 
-**2026-10-08, SummerCart64** (`SCv2`, firmware 2.20 rev 2), ROM SHA-256 `58b347db…`, Windows 11,
+The committed `multi64_bringup.z64` (`33a8e7ec…`) has not run on a cart. It was rebuilt from the
+same source as the ROM below when [`toolchain.lock`](../toolchain.lock) moved to its from-source
+toolchain: only the compiler differs. The ROM below was built with libdragon's toolchain asset
+564528689, which this repo keeps in its release
+[`n64-toolchain-16.2.0-564528689`](https://github.com/McAwful-Works/multi64/releases/tag/n64-toolchain-16.2.0-564528689).
+
+**2026-10-08, SummerCart64** (`SCv2`, firmware 2.20 rev 2), ROM SHA-256 `58b347db7fbc97d21e00f1fc82a4444eeec9ece4d74ddf9916f0a587e7049126`, Windows 11,
 `multi64d` and `multi64-test-connector` from this branch. Booted by the cart's own bootloader, since
 the cart's menu hung on every libdragon ROM that day (checklist step 3). Two runs; the second is the
 committed baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json).
