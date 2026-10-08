@@ -1,14 +1,18 @@
 # Pinned N64 toolchain for reproducible multi64_test.z64 builds.
 #
-# Read by setup-toolchain.sh; verified by `make check-toolchain` in test-rom/.
-# These are the exact versions the committed multi64_test.z64 was built with.
+# Read by setup-toolchain.sh and build-toolchain-from-source.sh; verified by
+# `make check-toolchain` in test-rom/. These are the exact versions the committed
+# multi64_test.z64 was built with.
 #
-# WHY THE ASSET ID AND CHECKSUM, NOT THE TAG:
-# libdragon's toolchain release tag `toolchain-continuous-prerelease` is ROLLING.
-# It was created 2023-01-26, but its assets are replaced in place -- the one
-# pinned here was uploaded 2026-08-29. Downloading "the latest asset from that
-# tag" therefore gives a DIFFERENT compiler over time, which is not a pin at all.
-# GitHub asset ids are immutable, so we fetch by id and verify the checksum.
+# WHY THIS REPO BUILDS AND HOSTS THE TOOLCHAIN ITSELF:
+# libdragon publishes its prebuilt toolchain under the rolling release
+# `toolchain-continuous-prerelease`, replaces the assets in place, and deletes the
+# old ones. The asset this lock first pinned, 534541635, went on 2026-09-15, and
+# its replacement is built differently and compiles the test ROM to different
+# bytes. So the toolchain is built here, from upstream sources by libdragon's own
+# build script at TOOLCHAIN_BUILD_COMMIT (the script that built 534541635), and
+# the result is hosted in a release of this repo. build-toolchain-from-source.sh
+# is that build; the checksum is the pin.
 
 # --- libdragon (library, headers, n64.mk) ---
 # Nothing in libdragon records its own version at install time, so there is no
@@ -17,10 +21,12 @@
 LIBDRAGON_REPO=https://github.com/DragonMinded/libdragon.git
 LIBDRAGON_COMMIT=c4a7e119eff1cfad07adcfa892a2910c40d8bdb8
 
-# --- mips64-elf GCC toolchain (prebuilt by the libdragon project) ---
-# NO LONGER DOWNLOADS: libdragon replaced these assets on 2026-09-15 and this id returns 404.
-# The current asset (564528689) builds the test ROM, but to different bytes. See n64/README.md.
-TOOLCHAIN_ASSET_ID=534541635
-TOOLCHAIN_ASSET_NAME=gcc-toolchain-mips64-x86_64.deb
-TOOLCHAIN_SHA256=1d624e3bd991087301aa3163e0c7084f699d7f40ab7269adb5231df08359810b
+# --- mips64-elf GCC toolchain (GCC 16.2.0, binutils 2.45, newlib 4.4.0.20231231) ---
+# Built on Ubuntu 24.04 x86_64, so it needs glibc 2.38 or newer.
+TOOLCHAIN_NAME=mips64-elf-gcc-16.2.0-libdragon-c4a7e119-x86_64-linux.tar.xz
+TOOLCHAIN_URL=https://github.com/McAwful-Works/multi64/releases/download/n64-toolchain-16.2.0-c4a7e119/mips64-elf-gcc-16.2.0-libdragon-c4a7e119-x86_64-linux.tar.xz
+TOOLCHAIN_SHA256=f86590159ef58ea2c616ca6abf883f984e21036c1eb68bcde026b9a982fb2a8a
 TOOLCHAIN_GCC_VERSION=16.2.0
+# libdragon's tools/build-toolchain.sh at this commit, checked by this checksum.
+TOOLCHAIN_BUILD_COMMIT=c4a7e119eff1cfad07adcfa892a2910c40d8bdb8
+TOOLCHAIN_BUILD_SCRIPT_SHA256=24322ed4a3fa65d3f50d6d53812d7cc5459e144ca31e468f2f85c500612a50a6

@@ -5,7 +5,8 @@
 #
 # Installs into the prefix rather than /opt, so no sudo is required. Prints the
 # N64_INST export you need at the end. Safe to re-run: work is skipped when the
-# pinned versions are already in place.
+# pinned versions are already in place, and an interrupted install picks up again.
+# It refuses a prefix holding any other toolchain; use an empty one.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,39 +20,48 @@ STAMP="$PREFIX/.multi64-toolchain-stamp"
 set -a; . "$LOCK"; set +a
 
 need() { command -v "$1" >/dev/null || { echo "required tool not found: $1" >&2; exit 1; }; }
-need curl; need git; need make; need sha256sum; need dpkg-deb
+need curl; need git; need make; need sha256sum; need tar; need xz
 
 if [ -f "$STAMP" ] && grep -qx "LIBDRAGON_COMMIT=$LIBDRAGON_COMMIT" "$STAMP" \
-   && grep -qx "TOOLCHAIN_ASSET_ID=$TOOLCHAIN_ASSET_ID" "$STAMP"; then
+   && grep -qx "TOOLCHAIN_SHA256=$TOOLCHAIN_SHA256" "$STAMP"; then
   echo "Already at the pinned versions. N64_INST=$PREFIX"
   exit 0
+fi
+
+# Unpacking over a different toolchain would leave its files behind: libraries
+# for other multilibs, headers, a libdragon built by another compiler. MARK is
+# written as soon as the pinned toolchain is unpacked, before libdragon builds,
+# so an install that stopped part-way can simply be re-run.
+MARK="$PREFIX/.multi64-toolchain-sha256"
+if [ -e "$PREFIX/bin/mips64-elf-gcc" ] && [ "$(cat "$MARK" 2>/dev/null)" != "$TOOLCHAIN_SHA256" ]; then
+  echo "$PREFIX already holds a toolchain that this script did not install from toolchain.lock." >&2
+  echo "Remove it, or pass an empty prefix:  $0 <prefix>" >&2
+  exit 1
 fi
 
 mkdir -p "$WORK"
 
 # --- 1. toolchain ------------------------------------------------------------
-DEB="$WORK/$TOOLCHAIN_ASSET_NAME"
-if [ ! -f "$DEB" ] || ! echo "$TOOLCHAIN_SHA256  $DEB" | sha256sum -c - >/dev/null 2>&1; then
-  echo "==> downloading toolchain asset $TOOLCHAIN_ASSET_ID"
-  # By asset id: the release tag is rolling, ids are immutable. See toolchain.lock.
-  curl -fL --retry 3 \
-    -H "Accept: application/octet-stream" \
-    "https://api.github.com/repos/DragonMinded/libdragon/releases/assets/$TOOLCHAIN_ASSET_ID" \
-    -o "$DEB"
+# Built from source by build-toolchain-from-source.sh and hosted in this repo's
+# releases, because libdragon deletes its old toolchain builds. See toolchain.lock.
+TARBALL="$WORK/$TOOLCHAIN_NAME"
+if [ ! -f "$TARBALL" ] || ! echo "$TOOLCHAIN_SHA256  $TARBALL" | sha256sum -c - >/dev/null 2>&1; then
+  echo "==> downloading toolchain from $TOOLCHAIN_URL"
+  curl -fL --retry 3 "$TOOLCHAIN_URL" -o "$TARBALL" || {
+    echo "Download failed. ./build-toolchain-from-source.sh rebuilds this toolchain from source." >&2
+    exit 1
+  }
 fi
 
 echo "==> verifying checksum"
-echo "$TOOLCHAIN_SHA256  $DEB" | sha256sum -c - || {
-  echo "CHECKSUM MISMATCH. The pinned asset is not what was downloaded; refusing to continue." >&2
+echo "$TOOLCHAIN_SHA256  $TARBALL" | sha256sum -c - || {
+  echo "CHECKSUM MISMATCH. The pinned toolchain is not what was downloaded; refusing to continue." >&2
   exit 1
 }
 
 echo "==> extracting toolchain into $PREFIX"
-rm -rf "$WORK/x"; mkdir -p "$WORK/x"
-dpkg-deb -x "$DEB" "$WORK/x"
-# The .deb lays the toolchain out under opt/libdragon; that subtree IS the prefix.
-mkdir -p "$PREFIX"
-cp -a "$WORK/x/opt/libdragon/." "$PREFIX/"
+tar -xJf "$TARBALL" -C "$PREFIX"
+echo "$TOOLCHAIN_SHA256" > "$MARK"
 
 GOT_GCC="$("$PREFIX/bin/mips64-elf-gcc" -dumpversion)"
 [ "$GOT_GCC" = "$TOOLCHAIN_GCC_VERSION" ] || {
@@ -79,7 +89,7 @@ echo "==> building libdragon (this takes a few minutes)"
 {
   echo "# Written by n64/setup-toolchain.sh -- do not edit."
   echo "LIBDRAGON_COMMIT=$LIBDRAGON_COMMIT"
-  echo "TOOLCHAIN_ASSET_ID=$TOOLCHAIN_ASSET_ID"
+  echo "TOOLCHAIN_SHA256=$TOOLCHAIN_SHA256"
   echo "TOOLCHAIN_GCC_VERSION=$GOT_GCC"
   echo "INSTALLED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$STAMP"
