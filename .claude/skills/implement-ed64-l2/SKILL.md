@@ -1,17 +1,17 @@
 ---
 name: implement-ed64-l2
-description: Guide for finishing EverDrive 64 X7 support - the DMA@ framing is implemented in Ed64L2Pipe but has never touched hardware, so this covers what to validate first, the test ROM's EverDrive boot path, and what would make the spec normative. Use when asked to implement, validate, debug, or estimate ED64 L2 or L3-over-EverDrive support.
+description: Guide for finishing EverDrive 64 X7 support - the DMA@ framing is implemented in Ed64L2Pipe and has run on only one X7, so this covers what to validate first, the test ROM's EverDrive boot path, and what would make the spec normative. Use when asked to implement, validate, debug, or estimate ED64 L2 or L3-over-EverDrive support.
 ---
 
 # Finishing `multi64-ed64-l2`
 
 `Ed64L2Pipe` (`crates/ed64-l2/src/lib.rs`) implements the framing in `docs/spec/l3-over-everdrive-x7.md` §4: a `DMA@` header carrying `(datatype << 24) | size`, the payload, and a `CMPH` trailer, 2-byte aligned. The directions are not symmetric about where that padding goes (#134): the host pads the payload before the trailer, a cart pads the whole message after it. Its unit tests cover encode/decode, resync, the datatype filter, and trailer errors.
 
-**None of it has touched a cart.** The framing is transcribed from UNFLoader and libdragon's `usb.c` — a working reference, not observation. Everything below assumes that distinction matters, because the previous EverDrive attempt in this repo failed precisely by trusting a plausible vendor source that did not apply to the hardware (spec §1.1).
+**It has run on one cart, which does not validate it.** On 2026-09-18 an X7 carried L3 both ways through `multi64d --cart ed64`, and showed that the cart cannot send while host data waits unread (spec §4.5 item 6; `n64/README.md` "Hardware record"). Everything else in the framing is transcribed from UNFLoader and libdragon's `usb.c` — a working reference, not observation. Everything below assumes that distinction matters, because the previous EverDrive attempt in this repo failed precisely by trusting a plausible vendor source that did not apply to the hardware (spec §1.1).
 
 ## Do not claim support
 
-Until someone runs this against an X7:
+Until §4.5 is answered on hardware:
 
 - Do not describe EverDrive as supported anywhere user-facing.
 - A successful `Ed64L2Pipe::open` means **the serial port opened**. There is no identity handshake in the data path. Use `ed64-smoke` (spec §8) to confirm a port is really an EverDrive.

@@ -3,7 +3,7 @@
 //! Run **`multi64_test.z64`** in **RAW_ECHO** mode (default), then: `cargo run -p ed64-echo-test -- --port COM3`
 //!
 //! **`multi64-ed64-l2`** implements the EverDrive wire mapping, so [`Ed64L2Pipe::open`] opens the port and this
-//! tool really talks to the cart — but that framing has never been validated against hardware. A failure here is
+//! tool really talks to the cart — but that framing has run on only one X7 and is not validated. A failure here is
 //! as likely to be the mapping as the ROM; see [spec §4.5](../../docs/spec/l3-over-everdrive-x7.md).
 
 use clap::Parser;
