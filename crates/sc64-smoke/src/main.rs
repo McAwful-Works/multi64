@@ -180,7 +180,9 @@ fn boot_rom(
             path.display()
         )));
     }
-    let title = String::from_utf8_lossy(&rom[0x20..0x34]).trim().to_string();
+    let title = String::from_utf8_lossy(&rom[0x20..0x34])
+        .trim_end_matches(['\0', ' '])
+        .to_string();
     println!("ROM: {} ({} bytes, {title:?})", path.display(), rom.len());
 
     let before = config_get(port, boot::CONFIG_BOOT_MODE, timeout)?;

@@ -204,7 +204,14 @@ intact, and the bootloader booted the same bytes. N64FlashcartMenu
 [issue #425](https://github.com/Polprzewodnikowy/N64FlashcartMenu/issues/425), open, reports the
 same symptom with its 0.3.4 release, and its reporter's reading of the cause: the menu's boot code
 zeroes the video timings but leaves the video interface on, so libdragon's `display_init` waits
-for a vertical blank that never comes. Which menu version that cart ran is not recorded here.
+for a vertical blank that never comes. That cart's `sc64menu.n64` is the 0.3.4 release, byte for
+byte (SHA-256 `042b4831…`, matching the release's published digest), and the libdragon pinned in
+[`toolchain.lock`](toolchain.lock) has that wait in `display_init`. The fix is on the menu's
+`main` and `develop` branches but in no tagged release as of 2026-10-08.
+
+`--boot-rom` was first run on 2026-10-08 on that SC64 (firmware 2.20 rev 2), with the console
+off: it wrote and verified `multi64_bringup.z64`, the console's next power-on started the
+bring-up ROM, and `--boot-menu` put the menu back.
 
 ---
 
