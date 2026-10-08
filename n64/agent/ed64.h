@@ -1,8 +1,10 @@
 /**
  * EverDrive-64 X7 USB driver for the game-resident agent.
  *
- * NEVER RUN ON A CART. The console half of the DMA@ framing in
- * docs/spec/l3-over-everdrive-x7.md section 4, written against libdragon's src/usb.c
+ * NOT SHOWN TO WORK ON A CART. One AP64 build was tried on an X7: the serial port opened, but the
+ * ROM never answered, so nothing shows this driver ever ran.
+ *
+ * The console half of the DMA@ framing in docs/spec/l3-over-everdrive-x7.md section 4, written against libdragon's src/usb.c
  * (trunk c4a7e119), not copied from it. libdragon moves data by DMA and stages received packets
  * at the top of the ROM window; this driver does neither. Bytes go through the cart's 512-byte
  * USB window by CPU load and store (pi_io.c), so it owns no PI state and cannot land inside a

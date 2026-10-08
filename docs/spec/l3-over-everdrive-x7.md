@@ -167,7 +167,7 @@ from the references; it has still never been exercised against a cart.
 
    **Why: unread host data blocks the write.** libdragon's own comment on that write says it will not write while there is data to read, and the X7 bears it out. Test ROM 1.12 changed one thing, reading everything the host had already sent before each echo, and the same burst passed with `tx_failures` still 0. A longer wait would not have helped, and could have hung the cart.
 
-   **What a cart-side sender must do:** read every waiting host message before it starts a write, and keep what it read for the receive path. `n64/agent/ed64.c`'s `ed64_send` does this, and sends nothing when it cannot hold everything waiting, since a reply the host never gets is a timeout, while one cut off is a malformed message. That driver has not run on a cart. Still open: whether host data that arrives *during* a multi-block write stalls it the same way. 1.12's burst did not trip it, but did not target it either.
+   **What a cart-side sender must do:** read every waiting host message before it starts a write, and keep what it read for the receive path. `n64/agent/ed64.c`'s `ed64_send` does this, and sends nothing when it cannot hold everything waiting, since a reply the host never gets is a timeout, while one cut off is a malformed message. That driver has not been shown to work on a cart. Still open: whether host data that arrives *during* a multi-block write stalls it the same way. 1.12's burst did not trip it, but did not target it either.
 
 The same run bears on items 1–3 without closing them. Every check through `multi64d` passed with zero overflow, resync or bad-header drops, which is consistent with the 2-byte alignment and the padding layouts in §4.2, though no check targeted an odd-length payload. A `serialport` VCP handle carried the whole run; the §4.4 purge under load was not specifically tested.
 
@@ -210,7 +210,7 @@ No other N64-side change is expected. If validation turns one up, record it here
 | [`crates/ed64-l3-framing-e2e`](../../crates/ed64-l3-framing-e2e) | `ed64-l3-framing-e2e`: same role as `sc64-l3-framing-e2e` over `Ed64L2Pipe`; runs, exercising §4 framing that is still unvalidated. |
 | [`n64/test-rom`](../../n64/README.md) | Already uses libdragon `<usb.h>`, which supports both carts. Boots on `CART_SC64` and `CART_EVERDRIVE`, with an on-screen **UNVALIDATED** warning on the latter (§5). |
 | `multi64d` | `--cart ed64` selects `Ed64L2Pipe` ([daemon API §5.1](./daemon-api-v1.md)). Experimental: has carried L3 both ways to one X7, with zero stream errors across the test app's checks (2026-09-18). |
-| [`n64/agent`](../../n64/agent/README.md) | `make CART=ed64` builds the in-game agent around `ed64.c`: the console side of §4 without libdragon, under the agent's PI rules. Never run on a cart. |
+| [`n64/agent`](../../n64/agent/README.md) | `make CART=ed64` builds the in-game agent around `ed64.c`: the console side of §4 without libdragon, under the agent's PI rules. Not shown to work on a cart: one AP64 build was tried on an X7, and the ROM never answered. |
 | [`crates/multi64`](../../crates/multi64/README.md) | Settings → **Cart** → *EverDrive-64 X7 (beta)* starts the daemon with `--cart ed64`. Its default, *Auto-detect*, finds an X7 only by sending the `usb64` test (§8) to ports, since its FT245R has no cart-specific USB descriptor ([`multi64-cart-probe`](../../crates/cart-probe/README.md)). |
 
 ---

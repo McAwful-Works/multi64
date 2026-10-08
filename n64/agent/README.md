@@ -18,7 +18,7 @@ those come from is the whole of an integration — see
 |---|---|
 | `agent.c`, `agent.h` | `agent_tick()`, L3 framing, the four hooks `mem_proto` needs |
 | `sc64.c`, `sc64.h` | SummerCart64 USB driver over the PI bus: staging, bounded waits, interrupt masking |
-| `ed64.c`, `ed64.h` | EverDrive-64 X7 driver (`CART=ed64`): `DMA@` messages through the cart's USB window. **Never run on a cart** |
+| `ed64.c`, `ed64.h` | EverDrive-64 X7 driver (`CART=ed64`): `DMA@` messages through the cart's USB window. **Not shown to work on a cart**: one try on an X7 got no answer from the ROM |
 | `ed64pro.c`, `ed64pro.h` | EverDrive-64 PRO driver (`CART=ed64pro`): the cart FIFO. **Never run on a cart** |
 | `pi_io.c`, `pi_io.h` | PI access for the EverDrive drivers and `cart_rom.c`, under the same rules as `sc64.c` |
 | `cart_rom.c` | The cartridge ROM for M64P's `PEEKROM`, the same on every cart |
@@ -69,7 +69,7 @@ Every build below served M64P on a SummerCart64 inside a commercial game, with t
 that build has **not** been run on hardware. Treat the first run of any new toolchain as a
 test, and follow the [testing ladder](../../docs/integration/testing.md).
 
-Only the **SummerCart64** driver has run on hardware, and it is the default. `CART=ed64` (EverDrive-64 X7) and `CART=ed64pro` (EverDrive-64 PRO) build the same agent around an EverDrive driver instead, and **neither has run on a cart**. The default build compiles none of that code and is byte-identical to the one in the table above. Build for the cart the game will run on: the drivers do not detect each other. See [cart-agent.md §6](../../docs/integration/cart-agent.md#6-everdrive-builds-experimental).
+Only the **SummerCart64** driver has been shown to work on hardware, and it is the default. `CART=ed64` (EverDrive-64 X7) and `CART=ed64pro` (EverDrive-64 PRO) build the same agent around an EverDrive driver instead, and **neither has been shown to work on a cart**. An X7 build has been tried once, in an Ocarina of Time seed: the serial port opened, but the ROM never answered. The PRO build has never run on a cart. The default build compiles none of that code and is byte-identical to the one in the table above. Build for the cart the game will run on: the drivers do not detect each other. See [cart-agent.md §6](../../docs/integration/cart-agent.md#6-everdrive-builds-experimental).
 
 ## Copies elsewhere
 

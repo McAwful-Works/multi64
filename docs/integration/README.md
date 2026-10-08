@@ -96,9 +96,10 @@ ways:
 | A compressed game whose patch loads its own block at boot | Flat image inside the range the patch's boot code already copies, so the stub copies nothing | That a frame hook is not always a safe place to copy from ROM ([placing-the-agent.md §5.5](placing-the-agent.md#55-when-something-already-loads-it)) |
 
 Two things none of them has exercised: a **4 MB** console with the agent in the base RAM (every
-one put it in the Expansion Pak), and any cart other than the SummerCart64. EverDrive-64 X7 and
-PRO builds of the agent exist ([cart-agent.md §6](cart-agent.md#6-everdrive-builds-experimental)),
-but neither has run on a cart.
+one put it in the Expansion Pak), and a working cart other than the SummerCart64. EverDrive-64 X7
+and PRO builds of the agent exist ([cart-agent.md §6](cart-agent.md#6-everdrive-builds-experimental)),
+but neither has been shown to work on a cart: Ocarina of Time's X7 build was tried once on an X7,
+and its ROM never answered.
 
 ## Guides
 
