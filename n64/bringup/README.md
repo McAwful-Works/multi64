@@ -152,24 +152,58 @@ fixed before the ROM goes to anyone.
 
 ### 2. X7 handover
 
-Send four files:
+Build the bundle from a clean checkout of a commit, on Windows in Git Bash, with `npm install`
+already run in `crates/multi64`:
 
-1. the **Multi64 installer**, for `multi64d`;
-2. `multi64_bringup.z64`;
-3. `multi64-test-connector.exe` (from step 1 above);
-4. the SC64 baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json).
+```sh
+sh n64/bringup/handover/pack.sh
+```
 
-The tester:
+It writes `target/handover/cart-diagnostics-<commit>/` and a zip of it, holding:
 
-1. Installs Multi64, sets Settings → **Cart** to EverDrive X7 (or Auto-detect), and starts the
-   bridge.
-2. Copies `multi64_bringup.z64` to the SD card and boots it from the EverDrive menu.
-3. Photographs the screen before anything else.
-4. Runs `multi64-test-connector.exe bringup --baseline sc64-2026-10-08.json`. It takes a few
-   minutes: three load levels through the CPU-word build, then the same through the DMA build.
-5. If it reports `link.hello` FAIL (no HELLO_ACK), presses **R** once (the top line changes to
-   `link X7 DMA`) and runs the same command again with `--out bringup-x7-dma.json`.
-6. Sends back the photo(s), every JSON file written, and the console output.
+- the Multi64 installer, built from that commit (optional for the tester);
+- `multi64d.exe`, the same build as the one inside the installer;
+- `multi64-test-connector.exe`;
+- `multi64_test.z64` and `multi64_bringup.z64`, the committed ROMs;
+- the SC64 baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json);
+- [`diagnose.bat`](handover/diagnose.bat), [`diagnose.ps1`](handover/diagnose.ps1) and the tester's
+  [`README.txt`](handover/README.txt);
+- `VERSION.txt`, which records the commit and every file's SHA-256.
+
+The tester copies the two ROMs to the SD card, closes Multi64, AP64 and Xfer64, and double-clicks
+`diagnose.bat`, which walks them through the run. It does not use
+Multi64's bridge, whose log lives only in the app. Instead it runs the bundled `multi64d` itself,
+at debug level with `--serial-trace` (every byte read from the cart), with a fresh daemon for each
+phase:
+
+1. **Control:** `multi64_test.z64` and `multi64-test-connector suite`. On an X7 or SC64 that ROM
+   moves USB through libdragon, which passed on an X7 on 2026-09-18, so a failure here is the
+   tester's cable, driver or port rather than the agent's driver. On a PRO it is no control:
+   libdragon does not support the PRO, so the test ROM uses `n64/test-rom/ed64pro.c`, the same
+   unproven mapping the agent uses, and the script says so.
+2. **Bring-up:** `multi64_bringup.z64` and `bringup --baseline`. If it reports `link.hello` FAIL
+   (no HELLO_ACK), the script has the tester press **R** (the top line changes to `link X7 DMA`)
+   and runs it again.
+
+A phase whose daemon's link does not come up within about 8 seconds is skipped rather than left to
+time out check by check, and the script prints the daemon's last warnings, which name the cause: a
+port held by another program, a port that does not exist, or a PRO that did not answer its identity
+check.
+Everything goes into `results-<time>/` beside the script and is zipped: the session transcript,
+each tool's output, each phase's `multi64d` log, the daemon's `GET /` before and after each phase,
+the machine's serial ports and FTDI driver versions, Windows' version, the cart OS version the
+tester types in and the bring-up JSON files. That one zip is what comes back. It asks for no
+photos of the TV: what a ROM shows on screen only matters when its link never comes up, so at the
+end the script asks the tester to describe a black or stuck screen, and the answer goes in the
+transcript.
+
+The script picks the cart and its port by the USB IDs in `crates/cart-probe` (X7 `0403:6001`,
+SummerCart64 `0403:6014`) when exactly one such port is plugged in, and asks otherwise; the PRO's
+IDs are not known, so a PRO is always asked for. `-Cart ed64|ed64pro|sc64`, `-Port COMn` and
+`-SkipControl` pass through `diagnose.bat`. Every `multi64d` it starts is put in a Windows job
+object that kills it when the script exits, so closing the window mid-run does not leave the port
+held, and a daemon from an earlier run of the same bundle is stopped at the start. Running it on
+the maintainer's SummerCart64 checks the bundle itself before it goes out.
 
 ### 3. What the results say
 
@@ -183,6 +217,27 @@ The tester:
 | Everything matches | The driver works on this cart, and a silent agent inside a game is about how it is placed in that game |
 
 ## Hardware record
+
+**2026-10-08, SummerCart64, through the remote tester's bundle** (`cart-diagnostics-fe8ff00`;
+`SCv2`, firmware 2.20 rev 2), ROM SHA-256
+`58b347db7fbc97d21e00f1fc82a4444eeec9ece4d74ddf9916f0a587e7049126`, Windows 11 Pro 10.0.26300, FTDI
+driver 2.12.36.20. `diagnose.bat` with no arguments: it found Multi64 running and waited for it to
+be closed, then picked the SC64 and COM4 by USB IDs.
+
+- **Phase 1, test ROM 1.14:** 34 passed, 0 failed, 3 skipped (HUD text, rumble, and the ROM
+  version, which the script does not supply).
+- **Phase 2, against the baseline:** 0 checks failed. Moderate-load traffic went Pass to Info, 1
+  timeout in 35, inside the 0 to 2 the earlier runs saw. Every identify and buffer check passed.
+- **Round trips:** with no load 60/117/481 ms (min/median/max), against a 67 ms median in the
+  baseline; 79 and 109 ms medians under moderate and heavy load, against 67 and 64.
+
+A second run the same day, with bundle `cart-diagnostics-3c9ffb0` (the one that went to the X7
+tester) and the cart reporting firmware `2.20.2`, matched it: test ROM 34 passed, 0 failed, 3
+skipped; bring-up 0 failed, with 1 timeout in 36 under moderate load and 2 in 35 under heavy. Its
+round trips with no load were 62/81/144 ms, with medians of 81 and 88 ms under moderate and heavy
+load. It also traced every cart read's bytes in hex, so it logged more than the first run did, yet
+was faster. Logging is therefore not what made the first run's round trips slower; the two runs
+differ by run-to-run spread, and every request with no load succeeded in both.
 
 **2026-10-08, SummerCart64, the previous pin's build** (`SCv2`, firmware 2.20 rev 2), ROM SHA-256
 `33a8e7ec7013b21cac1159971efb8d4113dcf74fe6ed8d5ac1f0d82dfdb6e17e`, Windows 11. This is the same
@@ -234,3 +289,4 @@ committed baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08
 | `spin_limits.sh` | Reads the drivers' spin limits for `build/spin_limits.h` |
 | `multi64_bringup.z64` | The committed build |
 | `baselines/` | Saved runs to compare against: `--baseline` or `bringup-compare` |
+| `handover/` | The remote tester's bundle: `pack.sh` builds it, `diagnose.bat` and `diagnose.ps1` run it |

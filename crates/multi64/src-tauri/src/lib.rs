@@ -128,7 +128,7 @@ impl CartSetting {
     }
 }
 
-/// How verbose `multi64d` stderr logging should be (see `multi64d` `--serial-trace` and `RUST_LOG`).
+/// How verbose `multi64d`'s logging should be (see `multi64d` `--serial-trace` and `RUST_LOG`).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Multi64dLogPreset {
@@ -138,7 +138,7 @@ pub enum Multi64dLogPreset {
     /// Every cart's L2 pipe (`multi64_sc64_l2`, `multi64_ed64_l2`, `multi64_ed64pro_l2`) + `multi64d`
     /// at debug, without per-read serial trace.
     Debug,
-    /// `--serial-trace`: `trace!` on each non-empty cart read (`multi64_sc64_l2=trace`).
+    /// `--serial-trace`: `trace!` on each non-empty cart read, with its bytes (`multi64_sc64_l2=trace`).
     SerialTrace,
     /// Debug-level crate logs plus `--serial-trace`.
     Verbose,

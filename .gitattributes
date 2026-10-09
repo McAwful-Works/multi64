@@ -23,6 +23,9 @@ Makefile text eol=lf
 toolchain.lock text eol=lf
 *.lua text eol=lf
 
+# cmd.exe misreads labels and blocks in a batch file with LF line endings.
+*.bat text eol=crlf
+
 # check-docs builds one regex alternation out of this list. A CRLF checkout would put a
 # carriage return inside every branch of it, so the check would match nothing and pass
 # silently -- the worst way for a check to break.

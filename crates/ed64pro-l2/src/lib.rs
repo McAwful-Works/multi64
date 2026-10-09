@@ -150,6 +150,7 @@ impl<T: Transport> Ed64ProL2Pipe<T> {
                 tracing::trace!(
                     target: "multi64_ed64pro_l2",
                     raw_bytes = n,
+                    bytes = %hex(&out[..n]),
                     "serial read from cart"
                 );
                 return Ok(n);
@@ -187,10 +188,28 @@ impl<T: Transport> Ed64ProL2Pipe<T> {
     }
 }
 
+/// `bytes` as lowercase hex, for the `--serial-trace` line: what the cart actually sent, so a
+/// garbled message can be read back from a log.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use multi64_ed64pro_link::fake::FakeEd64Pro;
+
+    #[test]
+    fn serial_trace_hex_is_lowercase_and_padded() {
+        assert_eq!(hex(&[0x00, 0xab, 0x10, 0xff]), "00ab10ff");
+        assert_eq!(hex(&[]), "");
+    }
 
     fn pipe() -> Ed64ProL2Pipe<FakeEd64Pro> {
         let dev = Ed64Pro::connect(FakeEd64Pro::new()).expect("handshake");
