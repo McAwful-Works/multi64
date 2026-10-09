@@ -17,13 +17,22 @@ use std::collections::VecDeque;
 use std::io;
 use std::time::Duration;
 
-/// Each `read` hands out the next scripted chunk, then times out. Writes are accepted and dropped.
+/// Each `read` hands out the next scripted chunk, then times out. An empty chunk is a read that
+/// finds nothing, and times out too. Writes are accepted and dropped.
 pub struct ScriptedPort {
-    reads: VecDeque<Vec<u8>>,
+    /// How long each read blocks before it returns, and what it returns.
+    reads: VecDeque<(Duration, Vec<u8>)>,
 }
 
 impl ScriptedPort {
     pub fn new(reads: Vec<Vec<u8>>) -> Self {
+        Self::timed(reads.into_iter().map(|r| (Duration::ZERO, r)).collect())
+    }
+
+    /// Each read blocks for its duration first, as a real port blocks until bytes arrive or its
+    /// timeout passes.
+    #[allow(dead_code)] // only multi64-ed64-l2's stall tests need time to pass
+    pub fn timed(reads: Vec<(Duration, Vec<u8>)>) -> Self {
         Self {
             reads: reads.into(),
         }
@@ -33,7 +42,11 @@ impl ScriptedPort {
 impl io::Read for ScriptedPort {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.reads.pop_front() {
-            Some(chunk) => {
+            Some((wait, chunk)) => {
+                std::thread::sleep(wait);
+                if chunk.is_empty() {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "nothing arrived"));
+                }
                 buf[..chunk.len()].copy_from_slice(&chunk);
                 Ok(chunk.len())
             }

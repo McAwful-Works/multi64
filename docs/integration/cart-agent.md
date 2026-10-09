@@ -145,9 +145,13 @@ than edit. A local fix to `mem_proto` is a fork of the protocol.
 
 ## 6. EverDrive builds (experimental)
 
-**Neither has been shown to work on a cart.** The PRO build has never run on one. The X7 build has
-been tried once, in an Ocarina of Time seed patched by AP64: the serial port opened, but the ROM
-never answered `HELLO`, and nothing from that run shows whether the agent ever started. They exist
+**Neither has been shown to work in a game.** The PRO build has never run on a cart. The X7 driver
+has worked on one outside a game, in [`n64/bringup`](../../n64/bringup/README.md)'s ROM, and under
+PI load cut a reply off part-way, which `ed64_send` now retries a busy PI to prevent
+([l3-over-everdrive-x7.md §4.5](../spec/l3-over-everdrive-x7.md#45-open-questions--resolve-on-hardware-before-dropping-draft)
+item 7). The X7 build has been tried once in a game, an Ocarina of Time seed patched by AP64: the
+serial port opened, but the ROM never answered `HELLO`, and nothing from that run shows whether the
+agent ever started. They exist
 so that the first person with an EverDrive has something to test. Nothing about them counts as
 support.
 

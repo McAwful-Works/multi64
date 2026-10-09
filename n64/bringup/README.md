@@ -5,15 +5,17 @@
 `multi64_bringup.z64` runs the cart agent's **own drivers** on a cart, outside any game, and
 reports what they do: on screen, and in a report a host reads through the agent itself. It exists
 because the agent's EverDrive drivers are written against libdragon's and Krikzz's code but have
-not been shown to work on a cart (one X7 try inside a game got no answer from the ROM), and an
+not been shown to work in a game (one X7 try inside a game got no answer from the ROM), and an
 agent that stays silent inside a game has no way to say why.
 
 Run it on a **SummerCart64 first**. The SC64 driver is proven inside games, so its report is
 the baseline: on another cart, the first result that differs from the SC64's is where to look.
 
-**Run on one cart: a SummerCart64,** on 2026-10-08, where every check passed
-([Hardware record](#hardware-record)). That run of the committed binary is the baseline. It has not
-run on an EverDrive.
+**Run on a SummerCart64,** on 2026-10-08, where every check passed
+([Hardware record](#hardware-record)). That run of the committed binary is the baseline. **And on an
+EverDrive-64 X7,** on 2026-10-09, where the X7 driver worked with the PI otherwise idle, and under
+load cut a reply off part-way and left the host deaf to the cart. Both have been fixed since, but
+not run on a cart.
 
 ## Design
 
@@ -217,6 +219,41 @@ the maintainer's SummerCart64 checks the bundle itself before it goes out.
 | Everything matches | The driver works on this cart, and a silent agent inside a game is about how it is placed in that game |
 
 ## Hardware record
+
+**2026-10-09, EverDrive-64 X7, through the remote tester's bundle** (`cart-diagnostics-3c9ffb0`; X7
+OS 3.09), ROM SHA-256 `58b347db7fbc97d21e00f1fc82a4444eeec9ece4d74ddf9916f0a587e7049126`, Windows 11
+Pro 10.0.26200, FTDI driver 2.12.36.20. `diagnose.bat` picked the X7 and its port by USB IDs. The
+first run of the agent's own X7 driver anywhere but inside a game.
+
+- **Phase 1, test ROM 1.14:** 34 passed, 0 failed, 3 skipped (HUD text, rumble, and the ROM
+  version, which the script does not supply). libdragon's X7 path works on this setup, so the
+  cable, driver and port are not in question.
+- **Identify:** the X7 driver's init answered. The X-series version register read `0xED640013`
+  once unlocked, and USBCFG reported the USB unit powered.
+- **Blocks:** every buffer test read back what it wrote, by CPU words and by PI DMA, with and
+  without load. One `PI_STATUS` read costs 263 ns and one X7 USBCFG read 3.61 µs (5.87 µs under
+  load), so `ED_BUSY_SPINS` (20,000) lets one wait run 72 ms, 117 ms under load.
+- **Link, CPU-word build, no load:** 36 of 36, round trip 64/84/116 ms (min/mean/max). The driver
+  lost nothing and failed no send, and none of its 13,857 PI accesses found the PI busy. **The X7
+  driver works**, outside a game.
+- **Link, moderate load:** 4 of 23 timed out, and then the cart stopped answering as far as the
+  tool could tell. One request got no reply at all. The next large one's 4122-byte reply stopped
+  after 2048 bytes, the header and 4 of its 9 blocks. The cart went on answering later requests,
+  but `multi64d` counted those messages as payload of the cut-off reply until 4122 bytes had
+  arrived, 45 s later, and then dropped the link on a bad trailer. The tool skipped the rest of
+  that build, and its switch to the DMA build timed out (`link.x7_dma.aborted`). The counters that
+  would say which PI access failed were lost with the link.
+
+Both faults are fixed since, and neither fix has run on a cart: `ed64_send` retries a busy PI once a
+message's first block is out, and `ed64-l2` drops a message that stalls part-way for 500 ms. The
+longest wait for a message's next byte in this run was 15 ms, across 142 whole messages. See
+[l3-over-everdrive-x7.md §4.5](../../docs/spec/l3-over-everdrive-x7.md#45-open-questions--resolve-on-hardware-before-dropping-draft)
+item 7.
+
+This run does not explain why an AP64 build on an X7 never answered: that ROM never answered
+`HELLO`, whose reply is one block, and here `HELLO` was answered in 22 ms. A rerun would show
+whether the X7 build holds up under moderate and heavy load, and whether the PI DMA build behaves
+the same. It would say nothing about the agent inside a game.
 
 **2026-10-08, SummerCart64, through the remote tester's bundle** (`cart-diagnostics-fe8ff00`;
 `SCv2`, firmware 2.20 rev 2), ROM SHA-256

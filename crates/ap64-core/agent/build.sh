@@ -13,7 +13,7 @@
 # with this build's flags, so its sources are compiled directly, not through its Makefile.
 # The cart is chosen the way that Makefile's CART= does: one driver per build, and for an
 # EverDrive the define that turns on L3 reassembly. The EverDrive drivers have not been shown to
-# work on a cart. Needs mips64-ultra-elf (WSL). Run a CR-stripped copy placed next to this file.
+# work in a game. Needs mips64-ultra-elf (WSL). Run a CR-stripped copy placed next to this file.
 set -eu
 GAME=${1:?game}
 HERE=$(cd "$(dirname "$0")" && pwd)

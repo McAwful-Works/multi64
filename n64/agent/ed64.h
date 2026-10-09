@@ -1,8 +1,11 @@
 /**
  * EverDrive-64 X7 USB driver for the game-resident agent.
  *
- * NOT SHOWN TO WORK ON A CART. One AP64 build was tried on an X7: the serial port opened, but the
- * ROM never answered, so nothing shows this driver ever ran.
+ * NOT SHOWN TO WORK IN A GAME. On one X7 it has worked in n64/bringup's ROM, outside any game:
+ * every request answered with the PI otherwise idle, and under PI load a reply cut off part-way.
+ * ed64_send now retries a busy PI to prevent that, which no cart has run yet
+ * (l3-over-everdrive-x7.md 4.5 item 7). One AP64 build was tried on an X7: the serial port opened, but the ROM never answered,
+ * so nothing shows this driver ran there.
  *
  * The console half of the DMA@ framing in docs/spec/l3-over-everdrive-x7.md section 4, written against libdragon's src/usb.c
  * (trunk c4a7e119), not copied from it. libdragon moves data by DMA and stages received packets
@@ -50,6 +53,10 @@ uint32_t ed64_receive(uint8_t *dst, uint32_t cap);
 
 /**
  * Send `len` bytes as one DMA@ message of the L3 datatype. Returns 1 on success, 0 on timeout.
+ *
+ * A message goes out in 512-byte blocks. When the PI is busy before the first block starts, it
+ * returns 0 having sent nothing. Once that block has started, a PI access that fails is tried
+ * again, up to 8 per message, so that a busy PI does not leave the host a message cut off part-way.
  *
  * Reads every message the host has already sent first, keeping it for ed64_receive: an X7 does not
  * finish a write while host bytes wait unread (l3-over-everdrive-x7.md 4.5 item 6). When more is

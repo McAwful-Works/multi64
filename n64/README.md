@@ -79,7 +79,7 @@ cargo run -p sc64-l3-framing-e2e --release -- --port COM3   # whole L3 frames
 cargo run -p sc64-echo-test -- --port COM3                  # raw L3 bytes echoed back
 ```
 
-**EverDrive X7:** same ROM — the committed binary boots on an EverDrive and shows an on-screen **UNVALIDATED** warning; use `ed64-l3-framing-e2e` / `ed64-echo-test`. [`multi64-ed64-l2`](../crates/ed64-l2/README.md) implements `Ed64L2Pipe`, but the mapping is **not yet validated**: it has run on one X7 (see the [hardware record](#hardware-record)), and these tools, or the test app, are how the rest of §4.5 gets answered. Start with `ed64-smoke` to confirm the port, then see [`l3-over-everdrive-x7.md`](../docs/spec/l3-over-everdrive-x7.md) §4.5.
+**EverDrive X7:** same ROM — the committed binary boots on an EverDrive and shows an on-screen **UNVALIDATED** warning; use `ed64-l3-framing-e2e` / `ed64-echo-test`. [`multi64-ed64-l2`](../crates/ed64-l2/README.md) implements `Ed64L2Pipe`, but the mapping is **not yet validated**: it has run on an X7 twice (see the [hardware record](#hardware-record)), and these tools, or the test app, are how the rest of §4.5 gets answered. Start with `ed64-smoke` to confirm the port, then see [`l3-over-everdrive-x7.md`](../docs/spec/l3-over-everdrive-x7.md) §4.5.
 
 **EverDrive-64 PRO:** same ROM. libdragon's `usb.h` does not know the PRO, so `test-rom/cart_link.c` detects one first and routes USB traffic through `test-rom/ed64pro.c`; the ROM then shows an on-screen **UNVALIDATED** warning. Host side: `ed64pro-echo-test` and `ed64pro-l3-framing-e2e` over the link alone, then `multi64d --cart ed64pro`. Never run on a cart — see [`l3-over-everdrive-pro.md`](../docs/spec/l3-over-everdrive-pro.md) §8 and §9.
 
@@ -98,10 +98,22 @@ Runs of the committed `multi64_test.z64` on real carts, newest first. Add one wh
 
 | Date | Cart | ROM | Host | Result |
 |------|------|-----|------|--------|
+| 2026-10-09 | EverDrive-64 X7 (OS 3.09) | `multi64-test-rom 1.14`, SHA-256 `bf20c574cb9f48569d5bb5bc1996cbce6f3bede08a2e62c7562f10af00fa26ae` | Windows 11 Pro 10.0.26200, FTDI driver 2.12.36.20; host tools and `multi64d` from `3c9ffb0` | **Pass** (34 passed, 3 skipped) |
 | 2026-10-08 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | `multi64-test-rom 1.14`, SHA-256 `bf20c574cb9f48569d5bb5bc1996cbce6f3bede08a2e62c7562f10af00fa26ae` | Windows 11 Pro 10.0.26300; host tools and `multi64d` built from `4f1f2ad` | **Pass** (35 passed, 2 skipped) on the second boot; the first boot failed and the failure did not recur |
 | 2026-09-18 | EverDrive-64 X7 (OS version not recorded) | `multi64-test-rom 1.10`, SHA-256 `75cce6950c3667be8ef89392f90b9a359783543fd1ef5e86e40a67df9181fe4a`; then `1.11`, SHA-256 `c6e04dd596c89ad2ff1363c81abe4480b1b62ab928d00c8870a917cf2ae005bb`; then `1.12`, SHA-256 `de9f50ba96a2c40607d142983def2d45fe43bdab0fa5aab92c62e245b550952a` | Windows (version not recorded); `multi64d --cart ed64`; test app from `611c89d`, `06d55d2`, `e71631e`, `243ea4b`, then `9e120de` | **Pass** on 1.12 (33 passed, 2 skipped); 1.10 and 1.11 failed the burst framing check |
 | 2026-09-17 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | `multi64-test-rom 1.10`; SHA-256 `75cce6950c3667be8ef89392f90b9a359783543fd1ef5e86e40a67df9181fe4a` | Windows 11 Pro 10.0.26200; host tools and `multi64d` from `a593195` | **Pass** (31/31) |
 | 2026-09-13 | SummerCart64 (`SCv2`, firmware 2.20 rev 2) | built from `52098ce`; SHA-256 `68b0544013c1622abe03dedf5a13cb95a8288d1d59421e0b2dbd565c6a884ba3` | Windows 11 Pro 10.0.26200; host tools and `multi64d` from `c7b13bb` | **Pass** |
+
+**2026-10-09, EverDrive-64 X7.** Run by a remote tester with the cart-diagnostics bundle
+([`bringup/README.md`](bringup/README.md#2-x7-handover)), as the control before the bring-up ROM.
+Every check passed: liveness, all of M64T and M64P, BENCH, and over direct serial the 8,308-byte
+frame both in one burst and one message at a time, with zero overflow, resync and bad-header drops
+and no failed cart writes. The three skips were HUD text and rumble, which the host cannot see, and
+the ROM version check, which the script does not supply a version for.
+
+The bring-up ROM ran next, on the same cart: the agent's own X7 driver answered every request with
+the PI otherwise idle, and under PI load cut a reply off part-way, which left `multi64d` deaf to the
+cart for 45 s. Its record is in [`bringup/README.md`](bringup/README.md#hardware-record).
 
 **2026-10-08, SummerCart64.** The first runs of ROM 1.14, and of the toolchain built by libdragon's
 `e356bf3` script. The ROM went onto the SD card with `sc64-sd-e2e --upload` and was read back byte
