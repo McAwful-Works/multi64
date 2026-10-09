@@ -1,16 +1,25 @@
 # Cart diagnostics for a remote tester: one run, one zip.
 #
 # Runs multi64d itself with full logging (debug, plus every byte read from the cart), so nothing
-# depends on Multi64's in-memory Developer log. Two phases, each against a fresh daemon:
+# depends on Multi64's in-memory Developer log. Two phases, each against a fresh daemon (phase 1
+# sometimes two, below):
 #
 #   1. Control: multi64_test.z64, which moves USB through libdragon, and `multi64-test-connector
-#      suite`. On an X7 this path passed on 2026-09-18, so a failure here is the tester's setup
-#      (cable, driver, port), not the agent's driver.
+#      suite`. On an X7 this path passed on 2026-09-18 and on the morning of 2026-10-09, so a
+#      failure here points at the tester's setup (cable, driver, port), not the agent's driver.
+#      Before the suite, its first request goes out on its own, up to three times, through a
+#      daemon started without --clear-serial. If none is answered, that daemon is stopped and a
+#      second one started with --clear-serial, which purges the port when it opens it; the request
+#      goes out again and the suite runs there. On 2026-10-09 an X7 sent nothing back through the
+#      bridge until the suite's own direct-serial step had purged the port, and this shows whether
+#      purging at bridge start is what fixes it. Doing it before the suite matters: the suite's
+#      direct-serial step purges the port too, which would hide the answer.
 #   2. Bring-up: multi64_bringup.z64 and `multi64-test-connector bringup --baseline`. On an X7,
 #      when the CPU-word build gets no HELLO_ACK, the tester switches to the DMA build and it runs
 #      again.
 #
-# Everything printed, both daemons' logs, the daemon's status before and after each phase, and the
+# Everything printed, every daemon's log, each daemon's status when it started and stopped, the
+# phase 1 tries (phase1-probe.txt, and phase1-purged-probe.txt when a second daemon ran), and the
 # machine's serial ports and drivers go into results-<time>\, which is zipped at the end.
 # Written for Windows PowerShell 5.1, which every Windows 10/11 has.
 
@@ -155,10 +164,12 @@ function Show-DaemonErrors([string]$phase) {
     $distinct | Select-Object -Last 6 | ForEach-Object { Say ("  " + $_) }
 }
 
-function Start-Daemon([string]$phase) {
+# $clearSerial is passed either way, so a MULTI64D_CLEAR_SERIAL in the tester's environment cannot
+# decide it.
+function Start-Daemon([string]$phase, [bool]$clearSerial = $false) {
     $env:RUST_LOG = 'debug'
     $env:MULTI64D_SERIAL_TRACE = '1'
-    $dargs = @('--serial', $script:Port, '--cart', $Cart)
+    $dargs = @('--serial', $script:Port, '--cart', $Cart, ('--clear-serial=' + $clearSerial.ToString().ToLower()))
     Say ("starting multi64d " + ($dargs -join ' ') + " (debug log, serial trace)")
     $p = Start-Process -FilePath $daemon -ArgumentList $dargs -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $out "$phase-multi64d.log") `
@@ -202,6 +213,19 @@ function Stop-Daemon($p, [string]$phase) {
     Save-Status "$phase-status-end.json"
     if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
     Start-Sleep -Milliseconds 500
+}
+
+# The suite's first request on its own: put the test ROM in M64T_PROTO, which it accepts from any
+# mode, through the daemon. Up to three tries of 5 s, all logged to $file. $true once one is answered.
+function Probe-Cart([string]$file) {
+    for ($try = 1; $try -le 3; $try++) {
+        if ((Run-Logged $file $tool @('set-mode', '--mode', '1')) -eq 0) {
+            Say "the cart answered through the bridge (try $try of 3)"
+            return $true
+        }
+    }
+    Say 'the cart did not answer through the bridge (3 tries)'
+    return $false
 }
 
 Section 'Multi64 cart diagnostics'
@@ -281,10 +305,20 @@ if (-not $SkipControl) {
         Say 'This ROM moves USB through libdragon, which has worked on an X7 and on a SummerCart64. It checks your cable, driver and port.'
     }
     Ask 'Boot multi64_test.z64 from the cart menu. When its text is on the TV, press Enter' | Out-Null
-    $p = Start-Daemon 'phase1'
+    # The purge experiment in this file's header: a daemon that does not purge first, then, only if
+    # the cart says nothing through it, one that does.
+    $phase = 'phase1'
+    $p = Start-Daemon $phase
+    if ($p -ne $null -and -not (Probe-Cart 'phase1-probe.txt')) {
+        Stop-Daemon $p $phase
+        Say 'Starting multi64d again, this time purging the port as it opens it, to see whether that brings the cart back.'
+        $phase = 'phase1-purged'
+        $p = Start-Daemon $phase $true
+        if ($p -ne $null) { Probe-Cart 'phase1-purged-probe.txt' | Out-Null }
+    }
     if ($p -ne $null) {
-        Run-Logged 'phase1-suite.txt' $tool @('suite', '--port', $Port) | Out-Null
-        Stop-Daemon $p 'phase1'
+        Run-Logged "$phase-suite.txt" $tool @('suite', '--port', $Port) | Out-Null
+        Stop-Daemon $p $phase
     }
 }
 

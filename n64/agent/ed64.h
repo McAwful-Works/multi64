@@ -3,8 +3,8 @@
  *
  * NOT SHOWN TO WORK IN A GAME. On one X7 it has worked in n64/bringup's ROM, outside any game:
  * every request answered with the PI otherwise idle, and under PI load a reply cut off part-way.
- * ed64_send now retries a busy PI to prevent that, which no cart has run yet
- * (l3-over-everdrive-x7.md 4.5 item 7). One AP64 build was tried on an X7: the serial port opened, but the ROM never answered,
+ * ed64_send now retries a busy PI to prevent that, and with the retry the same X7, in the same ROM,
+ * answered every request but one across three load levels (l3-over-everdrive-x7.md 4.5 item 7). One AP64 build was tried on an X7: the serial port opened, but the ROM never answered,
  * so nothing shows this driver ran there.
  *
  * The console half of the DMA@ framing in docs/spec/l3-over-everdrive-x7.md section 4, written against libdragon's src/usb.c
