@@ -15,7 +15,8 @@ the baseline: on another cart, the first result that differs from the SC64's is 
 ([Hardware record](#hardware-record)); that run is the baseline. **And on an EverDrive-64 X7,** on
 2026-10-09, where the X7 driver worked with the PI otherwise idle, and under load cut a reply off
 part-way and left the host deaf to the cart. The committed binary is **1.1**, which carries the fix
-for the first; the second is fixed in `multi64d`. 1.1 has not run on a cart. Its SC64 build is the
+for the first; the second is fixed in `multi64d`. **1.1 ran on the same X7 later that day,** where
+the CPU-word build answered every request but one across three load levels. Its SC64 build is the
 same source as 1.0's, so the baseline still stands for it.
 
 ## Design
@@ -178,13 +179,35 @@ The tester copies the two ROMs to the SD card, closes Multi64, AP64 and Xfer64, 
 `diagnose.bat`, which walks them through the run. It does not use
 Multi64's bridge, whose log lives only in the app. Instead it runs the bundled `multi64d` itself,
 at debug level with `--serial-trace` (every byte read from the cart), with a fresh daemon for each
-phase:
+phase, and a second one in phase 1 when the experiment below calls for it:
 
 1. **Control:** `multi64_test.z64` and `multi64-test-connector suite`. On an X7 or SC64 that ROM
-   moves USB through libdragon, which passed on an X7 on 2026-09-18, so a failure here is the
-   tester's cable, driver or port rather than the agent's driver. On a PRO it is no control:
-   libdragon does not support the PRO, so the test ROM uses `n64/test-rom/ed64pro.c`, the same
-   unproven mapping the agent uses, and the script says so.
+   moves USB through libdragon, which passed on an X7 on 2026-09-18 and on the morning of
+   2026-10-09, so a failure here points at the tester's cable, driver or port rather than the
+   agent's driver. On a PRO it is no control: libdragon does not support the PRO, so the test ROM
+   uses `n64/test-rom/ed64pro.c`, the same unproven mapping the agent uses, and the script says so.
+
+   Phase 1 also carries an experiment. In the second X7 run on 2026-10-09 this ROM sent nothing
+   through `multi64d` until the suite's direct-serial step had purged the port
+   ([Hardware record](#hardware-record)). So before the suite, the script sends the suite's first
+   request, `set-mode --mode 1`, on its own, up to three times, through a daemon started with
+   `--clear-serial=false`. If none is answered, it stops that daemon, starts another with
+   `--clear-serial=true`, which purges the port in both directions as it opens it, and sends the
+   request again; the suite then runs against that second daemon. It has to happen before the suite,
+   because the suite's direct-serial step purges the port too and would hide the result. Each
+   daemon has its own log (`phase1-` and `phase1-purged-multi64d.log`), and the tries are in
+   `phase1-probe.txt` and `phase1-purged-probe.txt`:
+
+   | Phase 1 shows | What it means |
+   |---|---|
+   | The first daemon is answered | The silence did not happen this time, and the run says nothing about its cause |
+   | Only the purged daemon is answered | Stale state in the USB path when the bridge started, which a purge clears |
+   | Neither is answered, but the suite's direct-serial step is | A purge at open is not enough; something else the direct step did is. That step also reopens the port and talks to the cart without `multi64d` |
+   | Nothing is answered at all | The ROM or the cart, not the host: the ROM's screen and the cart OS version are what is left to compare |
+
+   The suite ends by printing the ROM's `tx_failures`, its writes that gave up since boot. When
+   that count covers the tries no daemon answered, those requests reached the cart and only its
+   replies were lost, as in the second X7 run.
 2. **Bring-up:** `multi64_bringup.z64` and `bringup --baseline`. If it reports `link.hello` FAIL
    (no HELLO_ACK), the script has the tester press **R** (the top line changes to `link X7 DMA`)
    and runs it again.
@@ -222,6 +245,52 @@ the maintainer's SummerCart64 checks the bundle itself before it goes out.
 
 ## Hardware record
 
+**2026-10-09, EverDrive-64 X7, second run** (`cart-diagnostics-55cdfa9`, with the fixes from
+[#372](https://github.com/McAwful-Works/multi64/pull/372); X7 OS **3.11**, updated from 3.09 since
+the first run), ROM 1.1, SHA-256 `dcb36cdec9fc6eafc8a9a2cea63a004743255fb0779bdb0fabfb30dbd42749c4`,
+on the same cart, Windows, FTDI driver and port as the first run below.
+
+- **Phase 1, test ROM 1.14: 11 passed, 20 failed, 3 skipped.** The same ROM had passed on this
+  cart that morning under OS 3.09. This time the cart sent nothing through `multi64d`: the
+  daemon's serial trace has no byte from the cart between its start at 19:57:22Z and 19:59:21Z,
+  and every check through it timed out. The cart was receiving, though: its `DIAG`, read afterward,
+  counted 27 writes that gave up (`tx_failures`), and this ROM writes only once the host has sent it
+  something. Then the suite's direct-serial step released the port and opened it itself, which
+  purges it in both directions, and from there every check passed, including those through
+  `multi64d` once it had taken the port back. `multi64d` had started with `clear_serial=false`, and
+  taking the port back does not purge either.
+
+  **Not established:** what the purge cleared, and whether the cause is OS 3.11 or stale state in
+  the USB path when the bridge started. The direct step reopened the port as well as purging it,
+  but the daemon's own start was a fresh open too, and did not help. The next bundle's phase 1
+  tests a purge at the bridge's start ([X7 handover](#2-x7-handover)). See
+  [l3-over-everdrive-x7.md](../../docs/spec/l3-over-everdrive-x7.md) §4.5 item 8.
+- **Identify and blocks:** as in the first run, to within 1%. Every check passed; one `PI_STATUS`
+  read cost 263 ns and one X7 USBCFG read 3.60 µs (5.87 µs under load).
+- **Link, CPU-word build,** the build AP64's X7 agents ship: **answered every request but one, across all three load levels.**
+  - No load: 36 of 36, round trip 64/83/114 ms (min/mean/max).
+  - Moderate load: 34 of 35, one timeout. 67 of the driver's receive calls reported part of the
+    stream lost (`recv_lost`), yet only that one request went unanswered; the counters do not say
+    how the 67 map onto messages. `pi_io` found the PI busy on 7 of 11,632 accesses.
+  - Heavy load: 36 of 36, round trip 64/92/128 ms. The longest agent tick was 64.7 ms, 62.9 ms of
+    it in send.
+
+  The driver counted no failed send at any level and no reply came back wrong: the retry in
+  `ed64_send` held. No message stalled part-way either, so `ed64-l2`'s drop was never exercised.
+  Against the SC64 baseline 0 checks failed, and the X7's longest ticks ran 1.6 to 1.7 times the
+  SC64's: 13.7, 20.9 and 64.7 ms against 8.7, 12.5 and 39.9 ms, with no, moderate and heavy load.
+- **Link, PI DMA build** (diagnostic only; no game ships it): with no load, 36 of 36. Under
+  moderate load 4 of 19 timed out and it stopped answering, so the tool skipped the rest. The last
+  bytes from the cart arrived at 20:00:13Z. Nine seconds later a write to the cart could not finish
+  within its 1 s (`failed to write whole buffer`), so `multi64d` dropped the link and reopened it,
+  and nothing more came from the cart in the 36 s left. A write that cannot finish suggests the cart
+  was no longer reading, so this build had most likely stopped reading USB, not only answering.
+  Its counters were not read afterward, so why is not known.
+
+This run does not explain why an AP64 build on an X7 never answered either. Phase 1's silence has
+the same shape, a port that opens and a ROM that says nothing, but is not shown to have the same
+cause. And nothing here ran inside a game.
+
 **2026-10-09, EverDrive-64 X7, through the remote tester's bundle** (`cart-diagnostics-3c9ffb0`; X7
 OS 3.09), ROM 1.0, SHA-256 `58b347db7fbc97d21e00f1fc82a4444eeec9ece4d74ddf9916f0a587e7049126`, Windows 11
 Pro 10.0.26200, FTDI driver 2.12.36.20. `diagnose.bat` picked the X7 and its port by USB IDs. The
@@ -246,15 +315,14 @@ first run of the agent's own X7 driver anywhere but inside a game.
   that build, and its switch to the DMA build timed out (`link.x7_dma.aborted`). The counters that
   would say which PI access failed were lost with the link.
 
-Both faults are fixed since, and neither fix has run on a cart: `ed64_send` retries a busy PI once a
-message's first block is out, and `ed64-l2` drops a message that stalls part-way for 500 ms. The
-longest wait for a message's next byte in this run was 15 ms, across 142 whole messages. See
+Both faults were fixed in [#372](https://github.com/McAwful-Works/multi64/pull/372), and the run
+above was made with both fixes: `ed64_send` retries a busy PI once a message's first block is out,
+and `ed64-l2` drops a message that stalls part-way for 500 ms. The longest wait for a message's next
+byte in this run was 15 ms, across 142 whole messages. See
 [l3-over-everdrive-x7.md](../../docs/spec/l3-over-everdrive-x7.md) §4.5 item 7.
 
 This run does not explain why an AP64 build on an X7 never answered: that ROM never answered
-`HELLO`, whose reply is one block, and here `HELLO` was answered in 22 ms. A rerun would show
-whether the X7 build holds up under moderate and heavy load, and whether the PI DMA build behaves
-the same. It would say nothing about the agent inside a game.
+`HELLO`, whose reply is one block, and here `HELLO` was answered in 22 ms.
 
 **2026-10-08, SummerCart64, through the remote tester's bundle** (`cart-diagnostics-fe8ff00`;
 `SCv2`, firmware 2.20 rev 2), ROM SHA-256

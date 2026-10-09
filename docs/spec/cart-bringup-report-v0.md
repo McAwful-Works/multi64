@@ -2,8 +2,8 @@
 
 **Spec-Revision:** 1  
 **Status:** **Draft.** The ROM and the host tool that implement it have run on a SummerCart64
-(2026-10-08), the baseline every other cart's report is read against, and on an EverDrive-64 X7
-(2026-10-09). No other cart has run them.
+(2026-10-08), the baseline every other cart's report is read against, and twice on an
+EverDrive-64 X7 (2026-10-09). No other cart has run them.
 
 The cart bring-up ROM, [`n64/bringup`](../../n64/bringup/README.md)'s `multi64_bringup.z64`, runs
 the cart agent's own drivers on whatever cart it boots from and keeps what it measures in one

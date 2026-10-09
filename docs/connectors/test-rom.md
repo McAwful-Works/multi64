@@ -150,9 +150,10 @@ latest hardware run is recorded in [`n64/README.md`](../../n64/README.md#hardwar
 Two more subcommands drive a different ROM: [`n64/bringup`](../../n64/bringup/README.md)'s
 `multi64_bringup.z64`, which runs the cart agent's own drivers on a cart outside any game. Both
 have run on a SummerCart64, whose run is the committed baseline
-([`n64/bringup/baselines`](../../n64/bringup/baselines/)), and on an EverDrive-64 X7 on 2026-10-09,
-which found the faults recorded in [`n64/bringup/README.md`](../../n64/bringup/README.md#hardware-record).
-That X7 run is not committed as a baseline.
+([`n64/bringup/baselines`](../../n64/bringup/baselines/)), and twice on an EverDrive-64 X7 on
+2026-10-09: the first run found faults, and the second ran with their fixes. Both are recorded in
+[`n64/bringup/README.md`](../../n64/bringup/README.md#hardware-record). Neither X7 run is committed
+as a baseline.
 
 ```sh
 cargo run -p multi64-test-connector --release -- bringup --out bringup-sc64-baseline.json

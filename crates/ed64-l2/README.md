@@ -1,6 +1,6 @@
 # `multi64-ed64-l2` (EverDrive 64 X7)
 
-**Implemented, unvalidated.** Speaks the `DMA@` framing in [`l3-over-everdrive-x7.md`](../../docs/spec/l3-over-everdrive-x7.md) §4. Run on an X7 twice so far: the cart could not send while the host was sending, and once cut a message off part-way, which held this parser for 45 s until it gave up on the trailer — see §4.0 and §4.5 before trusting it. Context: [`docs/README.md` — Flash carts](../../docs/README.md#flash-carts-l2-backends).
+**Implemented, unvalidated.** Speaks the `DMA@` framing in [`l3-over-everdrive-x7.md`](../../docs/spec/l3-over-everdrive-x7.md) §4. Run on an X7 three times so far: the cart could not send while the host was sending, once cut a message off part-way, which held this parser for 45 s until it gave up on the trailer, and once sent nothing through it until a test step that purges the port had run — see §4.0 and §4.5 before trusting it. Context: [`docs/README.md` — Flash carts](../../docs/README.md#flash-carts-l2-backends).
 
 ## Build
 
@@ -15,7 +15,7 @@ cargo test -p multi64-ed64-l2
 2. ~~Implement `Ed64L2Pipe`~~ — **done**; the surface mirrors `Sc64L2Pipe` where the carts agree.
 3. `ed64-smoke` — `usb64` `cmd`/`t` probe ([spec §8](../../docs/spec/l3-over-everdrive-x7.md)) — not L3.
 4. `ed64-echo-test` / `ed64-l3-framing-e2e` — same roles as SC64 e2e tools; ROM in **RAW_ECHO** today.
-5. **A message that stalls part-way is dropped.** Once 500 ms (`PARTIAL_MESSAGE_STALL`) passes in reads with no byte arriving while the parser holds part of a message, it drops that part, logs it at `warn`, and resynchronizes on the next `DMA@` ([spec §4.4](../../docs/spec/l3-over-everdrive-x7.md#44-errors)). Not yet run on a cart.
+5. **A message that stalls part-way is dropped.** Once 500 ms (`PARTIAL_MESSAGE_STALL`) passes in reads with no byte arriving while the parser holds part of a message, it drops that part, logs it at `warn`, and resynchronizes on the next `DMA@` ([spec §4.4](../../docs/spec/l3-over-everdrive-x7.md#44-errors)). It was in the build that ran the third X7 run, which never triggered it, so it has not been exercised on a cart.
 6. ~~`multi64d` backend switch~~ — **done**, experimental: `multi64d --cart ed64` ([daemon API §5.1](../../docs/spec/daemon-api-v1.md)), which Multi64's Settings → **Cart** passes. It carries L3 only once the pipe itself is proven.
 
 **Hardware:** **X7** (and probably 3.0) USB models only. X5 has no USB. The **EverDrive-64 PRO** has USB but speaks edlink, not this `DMA@` mapping, so this crate does not apply to it — see [spec §1.1](../../docs/spec/l3-over-everdrive-x7.md#11-which-everdrives-this-can-apply-to). Its L3 pipe is [`multi64-ed64pro-l2`](../ed64pro-l2/README.md).
