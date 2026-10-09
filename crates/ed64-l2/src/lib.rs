@@ -304,6 +304,17 @@ impl Ed64L2Pipe {
             if let Some(e) = self.pending_err.take() {
                 return Err(e);
             }
+            // A bad trailer stops parsing with whole messages possibly still buffered behind it.
+            // Parse them now, rather than leave them waiting for a read that brings more bytes,
+            // where a quiet cart would have them taken for a message that stalled part-way.
+            if !self.wire.buf.is_empty() {
+                if let Err(e) = process_wire_messages(&mut self.wire, &mut self.l3_rx) {
+                    self.pending_err = Some(e);
+                }
+                if !self.l3_rx.is_empty() || self.pending_err.is_some() {
+                    continue;
+                }
+            }
             let mut scratch = [0u8; 512];
             let asked = Instant::now();
             let read = self.port.read(&mut scratch);
@@ -717,6 +728,23 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         // The error is reported once, then the pipe reads on as before.
         assert_eq!(pipe.read_l3_bytes(&mut out).unwrap(), 0);
+    }
+
+    /// Whole messages behind a bad trailer are parsed on the next call, with no new bytes needed,
+    /// so a quiet cart cannot get them dropped as a message that stalled part-way.
+    #[test]
+    fn messages_behind_a_bad_trailer_are_parsed_without_more_bytes() {
+        let mut bad = from_cart(MULTI64_L3_TYPE, b"xy");
+        let n = bad.len();
+        bad[n - 1] = b'!';
+        bad.extend_from_slice(&from_cart(MULTI64_L3_TYPE, b"after"));
+        let quiet = Duration::from_millis(30);
+        let port = vec![(Duration::ZERO, bad), (quiet, vec![]), (quiet, vec![])];
+        let mut pipe = pipe_on(ScriptedPort::timed(port), Duration::from_millis(50));
+        let mut out = [0u8; 16];
+        let e = pipe.read_l3_bytes(&mut out).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(read_script(&mut pipe, 2).unwrap(), b"after");
     }
 
     /// With nothing queued, a bad trailer still surfaces on the read that parsed it.

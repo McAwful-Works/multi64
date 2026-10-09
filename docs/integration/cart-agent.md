@@ -17,7 +17,7 @@ it; this is that code, written to be dropped into a ROM its authors did not desi
 | **Stack** | about 300 bytes at the deepest point, measured |
 | **RAM** | about 24 KB: 6.7–8.3 KB code, 0–1.1 KB data (both depend on compiler, flags and cart), 16.4–19 KB BSS |
 | **Symbols** | none undefined. Nothing from libultra, libdragon, the C library or the game |
-| **Cart** | SummerCart64. EverDrive-64 X7 and PRO builds exist (`CART=ed64`, `CART=ed64pro`) and have **not been shown to work on a cart**; see §6 |
+| **Cart** | SummerCart64. EverDrive-64 X7 and PRO builds exist (`CART=ed64`, `CART=ed64pro`) and have **not been shown to work in a game**; see §6 |
 
 The per-frame rule is not style. M64P promises that every region in one request is read at
 one consistent point in the frame and that a write lands between frames. That property comes
@@ -148,8 +148,7 @@ than edit. A local fix to `mem_proto` is a fork of the protocol.
 **Neither has been shown to work in a game.** The PRO build has never run on a cart. The X7 driver
 has worked on one outside a game, in [`n64/bringup`](../../n64/bringup/README.md)'s ROM, and under
 PI load cut a reply off part-way, which `ed64_send` now retries a busy PI to prevent
-([l3-over-everdrive-x7.md §4.5](../spec/l3-over-everdrive-x7.md#45-open-questions--resolve-on-hardware-before-dropping-draft)
-item 7). The X7 build has been tried once in a game, an Ocarina of Time seed patched by AP64: the
+([l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4.5 item 7). The X7 build has been tried once in a game, an Ocarina of Time seed patched by AP64: the
 serial port opened, but the ROM never answered `HELLO`, and nothing from that run shows whether the
 agent ever started. They exist
 so that the first person with an EverDrive has something to test. Nothing about them counts as
@@ -157,9 +156,9 @@ support.
 
 | Build | Driver | Wire | RAM, flat image |
 |---|---|---|---|
-| default | `sc64.c` | [l3-over-sc64.md](../spec/l3-over-sc64.md) | 23,664 B |
-| `CART=ed64` | `ed64.c` | [l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4: `DMA@` messages through the cart's 512-byte USB window | 26,976 B |
-| `CART=ed64pro` | `ed64pro.c` | [l3-over-everdrive-pro.md](../spec/l3-over-everdrive-pro.md): the cart FIFO | 23,136 B |
+| default | `sc64.c` | [l3-over-sc64.md](../spec/l3-over-sc64.md) | 25,752 B |
+| `CART=ed64` | `ed64.c` | [l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4: `DMA@` messages through the cart's 512-byte USB window | 29,253 B |
+| `CART=ed64pro` | `ed64pro.c` | [l3-over-everdrive-pro.md](../spec/l3-over-everdrive-pro.md): the cart FIFO | 25,272 B |
 
 Every build also links `cart_rom.c` and `pi_io.c`. Sizes are the object's code, data and BSS with
 libdragon's GCC 16.2; a flat image adds only the few bytes of the host glue.

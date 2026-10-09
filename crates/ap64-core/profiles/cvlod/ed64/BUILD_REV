@@ -1,4 +1,4 @@
-n64/agent from 2eaf679
+n64/agent from b898f62
 built by crates/ap64-core/agent/build.sh cvlod, cart ed64 (mips64-ultra-elf-gcc (GCC) 15.2.0)
-agent.bin sha1 78b9685f5f544b53633cb410f897ebdd82d8fe6a
-stub.bin  sha1 b733d04e83c050c442b3a8affb7d9bda27662009
+agent.bin sha1 23565764bed9f781eef49ff27a681e6a9016cf30
+stub.bin  sha1 92cb407f4d5423f7ca67c79050c0aef99c0c1f01

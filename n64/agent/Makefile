@@ -28,9 +28,9 @@ SIZE    = $(PREFIX)size
 
 PROTO   = ../test-rom
 
-# Which cart the agent drives. sc64 is the default and the only driver shown to work on hardware;
-# its build is unchanged by the other two. ed64 (EverDrive-64 X7) and ed64pro (EverDrive-64 PRO)
-# have not been shown to work on a cart. The drivers do not detect each other: build for the cart
+# Which cart the agent drives. sc64 is the default and the only driver shown to work in a game;
+# its build is unchanged by the other two. ed64 (EverDrive-64 X7) has worked on a cart only
+# outside a game, in n64/bringup's ROM, and ed64pro (EverDrive-64 PRO) has never run on one. The drivers do not detect each other: build for the cart
 # in use.
 CART ?= sc64
 
@@ -133,7 +133,7 @@ HOST_TEST_SOURCES = tests/reassembly_test.c agent.c $(PROTO)/mem_proto.c
 # tests/ed64_test.c: the real ed64.c linked against fake pi_io_* functions in place of pi_io.c,
 # modelling the X7's USBCFG register and USB window. It checks that a received message is delivered
 # in order and whole, or reported lost, and that every wait is bounded, not that the model matches
-# an X7, and the X7 driver has never been shown to work on one.
+# an X7. The X7 driver has worked on one only outside a game, in n64/bringup's ROM.
 host-test:
 	mkdir -p build/host
 	$(HOSTCC) $(HOST_CFLAGS) -DAGENT_CART_ED64 -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64
