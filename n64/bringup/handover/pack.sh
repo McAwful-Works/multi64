@@ -40,6 +40,26 @@ cp n64/bringup/handover/diagnose.ps1 n64/bringup/handover/diagnose.bat n64/bring
     (cd "$out" && sha256sum -- *.exe *.z64 *.json)
 } | sed 's/$/\r/' > "$out/VERSION.txt"
 
-(cd target/handover && powershell -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '$name.zip'")
+# Not Compress-Archive: Windows PowerShell 5.1's stores paths with backslashes, which unzip tools
+# outside Windows warn about or refuse. Name each entry with forward slashes, as diagnose.ps1 does.
+zipper=$(mktemp --suffix=.ps1)
+cat > "$zipper" <<'PS1'
+param([string]$Dir, [string]$Zip)
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+if (Test-Path $Zip) { Remove-Item $Zip -Force }
+$archive = [System.IO.Compression.ZipFile]::Open($Zip, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    $root = Split-Path $Dir -Parent
+    Get-ChildItem -Path $Dir -Recurse -File | ForEach-Object {
+        $entry = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
+        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, $entry) | Out-Null
+    }
+} finally {
+    $archive.Dispose()
+}
+PS1
+powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$zipper")" \
+    -Dir "$(cygpath -w "$root/$out")" -Zip "$(cygpath -w "$root/$out.zip")"
+rm -f "$zipper"
 cat "$out/VERSION.txt"
 echo "bundle: $out.zip"
