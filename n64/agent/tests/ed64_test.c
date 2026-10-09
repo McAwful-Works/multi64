@@ -7,8 +7,8 @@
  * what the host has sent; a write transfer sends the window from the offset it names to the
  * window's end; the status word carries POWER, RXF while nothing is waiting, and ACT while a
  * transfer is in progress), and the window itself. A read asking for more bytes than the host sent
- * never finishes, and any window load can be made to fail, the way pi_io.c fails when the PI stays
- * busy.
+ * never finishes, and any window load, or any run of pi_io accesses, can be made to fail, the way
+ * pi_io.c fails when the PI is busy.
  *
  * One behavior is observed rather than transcribed: a write transfer started while the host has
  * sent bytes the console has not read never finishes (ACT stays set), and the switch back to
@@ -20,9 +20,9 @@
  * byte view of a loaded word is the window's bytes in order, as it is on the big-endian console.
  *
  * It checks that a received message is delivered in order and whole, or reported lost, that a sent
- * message carries the framing the host parses, and that every wait is bounded. It says nothing
- * about the cart: the register model is transcribed, not observed, and this driver has never been
- * shown to work on an X7.
+ * message carries the framing the host parses and is not cut off by a busy PI once it has started,
+ * and that every wait is bounded. It says nothing about the cart: the register model is transcribed,
+ * not observed. The driver has run on one X7, in n64/bringup's ROM rather than in a game.
  */
 #undef NDEBUG
 #include <assert.h>
@@ -79,14 +79,32 @@ static struct {
     /* The next read-transfer write fails before its store, the PI busy from the start. */
     int fail_rd_before_store;
 
+    /* Every pi_io access, numbered from 1. Accesses busy_at to busy_at + busy_len - 1 fail before
+       they touch the cart, as pi_io.c's do when it finds a DMA under way; busy_at 0 for none. */
+    uint32_t pio;
+    uint32_t busy_at;
+    uint32_t busy_len;
+    /* The access that started the first write transfer, 0 until one has. */
+    uint32_t first_wr_pio;
+
     /* Everything the cart has transmitted, in order: a write transfer sends the window from the
        offset it names to the window's end. */
     uint8_t sent[F_HOST_BYTES];
     uint32_t sent_len;
 } f;
 
+/* Count an access, and say whether the PI is busy for it. */
+static int pi_busy(void)
+{
+    f.pio++;
+    return f.busy_at != 0u && f.pio >= f.busy_at && f.pio - f.busy_at < f.busy_len;
+}
+
 int pi_io_read(uint32_t addr, uint32_t *value)
 {
+    if (pi_busy()) {
+        return 0;
+    }
     if (addr == F_USBCFG) {
         *value = F_POWER | (f.host_pos == f.host_len ? F_RXF : 0u) |
                  (f.stuck || f.write_stuck ? F_ACT : 0u);
@@ -101,6 +119,9 @@ int pi_io_read(uint32_t addr, uint32_t *value)
 int pi_io_write_stored(uint32_t addr, uint32_t value, int *stored)
 {
     *stored = 0;
+    if (pi_busy()) {
+        return 0;
+    }
     if (addr == F_KEY || addr == F_SYSCFG) {
         *stored = 1;
         return 1;
@@ -133,6 +154,9 @@ int pi_io_write_stored(uint32_t addr, uint32_t value, int *stored)
         assert(start < F_WINDOW);
         n = F_WINDOW - start;
         f.writes++;
+        if (f.first_wr_pio == 0u) {
+            f.first_wr_pio = f.pio;
+        }
         if (f.host_pos < f.host_len) {
             /* What an X7 did: the write does not go out while host bytes wait unread. */
             f.write_stuck = 1;
@@ -157,6 +181,9 @@ int pi_io_write(uint32_t addr, uint32_t value)
 
 int pi_io_load_words(uint32_t *dst, uint32_t addr, uint32_t words)
 {
+    if (pi_busy()) {
+        return 0;
+    }
     f.loads++;
     if (f.loads == f.fail_load) {
         return 0;
@@ -169,6 +196,9 @@ int pi_io_load_words(uint32_t *dst, uint32_t addr, uint32_t words)
 
 int pi_io_store_words(const uint32_t *src, uint32_t addr, uint32_t words)
 {
+    if (pi_busy()) {
+        return 0;
+    }
     assert(addr >= F_USBDAT && (addr - F_USBDAT) % 4u == 0u);
     assert(addr - F_USBDAT + 4u * words <= F_WINDOW);
     memcpy(f.window + (addr - F_USBDAT), src, 4u * words);
@@ -555,6 +585,72 @@ static void more_waiting_than_the_driver_holds_sends_nothing(void)
     assert(ed64_receive(got, sizeof got) == 0u && f.host_pos == f.host_len);
 }
 
+/*
+ * An X7 under load sent the header and first 4 blocks of a 4122-byte reply, and then nothing more
+ * of it (n64/bringup, 2026-10-09): a PI access failed part-way, and ed64_send gave up with the rest
+ * unsent. The host counted the cart's later messages as that reply's payload until it gave up.
+ *
+ * Here the PI is busy for 3 accesses in a row, starting at each access a clean send of that reply
+ * makes in turn. Busy before the first block has started, nothing is sent; busy at any access after,
+ * the message still arrives whole, and only once.
+ */
+static void a_busy_pi_never_cuts_a_message_off(void)
+{
+    static uint8_t body[4122];
+    uint32_t total = 8u + sizeof body + 4u;
+    uint32_t setup;
+    uint32_t accesses;
+    uint32_t first_wr;
+    uint32_t at;
+
+    /* fresh_cart makes the same accesses every time, so access numbers line up across runs. */
+    pattern(body, sizeof body, 0xD1u);
+    fresh_cart();
+    setup = f.pio;
+    assert(ed64_send(body, sizeof body) == 1 && f.sent_len == total && f.writes == 9u);
+    accesses = f.pio;
+    first_wr = f.first_wr_pio;
+
+    for (at = setup + 1u; at <= accesses; at++) {
+        int ok;
+
+        fresh_cart();
+        f.busy_at = at;
+        f.busy_len = 3u;
+        ok = ed64_send(body, sizeof body);
+        if (at <= first_wr) {
+            assert(ok == 0 && f.sent_len == 0u && "a busy PI before the first block sent part of it");
+        } else {
+            assert(ok == 1 && "a busy PI after the first block made the send give up");
+            assert(f.sent_len == total && "a message went out cut off, or a block went out twice");
+            assert(memcmp(f.sent, "DMA@", 4u) == 0 && memcmp(f.sent + 8, body, sizeof body) == 0);
+            assert(memcmp(f.sent + 8 + sizeof body, "CMPH", 4u) == 0);
+        }
+    }
+}
+
+/*
+ * The retries are bounded: a PI that stays busy for good once the first block is out still ends the
+ * send, having tried at most 8 accesses again, and the host is left the part that went out.
+ */
+static void a_pi_busy_for_good_still_ends_the_send(void)
+{
+    static uint8_t body[4122];
+    uint32_t first_wr;
+
+    pattern(body, sizeof body, 0xE1u);
+    fresh_cart();
+    assert(ed64_send(body, sizeof body) == 1);
+    first_wr = f.first_wr_pio;
+
+    fresh_cart();
+    f.busy_at = first_wr + 1u;
+    f.busy_len = 0xFFFFFFFFu;
+    assert(ed64_send(body, sizeof body) == 0);
+    assert(f.sent_len == F_WINDOW && "only the first block went out");
+    assert(f.pio - f.busy_at + 1u == 9u && "the first failed access and 8 tries again, no more");
+}
+
 /* ---- runner ------------------------------------------------------------------------ */
 
 static const char *s_case;
@@ -591,6 +687,8 @@ int main(void)
     RUN(a_send_with_host_data_waiting_reads_it_first_and_sends_whole);
     RUN(a_loss_read_ahead_of_a_send_is_reported_in_order);
     RUN(more_waiting_than_the_driver_holds_sends_nothing);
+    RUN(a_busy_pi_never_cuts_a_message_off);
+    RUN(a_pi_busy_for_good_still_ends_the_send);
     printf("ed64 driver: %d cases passed\n", s_cases);
     return 0;
 }

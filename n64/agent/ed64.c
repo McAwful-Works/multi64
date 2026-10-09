@@ -56,14 +56,33 @@ static uint32_t s_rxq_before_loss;
 /* Messages ed64_send reads ahead in one call, at most. Bounds the loop if the PI stays busy. */
 #define ED_READ_AHEAD_MAX 32u
 
-static int usb_idle(void)
+/*
+ * PI accesses ed64_send tries again, per message, once its first block is on the wire. From then on
+ * a failed access would leave the host a message cut off part-way, which an X7 under load did: a
+ * 4122-byte reply stopped after 4 of its 9 blocks (n64/bringup, 2026-10-09). pi_io fails an access
+ * when a DMA the game started between its idle check and its interrupt mask is under way, which
+ * costs no time, or when the PI stays busy for PI_WAIT_SPINS, about 26 ms. So these add at most
+ * about 0.2 s to a message, under the 500 ms crates/ed64-l2 lets a message stall part-way before
+ * it drops the part it has (l3-over-everdrive-x7.md 4.4).
+ */
+#define ED_SEND_RETRIES 8u
+
+/**
+ * Wait for the USB unit to finish a transfer, up to ED_BUSY_SPINS status reads. A read the PI fails
+ * counts as a spin while `*retries` lasts, and spends one; with none left it fails the wait.
+ */
+static int usb_idle_retrying(uint32_t *retries)
 {
     uint32_t spins;
     uint32_t v;
 
     for (spins = 0u; spins < ED_BUSY_SPINS; spins++) {
         if (!pi_io_read(ED_REG_USBCFG, &v)) {
-            return 0;
+            if (*retries == 0u) {
+                return 0;
+            }
+            (*retries)--;
+            continue;
         }
         if (!(v & ED_USBSTAT_ACT)) {
             return 1;
@@ -72,6 +91,13 @@ static int usb_idle(void)
     /* Leave the USB unit in its idle read mode, as libdragon does on a timeout. */
     (void)pi_io_write(ED_REG_USBCFG, ED_USBMODE_RDNOP);
     return 0;
+}
+
+/* usb_idle_retrying with no retries: the first access the PI fails fails the wait. */
+static int usb_idle(void)
+{
+    uint32_t none = 0u;
+    return usb_idle_retrying(&none);
 }
 
 int ed64_init(void)
@@ -314,12 +340,38 @@ static uint8_t message_byte(const uint8_t *data, uint32_t len, uint32_t p)
     return 0u;
 }
 
+/**
+ * Start a write transfer of the window's bytes from `addr` (in the word at `first`) to its end.
+ * Returns 1 once the transfer has been asked for. A failed PI access before that has sent nothing,
+ * so the whole block is tried again while `*retries` lasts, spending one each time.
+ */
+static int start_block(uint32_t first, uint32_t addr, uint32_t *retries)
+{
+    for (;;) {
+        int stored = 0;
+
+        /* A store that was made and then failed to land may have started the transfer: going round
+           again could send the block twice, so it counts as started. */
+        if (pi_io_write(ED_REG_USBCFG, ED_USBMODE_WRNOP) &&
+            pi_io_store_words(s_window, ED_REG_USBDAT + first, (ED_WINDOW - first) / 4u) &&
+            (pi_io_write_stored(ED_REG_USBCFG, ED_USBMODE_WR | addr, &stored) || stored)) {
+            return 1;
+        }
+        if (*retries == 0u) {
+            return 0;
+        }
+        (*retries)--;
+    }
+}
+
 int ed64_send(const uint8_t *data, uint32_t len)
 {
     /* Header, payload and trailer, the whole message padded to 2 bytes (#134). */
     uint32_t total = (8u + len + 4u + 1u) & ~1u;
     uint32_t p = 0u;
     uint8_t *bytes = (uint8_t *)s_window;
+    /* None until the first block is on the wire: a busy PI before then drops the message whole. */
+    uint32_t retries = 0u;
 
     if (len == 0u || len > ED_MAX_MESSAGE) {
         return 0;
@@ -350,13 +402,17 @@ int ed64_send(const uint8_t *data, uint32_t len)
             bytes[(addr - first) + i] = message_byte(data, len, p + i);
         }
 
-        if (!pi_io_write(ED_REG_USBCFG, ED_USBMODE_WRNOP)) {
+        if (!start_block(first, addr, &retries)) {
             return 0;
         }
-        if (!pi_io_store_words(s_window, ED_REG_USBDAT + first, (ED_WINDOW - first) / 4u)) {
-            return 0;
+        if (p == 0u) {
+            /* The header is on its way. From here the rest must follow it, or the host is left a
+               message cut off part-way, so a busy PI is waited out instead of giving up. */
+            retries = ED_SEND_RETRIES;
         }
-        if (!pi_io_write(ED_REG_USBCFG, ED_USBMODE_WR | addr) || !usb_idle()) {
+        /* A transfer that never finishes (ACT stays set) is not tried again: the cart has given up
+           the write, and sending the block again could put it on the wire twice. */
+        if (!usb_idle_retrying(&retries)) {
             return 0;
         }
         p += n;

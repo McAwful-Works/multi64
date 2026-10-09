@@ -1,7 +1,7 @@
 # L3 over EverDrive 64 X7 (draft mapping)
 
 **Spec-Revision:** 1  
-**Status:** **Draft** — §4 is now **derived from a working reference implementation** but has **not been validated against hardware in this repository**. `multi64-ed64-l2` (`Ed64L2Pipe`) implements §4 and has run on **one X7** (2026-09-18): L3 through `multi64d` worked, and the cart could not send while the host was sending (§4.5 item 6). One cart does not validate a mapping. In-tree EverDrive tooling: `ed64-smoke` (§8), `ed64-echo-test`, `ed64-l3-framing-e2e` — all runnable; the two e2e tools exercise §4 framing against a cart and are how §4.5 gets answered.
+**Status:** **Draft** — §4 is now **derived from a working reference implementation** but has **not been validated against hardware in this repository**. `multi64-ed64-l2` (`Ed64L2Pipe`) implements §4 and has run on an X7 twice. On 2026-09-18 L3 through `multi64d` worked, and the cart could not send while the host was sending (§4.5 item 6). On 2026-10-09 a message from the cart stopped part-way and held the decoder for 45 s (§4.5 item 7). One cart does not validate a mapping. In-tree EverDrive tooling: `ed64-smoke` (§8), `ed64-echo-test`, `ed64-l3-framing-e2e` — all runnable; the two e2e tools exercise §4 framing against a cart and are how §4.5 gets answered.
 
 This document will define how **L3** octets ([l3-bridge-protocol-v1.md](./l3-bridge-protocol-v1.md)) are carried over the **EverDrive-64 X7** USB path. It does **not** redefine L3.
 
@@ -72,7 +72,7 @@ The host packet layout that satisfies these constraints is given in **§4**.
 
 Everything in §4 is transcribed from **[UNFLoader](https://github.com/buu342/N64-UNFLoader)** — `UNFLoader/device_everdrive.cpp`, the host half — cross-checked against the N64-side library this repository's test ROM already links: `<usb.h>`, libdragon's port of UNFLoader's `usb.c`. UNFLoader has shipped this protocol for EverDrive 64 for years, so it is a **working reference**, not a guess.
 
-It has been executed against **one X7** in this repository (2026-09-18, [`n64/README.md`](../../n64/README.md#hardware-record)), which answered some of §4.5 and raised a new question there. Until §4.5 is closed:
+It has been executed against an X7 in this repository on 2026-09-18 ([`n64/README.md`](../../n64/README.md#hardware-record)), which answered some of §4.5 and raised a new question there, and on 2026-10-09 ([`n64/bringup/README.md`](../../n64/bringup/README.md#hardware-record)), which found the decoder fault in §4.5 item 7. Until §4.5 is closed:
 
 - this document stays **Draft** and §4 is **not normative**;
 - `ed64-l2` built to it MUST be described as unproven, not as EverDrive support;
@@ -135,21 +135,29 @@ never inspected.
 
 §4 is not normative while this document is Draft, so the last column records what `ed64-l2`
 (`crates/ed64-l2/src/lib.rs`) **does**, rather than what an implementation must do. It recovers
-further than the reference does: only a bad trailer is an error at all.
+further than the reference does: only a bad trailer is an error at all, and a message the cart
+stops sending part-way is dropped after a stall rather than waited for.
 
 | Condition | Reference behavior | `ed64-l2` as implemented |
 |-----------|--------------------|------------------------|
 | No data pending | Queue status reports 0 | `read_l3_bytes` returns `Ok(0)` — same contract as `Sc64L2Pipe` |
 | Bytes before a header | `DEVICEERR_64D_BADDMA` | **Not an error.** The parser skips forward to the next `DMA@` and carries on, logging how many bytes it discarded at `debug` on target `multi64_ed64_l2`. With no `DMA@` anywhere in the buffer it keeps the last 3 bytes, in case a magic is split across two reads |
-| Trailer mismatch | `DEVICEERR_64D_BADCMP` | `io::ErrorKind::InvalidData`. Parse state is **not** reset: only the 4 `DMA@` magic bytes are dropped, so a resync cannot latch onto the same bad message again, and every byte after them stays buffered, to be parsed on the next read that brings more in. L3 octets decoded before the error are handed out first, so a caller that drops the pipe on error does not lose them; the error then surfaces once, when the queue is empty |
+| Trailer mismatch | `DEVICEERR_64D_BADCMP` | `io::ErrorKind::InvalidData`. Parse state is **not** reset: only the 4 `DMA@` magic bytes are dropped, so a resync cannot latch onto the same bad message again, and every byte after them stays buffered, to be parsed on the next `read_l3_bytes` call before the port is read again. L3 octets decoded before the error are handed out first, so a caller that drops the pipe on error does not lose them; the error then surfaces once, when the queue is empty |
 | Datatype other than `MULTI64_L3` | — | Not an error: the message is consumed whole and its payload **discarded**, with a `debug` log. Only `0x01` payloads reach the L3 codec |
 | Stalled transfer | 500 ms read/write timeouts | A read timeout is `Ok(0)`, not an error — the timeout is whatever `set_timeout` last applied (`multi64d` uses 50 ms for reads, 1 s for a write). Any other read error is returned unchanged, which faults `multi64d`'s link |
+| Message stops part-way | — | **Not an error.** Once **500 ms** (`PARTIAL_MESSAGE_STALL`) has passed in reads with no byte arriving while the parser holds part of a message, it drops that part and resynchronizes on the next `DMA@`, logging the bytes held and the header's size at `warn` on target `multi64_ed64_l2`, or at `debug` when what it held fell short of a whole 8-byte header. Only time spent blocked in a read counts, so a reader held up elsewhere while bytes queued in the driver does not trip it. A read that blocked past the limit and then brought new bytes drops the held part before they go in. None of the dropped bytes reach L3, so to L3 the message is simply missing |
 | Resynchronization | Purge RX **and** TX | `clear_serial_buffers` clears the port in both directions, the wire buffer, the decoded L3 queue, and any error held back |
 
 A `size` field that is wrong in a way the trailer check cannot yet see costs time rather than data:
 the parser must buffer `align(8 + size + 4)` bytes before it can check the trailer at all, and `size`
 is 24 bits, so a `DMA@` invented by noise can hold the decoder until as much as 16 MiB has arrived.
-Nothing bounds that below the header's own limit.
+The stall row above bounds that in time when the cart goes quiet, but not while it keeps sending:
+then a message cut off part-way, or a `size` invented by noise, still takes the cart's later messages
+as payload until its trailer is due, and the trailer check fails.
+
+The 500 ms comes from the X7 run in §4.5 item 7. A cart sends a message's blocks back to back: across
+142 whole messages there, the longest wait for a message's next byte was 15 ms. The agent's
+`ed64_send` adds at most about 0.2 s to a message when it retries a busy PI (§4.5 item 7).
 
 The trailer check reads the 4 bytes at `8 + size`, per the cart → host row of §4.2. It previously
 read them at `8 + align(size, 2)`, the host → cart layout, which put every odd-length message from
@@ -168,7 +176,15 @@ odd-length message from the cart (§4.5).
 
    **Why: unread host data blocks the write.** libdragon's own comment on that write says it will not write while there is data to read, and the X7 bears it out. Test ROM 1.12 changed one thing, reading everything the host had already sent before each echo, and the same burst passed with `tx_failures` still 0. A longer wait would not have helped, and could have hung the cart.
 
-   **What a cart-side sender must do:** read every waiting host message before it starts a write, and keep what it read for the receive path. `n64/agent/ed64.c`'s `ed64_send` does this, and sends nothing when it cannot hold everything waiting, since a reply the host never gets is a timeout, while one cut off is a malformed message. That driver has not been shown to work on a cart. Still open: whether host data that arrives *during* a multi-block write stalls it the same way. 1.12's burst did not trip it, but did not target it either.
+   **What a cart-side sender must do:** read every waiting host message before it starts a write, and keep what it read for the receive path. `n64/agent/ed64.c`'s `ed64_send` does this, and sends nothing when it cannot hold everything waiting, since a reply the host never gets is a timeout, while one cut off is a malformed message. That driver has since worked on an X7 with the PI otherwise idle (item 7). Still open: whether host data that arrives *during* a multi-block write stalls it the same way. 1.12's burst did not trip it, but did not target it either.
+
+7. **A busy PI cut a message off, and the host stayed deaf. Observed on one X7, 2026-10-09** ([`n64/bringup/README.md`](../../n64/bringup/README.md#hardware-record)). `n64/bringup`'s ROM ran the agent's own X7 driver, with no game. With the PI otherwise idle it answered 36 requests of 36. With a timer interrupt starting a 4 KiB ROM DMA every 2 ms, it sent the header and first 4 blocks of a 4122-byte reply, 2048 bytes, and nothing more of it.
+
+   **Cart side.** `ed64_send` gave up on the first PI access that failed, with the blocks already written on the wire. `pi_io.c` fails an access when, having waited for the PI to go idle, it masks interrupts and finds a DMA under way: one started by an interrupt between the two. That run lost the counters that would show it, along with the link, so this is the code's account, not a measurement. `ed64_send` now tries a failed access again, up to 8 per message, once the first block has started, and still sends nothing when the PI is busy before that. A transfer the cart never finishes is still not retried.
+
+   **Host side.** `ed64-l2` then counted the cart's later messages, which kept coming, as payload of the cut-off reply until 4122 bytes had arrived. It was deaf for 45 s and then failed on the trailer. It now drops a message that stalls part-way (§4.4).
+
+   Neither change has run on a cart yet. This run says nothing about why an AP64 build on an X7 never answered: that ROM never answered `HELLO`, whose reply is one block.
 
 The same run bears on items 1–3 without closing them. Every check through `multi64d` passed with zero overflow, resync or bad-header drops, which is consistent with the 2-byte alignment and the padding layouts in §4.2, though no check targeted an odd-length payload. A `serialport` VCP handle carried the whole run; the §4.4 purge under load was not specifically tested.
 
@@ -210,8 +226,8 @@ No other N64-side change is expected. If validation turns one up, record it here
 | [`crates/ed64-echo-test`](../../crates/ed64-echo-test) | `ed64-echo-test`: same role as `sc64-echo-test` over `Ed64L2Pipe`; runs, exercising §4 framing that is still unvalidated. |
 | [`crates/ed64-l3-framing-e2e`](../../crates/ed64-l3-framing-e2e) | `ed64-l3-framing-e2e`: same role as `sc64-l3-framing-e2e` over `Ed64L2Pipe`; runs, exercising §4 framing that is still unvalidated. |
 | [`n64/test-rom`](../../n64/README.md) | Already uses libdragon `<usb.h>`, which supports both carts. Boots on `CART_SC64` and `CART_EVERDRIVE`, with an on-screen **UNVALIDATED** warning on the latter (§5). |
-| `multi64d` | `--cart ed64` selects `Ed64L2Pipe` ([daemon API §5.1](./daemon-api-v1.md)). Experimental: has carried L3 both ways to one X7, with zero stream errors across the test app's checks (2026-09-18). |
-| [`n64/agent`](../../n64/agent/README.md) | `make CART=ed64` builds the in-game agent around `ed64.c`: the console side of §4 without libdragon, under the agent's PI rules. Not shown to work on a cart: one AP64 build was tried on an X7, and the ROM never answered. |
+| `multi64d` | `--cart ed64` selects `Ed64L2Pipe` ([daemon API §5.1](./daemon-api-v1.md)). Experimental: has carried L3 both ways to an X7, with zero stream errors across the test app's checks (2026-09-18 and 2026-10-09). |
+| [`n64/agent`](../../n64/agent/README.md) | `make CART=ed64` builds the in-game agent around `ed64.c`: the console side of §4 without libdragon, under the agent's PI rules. Has worked on one X7 in `n64/bringup`'s ROM, with no game, and cut a message off under PI load (§4.5 item 7). Not shown to work in a game: one AP64 build was tried on an X7, and the ROM never answered. |
 | [`crates/multi64`](../../crates/multi64/README.md) | Settings → **Cart** → *EverDrive-64 X7 (beta)* starts the daemon with `--cart ed64`. Its default, *Auto-detect*, finds an X7 only by sending the `usb64` test (§8) to ports, since its FT245R has no cart-specific USB descriptor ([`multi64-cart-probe`](../../crates/cart-probe/README.md)). |
 
 ---

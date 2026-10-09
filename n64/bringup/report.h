@@ -14,7 +14,7 @@
 #define REPORT_FORMAT 0u
 
 /** This ROM's own version (report.rom_version): major << 16 | minor. */
-#define BRINGUP_ROM_VERSION 0x00010000u
+#define BRINGUP_ROM_VERSION 0x00010001u
 
 /* report.cart */
 #define CART_NONE 0u

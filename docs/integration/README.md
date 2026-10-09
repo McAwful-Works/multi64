@@ -98,8 +98,9 @@ ways:
 Two things none of them has exercised: a **4 MB** console with the agent in the base RAM (every
 one put it in the Expansion Pak), and a working cart other than the SummerCart64. EverDrive-64 X7
 and PRO builds of the agent exist ([cart-agent.md §6](cart-agent.md#6-everdrive-builds-experimental)),
-but neither has been shown to work on a cart: Ocarina of Time's X7 build was tried once on an X7,
-and its ROM never answered.
+but neither has been shown to work in a game: Ocarina of Time's X7 build was tried once on an X7,
+and its ROM never answered. The X7 driver has worked on an X7 only outside a game, in
+[`n64/bringup`](../../n64/bringup/README.md)'s ROM.
 
 ## Guides
 

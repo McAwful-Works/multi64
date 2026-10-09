@@ -11,12 +11,15 @@
 //!
 //! # Validation status
 //!
-//! **This has run on one X7 only.** The framing is transcribed from
+//! **This has run on an X7 only.** The framing is transcribed from
 //! [UNFLoader](https://github.com/buu342/N64-UNFLoader) and libdragon's `usb.c`, both of which drive an
 //! X7 in practice. On that cart, L3 went both ways through `multi64d` with no stream errors. Over a
 //! direct serial connection, with the cart echoing messages while the host was still sending them,
-//! one arrived cut off. The parser reports that and resynchronizes at the next `DMA@` (spec §4.4). Spec §4.0 and §4.5 record what
-//! that means and what to check first. Treat a successful [`Ed64L2Pipe::open`] as "the serial port
+//! one arrived cut off. The parser reports that and resynchronizes at the next `DMA@` (spec §4.4).
+//! In a later run a message from the cart stopped part-way and nothing followed it for seconds, so
+//! the parser counted the cart's next messages as its payload; it now drops a message that stalls
+//! for [`PARTIAL_MESSAGE_STALL`] (spec §4.5 item 7). Spec §4.0 and §4.5 record what that means and
+//! what to check first. Treat a successful [`Ed64L2Pipe::open`] as "the serial port
 //! opened", not as "EverDrive support works" — there is no identity handshake in the data path, so use
 //! `ed64-smoke` (spec §8) to confirm a port really is an EverDrive.
 //!
@@ -53,6 +56,19 @@ const WIRE_ALIGN: usize = 2;
 
 /// The header's size field is 24 bits, so one message cannot carry more than this.
 const MAX_MESSAGE_BYTES: usize = 0x00FF_FFFF;
+
+/// How long the cart may go quiet part-way through a message before [`Ed64L2Pipe`] drops the part it
+/// holds and resynchronizes on the next `DMA@` (spec §4.4).
+///
+/// A cart sends a message's blocks back to back. Across 142 whole messages from an X7, the longest
+/// wait for the next byte of a message was 15 ms; the agent's `ed64_send`, retrying a busy PI, adds
+/// at most about 0.2 s. A message that stops for longer was cut off, and one did: a 4122-byte reply
+/// stopped after 2048 bytes, and the decoder counted the cart's next 45 s of messages as its payload
+/// (spec §4.5 item 7).
+///
+/// Only time spent waiting in a read counts, so a reader that was busy elsewhere while bytes queued
+/// up in the driver is not mistaken for a quiet cart.
+pub const PARTIAL_MESSAGE_STALL: Duration = Duration::from_millis(500);
 
 /// Default payload bytes per message. Deliberately conservative: one `REG_USB_DATA` window (spec §3).
 /// Raise it via [`Ed64L2Pipe::write_l3_stream_with_max`] once the link is proven on hardware.
@@ -102,6 +118,16 @@ impl WireBuffer {
                 dropped
             }
         }
+    }
+
+    /// Drop everything held: the part of a message that never finished. Returns how many bytes
+    /// went, and the size of the message they began, when they got as far as its header.
+    fn discard_partial(&mut self) -> (usize, Option<usize>) {
+        let size = (self.buf.len() >= 8 && self.buf.starts_with(&DMA_MAGIC))
+            .then(|| (u32::from_be_bytes([0, self.buf[5], self.buf[6], self.buf[7]])) as usize);
+        let held = self.buf.len();
+        self.buf.clear();
+        (held, size)
     }
 
     /// Pop the next complete message, or `Ok(None)` when more bytes are needed.
@@ -196,6 +222,10 @@ pub struct Ed64L2Pipe {
     /// An L2 error parsed after L3 bytes were queued. Held until [`read_l3_bytes`](Self::read_l3_bytes)
     /// has handed those bytes out, so a caller that drops the pipe on error does not lose them.
     pending_err: Option<io::Error>,
+    /// Time spent waiting in reads that brought nothing, while `wire` holds part of a message.
+    quiet: Duration,
+    /// [`PARTIAL_MESSAGE_STALL`], except in tests.
+    stall: Duration,
 }
 
 impl Ed64L2Pipe {
@@ -213,6 +243,8 @@ impl Ed64L2Pipe {
             wire: WireBuffer::default(),
             l3_rx: VecDeque::new(),
             pending_err: None,
+            quiet: Duration::ZERO,
+            stall: PARTIAL_MESSAGE_STALL,
         })
     }
 
@@ -229,6 +261,7 @@ impl Ed64L2Pipe {
         self.wire = WireBuffer::default();
         self.l3_rx.clear();
         self.pending_err = None;
+        self.quiet = Duration::ZERO;
         Ok(())
     }
 
@@ -252,6 +285,10 @@ impl Ed64L2Pipe {
     ///
     /// An L2 error (bad `CMPH` trailer) is returned only once every L3 octet received before it has
     /// been read.
+    ///
+    /// A message the cart stops sending part-way is dropped once [`PARTIAL_MESSAGE_STALL`] has
+    /// passed in reads with no byte arriving. That is not an error: its bytes never reach L3, it is
+    /// logged at `warn`, and the next `DMA@` decodes as usual.
     pub fn read_l3_bytes(&mut self, out: &mut [u8]) -> io::Result<usize> {
         if out.is_empty() {
             return Ok(0);
@@ -267,10 +304,27 @@ impl Ed64L2Pipe {
             if let Some(e) = self.pending_err.take() {
                 return Err(e);
             }
+            // A bad trailer stops parsing with whole messages possibly still buffered behind it.
+            // Parse them now, rather than leave them waiting for a read that brings more bytes,
+            // where a quiet cart would have them taken for a message that stalled part-way.
+            if !self.wire.buf.is_empty() {
+                if let Err(e) = process_wire_messages(&mut self.wire, &mut self.l3_rx) {
+                    self.pending_err = Some(e);
+                }
+                if !self.l3_rx.is_empty() || self.pending_err.is_some() {
+                    continue;
+                }
+            }
             let mut scratch = [0u8; 512];
-            match self.port.read(&mut scratch) {
+            let asked = Instant::now();
+            let read = self.port.read(&mut scratch);
+            // Before the bytes it brought go in: a read that blocked past the stall and then got
+            // the start of the next message must not append it to the one that was cut off.
+            self.count_quiet(asked.elapsed());
+            match read {
                 Ok(0) => return Ok(0),
                 Ok(n) => {
+                    self.quiet = Duration::ZERO;
                     // Same target shape as `multi64_sc64_l2`, so `multi64d --serial-trace` shows either cart.
                     tracing::trace!(
                         target: "multi64_ed64_l2",
@@ -287,6 +341,37 @@ impl Ed64L2Pipe {
                 Err(e) if e.kind() == io::ErrorKind::TimedOut => return Ok(0),
                 Err(e) => return Err(e),
             }
+        }
+    }
+
+    /// Count `waited`, time a read spent blocked, against the part of a message `wire` holds, and
+    /// drop that part once `self.stall` has passed with no byte arriving.
+    fn count_quiet(&mut self, waited: Duration) {
+        if self.wire.buf.is_empty() {
+            self.quiet = Duration::ZERO;
+            return;
+        }
+        self.quiet += waited;
+        if self.quiet < self.stall {
+            return;
+        }
+        let quiet_ms = self.quiet.as_millis();
+        self.quiet = Duration::ZERO;
+        let (held, size) = self.wire.discard_partial();
+        match size {
+            Some(size) => tracing::warn!(
+                target: "multi64_ed64_l2",
+                held,
+                size,
+                quiet_ms,
+                "dropped a message the cart stopped sending part-way; resynchronizing on the next DMA@"
+            ),
+            None => tracing::debug!(
+                target: "multi64_ed64_l2",
+                held,
+                quiet_ms,
+                "dropped bytes short of a DMA@ header after the cart went quiet"
+            ),
         }
     }
 
@@ -519,12 +604,105 @@ mod tests {
     }
 
     fn pipe_over(reads: Vec<Vec<u8>>) -> Ed64L2Pipe {
+        pipe_on(ScriptedPort::new(reads), PARTIAL_MESSAGE_STALL)
+    }
+
+    fn pipe_on(port: ScriptedPort, stall: Duration) -> Ed64L2Pipe {
         Ed64L2Pipe {
-            port: Box::new(ScriptedPort::new(reads)),
+            port: Box::new(port),
             wire: WireBuffer::default(),
             l3_rx: VecDeque::new(),
             pending_err: None,
+            quiet: Duration::ZERO,
+            stall,
         }
+    }
+
+    /// Read until the script runs out (`reads` reads in all): the L3 bytes, or the first error.
+    fn read_script(pipe: &mut Ed64L2Pipe, reads: usize) -> io::Result<Vec<u8>> {
+        let mut got = Vec::new();
+        let mut out = [0u8; 8192];
+        for _ in 0..reads + 1 {
+            let n = pipe.read_l3_bytes(&mut out)?;
+            got.extend_from_slice(&out[..n]);
+        }
+        Ok(got)
+    }
+
+    /// What an X7 sent on 2026-10-09: the header and first 4 blocks of a 4122-byte reply, and then
+    /// nothing more of it (spec §4.5 item 7), in reads of a block each.
+    fn cut_off_reply() -> Vec<(Duration, Vec<u8>)> {
+        let payload: Vec<u8> = (0..4122u32).map(|i| (i * 7) as u8).collect();
+        let wire = from_cart(MULTI64_L3_TYPE, &payload);
+        wire[..2048]
+            .chunks(512)
+            .map(|block| (Duration::ZERO, block.to_vec()))
+            .collect()
+    }
+
+    /// Once the cart has been quiet past the stall part-way through a message, that part is
+    /// dropped, and the next message decodes. The decoder used to count every later message as
+    /// payload of the cut one until 4122 bytes had arrived, deaf for 45 s, and then fail on the
+    /// trailer.
+    #[test]
+    fn a_message_cut_off_part_way_is_dropped_after_the_stall() {
+        let quiet = Duration::from_millis(30);
+        let mut port = cut_off_reply();
+        port.extend([(quiet, vec![]), (quiet, vec![])]);
+        port.push((
+            Duration::ZERO,
+            from_cart(MULTI64_L3_TYPE, b"the next reply"),
+        ));
+        let reads = port.len();
+        let mut pipe = pipe_on(ScriptedPort::timed(port), Duration::from_millis(50));
+        assert_eq!(read_script(&mut pipe, reads).unwrap(), b"the next reply");
+    }
+
+    /// The same when the next message ends the quiet: a read that blocked past the stall and then
+    /// brought the next `DMA@` drops the cut-off part before that message goes in after it.
+    #[test]
+    fn a_read_that_waited_past_the_stall_drops_the_part_before_its_bytes() {
+        let mut port = cut_off_reply();
+        port.push((
+            Duration::from_millis(80),
+            from_cart(MULTI64_L3_TYPE, b"the next reply"),
+        ));
+        let reads = port.len();
+        let mut pipe = pipe_on(ScriptedPort::timed(port), Duration::from_millis(50));
+        assert_eq!(read_script(&mut pipe, reads).unwrap(), b"the next reply");
+    }
+
+    /// Quiet shorter than the stall is a message still on its way: it is kept, and completes.
+    #[test]
+    fn a_message_that_resumes_within_the_stall_is_kept() {
+        let payload: Vec<u8> = (0..1500u32).map(|i| i as u8).collect();
+        let wire = from_cart(MULTI64_L3_TYPE, &payload);
+        let quiet = Duration::from_millis(5);
+        let port = vec![
+            (Duration::ZERO, wire[..512].to_vec()),
+            (quiet, vec![]),
+            (quiet, wire[512..1024].to_vec()),
+            (quiet, vec![]),
+            (Duration::ZERO, wire[1024..].to_vec()),
+        ];
+        let mut pipe = pipe_on(ScriptedPort::timed(port), Duration::from_secs(10));
+        assert_eq!(read_script(&mut pipe, 5).unwrap(), payload);
+    }
+
+    /// Quiet only counts while a message is part-way: a cart idle between messages is not stalled,
+    /// and the next message after it is not cut short.
+    #[test]
+    fn quiet_between_messages_drops_nothing() {
+        let wire = from_cart(MULTI64_L3_TYPE, b"second");
+        let port = vec![
+            (Duration::ZERO, from_cart(MULTI64_L3_TYPE, b"first")),
+            (Duration::from_millis(30), vec![]),
+            (Duration::from_millis(30), vec![]),
+            (Duration::ZERO, wire[..6].to_vec()),
+            (Duration::ZERO, wire[6..].to_vec()),
+        ];
+        let mut pipe = pipe_on(ScriptedPort::timed(port), Duration::from_millis(50));
+        assert_eq!(read_script(&mut pipe, 5).unwrap(), b"firstsecond");
     }
 
     /// #136: L3 bytes queued by the same serial read as a later bad trailer are handed out before
@@ -550,6 +728,23 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         // The error is reported once, then the pipe reads on as before.
         assert_eq!(pipe.read_l3_bytes(&mut out).unwrap(), 0);
+    }
+
+    /// Whole messages behind a bad trailer are parsed on the next call, with no new bytes needed,
+    /// so a quiet cart cannot get them dropped as a message that stalled part-way.
+    #[test]
+    fn messages_behind_a_bad_trailer_are_parsed_without_more_bytes() {
+        let mut bad = from_cart(MULTI64_L3_TYPE, b"xy");
+        let n = bad.len();
+        bad[n - 1] = b'!';
+        bad.extend_from_slice(&from_cart(MULTI64_L3_TYPE, b"after"));
+        let quiet = Duration::from_millis(30);
+        let port = vec![(Duration::ZERO, bad), (quiet, vec![]), (quiet, vec![])];
+        let mut pipe = pipe_on(ScriptedPort::timed(port), Duration::from_millis(50));
+        let mut out = [0u8; 16];
+        let e = pipe.read_l3_bytes(&mut out).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(read_script(&mut pipe, 2).unwrap(), b"after");
     }
 
     /// With nothing queued, a bad trailer still surfaces on the read that parsed it.
