@@ -42,8 +42,9 @@ mkdir -p "$out"
 cp "$setup" "$ap64_setup" target/release/multi64d.exe target/release/multi64-test-connector.exe "$out/"
 cp n64/test-rom/multi64_test.z64 n64/bringup/multi64_bringup.z64 "$out/"
 # The newest SummerCart64 baseline, under one name so that diagnose.ps1 need not know its date.
-# Baselines are named sc64-<date>.json, so the last in order is the newest.
-baseline=$(ls n64/bringup/baselines/sc64-*.json | sort | tail -n 1)
+# Baselines are named sc64-<date>.json, with a letter after the date for a second one that day, so
+# the last in byte order is the newest. LC_ALL=C: other locales skip the punctuation when sorting.
+baseline=$(ls n64/bringup/baselines/sc64-*.json | LC_ALL=C sort | tail -n 1)
 cp "$baseline" "$out/sc64-baseline.json"
 cp n64/bringup/handover/diagnose.ps1 n64/bringup/handover/diagnose.bat n64/bringup/handover/play-session.bat \
     n64/bringup/handover/zip-folder.ps1 n64/bringup/handover/README.txt "$out/"
