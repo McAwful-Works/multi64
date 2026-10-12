@@ -43,6 +43,11 @@ pub const SCAN_END: u32 = 0x10_0000;
 const OFF_CTL_LOAD: u32 = 0x020;
 /// A control value the ROM ignores (no such load level or variant), written to re-arm a word.
 const CTL_IGNORED: u32 = u32::MAX;
+/// Tries for one control write before the run gives up on it. Under load a working cart leaves a
+/// request unanswered now and then (n64/bringup/README.md has the counts), which the traffic
+/// checks report as INFO, and a run makes ten or more of these writes: one try each would fail
+/// healthy runs.
+const CONTROL_TRIES: u32 = 3;
 const OFF_CTL_VARIANT: u32 = 0x024;
 const OFF_TIMING: usize = 0x0C0;
 const OFF_BUFFER: usize = 0x148;
@@ -708,18 +713,32 @@ impl Link {
         Report::parse(addr, &regions[0])
     }
 
-    async fn set_word(&mut self, addr: u32, value: u32) -> Result<()> {
-        let (got, _) = self.poke(addr, &value.to_be_bytes()).await?;
-        got.map_err(|e| anyhow::anyhow!("writing {addr:#x}: {e}"))
-    }
-
     /// Write a control word so the ROM acts on it whatever it held before (spec section 5). The
     /// ROM acts on a change, so writing the value already there would do nothing; a value it
     /// ignores goes first. Each write is its own round trip, so the ROM sees both: the agent
     /// serves one request per frame, and the ROM reads its controls between frames.
-    async fn set_control(&mut self, addr: u32, value: u32) -> Result<()> {
-        self.set_word(addr, CTL_IGNORED).await?;
-        self.set_word(addr, value).await
+    ///
+    /// Each write is tried up to [`CONTROL_TRIES`] times. These go out while the ROM is under
+    /// load, where a request can go unanswered like any other, and writing either value a second
+    /// time changes nothing: the ROM has seen it or it has not. Returns one line for each try
+    /// that failed before its write went through, for the run's notes.
+    async fn set_control(&mut self, addr: u32, value: u32) -> Result<Vec<String>> {
+        let mut retried = Vec::new();
+        for word in [CTL_IGNORED, value] {
+            for attempt in 1..=CONTROL_TRIES {
+                let (got, _) = self.poke(addr, &word.to_be_bytes()).await?;
+                match got {
+                    Ok(()) => break,
+                    Err(e) if attempt < CONTROL_TRIES => retried.push(format!(
+                        "writing {word:#x} got {e} on try {attempt} of {CONTROL_TRIES} and was sent again"
+                    )),
+                    Err(e) => anyhow::bail!(
+                        "writing {word:#x} to {addr:#x}: {e}, {CONTROL_TRIES} tries"
+                    ),
+                }
+            }
+        }
+        Ok(retried)
     }
 }
 
@@ -1031,6 +1050,30 @@ enum Next {
     Stop,
 }
 
+/// [`Link::set_control`] on the control word `off` bytes into the report at `addr`, with every try
+/// that had to be repeated put in the run's notes: a control write that went unanswered is a lost
+/// request like the ones the traffic checks count, and the phase after it is read with that known.
+async fn control(
+    link: &mut Link,
+    run: &mut BringupRun,
+    addr: u32,
+    off: u32,
+    value: u32,
+) -> Result<()> {
+    let name = match off {
+        OFF_CTL_LOAD => "ctl_load",
+        OFF_CTL_VARIANT => "ctl_variant",
+        _ => "control word",
+    };
+    let retried = link
+        .set_control(addr + off, value)
+        .await
+        .with_context(|| name.to_string())?;
+    run.notes
+        .extend(retried.into_iter().map(|r| format!("{name}: {r}")));
+    Ok(())
+}
+
 /// Where a run is up to, for [`run_variant`].
 struct Target<'a> {
     addr: u32,
@@ -1041,8 +1084,8 @@ struct Target<'a> {
     cart_rom: bool,
 }
 
-/// Every load level through one agent build. `Err` when a control write or a report read failed:
-/// the link went away mid-phase, and the caller records that.
+/// Every load level through one agent build. `Err` when a control write failed on every try, or a
+/// request could not be sent at all: the link went away mid-phase, and the caller records that.
 async fn run_variant<F: FnMut(String) + Send>(
     link: &mut Link,
     run: &mut BringupRun,
@@ -1054,7 +1097,7 @@ async fn run_variant<F: FnMut(String) + Send>(
     let addr = t.addr;
     let tag = variant_tag(v, t.default);
     if v != t.default {
-        link.set_control(addr + OFF_CTL_VARIANT, v).await?;
+        control(link, run, addr, OFF_CTL_VARIANT, v).await?;
         // Let the ROM switch before asking: a HELLO the old build answers proves nothing.
         tokio::time::sleep(Duration::from_millis(200)).await;
         if link.hello_within(link.timeout * 2).await?.is_none() {
@@ -1078,7 +1121,7 @@ async fn run_variant<F: FnMut(String) + Send>(
 
     for load in [LOAD_OFF, LOAD_MODERATE, LOAD_HEAVY] {
         let lname = load_name(load);
-        link.set_control(addr + OFF_CTL_LOAD, load).await?;
+        control(link, run, addr, OFF_CTL_LOAD, load).await?;
         // The ROM acts on it next frame; read until it says so. Under heavy load a read can go
         // unanswered like any other request, so two of those end the wait rather than the run.
         let mut before: Option<Report> = None;
@@ -1215,7 +1258,7 @@ async fn run_variant<F: FnMut(String) + Send>(
             ));
             // Put the load back so the next build, or a person, finds the ROM idle. It may not
             // land: the build that stopped answering is the one that would apply it.
-            let _ = link.set_control(addr + OFF_CTL_LOAD, LOAD_OFF).await;
+            let _ = control(link, run, addr, OFF_CTL_LOAD, LOAD_OFF).await;
             return Ok(Next::Continue);
         }
     }
@@ -1364,8 +1407,8 @@ pub async fn run_bringup<F: FnMut(String) + Send>(
     }
 
     // Leave the ROM as it booted.
-    let _ = link.set_control(addr + OFF_CTL_LOAD, LOAD_OFF).await;
-    let _ = link.set_control(addr + OFF_CTL_VARIANT, default).await;
+    let _ = control(&mut link, &mut run, addr, OFF_CTL_LOAD, LOAD_OFF).await;
+    let _ = control(&mut link, &mut run, addr, OFF_CTL_VARIANT, default).await;
     let _ = link.hello_within(timeout).await;
     run.final_report = link.read_report(addr).await.ok();
     Ok(run)

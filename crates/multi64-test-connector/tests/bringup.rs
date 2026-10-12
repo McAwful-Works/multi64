@@ -7,13 +7,27 @@ use std::sync::{Arc, Mutex};
 use futures_util::{SinkExt, StreamExt};
 use multi64_l3::{Channel, Frame, FrameFlags, FrameType, StreamDecoder};
 use multi64_test_connector::bringup::{
-    run_bringup, BringupOptions, Outcome, CART_SC64, CART_X_SERIES, LOAD_HEAVY, REPORT_MAGIC,
+    run_bringup, BringupOptions, Outcome, CART_SC64, CART_X_SERIES, LOAD_HEAVY, LOAD_MODERATE,
+    REPORT_MAGIC, VARIANT_X7_DMA,
 };
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
 const REPORT: usize = 0x3EBA0;
 const RAM: usize = 0x10_0000;
+const CTL_LOAD: usize = 0x20;
+const CTL_VARIANT: usize = 0x24;
+/// The value the host writes to re-arm a control word.
+const CTL_IGNORED: u32 = u32::MAX;
+
+/// Which half of a request went missing.
+#[derive(Clone, Copy, PartialEq)]
+enum Lost {
+    /// The agent never saw the write, so the ROM did not act on it.
+    Request,
+    /// The write landed and the ROM acts on it, but its `POKE_ACK` never reached the host.
+    Reply,
+}
 
 struct Rom {
     ram: Vec<u8>,
@@ -21,6 +35,9 @@ struct Rom {
     seen_variant: u32,
     /// Requests that go unanswered under heavy load, as an agent losing the PI would.
     drop_under_heavy: bool,
+    /// Control writes that go unanswered, once per entry: the word's offset in the report, the
+    /// value written, and which half is lost. As an agent that found the PI busy for one request.
+    lose_control: Vec<(usize, u32, Lost)>,
     requests: u32,
 }
 
@@ -57,6 +74,7 @@ impl Rom {
             seen_load: 0,
             seen_variant: 0,
             drop_under_heavy: false,
+            lose_control: Vec::new(),
             requests: 0,
         }
     }
@@ -104,12 +122,31 @@ impl Rom {
         self.set(REPORT + 0x208 + 0x50, self.requests);
     }
 
+    /// The entry of `lose_control` this request matches, taken out of the list: a `POKEV` of one
+    /// word to a control word, carrying the value the entry names.
+    fn lost_control(&mut self, p: &[u8]) -> Option<Lost> {
+        if p[4] != 0x03 || p.len() != 18 || p[7] != 1 || p[12..14] != [0, 4] {
+            return None;
+        }
+        let off = (u32::from_be_bytes(p[8..12].try_into().unwrap()) as usize).wrapping_sub(REPORT);
+        let value = u32::from_be_bytes(p[14..18].try_into().unwrap());
+        let at = self
+            .lose_control
+            .iter()
+            .position(|&(o, v, _)| o == off && v == value)?;
+        Some(self.lose_control.remove(at).2)
+    }
+
     fn handle(&mut self, p: &[u8]) -> Option<Vec<u8>> {
         if p.len() < 5 || &p[0..4] != b"M64P" {
             return None;
         }
         self.frame();
         if self.drop_under_heavy && self.word(REPORT + 0x38) == LOAD_HEAVY {
+            return None;
+        }
+        let lost = self.lost_control(p);
+        if lost == Some(Lost::Request) {
             return None;
         }
         self.requests += 1;
@@ -160,6 +197,9 @@ impl Rom {
                 out.push(n as u8);
             }
             _ => return None,
+        }
+        if lost == Some(Lost::Reply) {
+            return None;
         }
         Some(out)
     }
@@ -366,4 +406,63 @@ async fn a_control_word_left_by_an_earlier_run_is_still_obeyed() {
             .collect::<Vec<_>>(),
         vec![0, 1, 2]
     );
+}
+
+#[tokio::test]
+async fn a_control_write_that_goes_unanswered_is_sent_again_and_the_run_carries_on() {
+    // Three control writes lost once each, as a cart under load leaves a request unanswered now
+    // and then: the re-arm before the first load level, the moderate level itself, and the
+    // acknowledgment of the switch to the DMA build, which the ROM has acted on by the time the
+    // host writes it again.
+    let rom = Arc::new(Mutex::new(Rom::x7()));
+    rom.lock().unwrap().lose_control = vec![
+        (CTL_LOAD, CTL_IGNORED, Lost::Request),
+        (CTL_LOAD, LOAD_MODERATE, Lost::Request),
+        (CTL_VARIANT, VARIANT_X7_DMA, Lost::Reply),
+    ];
+    let url = serve(rom.clone()).await;
+    let mut log = |_: String| {};
+    let run = run_bringup(&options(url), &mut log).await.unwrap();
+
+    assert!(rom.lock().unwrap().lose_control.is_empty());
+    assert!(run.failed() == 0, "{:#?}", run.checks);
+    assert!(!run.checks.iter().any(|c| c.name.ends_with(".aborted")));
+    // Every phase of both builds ran, each under the load it asked for.
+    assert_eq!(
+        run.phases
+            .iter()
+            .map(|p| (p.variant, p.after.as_ref().unwrap().load))
+            .collect::<Vec<_>>(),
+        vec![(2, 0), (2, 1), (2, 2), (3, 0), (3, 1), (3, 2)]
+    );
+    // And the run says which writes it had to repeat.
+    let retried: Vec<&String> = run.notes.iter().filter(|n| n.contains("try 1")).collect();
+    assert_eq!(retried.len(), 3, "{:#?}", run.notes);
+    assert!(retried[0].starts_with("ctl_load: writing 0xffffffff got timeout"));
+    assert!(retried[1].starts_with("ctl_load: writing 0x1 got timeout"));
+    assert!(retried[2].starts_with("ctl_variant: writing 0x3 got timeout"));
+}
+
+#[tokio::test]
+async fn a_control_write_never_answered_stops_the_run_after_three_tries() {
+    let rom = Arc::new(Mutex::new(Rom::new()));
+    rom.lock().unwrap().lose_control = vec![(CTL_LOAD, LOAD_MODERATE, Lost::Request); 4];
+    let url = serve(rom.clone()).await;
+    let mut log = |_: String| {};
+    let run = run_bringup(&options(url), &mut log).await.unwrap();
+
+    let c = run
+        .checks
+        .iter()
+        .find(|c| c.name == "link.default.aborted")
+        .unwrap_or_else(|| panic!("the run was not stopped: {:#?}", run.checks));
+    assert_eq!(c.outcome, Outcome::Fail);
+    assert!(
+        c.detail.contains("ctl_load") && c.detail.contains("3 tries"),
+        "{}",
+        c.detail
+    );
+    // Three tries, not four: one entry is left.
+    assert_eq!(rom.lock().unwrap().lose_control.len(), 1);
+    assert_eq!(run.phases.len(), 1);
 }

@@ -10,14 +10,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-/// Plain text when stderr is piped (e.g. multi64 GUI captures multi64d logs); colors in a real terminal.
-/// `tracing_subscriber::fmt` writes to **stderr** by default — check that stream, not stdout.
+/// Plain text when stdout is not a terminal (Multi64 reads multi64d's log through a pipe, and
+/// `multi64d ... > log.txt` sends it to a file); colors in a real terminal.
+/// `tracing_subscriber::fmt` writes to **stdout** by default, so that is the stream to test: with
+/// stderr tested instead, a log redirected from a terminal was written with ANSI escapes in it.
 /// See <https://no-color.org/>.
 fn tracing_use_ansi() -> bool {
     if std::env::var_os("NO_COLOR").is_some() {
         return false;
     }
-    std::io::stderr().is_terminal()
+    std::io::stdout().is_terminal()
 }
 
 #[derive(Parser, Debug)]

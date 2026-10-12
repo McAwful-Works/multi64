@@ -5,7 +5,8 @@
 #
 # Installs into the prefix rather than /opt, so no sudo is required. Prints the
 # N64_INST export you need at the end. Safe to re-run: work is skipped when the
-# pinned versions are already in place, and an interrupted install picks up again.
+# pinned versions are already in place, and an install interrupted at any step,
+# unpacking the toolchain included, picks up again.
 # It refuses a prefix holding any other toolchain; use an empty one.
 set -euo pipefail
 
@@ -32,8 +33,18 @@ fi
 # for other multilibs, headers, a libdragon built by another compiler. MARK is
 # written as soon as the pinned toolchain is unpacked, before libdragon builds,
 # so an install that stopped part-way can simply be re-run.
+#
+# UNPACKING covers the unpack itself. It is written before tar starts and
+# removed once MARK is in place, so a prefix that an interrupted tar left
+# holding half the pinned toolchain, mips64-elf-gcc perhaps among it, is told
+# from one holding somebody else's: this script put those files there, and
+# unpacking the same tarball again completes them. Both marks name the tarball
+# by checksum, so neither excuses a prefix begun under a different pin.
 MARK="$PREFIX/.multi64-toolchain-sha256"
-if [ -e "$PREFIX/bin/mips64-elf-gcc" ] && [ "$(cat "$MARK" 2>/dev/null)" != "$TOOLCHAIN_SHA256" ]; then
+UNPACKING="$PREFIX/.multi64-toolchain-unpacking"
+if [ -e "$PREFIX/bin/mips64-elf-gcc" ] \
+   && [ "$(cat "$MARK" 2>/dev/null)" != "$TOOLCHAIN_SHA256" ] \
+   && [ "$(cat "$UNPACKING" 2>/dev/null)" != "$TOOLCHAIN_SHA256" ]; then
   echo "$PREFIX already holds a toolchain that this script did not install from toolchain.lock." >&2
   echo "Remove it, or pass an empty prefix:  $0 <prefix>" >&2
   exit 1
@@ -59,9 +70,14 @@ echo "$TOOLCHAIN_SHA256  $TARBALL" | sha256sum -c - || {
   exit 1
 }
 
+if [ "$(cat "$UNPACKING" 2>/dev/null)" = "$TOOLCHAIN_SHA256" ]; then
+  echo "==> an earlier run stopped while unpacking; unpacking again"
+fi
 echo "==> extracting toolchain into $PREFIX"
+echo "$TOOLCHAIN_SHA256" > "$UNPACKING"
 tar -xJf "$TARBALL" -C "$PREFIX"
 echo "$TOOLCHAIN_SHA256" > "$MARK"
+rm -f "$UNPACKING"
 
 GOT_GCC="$("$PREFIX/bin/mips64-elf-gcc" -dumpversion)"
 [ "$GOT_GCC" = "$TOOLCHAIN_GCC_VERSION" ] || {

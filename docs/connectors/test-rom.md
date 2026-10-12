@@ -181,7 +181,10 @@ Exit codes as for `suite`: **0** no check failed, **1** at least one did, **2** 
 to. A cart that never answers is a run, not an error: `link.hello` fails, and the ROM's screen holds
 what it found without a link. Under load the agent gives up on a busy PI by design rather than
 stall the game, so timeouts under moderate or heavy load are reported as INFO, with their count, and
-fail only with no load. Three in a row end a phase.
+fail only with no load. Three in a row end a phase. The tool's own writes of the load level and
+the agent build are sent up to three times each: a `note:` line after the checks names every one
+that had to be sent again, and one that goes unanswered all three times stops the run's traffic
+there, as `link.<build>.aborted`.
 
 ## Examples
 

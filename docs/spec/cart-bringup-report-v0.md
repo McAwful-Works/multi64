@@ -269,7 +269,8 @@ So a host that writes the value a word already holds changes nothing, even when 
 differs from it because of a button since. To be sure of a setting, a host first writes a value the
 ROM ignores, such as `0xFFFFFFFF`, then the one it wants, in two requests: the ROM reads its
 controls between frames and the agent serves one request per frame. It then confirms `variant` and
-`load` before relying on them.
+`load` before relying on them. A host whose write is not acknowledged may send it again: the same
+value written twice is one change, whether or not the first write arrived.
 
 - `ctl_variant` naming a build that cannot drive the cart found (§4.2), or `ctl_load` naming no
   level (§4.6), is ignored, but still counts as the value last seen.

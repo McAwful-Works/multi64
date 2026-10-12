@@ -168,7 +168,9 @@ A `--config` / `MULTI64D_CONFIG` path that does **not** exist is a startup error
 
 ### 5.3 Logging
 
-Environment: `RUST_LOG` (e.g. `info`, `multi64d=debug`) for tracing.
+Environment: `RUST_LOG` (e.g. `info`, `multi64d=debug`) for tracing. The log is written to stdout,
+in color only when stdout is a terminal and `NO_COLOR` is not set, so a log piped or redirected to
+a file is plain text.
 
 ---
 
