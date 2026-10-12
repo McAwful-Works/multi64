@@ -185,7 +185,8 @@ It writes `target/handover/cart-diagnostics-<commit>/` and a zip of it, holding:
 - `multi64-test-connector.exe`;
 - `multi64_test.z64` and `multi64_bringup.z64`, the committed ROMs;
 - `sc64-baseline.json`, a copy of the newest `baselines/sc64-<date>.json`;
-- [`diagnose.bat`](handover/diagnose.bat), [`diagnose.ps1`](handover/diagnose.ps1),
+- [`diagnose.bat`](handover/diagnose.bat), [`play-session.bat`](handover/play-session.bat),
+  [`diagnose.ps1`](handover/diagnose.ps1), which both run,
   [`zip-folder.ps1`](handover/zip-folder.ps1), which zips both the results and the bundle itself,
   and the tester's [`README.txt`](handover/README.txt);
 - `VERSION.txt`, which records the commit, which baseline was copied, and every file's SHA-256.
@@ -289,6 +290,31 @@ is not known. So the script no longer trusts one attempt:
 The phases run inside one `try`. An error part-way, such as a tool that an antivirus program will
 not let run, is written to the transcript with where it happened, and the closing questions, the
 sweep for daemons and the zip still follow, so a failed run sends back what it gathered.
+
+#### A play session
+
+`play-session.bat` (`diagnose.ps1 -Play`) runs none of the three phases. It is for a connection
+that drops during play, which the phases cannot show: on 2026-10-12 an X7 playing Ocarina of Time
+through AP64 dropped on leaving the Deku Tree and stayed silent until AP64 and Multi64 were both
+restarted, with nothing done on the console, and no log of the bridge existed for it.
+
+The script starts `multi64d` itself, logged as above, in place of Multi64, sends three HELLOs, and
+has the tester open AP64, press Start and play against that daemon. When the connection drops the
+tester comes back without restarting anything, and the script looks for what is stuck, each step
+timed in UTC in the transcript to line up with the daemon's log:
+
+1. the daemon's `GET /`, then five HELLOs through the same daemon, untouched since the drop.
+   Answered: the bridge and the cart are fine, and what is stuck is on AP64's side;
+2. unanswered: a new daemon that does not purge the port, and five more. Answered: the stuck state
+   was in the old daemon, or went when its port was closed and opened again;
+3. still unanswered: a new daemon with `--clear-serial`, and five more. Answered: bytes left in the
+   USB link were in the way. Unanswered: the cart side is not answering at all, and the tester is
+   asked what the game is doing.
+
+Whatever the answers, the first daemon's log holds every byte the cart sent before and after the
+drop. AP64's own session logs written during the run (`%APPDATA%\dev.multi64.ap64\logs`) are copied
+into `ap64-logs/` in the results. Its dry runs here walked every step against a daemon with no
+cart; it has not run against a cart or a real drop.
 
 The script picks the cart and its port by the USB IDs in `crates/cart-probe` (X7 `0403:6001`,
 SummerCart64 `0403:6014`) when exactly one such port is plugged in, and asks otherwise; the PRO's

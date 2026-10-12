@@ -45,8 +45,8 @@ cp n64/test-rom/multi64_test.z64 n64/bringup/multi64_bringup.z64 "$out/"
 # Baselines are named sc64-<date>.json, so the last in order is the newest.
 baseline=$(ls n64/bringup/baselines/sc64-*.json | sort | tail -n 1)
 cp "$baseline" "$out/sc64-baseline.json"
-cp n64/bringup/handover/diagnose.ps1 n64/bringup/handover/diagnose.bat n64/bringup/handover/zip-folder.ps1 \
-    n64/bringup/handover/README.txt "$out/"
+cp n64/bringup/handover/diagnose.ps1 n64/bringup/handover/diagnose.bat n64/bringup/handover/play-session.bat \
+    n64/bringup/handover/zip-folder.ps1 n64/bringup/handover/README.txt "$out/"
 
 {
     echo "multi64 $commit ($(git log -1 --format=%cs)), Multi64 $version, AP64 $ap64_version, packed $(date -u +%Y-%m-%dT%H:%MZ)"
