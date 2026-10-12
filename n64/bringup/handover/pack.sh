@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds the cart diagnostics bundle a remote tester gets: run from the repository root on Windows
-# (Git Bash), with the Tauri CLI installed in crates/multi64 (`npm install` there once).
+# (Git Bash), with the Tauri CLI installed in crates/multi64 and crates/ap64 (`npm install` in each
+# once).
 #
 #   sh n64/bringup/handover/pack.sh [name]
 #
@@ -19,6 +20,12 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     exit 1
 fi
 
+# AP64's installer, for diagnose.ps1's phase 3. The agents AP64 patches into a game are the ones
+# committed under crates/ap64-core/profiles, so a seed patched with this installer carries this
+# commit's agent, where one from an AP64 the tester already had may carry an older one. It needs no
+# multi64d, and is built before it so that nothing comes between multi64d's build and Multi64's.
+(cd crates/ap64 && npm run build)
+
 # multi64d first and in the same profile: Multi64's build copies it into the installer. A workspace
 # build leaves a different multi64d, so build it on its own right before.
 cargo build --release -p multi64d
@@ -27,16 +34,18 @@ cargo build --release -p multi64-test-connector
 
 version=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' crates/multi64/src-tauri/tauri.conf.json | head -n 1)
 setup=target/release/bundle/nsis/Multi64_${version}_x64-setup.exe
+ap64_version=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' crates/ap64/src-tauri/tauri.conf.json | head -n 1)
+ap64_setup=target/release/bundle/nsis/AP64_${ap64_version}_x64-setup.exe
 
 rm -rf "$out" "$out.zip"
 mkdir -p "$out"
-cp "$setup" target/release/multi64d.exe target/release/multi64-test-connector.exe "$out/"
+cp "$setup" "$ap64_setup" target/release/multi64d.exe target/release/multi64-test-connector.exe "$out/"
 cp n64/test-rom/multi64_test.z64 n64/bringup/multi64_bringup.z64 "$out/"
 cp n64/bringup/baselines/sc64-2026-10-08.json "$out/"
 cp n64/bringup/handover/diagnose.ps1 n64/bringup/handover/diagnose.bat n64/bringup/handover/README.txt "$out/"
 
 {
-    echo "multi64 $commit ($(git log -1 --format=%cs)), Multi64 $version, packed $(date -u +%Y-%m-%dT%H:%MZ)"
+    echo "multi64 $commit ($(git log -1 --format=%cs)), Multi64 $version, AP64 $ap64_version, packed $(date -u +%Y-%m-%dT%H:%MZ)"
     (cd "$out" && sha256sum -- *.exe *.z64 *.json)
 } | sed 's/$/\r/' > "$out/VERSION.txt"
 

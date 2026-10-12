@@ -12,3 +12,6 @@ If Windows warns about the files, choose "More info", then "Run anyway".
 If it asks for a COM port, Device Manager lists it under "Ports (COM & LPT)".
 
 Multi64_..._setup.exe is the latest Multi64. You don't need it for the test.
+
+Optional game test: install AP64_..._setup.exe, patch your seed again with it for your cart,
+and copy that ROM to the SD card too. diagnose.bat asks about it after the two test ROMs.

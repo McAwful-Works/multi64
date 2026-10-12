@@ -158,7 +158,7 @@ fixed before the ROM goes to anyone.
 ### 2. X7 handover
 
 Build the bundle from a clean checkout of a commit, on Windows in Git Bash, with `npm install`
-already run in `crates/multi64`:
+already run in `crates/multi64` and `crates/ap64`:
 
 ```sh
 sh n64/bringup/handover/pack.sh
@@ -167,7 +167,9 @@ sh n64/bringup/handover/pack.sh
 It writes `target/handover/cart-diagnostics-<commit>/` and a zip of it, holding:
 
 - the Multi64 installer, built from that commit (optional for the tester);
-- `multi64d.exe`, the same build as the one inside the installer;
+- the AP64 installer, built from that commit, which only phase 3 below needs: the tester patches
+  a seed with it for their cart, so the ROM carries that commit's agent;
+- `multi64d.exe`, the same build as the one inside the Multi64 installer;
 - `multi64-test-connector.exe`;
 - `multi64_test.z64` and `multi64_bringup.z64`, the committed ROMs;
 - the SC64 baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json);
@@ -176,10 +178,12 @@ It writes `target/handover/cart-diagnostics-<commit>/` and a zip of it, holding:
 - `VERSION.txt`, which records the commit and every file's SHA-256.
 
 The tester copies the two ROMs to the SD card, closes Multi64, AP64 and Xfer64, and double-clicks
-`diagnose.bat`, which walks them through the run. It does not use
+`diagnose.bat`, which walks them through the run. For phase 3 they first install the bundle's AP64,
+patch their seed with it for their cart, and copy that ROM to the card too. The script does not use
 Multi64's bridge, whose log lives only in the app. Instead it runs the bundled `multi64d` itself,
 at debug level with `--serial-trace` (every byte read from the cart), with a fresh daemon for each
-phase, and a second one in phase 1 when the experiment below calls for it:
+phase, and a second one in phases 1 and 3 when the experiment below calls for it. Phase 3 is
+optional and the script asks before it:
 
 1. **Control:** `multi64_test.z64` and `multi64-test-connector suite`. On an X7 or SC64 that ROM
    moves USB through libdragon, which passed on an X7 on 2026-09-18 and on the morning of
@@ -211,6 +215,32 @@ phase, and a second one in phase 1 when the experiment below calls for it:
 2. **Bring-up:** `multi64_bringup.z64` and `bringup --baseline`. If it reports `link.hello` FAIL
    (no HELLO_ACK), the script has the tester press **R** (the top line changes to `link X7 DMA`)
    and runs it again.
+3. **In a game (optional):** the agent as AP64 places it, with a game running around it. The one
+   AP64 build tried on an X7, an Ocarina of Time seed on 2026-10-07, opened the port and was never
+   answered, and nothing from that run shows whether the agent ever started; this phase keeps the
+   bridge's log of such a run. The script asks whether a ROM patched by the bundle's AP64 for this
+   cart is on the SD card, and skips the phase on anything but `y`. Otherwise it asks which game,
+   has the tester boot it and wait at the title screen, and then:
+
+   - sends M64P `HELLO` (`mem-hello`) five times, 3 seconds apart. All five go out whatever the
+     answers: in a game the agent gives up on a busy PI rather than stall the game, so how many
+     get through is part of the result (`phase3-hello.txt`);
+   - if none was answered, runs phase 1's purge experiment again: it stops the daemon, starts one
+     with `--clear-serial=true` and sends five more (`phase3-purged-hello.txt`, and that daemon's
+     `phase3-purged-multi64d.log`);
+   - once a `HELLO` has been answered, reads RDRAM with `mem-peek`: 28 bytes at `0x300`, the values
+     the boot code left, then 64 at `0x400`, then `0x300` again, which should match the first, then
+     4096 bytes at `0x400`, the most one region may hold. Last, it reads the game name from the ROM
+     header with `mem-rom-peek`, which is how AP64 reads the cart when it starts a session. All of
+     it goes to `phase3-reads.txt`. Nothing is written to the game;
+   - asks whether the game is still running as normal, and puts the answer in the transcript.
+
+   It has not run on an X7. On 2026-10-12 the script's phase 3 ran alone (`-GameOnly`) on a
+   SummerCart64 with a Kirby 64 seed running: 5 of 5 `HELLO`s answered through the
+   first daemon, every read answered, the two `0x300` reads identical, and the header read back as
+   `Kirby64`. That shows the script and its commands work against an agent in a game. It says
+   nothing about an X7. The branch where no `HELLO` is answered has only run against a stand-in
+   daemon that refuses every connection.
 
 A phase whose daemon's link does not come up within about 8 seconds is skipped rather than left to
 time out check by check, and the script prints the daemon's last warnings, which name the cause: a
@@ -241,8 +271,9 @@ is not known. So the script no longer trusts one attempt:
 
 The script picks the cart and its port by the USB IDs in `crates/cart-probe` (X7 `0403:6001`,
 SummerCart64 `0403:6014`) when exactly one such port is plugged in, and asks otherwise; the PRO's
-IDs are not known, so a PRO is always asked for. `-Cart ed64|ed64pro|sc64`, `-Port COMn` and
-`-SkipControl` pass through `diagnose.bat`. Every `multi64d` it starts is put in a Windows job
+IDs are not known, so a PRO is always asked for. `-Cart ed64|ed64pro|sc64`, `-Port COMn`,
+`-SkipControl` (no phase 1) and `-GameOnly` (phase 3 alone, without asking whether there is a ROM
+for it) pass through `diagnose.bat`. Every `multi64d` it starts is put in a Windows job
 object that kills it when the script exits, so closing the window mid-run does not leave the port
 held, and a daemon from an earlier run of the same bundle is stopped at the start. Running it on
 the maintainer's SummerCart64 checks the bundle itself before it goes out.

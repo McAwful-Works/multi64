@@ -1,8 +1,8 @@
 # Cart diagnostics for a remote tester: one run, one zip.
 #
 # Runs multi64d itself with full logging (debug, plus every byte read from the cart), so nothing
-# depends on Multi64's in-memory Developer log. Two phases, each against a fresh daemon (phase 1
-# sometimes two, below):
+# depends on Multi64's in-memory Developer log. Three phases, the third optional, each against a
+# fresh daemon (phases 1 and 3 sometimes two, below):
 #
 #   1. Control: multi64_test.z64, which moves USB through libdragon, and `multi64-test-connector
 #      suite`. On an X7 this path passed on 2026-09-18 and on the morning of 2026-10-09, so a
@@ -17,10 +17,21 @@
 #   2. Bring-up: multi64_bringup.z64 and `multi64-test-connector bringup --baseline`. On an X7,
 #      when the CPU-word build gets no HELLO_ACK, the tester switches to the DMA build and it runs
 #      again.
+#   3. In a game, only when the tester says a ROM patched by this bundle's AP64 is on the SD card:
+#      the agent as AP64 places it, with the game running around it. The one AP64 build tried on
+#      an X7, on 2026-10-07, opened the port and was never answered, and nothing from that run
+#      shows whether the agent ever started. Five M64P HELLOs go out 3 s apart, all five whatever
+#      the answers, since a game shares the PI with the agent and how many get through is part of
+#      the result. If none does, the same purge experiment as phase 1: a second daemon with
+#      --clear-serial and five more. Once one is answered: three small RDRAM reads (the boot values at 0x300 twice, which
+#      should match, and 64 bytes at 0x400), one of 4096 bytes, the most one region may hold, and
+#      the ROM header's game name through PEEKROM, which is how AP64 itself reads the cart.
+#      Nothing is written to the game.
 #
 # Everything printed, every daemon's log, each daemon's status when it started and stopped, the
-# phase 1 tries (phase1-probe.txt, and phase1-purged-probe.txt when a second daemon ran), and the
-# machine's serial ports and drivers go into results-<time>\, which is zipped at the end.
+# phase 1 tries (phase1-probe.txt, and phase1-purged-probe.txt when a second daemon ran), phase 3's
+# HELLOs and reads (phase3-hello.txt, phase3-purged-hello.txt, phase3-reads.txt), and the machine's
+# serial ports and drivers go into results-<time>\, which is zipped at the end.
 # Written for Windows PowerShell 5.1, which every Windows 10/11 has.
 
 param(
@@ -29,7 +40,10 @@ param(
     # Serial port. Empty: the only port with the cart's USB IDs, else ask.
     [string]$Port = '',
     # Skip phase 1, for a rerun of the bring-up alone.
-    [switch]$SkipControl
+    [switch]$SkipControl,
+    # Phase 3 alone, without asking whether there is a ROM for it: for a cart whose phases 1 and 2
+    # have already come back.
+    [switch]$GameOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -114,7 +128,9 @@ function Run-Logged([string]$file, [string]$exe, [string[]]$arguments) {
     $ErrorActionPreference = 'Continue'
     & $exe @arguments 2>&1 | ForEach-Object {
         $line = "$_"
-        Write-Host $line
+        # Phase 3's 4096-byte read prints as one line of 8192 hex digits: whole in the files, cut
+        # short on screen.
+        if ($line.Length -gt 300) { Write-Host ($line.Substring(0, 300) + ' ...') } else { Write-Host $line }
         Add-Content -Encoding UTF8 -Path $log -Value $line
         Add-Content -Encoding UTF8 -Path $session -Value $line
     }
@@ -275,6 +291,19 @@ function Probe-Cart([string]$file) {
     return $false
 }
 
+# M64P HELLO to the agent inside a game, five times, 3 s apart, all logged to $file. Every one is
+# sent whether or not an earlier one was answered: in a game the agent gives up on a busy PI rather
+# than stall the game, so how many of the five get through is part of the result. Returns the count.
+function Probe-Agent([string]$file) {
+    $answered = 0
+    for ($try = 1; $try -le 5; $try++) {
+        if ($try -gt 1) { Start-Sleep -Seconds 3 }
+        if ((Run-Logged $file $tool @('mem-hello')) -eq 0) { $answered++ }
+    }
+    Say "the agent answered $answered of 5 HELLOs"
+    return $answered
+}
+
 Section 'Multi64 cart diagnostics'
 if (Test-Path (Join-Path $here 'VERSION.txt')) {
     Get-Content (Join-Path $here 'VERSION.txt') | ForEach-Object { Say $_ }
@@ -337,14 +366,14 @@ if (-not $Port) {
 }
 $script:Port = $Port
 
-if (-not $SkipControl) {
+if (-not $SkipControl -and -not $GameOnly) {
     if ($Cart -eq 'ed64pro') {
         # libdragon has no PRO support, so on a PRO the test ROM's USB goes through this repo's own
         # ed64pro.c: the same unproven mapping as the agent, which makes this no control.
-        Section 'Phase 1 of 2: test ROM run with multi64_test.z64'
+        Section 'Phase 1 of 3: test ROM run with multi64_test.z64'
         Say 'On a PRO this ROM uses the same untested link design as the bring-up ROM, so it is a second first-time check, not a known-good control.'
     } else {
-        Section 'Phase 1 of 2: control run with multi64_test.z64'
+        Section 'Phase 1 of 3: control run with multi64_test.z64'
         Say 'This ROM moves USB through libdragon, which has worked on an X7 and on a SummerCart64. It checks your cable, driver and port.'
     }
     Ask 'Boot multi64_test.z64 from the cart menu. When its text is on the TV, press Enter' | Out-Null
@@ -365,9 +394,12 @@ if (-not $SkipControl) {
     }
 }
 
-Section 'Phase 2 of 2: bring-up run with multi64_bringup.z64'
-Ask 'Power the console off and on, boot multi64_bringup.z64, wait until its text on the TV stops changing, then press Enter' | Out-Null
-$p = Start-Daemon 'phase2'
+$p = $null
+if (-not $GameOnly) {
+    Section 'Phase 2 of 3: bring-up run with multi64_bringup.z64'
+    Ask 'Power the console off and on, boot multi64_bringup.z64, wait until its text on the TV stops changing, then press Enter' | Out-Null
+    $p = Start-Daemon 'phase2'
+}
 if ($p -ne $null) {
     $words = Join-Path $out 'phase2-bringup.json'
     Run-Logged 'phase2-bringup.txt' $tool @('bringup', '--baseline', $baseline, '--out', $words) | Out-Null
@@ -382,11 +414,58 @@ if ($p -ne $null) {
     Stop-Daemon $p 'phase2'
 }
 
+Section 'Phase 3 of 3 (optional): the AP64 agent inside a game'
+Say 'This needs a game ROM that the AP64 in this folder patched for this cart (README.txt). One patched by an older AP64 carries an older agent, and would not test this one.'
+$hasGame = if ($GameOnly) { 'y' } else { (Ask 'Is such a ROM on the SD card? Type y and press Enter, or just press Enter to skip this part').Trim().ToLower() }
+if ($hasGame -notin @('y', 'yes')) {
+    Say 'phase 3 skipped: no patched ROM'
+} else {
+    Say ("game: " + (Ask 'Which game is it?'))
+    Ask 'Power the console off and on, boot that ROM, wait at its title screen, then press Enter' | Out-Null
+    # The purge experiment again, as in phase 1: a daemon that does not purge first, then, only if
+    # the agent says nothing through it, one that does.
+    $phase = 'phase3'
+    $answered = 0
+    $p = Start-Daemon $phase
+    if ($p -ne $null) {
+        $answered = Probe-Agent 'phase3-hello.txt'
+        if ($answered -eq 0) {
+            Stop-Daemon $p $phase
+            Say 'Starting multi64d again, this time purging the port as it opens it, to see whether that brings the agent back.'
+            $phase = 'phase3-purged'
+            $p = Start-Daemon $phase $true
+            if ($p -ne $null) { $answered = Probe-Agent 'phase3-purged-hello.txt' }
+        }
+    }
+    if ($p -ne $null) {
+        if ($answered -gt 0) {
+            # RDRAM offsets every game has. 0x300 holds what the boot code left (TV type, CIC,
+            # RAM size), which a running game has no reason to change, so its two reads should
+            # match; 0x400 is where a game's own code starts. 4096 bytes is the most one region
+            # may hold.
+            $reads = 'phase3-reads.txt'
+            Run-Logged $reads $tool @('mem-peek', '--addr', '0x300', '--len', '28') | Out-Null
+            Run-Logged $reads $tool @('mem-peek', '--addr', '0x400', '--len', '64') | Out-Null
+            Run-Logged $reads $tool @('mem-peek', '--addr', '0x300', '--len', '28') | Out-Null
+            Run-Logged $reads $tool @('mem-peek', '--addr', '0x400', '--len', '4096') | Out-Null
+            # The ROM header's game name, read from the cart while the game uses it: AP64 reads
+            # the ROM this way when it starts a session.
+            Run-Logged $reads $tool @('mem-rom-peek', '--addr', '0x20', '--len', '20') | Out-Null
+        } else {
+            Say 'The agent answered no HELLO, so the reads are left out.'
+        }
+        Stop-Daemon $p $phase
+    }
+    Say ("game screen: " + (Ask 'Is the game still running as normal? Describe anything else it shows (or leave empty)'))
+}
+
 Section 'Cart'
 $cartOs = Ask 'Your cart menu/OS version, from the cart menu (or leave empty)'
 Say ("cart OS: " + $cartOs)
-$screen = Ask 'Did either ROM stay on a black screen, or stop partway? Describe it (or leave empty)'
-Say ("screen: " + $screen)
+if (-not $GameOnly) {
+    $screen = Ask 'Did either test ROM stay on a black screen, or stop partway? Describe it (or leave empty)'
+    Say ("screen: " + $screen)
+}
 
 Section 'Done'
 # Nothing this script started may outlive it holding the cart's port and a log. Each daemon was
