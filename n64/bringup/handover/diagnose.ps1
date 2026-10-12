@@ -28,6 +28,10 @@
 #      the ROM header's game name through PEEKROM, which is how AP64 itself reads the cart.
 #      Nothing is written to the game.
 #
+# With -Play (play-session.bat) none of those run. The daemon is started here in place of Multi64
+# and the tester plays through AP64 against it, so that a connection that drops during play leaves
+# every byte the cart sent in a log; Run-PlaySession, below, says what is tried when it drops.
+#
 # Everything printed, every daemon's log, each daemon's status when it started and stopped, the
 # phase 1 tries (phase1-probe.txt, and phase1-purged-probe.txt when a second daemon ran), phase 3's
 # HELLOs and reads (phase3-hello.txt, phase3-purged-hello.txt, phase3-reads.txt), and the machine's
@@ -43,7 +47,11 @@ param(
     [switch]$SkipControl,
     # Phase 3 alone, without asking whether there is a ROM for it: for a cart whose phases 1 and 2
     # have already come back.
-    [switch]$GameOnly
+    [switch]$GameOnly,
+    # A play session in place of the three phases: the bridge runs here, logged, while the tester
+    # plays through AP64, and what is stuck is looked for when the connection drops.
+    # play-session.bat passes this.
+    [switch]$Play
 )
 
 $ErrorActionPreference = 'Stop'
@@ -303,14 +311,98 @@ function Probe-Cart([string]$file) {
 # M64P HELLO to the agent inside a game, five times, 3 s apart, all logged to $file. Every one is
 # sent whether or not an earlier one was answered: in a game the agent gives up on a busy PI rather
 # than stall the game, so how many of the five get through is part of the result. Returns the count.
-function Probe-Agent([string]$file) {
+function Probe-Agent([string]$file, [int]$count = 5) {
     $answered = 0
-    for ($try = 1; $try -le 5; $try++) {
+    for ($try = 1; $try -le $count; $try++) {
         if ($try -gt 1) { Start-Sleep -Seconds 3 }
         if ((Run-Logged $file $tool @('mem-hello')) -eq 0) { $answered++ }
     }
-    Say "the agent answered $answered of 5 HELLOs"
+    Say "the agent answered $answered of $count HELLOs"
     return $answered
+}
+
+# A transcript line with the time of day in front: in a play session the order and timing of
+# events is the evidence, and multi64d's log carries UTC times to line them up against.
+function Note([string]$text) {
+    Say ("[" + (Get-Date).ToUniversalTime().ToString('HH:mm:ss') + "Z] " + $text)
+}
+
+# -Play: the bridge runs here, with full logging, in place of Multi64, while the tester plays
+# through AP64. When the connection drops, nothing is restarted until it has been looked at:
+#   1. the daemon's status, and HELLOs through the same daemon, untouched since the drop. Answered:
+#      the bridge and the cart are fine, and what is stuck is on AP64's side;
+#   2. unanswered: a new daemon that does not purge the port. Answered: the stuck state was in the
+#      old daemon, or went when its port was closed and opened again;
+#   3. still unanswered: a new daemon that purges the port as it opens it. Answered: bytes left in
+#      the USB link were in the way. Unanswered: the cart side is not answering at all.
+# Whatever the answers, the daemon's log of the session holds every byte the cart sent before and
+# after the drop, which is what shows why. AP64's own log of the session is copied in beside it.
+function Run-PlaySession {
+    Section 'Play session: the bridge is logged while you play'
+    Say 'This runs the bridge in place of Multi64 and records everything the cart sends while you play through AP64. Keep Multi64 closed until this is finished.'
+    Say ("game: " + (Ask 'Which game is it?'))
+    Ask 'Boot your AP64-patched ROM and wait at its title screen. Leave AP64 closed, or stopped, for now. Then press Enter' | Out-Null
+    $began = Get-Date
+    $phase = 'play'
+    $p = Start-Daemon $phase
+    if ($p -eq $null) { return }
+    Note 'the bridge is up'
+    if ((Probe-Agent 'play-before-hello.txt' 3) -eq 0) {
+        Say 'The agent is not answering even before play. Carrying on, so that what AP64 sees is recorded too.'
+    }
+    Note 'play begins'
+    Say ''
+    Say 'Now open AP64 (not Multi64), press Start, connect your Archipelago client, and play.'
+    Say 'When the connection drops, DO NOT restart or stop anything: come straight back to this window.'
+    Say 'If it has not dropped after about 20 minutes, come back anyway.'
+    $doing = Ask 'When you are back: type what you were doing in the game when it dropped (or leave empty), then press Enter'
+    Note ("the tester is back: " + $doing)
+    Save-Status 'play-status-when-back.json'
+    $dropped = (Ask 'Did the connection drop? Type y or n, then press Enter').Trim().ToLower() -in @('y', 'yes')
+    Note ("dropped: " + $dropped)
+    if ($dropped) {
+        Say ("AP64 status: " + (Ask "What does AP64's Status line say right now? (or leave empty)"))
+        Ask 'Press Stop in AP64, but leave AP64 open and do not touch the console. Then press Enter' | Out-Null
+        Note 'HELLOs through the same bridge, untouched since the drop'
+        $answered = Probe-Agent 'play-after-drop-hello.txt'
+        if ($answered -gt 0) {
+            Say 'The agent answers through this bridge, so the bridge and the cart are not what is stuck.'
+        } else {
+            Stop-Daemon $p $phase
+            Note 'a new bridge, without purging the port'
+            $phase = 'play-restarted'
+            $p = Start-Daemon $phase
+            if ($p -ne $null) { $answered = Probe-Agent 'play-restarted-hello.txt' }
+            if ($answered -eq 0) {
+                Stop-Daemon $p $phase
+                Note 'a new bridge, purging the port as it opens it'
+                $phase = 'play-purged'
+                $p = Start-Daemon $phase $true
+                if ($p -ne $null) { $answered = Probe-Agent 'play-purged-hello.txt' }
+            }
+            if ($answered -eq 0) {
+                Say 'The agent did not answer through a new bridge either.'
+                Say ("console: " + (Ask 'Is the game still running and taking the controller? Describe what is on the TV'))
+            }
+        }
+        if ($p -ne $null -and $answered -gt 0) {
+            Say ("AP64 after: " + (Ask "Press Start in AP64 again and wait 15 seconds. Type what its Status line says now"))
+        }
+    }
+    Stop-Daemon $p $phase
+
+    # AP64 keeps a log of each session. The ones written during this run say what AP64 saw, with
+    # times, on its side of the bridge.
+    $ap64Logs = Join-Path $env:APPDATA 'dev.multi64.ap64\logs'
+    if (Test-Path $ap64Logs) {
+        $dest = Join-Path $out 'ap64-logs'
+        New-Item -ItemType Directory -Path $dest | Out-Null
+        $copied = @(Get-ChildItem -Path $ap64Logs -Filter 'session-*.txt' | Where-Object { $_.LastWriteTime -ge $began })
+        $copied | Copy-Item -Destination $dest
+        Say ("copied " + $copied.Count + " AP64 session log(s) written during this run")
+    } else {
+        Say 'no AP64 session logs found'
+    }
 }
 
 Section 'Multi64 cart diagnostics'
@@ -338,10 +430,13 @@ try {
         Say ("multi64d " + ($stuck -join ', ') + " still holds the cart's port, so the tests below may not be able to open it. Restarting this PC clears it.")
     }
     while ($true) {
-        $busy = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -in @('multi64d', 'multi64', 'ap64', 'xfer64') -and $_.Id -notin $stuck }
+        # A play session runs AP64 against this script's bridge, so AP64 may stay open for one.
+        $others = if ($Play) { @('multi64d', 'multi64', 'xfer64') } else { @('multi64d', 'multi64', 'ap64', 'xfer64') }
+        $busy = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -in $others -and $_.Id -notin $stuck }
         if (-not $busy) { Say 'none running'; break }
         Say ("running: " + (($busy | ForEach-Object { $_.ProcessName }) -join ', '))
-        Ask 'Close Multi64 (Quit from its tray icon), AP64 and Xfer64, then press Enter' | Out-Null
+        $close = if ($Play) { 'Close Multi64 (Quit from its tray icon) and Xfer64' } else { 'Close Multi64 (Quit from its tray icon), AP64 and Xfer64' }
+        Ask ($close + ', then press Enter') | Out-Null
     }
 
     Section 'Serial ports and drivers'
@@ -383,7 +478,9 @@ try {
     }
     $script:Port = $Port
 
-    if (-not $SkipControl -and -not $GameOnly) {
+    if ($Play) { Run-PlaySession }
+
+    if (-not $SkipControl -and -not $GameOnly -and -not $Play) {
         if ($Cart -eq 'ed64pro') {
             # libdragon has no PRO support, so on a PRO the test ROM's USB goes through this repo's own
             # ed64pro.c: the same unproven mapping as the agent, which makes this no control.
@@ -412,7 +509,7 @@ try {
     }
 
     $p = $null
-    if (-not $GameOnly) {
+    if (-not $GameOnly -and -not $Play) {
         Section 'Phase 2 of 3: bring-up run with multi64_bringup.z64'
         Ask 'Power the console off and on, boot multi64_bringup.z64, wait until its text on the TV stops changing, then press Enter' | Out-Null
         $p = Start-Daemon 'phase2'
@@ -433,49 +530,51 @@ try {
         Stop-Daemon $p 'phase2'
     }
 
-    Section 'Phase 3 of 3 (optional): the AP64 agent inside a game'
-    Say 'This needs a game ROM that the AP64 in this folder patched for this cart (README.txt). One patched by an older AP64 carries an older agent, and would not test this one.'
-    $hasGame = if ($GameOnly) { 'y' } else { (Ask 'Is such a ROM on the SD card? Type y and press Enter, or just press Enter to skip this part').Trim().ToLower() }
-    if ($hasGame -notin @('y', 'yes')) {
-        Say 'phase 3 skipped: no patched ROM'
-    } else {
-        Say ("game: " + (Ask 'Which game is it?'))
-        Ask 'Power the console off and on, boot that ROM, wait at its title screen, then press Enter' | Out-Null
-        # The purge experiment again, as in phase 1: a daemon that does not purge first, then, only if
-        # the agent says nothing through it, one that does.
-        $phase = 'phase3'
-        $answered = 0
-        $p = Start-Daemon $phase
-        if ($p -ne $null) {
-            $answered = Probe-Agent 'phase3-hello.txt'
-            if ($answered -eq 0) {
+    if (-not $Play) {
+        Section 'Phase 3 of 3 (optional): the AP64 agent inside a game'
+        Say 'This needs a game ROM that the AP64 in this folder patched for this cart (README.txt). One patched by an older AP64 carries an older agent, and would not test this one.'
+        $hasGame = if ($GameOnly) { 'y' } else { (Ask 'Is such a ROM on the SD card? Type y and press Enter, or just press Enter to skip this part').Trim().ToLower() }
+        if ($hasGame -notin @('y', 'yes')) {
+            Say 'phase 3 skipped: no patched ROM'
+        } else {
+            Say ("game: " + (Ask 'Which game is it?'))
+            Ask 'Power the console off and on, boot that ROM, wait at its title screen, then press Enter' | Out-Null
+            # The purge experiment again, as in phase 1: a daemon that does not purge first, then, only if
+            # the agent says nothing through it, one that does.
+            $phase = 'phase3'
+            $answered = 0
+            $p = Start-Daemon $phase
+            if ($p -ne $null) {
+                $answered = Probe-Agent 'phase3-hello.txt'
+                if ($answered -eq 0) {
+                    Stop-Daemon $p $phase
+                    Say 'Starting multi64d again, this time purging the port as it opens it, to see whether that brings the agent back.'
+                    $phase = 'phase3-purged'
+                    $p = Start-Daemon $phase $true
+                    if ($p -ne $null) { $answered = Probe-Agent 'phase3-purged-hello.txt' }
+                }
+            }
+            if ($p -ne $null) {
+                if ($answered -gt 0) {
+                    # RDRAM offsets every game has. 0x300 holds what the boot code left (TV type, CIC,
+                    # RAM size), which a running game has no reason to change, so its two reads should
+                    # match; 0x400 is where a game's own code starts. 4096 bytes is the most one region
+                    # may hold.
+                    $reads = 'phase3-reads.txt'
+                    Run-Logged $reads $tool @('mem-peek', '--addr', '0x300', '--len', '28') | Out-Null
+                    Run-Logged $reads $tool @('mem-peek', '--addr', '0x400', '--len', '64') | Out-Null
+                    Run-Logged $reads $tool @('mem-peek', '--addr', '0x300', '--len', '28') | Out-Null
+                    Run-Logged $reads $tool @('mem-peek', '--addr', '0x400', '--len', '4096') | Out-Null
+                    # The ROM header's game name, read from the cart while the game uses it: AP64 reads
+                    # the ROM this way when it starts a session.
+                    Run-Logged $reads $tool @('mem-rom-peek', '--addr', '0x20', '--len', '20') | Out-Null
+                } else {
+                    Say 'The agent answered no HELLO, so the reads are left out.'
+                }
                 Stop-Daemon $p $phase
-                Say 'Starting multi64d again, this time purging the port as it opens it, to see whether that brings the agent back.'
-                $phase = 'phase3-purged'
-                $p = Start-Daemon $phase $true
-                if ($p -ne $null) { $answered = Probe-Agent 'phase3-purged-hello.txt' }
             }
+            Say ("game screen: " + (Ask 'Is the game still running as normal? Describe anything else it shows (or leave empty)'))
         }
-        if ($p -ne $null) {
-            if ($answered -gt 0) {
-                # RDRAM offsets every game has. 0x300 holds what the boot code left (TV type, CIC,
-                # RAM size), which a running game has no reason to change, so its two reads should
-                # match; 0x400 is where a game's own code starts. 4096 bytes is the most one region
-                # may hold.
-                $reads = 'phase3-reads.txt'
-                Run-Logged $reads $tool @('mem-peek', '--addr', '0x300', '--len', '28') | Out-Null
-                Run-Logged $reads $tool @('mem-peek', '--addr', '0x400', '--len', '64') | Out-Null
-                Run-Logged $reads $tool @('mem-peek', '--addr', '0x300', '--len', '28') | Out-Null
-                Run-Logged $reads $tool @('mem-peek', '--addr', '0x400', '--len', '4096') | Out-Null
-                # The ROM header's game name, read from the cart while the game uses it: AP64 reads
-                # the ROM this way when it starts a session.
-                Run-Logged $reads $tool @('mem-rom-peek', '--addr', '0x20', '--len', '20') | Out-Null
-            } else {
-                Say 'The agent answered no HELLO, so the reads are left out.'
-            }
-            Stop-Daemon $p $phase
-        }
-        Say ("game screen: " + (Ask 'Is the game still running as normal? Describe anything else it shows (or leave empty)'))
     }
 } catch {
     Say ''
@@ -486,7 +585,7 @@ try {
 Section 'Cart'
 $cartOs = Ask 'Your cart menu/OS version, from the cart menu (or leave empty)'
 Say ("cart OS: " + $cartOs)
-if (-not $GameOnly) {
+if (-not $GameOnly -and -not $Play) {
     $screen = Ask 'Did either test ROM stay on a black screen, or stop partway? Describe it (or leave empty)'
     Say ("screen: " + $screen)
 }

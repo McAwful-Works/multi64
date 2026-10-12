@@ -15,3 +15,6 @@ Multi64_..._setup.exe is the latest Multi64. You don't need it for the test.
 
 Optional game test: install AP64_..._setup.exe, patch your seed again with it for your cart,
 and copy that ROM to the SD card too. diagnose.bat asks about it after the two test ROMs.
+
+If the connection drops while you play: close Multi64, double-click play-session.bat, and
+follow what it says. It records a play session and makes a zip to send back.
