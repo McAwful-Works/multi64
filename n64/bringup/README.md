@@ -167,6 +167,10 @@ The values above are placeholders, not measurements. **Z** steps the load (off, 
    `blocks.buffer.*` checks PASS; `link.default.load_off.traffic` PASS. Under moderate and heavy
    load a few timeouts are normal, because the agent gives up on a busy PI by design rather than
    stall the game; they are reported as INFO with their count, which varies from run to run.
+   The tool's own writes of the load level and the agent build cross the same link, so each is
+   sent up to three times before the run stops there (`link.<build>.aborted`). After the checks,
+   one `note:` line for each write that had to be sent again names it; the JSON's `notes` keeps
+   them.
 6. Keep the JSON: it is what another cart's run is compared against. Commit it under
    [`baselines/`](baselines/) as `sc64-<date>.json`. The newest by name is the one the bundle
    ships, as `sc64-baseline.json`, so record a new one whenever the ROM changes. Currently that is
@@ -303,7 +307,11 @@ is not known. So the script no longer trusts one attempt:
 
 The phases run inside one `try`. An error part-way, such as a tool that an antivirus program will
 not let run, is written to the transcript with where it happened, and the closing questions, the
-sweep for daemons and the zip still follow, so a failed run sends back what it gathered.
+sweep for daemons and the zip still follow, so a failed run sends back what it gathered. Each look
+at the machine before the phases (the Windows version, the serial devices, their drivers) has a
+`try` of its own: on a PC whose WMI will not answer, the transcript loses those lines and the run
+goes on. It then asks for the cart and the port outright, showing the ports `multi64d --list-ports`
+found before the port question.
 
 #### A play session
 
@@ -330,14 +338,31 @@ drop. AP64's own session logs written during the run (`%APPDATA%\dev.multi64.ap6
 into `ap64-logs/` in the results. Its dry runs here walked every step against a daemon with no
 cart; it has not run against a cart or a real drop.
 
-The script picks the cart and its port by the USB IDs in `crates/cart-probe` (X7 `0403:6001`,
-SummerCart64 `0403:6014`) when exactly one such port is plugged in, and asks otherwise; the PRO's
-IDs are not known, so a PRO is always asked for. `-Cart ed64|ed64pro|sc64`, `-Port COMn`,
-`-SkipControl` (no phase 1) and `-GameOnly` (phase 3 alone, without asking whether there is a ROM
-for it) pass through `diagnose.bat`. Every `multi64d` it starts is put in a Windows job
-object that kills it when the script exits, so closing the window mid-run does not leave the port
-held, and a daemon from an earlier run of the same bundle is stopped at the start. Running it on
-the maintainer's SummerCart64 checks the bundle itself before it goes out.
+Before anything else the script looks for programs that would hold the cart's port. A `multi64d`
+from an earlier run of the same bundle is stopped. While Multi64, AP64 or Xfer64 is open (AP64 may
+stay open for a play session), it asks the tester to close them and looks again. A `multi64d` that
+is still there once they are closed is taken to be the bridge of an installed Multi64 that has
+gone, which one tester's PC had: it has no window and no tray icon to quit it from, so the script
+names it and offers to stop it, on a `y` or `n`. Unless the answer is `y` or `yes` and Windows
+ends it, the transcript says that it stays, and that the tests will most likely not be able to
+start, and the run carries on to gather what it can. A daemon of the script's own that finds
+another bridge on port 38765 exits, and its phase is skipped.
+
+The script finds the cart and its port by the USB IDs in `crates/cart-probe` (X7 `0403:6001`,
+SummerCart64 `0403:6014`), and uses neither without the tester's say. Both are stock FTDI IDs,
+which an ordinary USB serial adapter reports too, so with the cart not plugged in the one matching
+port could be some other device. When exactly one such port is plugged in, the script shows its
+Windows name and the tester presses Enter to accept it or types another, once for the cart and
+once for the port. Otherwise it asks outright; the PRO's IDs are not known, so a PRO is always
+asked for. An answer that names no cart, or no COM port, is asked for again, five times at most;
+after that the run stops on the error and zips what it has.
+`-Cart ed64|ed64pro|sc64` and `-Port COMn`, which are not asked about when given, `-SkipControl`
+(no phase 1) and `-GameOnly` (phase 3 alone, without asking whether there is a ROM for it) pass
+through `diagnose.bat`. Every `multi64d` it starts is put in a Windows job object that kills it
+when the script exits, so closing the window mid-run does not leave the port held. Running it on
+the maintainer's SummerCart64 checks the bundle itself before it goes out. The offer to stop a
+bridge and the Enter-to-accept prompts have been walked here only in dry runs, against a stand-in
+device list and COM ports that do not exist; no tester has met them yet.
 
 ### 3. What the results say
 
