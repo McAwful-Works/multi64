@@ -14,10 +14,20 @@ the baseline: on another cart, the first result that differs from the SC64's is 
 **ROM 1.0 ran on a SummerCart64,** on 2026-10-08, where every check passed
 ([Hardware record](#hardware-record)); that run is the baseline. **And on an EverDrive-64 X7,** on
 2026-10-09, where the X7 driver worked with the PI otherwise idle, and under load cut a reply off
-part-way and left the host deaf to the cart. The committed binary is **1.1**, which carries the fix
-for the first; the second is fixed in `multi64d`. **1.1 ran on the same X7 later that day,** where
-the CPU-word build answered every request but one across three load levels. Its SC64 build is the
-same source as 1.0's, so the baseline still stands for it.
+part-way and left the host deaf to the cart. **1.1** carries the fix for the first; the second is
+fixed in `multi64d`. **1.1 ran on the same X7 later that day,** where the CPU-word build answered
+every request but one across three load levels. Its SC64 build is the same source as 1.0's, so the
+baseline still stood for it.
+
+**The committed binary is 1.2, and no cart has run it.** It differs from 1.1 in two things. Its two
+X7 builds carry the driver as it now is: `ed64_receive` keeps its place in the stream when a busy
+PI or the clock stops it, where it used to report the message lost and read the rest of it as
+headers, and every wait in the driver ends by the console's clock ([l3-over-everdrive-x7.md](../../docs/spec/l3-over-everdrive-x7.md) §4.5
+item 7). And a host's change of `ctl_load` starts the link's maxima afresh even when it names the
+level already in effect, so the first stretch of traffic after boot reports its own longest tick,
+not the longest since boot. Its SC64 and PRO builds are 1.1's driver sources unchanged, but a
+baseline is a run of the whole ROM, and 1.2 has none yet: recording one takes the maintainer's
+cart ([checklist](#1-summercart64-baseline-first-on-the-maintainers-cart)).
 
 **On 2026-10-12 the X7 agent answered inside a game for the first time:** an Ocarina of Time seed
 patched for the X7, left at its title screen, where every `HELLO` and every read was answered
@@ -72,8 +82,9 @@ so it is a diagnostic build, not an option for games. It is exposed three ways:
 1. **Identify.** Raw reads of every cart's ID registers before anything is unlocked, then each
    driver's own initialization in libdragon's order (64drive, PRO, X7, SC64) until one answers.
 2. **Blocks.** What one spin of each driver's wait costs, read 1024 times, against the spin limit
-   [`spin_limits.sh`](spin_limits.sh) reads out of the driver sources at build time. Then 512 bytes
-   written to the cart's buffer and read back by CPU words and by PI DMA, all four ways.
+   [`spin_limits.sh`](spin_limits.sh) reads out of the driver sources at build time. The X7
+   driver's wait also ends after 75 ms by the clock, which that product does not show. Then 512
+   bytes written to the cart's buffer and read back by CPU words and by PI DMA, all four ways.
 3. **Link.** The cart's agent build called once a frame, for a host to talk to.
 4. **Conditions.** Stage 2 again under background ROM DMA started from a timer interrupt, where a
    game's PI manager starts its own. The timer also records how long interrupts were held off. The
@@ -92,8 +103,8 @@ make
 It needs `N64_INST`, like the test ROM ([n64/README.md](../README.md#toolchain)), and builds the
 agent sources from `../agent` itself. A prefix installed by `setup-toolchain.sh` with the toolchain
 [`toolchain.lock`](../toolchain.lock) pins rebuilds the committed `multi64_bringup.z64` byte for
-byte: SHA-256 `dcb36cdec9fc6eafc8a9a2cea63a004743255fb0779bdb0fabfb30dbd42749c4` (1.1). The same
-toolchain rebuilds 1.0, `58b347db…`, from its commit. That toolchain
+byte: SHA-256 `fe9a9c01e58e09bbc47b1f0119a239f4e011d591d86274179adcee8ea7ae11eb` (1.2). The same
+toolchain rebuilds 1.1, `dcb36cde…`, and 1.0, `58b347db…`, from their commits. That toolchain
 is libdragon `e356bf3` with mips64-elf GCC 16.2.0, built by libdragon's toolchain script at that
 same commit.
 
@@ -108,7 +119,7 @@ in as its last line. A screen that stays black, with not even the first line, ne
 ROM's code. Once every stage has run, the screen below replaces those lines.
 
 ```
-multi64 bring-up 1.1  cart SC64  link SC64  load off  f1234
+multi64 bring-up 1.2  cart SC64  link SC64  load off  f1234
 identify ed14 ........>........  ed04 ........>........     raw ID reads, then after X7 init
          sc64 ........>53437632  sys ........ ........     SC64 IDENT before and after unlock
          init PRO- X7- SC64+  d64 ........  probes 3F     + answered, - did not, . not tried
@@ -165,6 +176,9 @@ The values above are placeholders, not measurements. **Z** steps the load (off, 
    ships, as `sc64-baseline.json`, so record a new one whenever the ROM changes. Currently that is
    [`baselines/sc64-2026-10-12.json`](baselines/sc64-2026-10-12.json), from bring-up ROM 1.1; the
    first, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json), is from ROM 1.0.
+   **The committed ROM is 1.2 and has no baseline yet**, so this step is owed for it. Until it is
+   done a 1.2 run is compared against 1.1's, and its longest ticks with no load may read lower
+   for a reason that is the ROM's: 1.1's covered everything since boot.
    When a run and its baseline come from different builds of the ROM, the comparison says so on
    its first line.
 
@@ -362,6 +376,9 @@ device list and COM ports that do not exist; no tester has met them yet.
 | Everything matches | The driver works on this cart, and a silent agent inside a game is about how it is placed in that game |
 
 ## Hardware record
+
+Every run of the bring-up ROM below is of 1.1 or 1.0. ROM 1.2, the committed one, has not run on a
+cart, and neither has the X7 driver it carries, in this ROM or in a game.
 
 **2026-10-12, EverDrive-64 X7, an AP64 session with an Archipelago client: reported, not logged.**
 The same day as the fifth run below, the tester sent a screenshot. No results zip and no bridge log

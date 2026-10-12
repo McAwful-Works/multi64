@@ -1,4 +1,4 @@
-n64/agent from b898f62
+n64/agent from fb66aaa
 built by crates/ap64-core/agent/build.sh sf64, cart ed64 (mips64-ultra-elf-gcc (GCC) 15.2.0)
-agent.bin sha1 78c4dffa4a15cdd40fcc438250424ab8e95c3696
-stub.bin  sha1 a0e054e893fa4782bd11ed4ed14e7786db9c9f64
+agent.bin sha1 44f6a898babb53990b9691d3ce913e1b37964987
+stub.bin  sha1 85e8ae46c27997423d5bf300eecd6a21c9f53a54

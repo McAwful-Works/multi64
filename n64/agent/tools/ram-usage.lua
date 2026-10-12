@@ -20,7 +20,7 @@ local SAMPLE_EVERY = 60
 -- Sized for the largest cart build, because one placement has to hold every build: each
 -- game is built once per flash cart, all at the same AGENT_VRAM, and the patcher picks
 -- one. What each occupies is AGENT_BSS_END - AGENT_VRAM from a profile's layout.env
--- (code + data + bss): 29,376 B for the EverDrive-64 X7 (ed64/), 25,888 B for the
+-- (code + data + bss): 30,364 B for the EverDrive-64 X7 (ed64/), 25,888 B for the
 -- SummerCart64 (the profile's own), 25,404 B for the PRO (ed64pro/). Sizing this for the
 -- SummerCart64 alone, as it once was, marked runs that the X7 build does not fit in.
 --

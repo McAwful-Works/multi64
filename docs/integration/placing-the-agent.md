@@ -29,7 +29,7 @@ ends, whether IPL3 or the header CRC changed, and which RAM addresses its new co
 
 ## 2. Find RAM for the agent
 
-About 29 KB, never touched by the game or its patch, for as long as the game runs. That is the
+About 30 KB, never touched by the game or its patch, for as long as the game runs. That is the
 EverDrive-64 X7 build, the largest of an AP64 game's three agent builds; the SummerCart64's is
 about 26 KB, but one placement has to hold all three.
 

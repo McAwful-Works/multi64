@@ -6,7 +6,9 @@
 //! had a game played through it. The X7's has worked on one X7 outside a game, in `n64/bringup`'s
 //! ROM, and has answered inside one game on it, an Ocarina of Time seed left at its title screen
 //! (2026-10-12). A tester reported an Archipelago client connecting through it that day; no item
-//! sent or received and no sustained play has been shown. The PRO's has never run on a cart.
+//! sent or received and no sustained play has been shown. The X7 build profiles now carry is a
+//! later driver, which keeps its place in the stream between calls and times its waits; no cart
+//! has run that one. The PRO's has never run on a cart.
 
 use serde::{Deserialize, Serialize};
 

@@ -286,6 +286,8 @@ on 2026-10-12, the agent answered every request with the game left at its title 
 ([hardware record](../../n64/bringup/README.md#hardware-record)). Later that day the tester
 reported, by a screenshot of AP64 with no log, an Archipelago client connected and 142 cart round
 trips without a stall; no item sent or received and no sustained play has been shown on an X7.
+The X7 agent AP64 patches in now is a later build than those runs used: its driver keeps its place
+in the stream from one call to the next and times its waits, and no cart has run it.
 The PRO's has never run on a cart.
 They differ in size, so a seed is checked for the cart chosen, and changing the cart checks it
 again. Donkey Kong 64 is where that shows: the X7's agent, the largest, does

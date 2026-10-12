@@ -110,7 +110,9 @@ Two copies of each table: `[0]` measured with no load, `[1]` under the level in 
 | `+0xC` | `ticks_max` | The slowest single read |
 
 `ticks_total / 1024 * spins` is the longest that driver's wait can last at the measured rate: what a
-game frame loses when the wait gives up.
+game frame loses when the wait gives up. From ROM 1.2 the X7 driver's wait (id `2`) is the one
+exception: it also ends after 75 ms by the CPU Count register, whichever comes first, so that
+product bounds it only while it is under 75 ms.
 
 ### 3.5 `buffer` entry
 
@@ -143,9 +145,14 @@ masks interrupts even with no DMA running.
 ### 3.7 Link
 
 `link[4]` at `0x208`, 96 bytes each, indexed by variant id − 1 (§4.2). Counters only grow; the three
-`*_max` fields reset whenever the variant or the load level changes. A host compares two readings to
+`*_max` fields reset whenever the variant or the load level changes, and from ROM 1.2 whenever a
+change to `ctl_load` names a level, even the one in effect (§5). A host compares two readings to
 see what one stretch of traffic did. The conditions stage's own brief change of level does not
 reset them.
+
+In ROM 1.0 and 1.1 a `ctl_load` naming the level in effect reset nothing. A host that begins with
+the level the ROM booted in, as `multi64-test-connector bringup` does, therefore read back maxima
+for its first stretch of traffic that covered everything since boot.
 
 | Offset | Field | Meaning |
 |--------|-------|---------|
@@ -274,6 +281,10 @@ value written twice is one change, whether or not the first write arrived.
 
 - `ctl_variant` naming a build that cannot drive the cart found (§4.2), or `ctl_load` naming no
   level (§4.6), is ignored, but still counts as the value last seen.
+- A `ctl_load` that changes to the level already in effect changes no level. From ROM 1.2 it still
+  resets the link's `*_max` fields (§3.7), so a host that writes an ignored value and then the
+  level, as above, starts each stretch of traffic with maxima of its own. The **Z** button, which
+  always changes the level, resets them as before.
 - Switching variant hands the link to a different agent with its own state. Its first ticks run its
   own driver initialization, and whatever the previous agent had read but not answered is lost.
 - A variant that never answers cannot be switched away from over the link. The controller can.

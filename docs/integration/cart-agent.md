@@ -165,13 +165,18 @@ connected: a screenshot showing 142 cart round trips with no stall and no reconn
 behind it. It does not show an item sent or received, or how long the session ran. Sustained play
 on an X7 is still unshown.
 
+Every one of those runs was of the X7 driver as it stood before two changes: its receive path now
+keeps its place in the stream from one call to the next, and its waits end by the console's clock
+(both below). The driver as it now is has run only against `make host-test`'s fake cart, on a PC.
+No cart has run it.
+
 The builds exist so that someone with an EverDrive has something to test. Nothing about them counts
 as support.
 
 | Build | Driver | Wire | RAM, flat image |
 |---|---|---|---|
 | default | `sc64.c` | [l3-over-sc64.md](../spec/l3-over-sc64.md) | 25,752 B |
-| `CART=ed64` | `ed64.c` | [l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4: `DMA@` messages through the cart's 512-byte USB window | 29,253 B |
+| `CART=ed64` | `ed64.c` | [l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4: `DMA@` messages through the cart's 512-byte USB window | 30,181 B |
 | `CART=ed64pro` | `ed64pro.c` | [l3-over-everdrive-pro.md](../spec/l3-over-everdrive-pro.md): the cart FIFO | 25,272 B |
 
 Every build also links `cart_rom.c` and `pi_io.c`. Sizes are the object's code, data and BSS with
@@ -188,11 +193,21 @@ What differs from the SC64 build:
   512-byte messages (X7) or 1024-byte FIFO writes (PRO), so these builds collect bytes across
   receives and ticks, and find frames by their magic, skipping a header whose type, channel or length
   the protocol does not allow. A host message that arrives while the agent's buffer has less room
-  than it needs is not lost: the X7 driver keeps the part that does not fit, up to 512 bytes, and
-  hands it over on the next receive, and the PRO leaves it in the cart FIFO. When the driver reports
-  a lost piece (a failed read, a bad `DMA@` header or `CMPH` trailer, an X7 message more than 512
-  bytes larger than the room left) the partial frame is dropped at once, so it
-  cannot be completed with a later request's bytes.
+  than it needs is not lost: the X7 driver puts each message together in its own 2 KiB and hands
+  over what does not fit on later receives, and the PRO leaves it in the cart FIFO. When the driver
+  reports a lost piece (on the PRO a failed read; on the X7 a bad `DMA@` header or `CMPH` trailer, a
+  message carrying more than 2 KiB, or a read the cart never finishes because the host sent less
+  than its header said) the partial frame is dropped at once, so it cannot be completed with a
+  later request's bytes.
+- **The X7 driver keeps its place in the stream from one call to the next.** A call that a busy PI
+  or the clock stops loses nothing: bytes already read stay in the driver's buffer, bytes asked of
+  the cart stay in the cart's USB window, and the next call carries on from the same byte, so a
+  message arrives late and not lost. Before this, a PI access that failed part-way through a
+  message made the driver report it lost and read the rest of it as headers, 8 bytes a tick, and
+  the host's retry with it. A message the driver does not want, one of another datatype or one too
+  big to hold, is taken off USB unread before the next header is looked for, its trailer unchecked.
+  Two cases still leave it not knowing where the next header is, and looking 8 bytes at a time: a
+  host message cut short, whose read the cart never finishes, and a header that is not `DMA@`.
 - **A loss the driver cannot see is not recovered from cleanly.** The partial frame keeps the length
   its header claimed, and whatever arrives next is read as the rest of it. The 60-tick guard counts
   only ticks in which *nothing at all* arrives — any arrival resets it — so a host that retries
@@ -207,7 +222,12 @@ What differs from the SC64 build:
 - **Nothing is staged in ROM space.** libdragon's X7 driver copies received packets to the top of the
   ROM window; this one reads straight out of the cart's USB window. The PRO needs no staging.
 - **A reply holds the tick while it is sent.** The X7 driver waits for the cart after each 512-byte
-  block, the PRO driver after each 1024-byte block. Every wait is bounded.
+  block, the PRO driver after each 1024-byte block. Every wait is bounded: the PRO's by a count of
+  register reads, the X7's by the console's clock as well, since a count does not bound time when
+  each read can itself wait about 26 ms for the PI. One X7 send takes at most about 0.3 s, one
+  receive about 0.15 s, and everything one `agent_tick` does in the X7 driver about 0.49 s
+  ([`ed64.h`](../../n64/agent/ed64.h) has the sums). Those are limits for a PI that stays busy or a
+  transfer that never finishes, not what a tick normally costs.
 - **The X7 driver writes `SYSCFG = 0` at init**, as libdragon does. Whether that is harmless inside a
   commercial game is unverified.
 

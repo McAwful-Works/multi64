@@ -102,7 +102,8 @@ but no game has been played through either. Ocarina of Time's X7 build has been 
 X7: the first time its ROM never answered, and the second, on 2026-10-12, the agent answered every
 request with the game left at its title screen, and the tester later reported an Archipelago client
 connecting through it. The X7 driver has also worked on an X7 outside a
-game, in [`n64/bringup`](../../n64/bringup/README.md)'s ROM.
+game, in [`n64/bringup`](../../n64/bringup/README.md)'s ROM. All of that was the driver before it
+kept its place in the stream between calls and timed its waits; no cart has run it since.
 
 ## Guides
 

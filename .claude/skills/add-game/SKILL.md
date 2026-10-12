@@ -335,7 +335,7 @@ register it in `ap64-core::builtin()`. Comment `game.env` with *why* each addres
 
 `build.sh` builds the agent once per flash cart: the SummerCart64's into `profiles/<game>/`,
 and the experimental EverDrive-64 X7's and PRO's into its `ed64/` and `ed64pro/`. They differ
-in size, and the X7's is the largest, about 29.4 KB of RAM to the SummerCart64's 25.9 KB, so
+in size, and the X7's is the largest, about 30.4 KB of RAM to the SummerCart64's 25.9 KB, so
 measure room for that one. Where an `imm` check bounds the agent from below, write
 `min = "agent_end"` rather than one build's end, as DK64's heap top does: the X7's agent does
 not fit there, and the check is what refuses it.
