@@ -400,7 +400,7 @@ fn a_quiet_client_is_never_dropped() {
                 }
                 let Some(mut s) = connected else {
                     done.store(true, Ordering::Relaxed);
-                    return Vec::new();
+                    return (Vec::new(), None);
                 };
                 // Whatever holds a port a lost race gave away is itself a listener, so
                 // this may have connected to it rather than to the connector: never
@@ -418,7 +418,11 @@ fn a_quiet_client_is_never_dropped() {
                     replies.push(line);
                 }
                 done.store(true, Ordering::Relaxed);
-                replies
+                // The socket goes back with the replies, still open. Dropped here it would
+                // close while `serve` may be between looking at `done` and reading from
+                // its client, and `serve` would report, correctly, that the client had
+                // closed the connection: a disconnect this test made and then failed on.
+                (replies, Some(s))
             })
         };
         let mut events = Vec::new();
@@ -429,7 +433,8 @@ fn a_quiet_client_is_never_dropped() {
             let _ = client.join();
             return Err(e);
         }
-        let replies = client.join().unwrap();
+        // `serve` has returned, so the client's socket can close now and no sooner.
+        let (replies, _socket) = client.join().unwrap();
         assert_eq!(replies.len(), 2, "both polls were answered: {replies:?}");
         assert!(
             replies.iter().all(|r| r.contains("\"playerName\"")),

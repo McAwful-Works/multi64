@@ -68,7 +68,10 @@ fn rom() -> Vec<u8> {
     image
 }
 
-/// Connect, send each line, collect each reply, then set `done`.
+/// Connect, send each line, collect each reply, then set `done`. The replies come back
+/// with the socket, still open: `serve` may be between looking at `done` and reading from
+/// its client, and a socket closed then is a `ClientDisconnected` the test itself made.
+/// Hold it until `serve` has returned.
 ///
 /// Gives up quietly if nothing ever answers on `port`, so that an attempt whose port
 /// was taken before `serve` could bind it can be joined and run again.
@@ -76,7 +79,7 @@ fn client(
     port: u16,
     lines: Vec<String>,
     done: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<Vec<String>> {
+) -> std::thread::JoinHandle<(Vec<String>, Option<TcpStream>)> {
     std::thread::spawn(move || {
         let mut connected = None;
         for _ in 0..500 {
@@ -92,7 +95,7 @@ fn client(
         }
         let Some(stream) = connected else {
             done.store(true, Ordering::SeqCst);
-            return Vec::new();
+            return (Vec::new(), None);
         };
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -109,7 +112,7 @@ fn client(
             replies.push(reply.trim_end().to_string());
         }
         done.store(true, Ordering::SeqCst);
-        replies
+        (replies, Some(writer))
     })
 }
 
@@ -162,7 +165,7 @@ fn serves_domains_guards_and_writes() {
             let _ = c.join();
             return Err(e);
         }
-        let replies = c.join().unwrap();
+        let (replies, _socket) = c.join().unwrap();
         assert_eq!(replies.len(), lines.len(), "{replies:#?}");
 
         assert_eq!(replies[0], "1", "VERSION");
@@ -284,7 +287,7 @@ fn a_dead_cart_ends_the_session_even_though_the_script_catches_it() {
         }
         assert!(err.contains("gave up"), "{err}");
         assert!(
-            c.join().unwrap().is_empty(),
+            c.join().unwrap().0.is_empty(),
             "no reply is sent for a dead cart"
         );
         Ok(())
