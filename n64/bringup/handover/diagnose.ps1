@@ -36,12 +36,18 @@
 # phase 1 tries (phase1-probe.txt, and phase1-purged-probe.txt when a second daemon ran), phase 3's
 # HELLOs and reads (phase3-hello.txt, phase3-purged-hello.txt, phase3-reads.txt), and the machine's
 # serial ports and drivers go into results-<time>\, which is zipped at the end.
+#
+# Nothing is sent to a port the tester has not seen named. The cart's USB IDs are those of stock
+# FTDI chips, which an ordinary USB serial adapter reports too, so a port or a cart found by them
+# is shown with its Windows name for the tester to accept with Enter or replace.
 # Written for Windows PowerShell 5.1, which every Windows 10/11 has.
 
 param(
-    # multi64d's --cart: ed64 (X7), ed64pro or sc64. Empty: the only X7 or SC64 plugged in, else ask.
+    # multi64d's --cart: ed64 (X7), ed64pro or sc64. Empty: asked for, with the only X7 or SC64 USB
+    # port plugged in, when there is exactly one, as the answer Enter gives.
     [string]$Cart = '',
-    # Serial port. Empty: the only port with the cart's USB IDs, else ask.
+    # Serial port. Empty: asked for, with the only port carrying the cart's USB IDs, when there is
+    # exactly one, as the answer Enter gives.
     [string]$Port = '',
     # Skip phase 1, for a rerun of the bring-up alone.
     [switch]$SkipControl,
@@ -223,6 +229,15 @@ function Start-Daemon([string]$phase, [bool]$clearSerial = $false) {
                 $up = Port-Open
             }
             Save-Status "$phase-status-start.json"
+            # Something answered on port 38765. When another multi64d was left running (the tester
+            # chose to, or it would not stop), that is the one answering, and this one could not
+            # take the port and has exited. Its tests would run through a bridge that logs nothing
+            # here.
+            if ($p.HasExited) {
+                Say "multi64d exited (code $($p.ExitCode)): another bridge already has port 38765, so this test is skipped."
+                Show-DaemonErrors $phase
+                return $null
+            }
             if (-not $up) {
                 Say "multi64d is running, but its link to the cart on $($script:Port) did not come up, so this test is skipped."
                 Show-DaemonErrors $phase
@@ -259,6 +274,29 @@ function Stop-Daemon($p, [string]$phase) {
     Start-Sleep -Milliseconds 500
 }
 
+# Ends one process: Stop-Process, then taskkill if Windows still lists it. $true once it is gone.
+function Stop-Pid([int]$id) {
+    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    if (Get-Process -Id $id -ErrorAction SilentlyContinue) {
+        $ErrorActionPreference = 'Continue'
+        & taskkill.exe /F /T /PID $id 2>&1 | ForEach-Object { Say ("  " + "$_") }
+        $ErrorActionPreference = 'Stop'
+        Start-Sleep -Seconds 1
+    }
+    return -not (Get-Process -Id $id -ErrorAction SilentlyContinue)
+}
+
+# One line about a process for the transcript. The path and start time of a process that belongs
+# to another user, or runs elevated, cannot be read, and failing to must not end the run.
+function Describe-Process($proc) {
+    $path = 'path not readable'
+    $started = 'at a time not readable'
+    try { if ($proc.Path) { $path = $proc.Path } } catch { }
+    try { $started = $proc.StartTime.ToString('HH:mm:ss') } catch { }
+    return ($proc.ProcessName + " " + $proc.Id + ", started " + $started + ", " + $path)
+}
+
 # Stops every multi64d started from this bundle, saying why it was there. A daemon from this bundle
 # is never the tester's to close: it is one this script started, now or in an earlier run. Returns
 # the process IDs of any that are still running after everything here has been tried.
@@ -267,15 +305,7 @@ function Stop-Leftovers([string]$why, [string]$afterUnplug) {
     Get-Process multi64d -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $daemon } | ForEach-Object {
         $id = $_.Id
         Say "stopping multi64d $id, $why (started $($_.StartTime.ToString('HH:mm:ss')))"
-        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 500
-        if (Get-Process -Id $id -ErrorAction SilentlyContinue) {
-            $ErrorActionPreference = 'Continue'
-            & taskkill.exe /F /T /PID $id 2>&1 | ForEach-Object { Say ("  " + "$_") }
-            $ErrorActionPreference = 'Stop'
-            Start-Sleep -Seconds 1
-        }
-        if (Get-Process -Id $id -ErrorAction SilentlyContinue) { $stuck += $id }
+        if (-not (Stop-Pid $id)) { $stuck += $id }
     }
     if ($stuck.Count -eq 0) { return @() }
     # A process Windows has been told to end, twice, and that is still there has a thread waiting in
@@ -293,6 +323,35 @@ function Stop-Leftovers([string]$why, [string]$afterUnplug) {
         }
     }
     return $still
+}
+
+# Which cart this is, as multi64d's --cart takes it. With $guess, Enter takes the guess. Asked again
+# until the answer is a cart, five times at most.
+function Read-Cart([string]$guess) {
+    $carts = @{ 'x7' = 'ed64'; 'ed64' = 'ed64'; 'pro' = 'ed64pro'; 'ed64pro' = 'ed64pro'; 'sc64' = 'sc64' }
+    $prompt = 'Which cart is this: x7, pro or sc64?'
+    if ($guess) { $prompt = "Press Enter if your cart is $($script:CartNames[$guess]). If it is not, type which it is: x7, pro or sc64" }
+    for ($n = 0; $n -lt 5; $n++) {
+        $pick = (Ask $prompt).Trim().ToLower()
+        if ($pick -eq '' -and $guess) { return $guess }
+        if ($carts.ContainsKey($pick)) { return $carts[$pick] }
+        Say "'$pick' is not one of x7, pro or sc64"
+    }
+    throw 'no cart was named'
+}
+
+# The cart's COM port. With $guess, Enter takes the guess. Asked again until the answer is a COM
+# port's name, five times at most.
+function Read-Port([string]$guess) {
+    $prompt = 'Which COM port is the cart (for example COM5)?'
+    if ($guess) { $prompt = "Press Enter to use $guess. If $guess is some other USB device and not the cart, type the cart's COM port instead (for example COM7)" }
+    for ($n = 0; $n -lt 5; $n++) {
+        $pick = (Ask $prompt).Trim().ToUpper()
+        if ($pick -eq '' -and $guess) { return $guess }
+        if ($pick -match '^COM\d+$') { return $pick }
+        Say "'$pick' is not a COM port's name, such as COM5"
+    }
+    throw 'no COM port was named'
 }
 
 # The suite's first request on its own: put the test ROM in M64T_PROTO, which it accepts from any
@@ -410,8 +469,16 @@ if (Test-Path (Join-Path $here 'VERSION.txt')) {
     Get-Content (Join-Path $here 'VERSION.txt') | ForEach-Object { Say $_ }
 }
 Say ("started " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
-$os = Get-CimInstance Win32_OperatingSystem
-Say ("Windows: " + $os.Caption + " " + $os.Version + " (build " + $os.BuildNumber + "), PowerShell " + $PSVersionTable.PSVersion)
+# Each look at the machine, here and under 'Serial ports and drivers', has a try of its own.
+# $ErrorActionPreference is Stop and Get-CimInstance fails on a PC whose WMI is broken: that costs
+# the transcript one line of the inventory, not the run.
+try {
+    $os = Get-CimInstance Win32_OperatingSystem
+    Say ("Windows: " + $os.Caption + " " + $os.Version + " (build " + $os.BuildNumber + "), PowerShell " + $PSVersionTable.PSVersion)
+} catch {
+    Say ("Windows: " + [Environment]::OSVersion.VersionString + ", PowerShell " + $PSVersionTable.PSVersion)
+    Say ("  (Windows would not say more: " + $_.Exception.Message + ")")
+}
 
 foreach ($f in @($daemon, $tool, $baseline, $zipper)) {
     if (-not (Test-Path $f)) { Say "missing $f; unzip the whole bundle and run this from inside it"; exit 1 }
@@ -429,38 +496,96 @@ try {
         # Nothing more can be done about it here, and asking the tester to close it would never end.
         Say ("multi64d " + ($stuck -join ', ') + " still holds the cart's port, so the tests below may not be able to open it. Restarting this PC clears it.")
     }
+    # A multi64d from anywhere else is an installed Multi64's bridge. While Multi64 is open,
+    # quitting it stops the bridge with it. One that has outlived its Multi64, as one tester's did,
+    # has no window and no tray icon to quit it from, and asking for it to be closed never ends: so
+    # once multi64d is all that is left, the script offers to stop it. $left holds the ones that
+    # stay, because the tester said no or Windows would not end them.
+    $left = @()
     while ($true) {
         # A play session runs AP64 against this script's bridge, so AP64 may stay open for one.
         $others = if ($Play) { @('multi64d', 'multi64', 'xfer64') } else { @('multi64d', 'multi64', 'ap64', 'xfer64') }
-        $busy = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -in $others -and $_.Id -notin $stuck }
-        if (-not $busy) { Say 'none running'; break }
+        $busy = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -in $others -and $_.Id -notin $stuck -and $_.Id -notin $left })
+        if ($busy.Count -eq 0) {
+            if ($stuck.Count + $left.Count -eq 0) { Say 'none running' } else { Say 'nothing else running' }
+            break
+        }
         Say ("running: " + (($busy | ForEach-Object { $_.ProcessName }) -join ', '))
-        $close = if ($Play) { 'Close Multi64 (Quit from its tray icon) and Xfer64' } else { 'Close Multi64 (Quit from its tray icon), AP64 and Xfer64' }
-        Ask ($close + ', then press Enter') | Out-Null
+        if (@($busy | Where-Object { $_.ProcessName -ne 'multi64d' }).Count -gt 0) {
+            $close = if ($Play) { 'Close Multi64 (Quit from its tray icon) and Xfer64' } else { 'Close Multi64 (Quit from its tray icon), AP64 and Xfer64' }
+            Ask ($close + ', then press Enter') | Out-Null
+            continue
+        }
+        # Only multi64d is left. One whose Multi64 was quit a moment ago is on its way out.
+        Start-Sleep -Seconds 2
+        $daemons = @($busy | Where-Object { Get-Process -Id $_.Id -ErrorAction SilentlyContinue })
+        if ($daemons.Count -eq 0) { continue }
+        foreach ($d in $daemons) { Say ("  " + (Describe-Process $d)) }
+        Say "multi64d is the bridge Multi64 runs. It is still running with no Multi64 open, so there is nothing to quit it from, and it has to stop before these tests can use the cart."
+        $stop = (Ask 'Stop it now? Type y or n, then press Enter').Trim().ToLower() -in @('y', 'yes')
+        foreach ($d in $daemons) {
+            if (-not $stop) {
+                Say "multi64d $($d.Id) is left running: the answer was not y"
+            } elseif (Stop-Pid $d.Id) {
+                Say "multi64d $($d.Id) stopped"
+                continue
+            } else {
+                Say "multi64d $($d.Id) will not stop: Windows was asked twice and it is still running"
+            }
+            $left += $d.Id
+        }
+        if ($left.Count -gt 0) {
+            # As for $stuck above: said once, recorded, and the run goes on to gather what it can.
+            Say ("multi64d " + ($left -join ', ') + " is still running. A bridge keeps the cart's port and its own port, 38765, and the tests below need both, so they will most likely not be able to start. Restarting this PC clears it.")
+        }
     }
 
     Section 'Serial ports and drivers'
-    $ports = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match '\(COM\d+\)' })
-    foreach ($d in $ports) { Say ($d.Name + "  " + $d.DeviceID + "  status " + $d.Status) }
-    Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceClass -eq 'PORTS' -or $_.DeviceName -match 'USB Serial|FTDI' } |
-        ForEach-Object { Say ("driver: " + $_.DeviceName + "  " + $_.Manufacturer + "  " + $_.DriverVersion + "  " + $_.DriverDate) }
-    Run-Logged 'ports.txt' $daemon @('--list-ports') | Out-Null
+    # $ports stays empty when Windows will not list its devices. Nothing is found by USB ID then, so
+    # the cart and the port are asked for, with the ports multi64d itself can see as the list.
+    $ports = @()
+    $portsRead = $false
+    try {
+        $ports = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match '\(COM\d+\)' })
+        $portsRead = $true
+        foreach ($d in $ports) { Say ($d.Name + "  " + $d.DeviceID + "  status " + $d.Status) }
+    } catch {
+        Say ("Windows would not list its devices: " + $_.Exception.Message)
+    }
+    try {
+        Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceClass -eq 'PORTS' -or $_.DeviceName -match 'USB Serial|FTDI' } |
+            ForEach-Object { Say ("driver: " + $_.DeviceName + "  " + $_.Manufacturer + "  " + $_.DriverVersion + "  " + $_.DriverDate) }
+    } catch {
+        Say ("Windows would not list its drivers: " + $_.Exception.Message)
+    }
+    # multi64d's own list of ports, which does not come from WMI: one name to a line.
+    $listed = @()
+    try {
+        Run-Logged 'ports.txt' $daemon @('--list-ports') | Out-Null
+        $portsFile = Join-Path $out 'ports.txt'
+        if (Test-Path $portsFile) { $listed = @(Get-Content $portsFile | ForEach-Object { "$_".Trim() } | Where-Object { $_ -match '^COM\d+$' }) }
+    } catch {
+        Say ("multi64d --list-ports did not run: " + $_.Exception.Message)
+    }
 
     # USB IDs from crates/cart-probe: the X7's FT245R is 0403:6001, the SummerCart64 0403:6014. Both
-    # are stock FTDI parts, so a match only picks a default; the PRO's is not known, so it is asked for.
+    # are stock FTDI parts, which an ordinary USB serial adapter carries too, and the PRO's are not
+    # known and may be the same. So a match is only the answer Enter gives: the device is shown by
+    # name and the tester accepts it or types another.
+    $script:CartNames = @{ 'ed64' = 'an EverDrive-64 X7'; 'ed64pro' = 'an EverDrive-64 PRO'; 'sc64' = 'a SummerCart64' }
     if (-not $Cart) {
         # With -Port, only that port can say which cart it is.
         $candidates = $ports
         if ($Port) { $candidates = @($ports | Where-Object { $_.Name -match ('\(' + [regex]::Escape($Port) + '\)') }) }
         $x7 = @($candidates | Where-Object { $_.DeviceID -match 'VID_0403.PID_6001' })
         $sc = @($candidates | Where-Object { $_.DeviceID -match 'VID_0403.PID_6014' })
+        $guess = ''
         if ($x7.Count + $sc.Count -eq 1) {
-            $Cart = if ($x7.Count -eq 1) { 'ed64' } else { 'sc64' }
-            Say "cart: $Cart, from the only X7 or SummerCart64 USB port plugged in"
-        } else {
-            $pick = (Ask 'Which cart is this: x7, pro or sc64?').Trim().ToLower()
-            $Cart = switch ($pick) { 'x7' { 'ed64' } 'pro' { 'ed64pro' } default { $pick } }
+            $guess = if ($x7.Count -eq 1) { 'ed64' } else { 'sc64' }
+            Say ("found: " + @($x7 + $sc)[0].Name + ", which has the USB ID of " + $script:CartNames[$guess])
         }
+        $Cart = Read-Cart $guess
+        Say "cart: $Cart"
     } else {
         Say "cart: $Cart (given)"
     }
@@ -469,13 +594,20 @@ try {
     if (-not $Port) {
         $id = switch ($Cart) { 'ed64' { 'VID_0403.PID_6001' } 'sc64' { 'VID_0403.PID_6014' } default { 'no match' } }
         $match = @($ports | Where-Object { $_.DeviceID -match $id })
+        $guess = ''
         if ($match.Count -eq 1) {
-            $Port = [regex]::Match($match[0].Name, 'COM\d+').Value
-            Say "using $Port, the only matching port"
-        } else {
-            $Port = (Ask 'Which COM port is the cart (for example COM5)?').Trim().ToUpper()
+            $guess = [regex]::Match($match[0].Name, 'COM\d+').Value
+            Say ("found: " + $match[0].Name + ", the only port with the USB ID of " + $script:CartNames[$Cart])
+        } elseif (-not $portsRead -and $listed.Count -gt 0) {
+            Say ("the ports multi64d can see: " + ($listed -join ', '))
         }
+        $Port = Read-Port $guess
+        Say "port: $Port"
+    } else {
+        Say "port: $Port (given)"
     }
+    $known = @($ports | ForEach-Object { [regex]::Match($_.Name, 'COM\d+').Value }) + $listed
+    if ($known.Count -gt 0 -and $Port -notin $known) { Say "note: $Port is not one of the ports listed above" }
     $script:Port = $Port
 
     if ($Play) { Run-PlaySession }
