@@ -3,7 +3,7 @@
 //! Detect the game, verify the seed against its profile, and write the seed with the
 //! agent spliced in (by default beside it, as `<stem>-agent.z64`). `--check` only verifies.
 //! `--cart` picks the flash cart the agent is built for: `sc64` (the default, and the only one
-//! whose agent has been shown to work on a cart), or the experimental `ed64` (EverDrive-64 X7)
+//! whose agent has had a game played through it), or the experimental `ed64` (EverDrive-64 X7)
 //! and `ed64pro`.
 
 use std::path::PathBuf;
@@ -93,7 +93,7 @@ fn run() -> Result<(), String> {
         if cart.tested() {
             ""
         } else {
-            " (experimental: this cart's agent has never been shown to work on one)"
+            " (experimental: no game has been played through this cart's agent yet)"
         }
     );
     if d.candidates.is_empty() {

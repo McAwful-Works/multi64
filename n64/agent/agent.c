@@ -16,9 +16,9 @@
 
 /*
  * The cart driver is chosen at build time (Makefile CART=). SummerCart64 is the default and the
- * only driver shown to work in a game; its build compiles none of the EverDrive code below.
- * The EverDrive drivers are experimental. The X7's has worked on a cart only outside a game, in
- * n64/bringup's ROM; the PRO's has never run on one.
+ * only driver a game has been played through; its build compiles none of the EverDrive code below.
+ * The EverDrive drivers are experimental. The X7's has worked on one cart in n64/bringup's ROM, and
+ * has answered inside one game, Ocarina of Time; the PRO's has never run on a cart.
  */
 #if defined(AGENT_CART_ED64) && defined(AGENT_CART_ED64PRO)
 #error "define at most one of AGENT_CART_ED64 and AGENT_CART_ED64PRO"

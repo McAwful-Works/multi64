@@ -4,9 +4,9 @@
 
 `multi64_bringup.z64` runs the cart agent's **own drivers** on a cart, outside any game, and
 reports what they do: on screen, and in a report a host reads through the agent itself. It exists
-because the agent's EverDrive drivers are written against libdragon's and Krikzz's code but have
-not been shown to work in a game (one X7 try inside a game got no answer from the ROM), and an
-agent that stays silent inside a game has no way to say why.
+because the agent's EverDrive drivers are written against libdragon's and Krikzz's code, and when
+it was written neither had answered inside a game: the one X7 try, on 2026-10-07, got no answer from
+the ROM, and an agent that stays silent inside a game has no way to say why.
 
 Run it on a **SummerCart64 first**. The SC64 driver is proven inside games, so its report is
 the baseline: on another cart, the first result that differs from the SC64's is where to look.
@@ -18,6 +18,13 @@ part-way and left the host deaf to the cart. The committed binary is **1.1**, wh
 for the first; the second is fixed in `multi64d`. **1.1 ran on the same X7 later that day,** where
 the CPU-word build answered every request but one across three load levels. Its SC64 build is the
 same source as 1.0's, so the baseline still stands for it.
+
+**On 2026-10-12 the X7 agent answered inside a game for the first time:** an Ocarina of Time seed
+patched for the X7, left at its title screen, where every `HELLO` and every read was answered
+([Hardware record](#hardware-record)). Later that day the tester reported, by screenshot, an AP64
+session on the same game with an Archipelago client connected. No item sent or received and no
+sustained play has been shown on an X7, and one cart is not validation: the EverDrive builds stay
+experimental.
 
 ## Design
 
@@ -215,7 +222,7 @@ optional and the script asks before it:
 2. **Bring-up:** `multi64_bringup.z64` and `bringup --baseline`. If it reports `link.hello` FAIL
    (no HELLO_ACK), the script has the tester press **R** (the top line changes to `link X7 DMA`)
    and runs it again.
-3. **In a game (optional):** the agent as AP64 places it, with a game running around it. The one
+3. **In a game (optional):** the agent as AP64 places it, with a game running around it. The first
    AP64 build tried on an X7, an Ocarina of Time seed on 2026-10-07, opened the port and was never
    answered, and nothing from that run shows whether the agent ever started; this phase keeps the
    bridge's log of such a run. The script asks whether a ROM patched by the bundle's AP64 for this
@@ -235,12 +242,13 @@ optional and the script asks before it:
      it goes to `phase3-reads.txt`. Nothing is written to the game;
    - asks whether the game is still running as normal, and puts the answer in the transcript.
 
-   It has not run on an X7. On 2026-10-12 the script's phase 3 ran alone (`-GameOnly`) on a
-   SummerCart64 with a Kirby 64 seed running: 5 of 5 `HELLO`s answered through the
-   first daemon, every read answered, the two `0x300` reads identical, and the header read back as
-   `Kirby64`. That shows the script and its commands work against an agent in a game. It says
-   nothing about an X7. The branch where no `HELLO` is answered has only run against a stand-in
-   daemon that refuses every connection.
+   It ran on an X7 on 2026-10-12, with an Ocarina of Time seed, and every `HELLO` and read was
+   answered ([Hardware record](#hardware-record)). Before the bundle went out, the script's phase 3
+   ran alone (`-GameOnly`) on a SummerCart64 with a Kirby 64 seed running, and then as part of a
+   whole run of the bundle: both times 5 of 5 `HELLO`s were answered through the first daemon,
+   every read was answered, the two `0x300` reads were identical, and the header read back as
+   `Kirby64`. The branch where no `HELLO` is answered has only run against a stand-in daemon that
+   refuses every connection.
 
 A phase whose daemon's link does not come up within about 8 seconds is skipped rather than left to
 time out check by check, and the script prints the daemon's last warnings, which name the cause: a
@@ -291,6 +299,101 @@ the maintainer's SummerCart64 checks the bundle itself before it goes out.
 
 ## Hardware record
 
+**2026-10-12, EverDrive-64 X7, an AP64 session with an Archipelago client: reported, not logged.**
+The same day as the fifth run below, the tester sent a screenshot. No results zip and no bridge log
+came with it, so this entry is what the screenshot is reported to show, and nothing here was
+checked against a log.
+
+- **AP64's Play card:** game `The Legend of Zelda: Ocarina of Time`, connector `Ocarina of Time`,
+  Multi64 `Connected`, Console `Running`, AP client `Connected`, status
+  `Playing - AP client connected`, and activity
+  `port 28921, 46 client requests, 142 cart round trips, 0 stalls, 0 reconnects`.
+- **Archipelago's Ocarina of Time client,** beside it: `Starting n64 connector`, then
+  `Successfully Connected to N64`.
+
+So an Archipelago client has connected to an AP64 game on an X7, and AP64 counted 142 round trips
+to the cart with no stall and no reconnect. **What it does not show:** how long the session ran,
+any play beyond connecting, an item sent or received, or a clean shutdown. Which ROM and AP64 build
+were used is not recorded either. Sustained play on an X7 is still unshown.
+
+**2026-10-12, EverDrive-64 X7, fifth run, and the first inside a game** (`cart-diagnostics-f590935`,
+the bundle with phase 3 from [#375](https://github.com/McAwful-Works/multi64/pull/375); X7 OS 3.11),
+ROM 1.1, SHA-256 `dcb36cdec9fc6eafc8a9a2cea63a004743255fb0779bdb0fabfb30dbd42749c4`, on the same
+cart, Windows, FTDI driver and port as the runs below. Started at 11:31 -04:00.
+
+- **Phase 1, test ROM 1.14:** 34 passed, 0 failed, 3 skipped. The first request was answered on
+  the first try, through a daemon started with `--clear-serial=false`. The second run's silence did
+  not happen, so the purge experiment says nothing about its cause.
+- **Identify and blocks:** every check passed, with the timings of the earlier runs: one
+  `PI_STATUS` read 263 ns, one X7 USBCFG read 3.61 µs (5.87 µs under load).
+- **Link, CPU-word build,** the build AP64's X7 agents ship: no reply came back wrong and the
+  driver counted no failed send.
+  - No load: 36 of 36, round trip 64/82/114 ms (min/mean/max).
+  - Moderate load: 33 of 34, one timeout. `recv_lost` 67; `pi_io` found the PI busy on 4 of 10,304
+    accesses.
+  - Heavy load: 32 of 34, two timeouts. `recv_lost` 12; the PI busy on 79 of 189,563 accesses.
+    The longest agent tick was 305.8 ms, 305.7 ms of it in receive, against 61 to 65 ms, mostly in
+    send, in the second and fourth runs. Why one receive ran that long is not known.
+- **Link, PI DMA build** (diagnostic only; no game ships it): **answered at all three load levels
+  this time.** No load, 36 of 36. Moderate, 27 of 30, three timeouts, `recv_lost` 201. Heavy, 36 of
+  36. The same ROM stopped answering under moderate load in the second and fourth runs, so this is
+  one pass of a build that stalls some of the time, not a fix.
+- **Against the SC64 baseline:** 0 checks failed.
+- **Phase 3, inside a game:** an Ocarina of Time seed, booted and left at its title screen. The
+  tester answered yes when the script asked whether the ROM had been patched for this cart by the
+  bundle's AP64; nothing in the results can confirm which AP64 patched it.
+  - The agent answered **5 of 5** M64P `HELLO`s, 3 s apart, through a daemon started with
+    `--clear-serial=false`: protocol 0, agent version 256, 8 MiB of RDRAM, a 64 MiB cart ROM.
+  - Every `mem-peek` was answered, and the two reads of `0x300` were identical. The 4096-byte
+    read's reply is the 4122-byte message the first run saw cut off after 2048 bytes; here all of
+    it arrived.
+  - `mem-rom-peek` at `0x20` read back `THE LEGEND OF ZELDA`, the game name in the ROM header.
+  - `multi64d` logged no error, and no warning but the one it prints at every start with
+    `--cart ed64`. The tester reported the game still on its title screen afterward.
+
+**What this run does not show:**
+
+- **A play session.** Phase 3 sends five `HELLO`s and five reads in about 15 s, writes nothing to
+  the game, and runs at the title screen, with no Archipelago client. One connected later that
+  day, by the tester's report above.
+- **Why the 2026-10-07 try was silent.** Three things could have done it, and none was tested as
+  the cause. That ROM was patched by an older AP64 and carried an older X7 agent, from before the
+  agents were rebuilt for [#372](https://github.com/McAwful-Works/multi64/pull/372). The second run's phase 1 showed that
+  this cart can say nothing through `multi64d` from the bridge's start, for a reason not yet
+  explained. And on this tester's PC a `multi64d` has outlived being stopped (the third run, under
+  [X7 handover](#2-x7-handover)), which nobody knew to look for on 2026-10-07.
+- **That the X7 works.** This is one cart, one game and one boot.
+
+**2026-10-12, EverDrive-64 X7, fourth run** (`cart-diagnostics-355fbbf`, the bundle with the
+hardening from [#374](https://github.com/McAwful-Works/multi64/pull/374); X7 OS 3.11), ROM 1.1, on
+the same cart, Windows, FTDI driver and port. Started at 10:35 -04:00. The third run, at 09:51 that
+morning, is the one whose zip was lost ([X7 handover](#2-x7-handover)); its results are not
+recorded here. This time the zip was written, and the transcript records no daemon outliving its
+stop.
+
+- **Phase 1, test ROM 1.14:** 34 passed, 0 failed, 3 skipped, answered on the first try through a
+  daemon started with `--clear-serial=false`.
+- **Identify and blocks:** every check passed, with the same timings as before.
+- **Link, CPU-word build:** no load, 36 of 36, round trip 64/80/109 ms (min/mean/max). Moderate
+  load, 33 of 34, one timeout, `recv_lost` 67. Heavy load, 33 of 34, one timeout, `recv_lost` 67,
+  longest agent tick 61.1 ms. No failed send and no wrong reply.
+- **Link, PI DMA build:** no load, 36 of 36. Under moderate load 5 of 30 timed out and it stopped
+  answering, as in the second run and with the same shape: the last bytes from the cart arrived at
+  14:37:27Z, a write to the cart could not finish 9 s later (`failed to write whole buffer`),
+  `multi64d` dropped the link and reopened it, and nothing more came from the cart in the 36 s
+  left. Its counters were again not read afterward.
+- **Against the SC64 baseline:** 0 checks failed.
+
+**2026-10-12, SummerCart64, bundle `cart-diagnostics-f590935`** (`SCv2`, firmware `2.20.2`), ROM
+1.1, Windows 11 Pro 10.0.26300, FTDI driver 2.12.36.20. The whole bundle on the maintainer's cart,
+at 11:09 -04:00, before the same bundle's X7 run above.
+
+- **Phase 1, test ROM 1.14:** 34 passed, 0 failed, 3 skipped.
+- **Phase 2, against the baseline:** 0 checks failed. No load, 36 of 36, round trip 60/88/210 ms
+  (min/mean/max). Moderate load, 31 of 34, three timeouts; heavy, 35 of 36, one timeout.
+- **Phase 3, inside a game:** a Kirby 64 seed. 5 of 5 `HELLO`s answered, every read answered, the
+  two `0x300` reads identical, and the header read back as `Kirby64`.
+
 **2026-10-09, EverDrive-64 X7, second run** (`cart-diagnostics-55cdfa9`, with the fixes from
 [#372](https://github.com/McAwful-Works/multi64/pull/372); X7 OS **3.11**, updated from 3.09 since
 the first run), ROM 1.1, SHA-256 `dcb36cdec9fc6eafc8a9a2cea63a004743255fb0779bdb0fabfb30dbd42749c4`,
@@ -308,8 +411,9 @@ on the same cart, Windows, FTDI driver and port as the first run below.
 
   **Not established:** what the purge cleared, and whether the cause is OS 3.11 or stale state in
   the USB path when the bridge started. The direct step reopened the port as well as purging it,
-  but the daemon's own start was a fresh open too, and did not help. The next bundle's phase 1
-  tests a purge at the bridge's start ([X7 handover](#2-x7-handover)). See
+  but the daemon's own start was a fresh open too, and did not help. Later bundles' phase 1
+  tests a purge at the bridge's start ([X7 handover](#2-x7-handover)); the 2026-10-12 runs above
+  never reached it, because the cart answered. See
   [l3-over-everdrive-x7.md](../../docs/spec/l3-over-everdrive-x7.md) §4.5 item 8.
 - **Identify and blocks:** as in the first run, to within 1%. Every check passed; one `PI_STATUS`
   read cost 263 ns and one X7 USBCFG read 3.60 µs (5.87 µs under load).
@@ -333,9 +437,9 @@ on the same cart, Windows, FTDI driver and port as the first run below.
   was no longer reading, so this build had most likely stopped reading USB, not only answering.
   Its counters were not read afterward, so why is not known.
 
-This run does not explain why an AP64 build on an X7 never answered either. Phase 1's silence has
-the same shape, a port that opens and a ROM that says nothing, but is not shown to have the same
-cause. And nothing here ran inside a game.
+This run does not explain why the AP64 build tried on an X7 on 2026-10-07 never answered either.
+Phase 1's silence has the same shape, a port that opens and a ROM that says nothing, but is not
+shown to have the same cause. And nothing here ran inside a game.
 
 **2026-10-09, EverDrive-64 X7, through the remote tester's bundle** (`cart-diagnostics-3c9ffb0`; X7
 OS 3.09), ROM 1.0, SHA-256 `58b347db7fbc97d21e00f1fc82a4444eeec9ece4d74ddf9916f0a587e7049126`, Windows 11
@@ -367,8 +471,8 @@ and `ed64-l2` drops a message that stalls part-way for 500 ms. The longest wait 
 byte in this run was 15 ms, across 142 whole messages. See
 [l3-over-everdrive-x7.md](../../docs/spec/l3-over-everdrive-x7.md) §4.5 item 7.
 
-This run does not explain why an AP64 build on an X7 never answered: that ROM never answered
-`HELLO`, whose reply is one block, and here `HELLO` was answered in 22 ms.
+This run does not explain why the AP64 build tried on an X7 on 2026-10-07 never answered: that
+ROM never answered `HELLO`, whose reply is one block, and here `HELLO` was answered in 22 ms.
 
 **2026-10-08, SummerCart64, through the remote tester's bundle** (`cart-diagnostics-fe8ff00`;
 `SCv2`, firmware 2.20 rev 2), ROM SHA-256

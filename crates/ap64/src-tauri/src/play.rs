@@ -741,7 +741,7 @@ const HINT_AFTER: Duration = Duration::from_secs(15);
 /// the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Silence {
-    /// A cart whose agent has never been shown to work: an EverDrive. Its port is open whether
+    /// A cart whose agent no game has been played through: an EverDrive. Its port is open whether
     /// or not anything runs on the console, so a connected cart says nothing about the ROM.
     /// `pak` is whether a missing Expansion Pak is possible too, as for [`Silence::Pak`].
     Untested { cart: Cart, pak: bool },
@@ -766,8 +766,8 @@ impl Silence {
     fn detail(self) -> String {
         match self {
             Silence::Untested { cart, .. } => format!(
-                "the ROM is not answering. AP64's agent for the {cart} is experimental and has \
-                 never been shown to work on a cart: check the ROM was patched for the {cart}"
+                "the ROM is not answering. AP64's agent for the {cart} is experimental, and no \
+                 game has been played through it yet: check the ROM was patched for the {cart}"
             ),
             Silence::Pak => "the ROM is not answering. If it is running, check the console has \
                              an Expansion Pak: AP64 needs one for this game"
@@ -784,8 +784,8 @@ impl Silence {
         match self {
             Silence::Untested { cart, pak } => format!(
                 "the {cart}'s port is open but the ROM has not answered for {after} s; an open \
-                 port does not mean a ROM is running, and AP64's agent for the {cart} has never \
-                 been shown to work on a cart{}",
+                 port does not mean a ROM is running, and no game has been played through \
+                 AP64's agent for the {cart} yet{}",
                 if pak {
                     "; without an Expansion Pak the stub also skips the agent"
                 } else {
@@ -1375,7 +1375,7 @@ mod tests {
     }
 
     /// A silent ROM on an EverDrive is put down to the EverDrive, whose open port proves nothing
-    /// and whose agent is unproven, and not to the Pak; on the SummerCart64 the Pak is named
+    /// and whose agent is experimental, and not to the Pak; on the SummerCart64 the Pak is named
     /// only for a game that runs without one. Seen first as OoT on an X7, told to check a Pak
     /// that OoT's randomizer had already needed in order to boot.
     #[test]

@@ -10,8 +10,9 @@
 # layout.env, which also carries the counter offsets a probe needs. Environment:
 #   PREFIX     toolchain prefix (default mips64-elf-, libdragon's)
 #   STUB_MAX   refuse a stub larger than this many bytes (default 4096)
-#   CART       sc64 (default; the only driver shown to work in a game), or ed64 / ed64pro for an
-#              EverDrive-64 X7 / PRO (experimental, not shown to work in a game)
+#   CART       sc64 (default; the only driver a game has been played through), or ed64 / ed64pro
+#              for an EverDrive-64 X7 / PRO (experimental; n64/agent/README.md says how far each
+#              has got)
 set -eu
 
 [ $# -ge 6 ] || { sed -n '2,15p' "$0" >&2; exit 2; }

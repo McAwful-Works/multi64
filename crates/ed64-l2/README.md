@@ -1,6 +1,6 @@
 # `multi64-ed64-l2` (EverDrive 64 X7)
 
-**Implemented, unvalidated.** Speaks the `DMA@` framing in [`l3-over-everdrive-x7.md`](../../docs/spec/l3-over-everdrive-x7.md) §4. Run on an X7 three times so far: the cart could not send while the host was sending, once cut a message off part-way, which held this parser for 45 s until it gave up on the trailer, and once sent nothing through it until a test step that purges the port had run — see §4.0 and §4.5 before trusting it. Context: [`docs/README.md` — Flash carts](../../docs/README.md#flash-carts-l2-backends).
+**Implemented, unvalidated.** Speaks the `DMA@` framing in [`l3-over-everdrive-x7.md`](../../docs/spec/l3-over-everdrive-x7.md) §4. Run on one X7 so far, on three days: the cart could not send while the host was sending, once cut a message off part-way, which held this parser for 45 s until it gave up on the trailer, and once sent nothing through it until a test step that purges the port had run. On the third day, 2026-10-12, none of that recurred in two runs, and the second carried requests to the cart agent inside a running game, every one answered — see §4.0 and §4.5 before trusting it. Context: [`docs/README.md` — Flash carts](../../docs/README.md#flash-carts-l2-backends).
 
 ## Build
 
