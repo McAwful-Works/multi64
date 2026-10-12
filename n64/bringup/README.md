@@ -225,10 +225,19 @@ end the script asks the tester to describe a black or stuck screen, and the answ
 transcript.
 
 The zip is written even when something still holds a results file open. On a tester's PC on
-2026-10-12 a daemon log was still held when the zip was made, and the step failed with the whole
-zip lost, though the folder was intact. Each daemon is now waited for after it is stopped, files
-are read whoever else has them open, and one that still cannot be read is named on screen and left
-out, with a request to send the folder as well.
+2026-10-12, with an X7, the phase 2 daemon was still running after the script had stopped it, and
+still held its log; the zip step failed with the whole zip lost, though the folder was intact. The
+same tester reports Multi64 failing to close its bridge. Why that `multi64d` outlives being ended
+is not known. So the script no longer trusts one attempt:
+
+- after stopping a daemon it asks Windows whether the process is gone, and tries `taskkill` if not;
+- before zipping, and at the start of a run, it stops any `multi64d` from the bundle that is still
+  running, and says so in the transcript;
+- a daemon that survives both is most likely waiting in the cart's USB serial driver, so the script
+  asks the tester to unplug the cart's USB cable and records whether the process then goes, which
+  is the evidence for or against that;
+- the zip step reads files whoever else has them open, and one that still cannot be read is named
+  on screen and left out, with a request to send the folder as well.
 
 The script picks the cart and its port by the USB IDs in `crates/cart-probe` (X7 `0403:6001`,
 SummerCart64 `0403:6014`) when exactly one such port is plugged in, and asks otherwise; the PRO's
