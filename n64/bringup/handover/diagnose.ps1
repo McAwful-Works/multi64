@@ -212,6 +212,10 @@ function Stop-Daemon($p, [string]$phase) {
     if ($p -eq $null) { return }
     Save-Status "$phase-status-end.json"
     if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+    # Wait for it to be gone, then let go of it: its log files stay open until the process has
+    # exited and this script has released its end of them.
+    [void]$p.WaitForExit(5000)
+    $p.Close()
     Start-Sleep -Milliseconds 500
 }
 
@@ -354,14 +358,36 @@ $zip = "$out.zip"
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 if (Test-Path $zip) { Remove-Item $zip -Force }
 $archive = [System.IO.Compression.ZipFile]::Open($zip, [System.IO.Compression.ZipArchiveMode]::Create)
+$unread = @()
 try {
     $root = Split-Path $out -Parent
     Get-ChildItem -Path $out -Recurse -File | ForEach-Object {
         $name = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
-        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, $name) | Out-Null
+        # Not CreateEntryFromFile: it refuses a file anything still has open for writing, and on one
+        # tester's PC a daemon log was still held when the zip was made, which lost the whole zip.
+        # Opened this way a file is read whoever else has it open, and one that still cannot be
+        # read is named and left out instead of ending the run.
+        try {
+            $source = [System.IO.File]::Open($_.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+                ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+            try {
+                $target = $archive.CreateEntry($name, [System.IO.Compression.CompressionLevel]::Optimal).Open()
+                try { $source.CopyTo($target) } finally { $target.Dispose() }
+            } finally {
+                $source.Dispose()
+            }
+        } catch {
+            $cause = $_.Exception
+            if ($cause.InnerException) { $cause = $cause.InnerException }
+            $unread += $cause.Message
+        }
     }
 } finally {
     $archive.Dispose()
+}
+foreach ($message in $unread) { Write-Host "left out of the zip: $message" -ForegroundColor Yellow }
+if ($unread.Count -gt 0) {
+    Write-Host "If you can, also send the folder itself: $out" -ForegroundColor Yellow
 }
 Write-Host ''
 Write-Host "Send this one file back: $zip" -ForegroundColor Green

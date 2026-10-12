@@ -224,6 +224,12 @@ photos of the TV: what a ROM shows on screen only matters when its link never co
 end the script asks the tester to describe a black or stuck screen, and the answer goes in the
 transcript.
 
+The zip is written even when something still holds a results file open. On a tester's PC on
+2026-10-12 a daemon log was still held when the zip was made, and the step failed with the whole
+zip lost, though the folder was intact. Each daemon is now waited for after it is stopped, files
+are read whoever else has them open, and one that still cannot be read is named on screen and left
+out, with a request to send the folder as well.
+
 The script picks the cart and its port by the USB IDs in `crates/cart-probe` (X7 `0403:6001`,
 SummerCart64 `0403:6014`) when exactly one such port is plugged in, and asks otherwise; the PRO's
 IDs are not known, so a PRO is always asked for. `-Cart ed64|ed64pro|sc64`, `-Port COMn` and
