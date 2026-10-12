@@ -30,9 +30,10 @@ PROTO   = ../test-rom
 
 # Which cart the agent drives. sc64 is the default and the only driver a game has been played
 # through; its build is unchanged by the other two. ed64 (EverDrive-64 X7) has worked on one cart
-# in n64/bringup's ROM and has answered inside one game, Ocarina of Time, and ed64pro
-# (EverDrive-64 PRO) has never run on a cart. The drivers do not detect each other: build for the
-# cart in use.
+# in n64/bringup's ROM and has answered inside one game, Ocarina of Time, as it stood before it
+# kept its place in the stream between calls and timed its waits (ed64.h); no cart has run it
+# since. ed64pro (EverDrive-64 PRO) has never run on a cart. The drivers do not detect each other:
+# build for the cart in use.
 CART ?= sc64
 
 ifeq ($(CART),sc64)
@@ -132,10 +133,13 @@ HOST_TEST_SOURCES = tests/reassembly_test.c agent.c $(PROTO)/mem_proto.c
 # the agent looked every frame -- and the rules around that (spec 4.3). No console, no cart.
 #
 # tests/ed64_test.c: the real ed64.c linked against fake pi_io_* functions in place of pi_io.c,
-# modelling the X7's USBCFG register and USB window. It checks that a received message is delivered
-# in order and whole, or reported lost, and that every wait is bounded, not that the model matches
-# an X7. On a cart, the X7 driver has worked on one X7: in n64/bringup's ROM, and inside one game,
-# Ocarina of Time.
+# modelling the X7's USBCFG register and USB window, and built with ED64_HOST_TEST so that the test
+# supplies the driver's clock. It checks that a received message is delivered in order and whole,
+# or reported lost once with the messages behind it intact, that a busy or slow PI loses none, and
+# that every call ends within its limit on that clock, not that the model matches an X7. On a cart,
+# the X7 driver has worked on one X7, in n64/bringup's ROM and inside one game, Ocarina of Time, as
+# it stood before it kept its place in the stream between calls and timed its waits. No cart has
+# run it since.
 host-test:
 	mkdir -p build/host
 	$(HOSTCC) $(HOST_CFLAGS) -DAGENT_CART_ED64 -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64
@@ -144,7 +148,7 @@ host-test:
 	build/host/reassembly-ed64pro
 	$(HOSTCC) $(HOST_CFLAGS) -DSC64_HOST_TEST -I. -I$(PROTO) tests/sc64_test.c sc64.c -o build/host/sc64
 	build/host/sc64
-	$(HOSTCC) $(HOST_CFLAGS) -I. -I$(PROTO) tests/ed64_test.c ed64.c -o build/host/ed64
+	$(HOSTCC) $(HOST_CFLAGS) -DED64_HOST_TEST -I. -I$(PROTO) tests/ed64_test.c ed64.c -o build/host/ed64
 	build/host/ed64
 	$(HOSTCC) $(HOST_CFLAGS) -I. -I$(PROTO) tests/cart_rom_test.c cart_rom.c $(PROTO)/mem_proto.c -o build/host/cart_rom
 	build/host/cart_rom

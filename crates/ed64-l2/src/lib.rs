@@ -64,10 +64,13 @@ const MAX_MESSAGE_BYTES: usize = 0x00FF_FFFF;
 /// holds and resynchronizes on the next `DMA@` (spec §4.4).
 ///
 /// A cart sends a message's blocks back to back. Across 142 whole messages from an X7, the longest
-/// wait for the next byte of a message was 15 ms; the agent's `ed64_send`, retrying a busy PI, adds
-/// at most about 0.2 s. A message that stops for longer was cut off, and one did: a 4122-byte reply
-/// stopped after 2048 bytes, and the decoder counted the cart's next 45 s of messages as its payload
-/// (spec §4.5 item 7).
+/// wait for the next byte of a message was 15 ms. The agent's `ed64_send` gives a whole message
+/// 250 ms by the console's clock and runs past that by at most two of its waits for an idle PI,
+/// about 53 ms, so a message it goes on to finish is never quiet for longer than about 0.3 s. That
+/// is the code's account, checked against a fake cart on a PC; no cart has run the
+/// driver since that limit was added. A message that stops for longer was cut off, and one did: a
+/// 4122-byte reply stopped after 2048 bytes, and the decoder counted the cart's next 45 s of
+/// messages as its payload (spec §4.5 item 7).
 ///
 /// Only time spent waiting in a read counts, so a reader that was busy elsewhere while bytes queued
 /// up in the driver is not mistaken for a quiet cart.

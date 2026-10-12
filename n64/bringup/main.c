@@ -68,12 +68,20 @@ static void select_variant(uint32_t v)
     reset_maxima();
 }
 
+/*
+ * The maxima start afresh even when `level` is the one in effect. A host begins each stretch of
+ * traffic by writing the level it wants, and the first of them is the level the ROM booted in, or
+ * was last left in. Were that nothing to act on, as it was until ROM 1.2, that stretch's longest
+ * tick, receive and send would be the longest since boot.
+ */
 static void select_load(uint32_t level)
 {
-    if (level >= LOAD_LEVELS || level == load_level()) {
+    if (level >= LOAD_LEVELS) {
         return;
     }
-    load_set(level);
+    if (level != load_level()) {
+        load_set(level);
+    }
     reset_maxima();
 }
 
@@ -186,8 +194,9 @@ static const char *timing_name(uint32_t id)
     }
 }
 
-/* "1.21 us x 20000 = 24.2 ms | 1.80 us": per read, the longest the driver's wait can last at that
-   rate, and per read under moderate load. */
+/* "1.21 us x 20000 = 24.2 ms | 1.80 us": per read, the longest that many reads of the driver's wait
+   last at that rate, and per read under moderate load. The X7 driver's wait also ends by the
+   clock, at 75 ms, whatever this line works out to. */
 static void print_timing(const struct timing *t, const struct timing *loaded)
 {
     uint64_t ns = (uint64_t)t->ticks_total * 1000000000u / ((uint64_t)TIMING_READS * TICKS_PER_SECOND);

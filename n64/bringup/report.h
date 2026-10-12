@@ -14,7 +14,7 @@
 #define REPORT_FORMAT 0u
 
 /** This ROM's own version (report.rom_version): major << 16 | minor. */
-#define BRINGUP_ROM_VERSION 0x00010001u
+#define BRINGUP_ROM_VERSION 0x00010002u
 
 /* report.cart */
 #define CART_NONE 0u
@@ -95,7 +95,8 @@ struct buffer_test {
     uint32_t ticks_read;
 };
 
-/** One agent build's traffic. Counters only grow; maxima reset when the variant or load changes. */
+/** One agent build's traffic. Counters only grow; maxima reset when the variant or the load level
+ *  changes, and when a host's ctl_load or the Z button asks for a level, even the one in effect. */
 struct link_stats {
     uint32_t init_calls;     /* the agent's own cart init, through the driver */
     uint32_t init_ok;
