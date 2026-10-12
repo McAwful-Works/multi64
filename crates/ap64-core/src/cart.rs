@@ -5,7 +5,8 @@
 //! a seed is patched with the one for the cart it will run on. Only the SummerCart64's driver has
 //! had a game played through it. The X7's has worked on one X7 outside a game, in `n64/bringup`'s
 //! ROM, and has answered inside one game on it, an Ocarina of Time seed left at its title screen
-//! (2026-10-12); no play session has run on an X7. The PRO's has never run on a cart.
+//! (2026-10-12). A tester reported an Archipelago client connecting through it that day; no item
+//! sent or received and no sustained play has been shown. The PRO's has never run on a cart.
 
 use serde::{Deserialize, Serialize};
 

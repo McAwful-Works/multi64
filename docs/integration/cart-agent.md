@@ -153,12 +153,17 @@ retry it answered every request but one across three load levels
 
 Inside a game, the X7 build has been tried twice, both times in an Ocarina of Time seed patched by
 AP64. On 2026-10-07 the serial port opened, but the ROM never answered `HELLO`, and nothing from
-that run shows whether the agent ever started. On 2026-10-12, in a seed the tester reports patching again with a
-current AP64 and with the game left at its title screen, the agent answered five `HELLO`s of five and every read, a 4096-byte one
-included
+that run shows whether the agent ever started. On 2026-10-12, in a seed the tester reports patching
+again with a current AP64 and with the game left at its title screen, the agent answered five
+`HELLO`s of five and every read, a 4096-byte one included
 ([hardware record](../../n64/bringup/README.md#hardware-record)). Why the first try was silent is
 not established, and the second was about 15 seconds with no Archipelago client and no write to
 the game: it shows the agent starts and answers there, not that a session holds.
+
+Later on 2026-10-12 the tester reported an AP64 session on that game with an Archipelago client
+connected: a screenshot showing 142 cart round trips with no stall and no reconnect, and no log
+behind it. It does not show an item sent or received, or how long the session ran. Sustained play
+on an X7 is still unshown.
 
 The builds exist so that someone with an EverDrive has something to test. Nothing about them counts
 as support.

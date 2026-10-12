@@ -21,8 +21,10 @@ same source as 1.0's, so the baseline still stands for it.
 
 **On 2026-10-12 the X7 agent answered inside a game for the first time:** an Ocarina of Time seed
 patched for the X7, left at its title screen, where every `HELLO` and every read was answered
-([Hardware record](#hardware-record)). No play session has run on an X7, and one cart is not
-validation: the EverDrive builds stay experimental.
+([Hardware record](#hardware-record)). Later that day the tester reported, by screenshot, an AP64
+session on the same game with an Archipelago client connected. No item sent or received and no
+sustained play has been shown on an X7, and one cart is not validation: the EverDrive builds stay
+experimental.
 
 ## Design
 
@@ -297,6 +299,23 @@ the maintainer's SummerCart64 checks the bundle itself before it goes out.
 
 ## Hardware record
 
+**2026-10-12, EverDrive-64 X7, an AP64 session with an Archipelago client: reported, not logged.**
+The same day as the fifth run below, the tester sent a screenshot. No results zip and no bridge log
+came with it, so this entry is what the screenshot is reported to show, and nothing here was
+checked against a log.
+
+- **AP64's Play card:** game `The Legend of Zelda: Ocarina of Time`, connector `Ocarina of Time`,
+  Multi64 `Connected`, Console `Running`, AP client `Connected`, status
+  `Playing - AP client connected`, and activity
+  `port 28921, 46 client requests, 142 cart round trips, 0 stalls, 0 reconnects`.
+- **Archipelago's Ocarina of Time client,** beside it: `Starting n64 connector`, then
+  `Successfully Connected to N64`.
+
+So an Archipelago client has connected to an AP64 game on an X7, and AP64 counted 142 round trips
+to the cart with no stall and no reconnect. **What it does not show:** how long the session ran,
+any play beyond connecting, an item sent or received, or a clean shutdown. Which ROM and AP64 build
+were used is not recorded either. Sustained play on an X7 is still unshown.
+
 **2026-10-12, EverDrive-64 X7, fifth run, and the first inside a game** (`cart-diagnostics-f590935`,
 the bundle with phase 3 from [#375](https://github.com/McAwful-Works/multi64/pull/375); X7 OS 3.11),
 ROM 1.1, SHA-256 `dcb36cdec9fc6eafc8a9a2cea63a004743255fb0779bdb0fabfb30dbd42749c4`, on the same
@@ -335,8 +354,8 @@ cart, Windows, FTDI driver and port as the runs below. Started at 11:31 -04:00.
 **What this run does not show:**
 
 - **A play session.** Phase 3 sends five `HELLO`s and five reads in about 15 s, writes nothing to
-  the game, and runs at the title screen. No Archipelago client has been connected to an AP64 game
-  on an X7.
+  the game, and runs at the title screen, with no Archipelago client. One connected later that
+  day, by the tester's report above.
 - **Why the 2026-10-07 try was silent.** Three things could have done it, and none was tested as
   the cause. That ROM was patched by an older AP64 and carried an older X7 agent, from before the
   agents were rebuilt for [#372](https://github.com/McAwful-Works/multi64/pull/372). The second run's phase 1 showed that

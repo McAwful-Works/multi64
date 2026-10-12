@@ -100,7 +100,8 @@ one put it in the Expansion Pak), and a working cart other than the SummerCart64
 and PRO builds of the agent exist ([cart-agent.md §6](cart-agent.md#6-everdrive-builds-experimental)),
 but no game has been played through either. Ocarina of Time's X7 build has been tried twice on an
 X7: the first time its ROM never answered, and the second, on 2026-10-12, the agent answered every
-request with the game left at its title screen. The X7 driver has also worked on an X7 outside a
+request with the game left at its title screen, and the tester later reported an Archipelago client
+connecting through it. The X7 driver has also worked on an X7 outside a
 game, in [`n64/bringup`](../../n64/bringup/README.md)'s ROM.
 
 ## Guides

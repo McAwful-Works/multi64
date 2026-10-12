@@ -283,8 +283,10 @@ the SummerCart64's agent has had a game played through it. The EverDrive builds 
 yet, so the dialog marks them. The X7's has been tried twice, with an Ocarina of Time seed on an
 X7. The first time, on 2026-10-07, the serial port opened but the ROM never answered. The second,
 on 2026-10-12, the agent answered every request with the game left at its title screen
-([hardware record](../../n64/bringup/README.md#hardware-record)); no Archipelago session has run
-on an X7. The PRO's has never run on a cart.
+([hardware record](../../n64/bringup/README.md#hardware-record)). Later that day the tester
+reported, by a screenshot of AP64 with no log, an Archipelago client connected and 142 cart round
+trips without a stall; no item sent or received and no sustained play has been shown on an X7.
+The PRO's has never run on a cart.
 They differ in size, so a seed is checked for the cart chosen, and changing the cart checks it
 again. Donkey Kong 64 is where that shows: the X7's agent, the largest, does
 not fit under the randomizer's code, so that pairing is refused.

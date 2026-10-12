@@ -5,10 +5,11 @@
  * outside any game: every request answered with the PI otherwise idle, and under PI load a reply
  * cut off part-way. ed64_send now retries a busy PI to prevent that, and with the retry the same
  * X7, in the same ROM, answered every request but one across three load levels
- * (l3-over-everdrive-x7.md 4.5 item 7). Inside a game it has answered once: on 2026-10-12, in an
- * Ocarina of Time seed AP64 patched and left at its title screen, every HELLO and every read. An
- * earlier AP64 build, on 2026-10-07, opened the serial port and was never answered; why is not
- * known.
+ * (l3-over-everdrive-x7.md 4.5 item 7). Inside a game it has answered on that X7 on 2026-10-12:
+ * in an Ocarina of Time seed AP64 patched and left at its title screen, every HELLO and every
+ * read, and later that day, by a tester's screenshot with no log, with an Archipelago client
+ * connected. An earlier AP64 build, on 2026-10-07, opened the serial port and was never answered;
+ * why is not known.
  *
  * The console half of the DMA@ framing in docs/spec/l3-over-everdrive-x7.md section 4, written against libdragon's src/usb.c
  * (trunk c4a7e119), not copied from it. libdragon moves data by DMA and stages received packets

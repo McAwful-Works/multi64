@@ -22,8 +22,8 @@
  * It checks that a received message is delivered in order and whole, or reported lost, that a sent
  * message carries the framing the host parses and is not cut off by a busy PI once it has started,
  * and that every wait is bounded. It says nothing about the cart: the register model is transcribed,
- * not observed. The driver has run on one X7: in n64/bringup's ROM, and once inside a game left at
- * its title screen.
+ * not observed. The driver has run on one X7: in n64/bringup's ROM, and inside one game, Ocarina
+ * of Time.
  */
 #undef NDEBUG
 #include <assert.h>
