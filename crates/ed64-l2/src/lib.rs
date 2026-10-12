@@ -18,10 +18,12 @@
 //! one arrived cut off. The parser reports that and resynchronizes at the next `DMA@` (spec §4.4).
 //! In a later run a message from the cart stopped part-way and nothing followed it for seconds, so
 //! the parser counted the cart's next messages as its payload; it now drops a message that stalls
-//! for [`PARTIAL_MESSAGE_STALL`] (spec §4.5 item 7). Spec §4.0 and §4.5 record what that means and
-//! what to check first. Treat a successful [`Ed64L2Pipe::open`] as "the serial port
-//! opened", not as "EverDrive support works" — there is no identity handshake in the data path, so use
-//! `ed64-smoke` (spec §8) to confirm a port really is an EverDrive.
+//! for [`PARTIAL_MESSAGE_STALL`] (spec §4.5 item 7). On 2026-10-12 it carried requests to the cart
+//! agent inside a running game, left at its title screen, and every one was answered; no play
+//! session has run over it. Spec §4.0 and §4.5 record what that means and what to check first.
+//! Treat a successful [`Ed64L2Pipe::open`] as "the serial port opened", not as "EverDrive support
+//! works" — there is no identity handshake in the data path, so use `ed64-smoke` (spec §8) to
+//! confirm a port really is an EverDrive.
 //!
 //! [`Ed64L2Pipe`] mirrors `multi64_sc64_l2::Sc64L2Pipe`'s surface so the e2e tools can drive either cart.
 //!

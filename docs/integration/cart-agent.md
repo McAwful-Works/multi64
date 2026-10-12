@@ -17,7 +17,7 @@ it; this is that code, written to be dropped into a ROM its authors did not desi
 | **Stack** | about 300 bytes at the deepest point, measured |
 | **RAM** | about 24 KB: 6.7–8.3 KB code, 0–1.1 KB data (both depend on compiler, flags and cart), 16.4–19 KB BSS |
 | **Symbols** | none undefined. Nothing from libultra, libdragon, the C library or the game |
-| **Cart** | SummerCart64. EverDrive-64 X7 and PRO builds exist (`CART=ed64`, `CART=ed64pro`) and have **not been shown to work in a game**; see §6 |
+| **Cart** | SummerCart64. EverDrive-64 X7 and PRO builds exist (`CART=ed64`, `CART=ed64pro`) and are **experimental**: no game has been played through either; see §6 |
 
 The per-frame rule is not style. M64P promises that every region in one request is read at
 one consistent point in the frame and that a write lands between frames. That property comes
@@ -145,15 +145,23 @@ than edit. A local fix to `mem_proto` is a fork of the protocol.
 
 ## 6. EverDrive builds (experimental)
 
-**Neither has been shown to work in a game.** The PRO build has never run on a cart. The X7 driver
+**No game has been played through either.** The PRO build has never run on a cart. The X7 driver
 has worked on one outside a game, in [`n64/bringup`](../../n64/bringup/README.md)'s ROM, and under
 PI load cut a reply off part-way, which `ed64_send` now retries a busy PI to prevent. With that
 retry it answered every request but one across three load levels
-([l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4.5 item 7). The X7 build has been tried once in a game, an Ocarina of Time seed patched by AP64: the
-serial port opened, but the ROM never answered `HELLO`, and nothing from that run shows whether the
-agent ever started. They exist
-so that the first person with an EverDrive has something to test. Nothing about them counts as
-support.
+([l3-over-everdrive-x7.md](../spec/l3-over-everdrive-x7.md) §4.5 item 7).
+
+Inside a game, the X7 build has been tried twice, both times in an Ocarina of Time seed patched by
+AP64. On 2026-10-07 the serial port opened, but the ROM never answered `HELLO`, and nothing from
+that run shows whether the agent ever started. On 2026-10-12, in a seed the tester reports patching again with a
+current AP64 and with the game left at its title screen, the agent answered five `HELLO`s of five and every read, a 4096-byte one
+included
+([hardware record](../../n64/bringup/README.md#hardware-record)). Why the first try was silent is
+not established, and the second was about 15 seconds with no Archipelago client and no write to
+the game: it shows the agent starts and answers there, not that a session holds.
+
+The builds exist so that someone with an EverDrive has something to test. Nothing about them counts
+as support.
 
 | Build | Driver | Wire | RAM, flat image |
 |---|---|---|---|

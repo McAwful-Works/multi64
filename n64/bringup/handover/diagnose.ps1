@@ -18,7 +18,7 @@
 #      when the CPU-word build gets no HELLO_ACK, the tester switches to the DMA build and it runs
 #      again.
 #   3. In a game, only when the tester says a ROM patched by this bundle's AP64 is on the SD card:
-#      the agent as AP64 places it, with the game running around it. The one AP64 build tried on
+#      the agent as AP64 places it, with the game running around it. The first AP64 build tried on
 #      an X7, on 2026-10-07, opened the port and was never answered, and nothing from that run
 #      shows whether the agent ever started. Five M64P HELLOs go out 3 s apart, all five whatever
 #      the answers, since a game shares the PI with the agent and how many get through is part of

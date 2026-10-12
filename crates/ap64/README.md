@@ -226,7 +226,7 @@ When the cart is connected but the ROM has been silent for 15 seconds, the statu
 and the session log says so once:
 
 - On an EverDrive (Multi64 set up for the X7 or the PRO), the port is open whether or not a
-  ROM is running, and AP64's agent for those carts has never been shown to work on one. The
+  ROM is running, and no game has been played through AP64's agent for those carts. The
   status says the agent is experimental and to check the ROM was patched for that cart. For a
   game that runs without an Expansion Pak, the log adds that a missing Pak would also do it.
 - On the SummerCart64, for a game that runs without an Expansion Pak, it names the Pak as the
@@ -278,10 +278,13 @@ cargo run -p ap64-cli -- <seed.z64> --cart ed64    # for an EverDrive-64 X7 (exp
 EverDrive-64 X7 or the EverDrive-64 PRO. The Patch dialog asks which, as **Flash cart**. It
 defaults to the cart Multi64 is set up for when Multi64 is running, and otherwise to the last
 one chosen. The command line takes `--cart sc64|ed64|ed64pro`, SummerCart64 by default. Only
-the SummerCart64's agent has been shown to work on a cart. The EverDrive builds are
+the SummerCart64's agent has had a game played through it. The EverDrive builds are
 **experimental**: they build, fit, and load in an emulator, but no one has played through one
-yet, so the dialog marks them. The X7's has been tried once, with an Ocarina of Time seed on an
-X7: the serial port opened, but the ROM never answered. The PRO's has never run on a cart.
+yet, so the dialog marks them. The X7's has been tried twice, with an Ocarina of Time seed on an
+X7. The first time, on 2026-10-07, the serial port opened but the ROM never answered. The second,
+on 2026-10-12, the agent answered every request with the game left at its title screen
+([hardware record](../../n64/bringup/README.md#hardware-record)); no Archipelago session has run
+on an X7. The PRO's has never run on a cart.
 They differ in size, so a seed is checked for the cart chosen, and changing the cart checks it
 again. Donkey Kong 64 is where that shows: the X7's agent, the largest, does
 not fit under the randomizer's code, so that pairing is refused.
