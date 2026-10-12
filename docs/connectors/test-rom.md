@@ -170,7 +170,8 @@ ROM header with `PEEKROM`, and asks for the largest response M64P allows. On an 
 that again through the PI DMA build. It saves everything as JSON: the report as the ROM booted, one
 phase per build and load level with the report after it, and the checks. Check names do not
 mention the cart, so `--baseline` (or `bringup-compare`, with no cart) lists every check whose
-outcome differs from another run's, and the measured values side by side.
+outcome differs from another run's, and the measured values side by side. When the two runs came
+from different builds of the bring-up ROM, its first line says so.
 
 Options: `--out` (default `bringup-<cart>-<unix time>.json`), `--baseline`, `--rounds` (echo rounds
 per load level, default 3), `--default-variant-only`, `--base`, plus the global `--url` and

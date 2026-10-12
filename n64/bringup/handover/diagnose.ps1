@@ -58,7 +58,8 @@ $session = Join-Path $out 'session.txt'
 $base = 'http://127.0.0.1:38765'
 $daemon = Join-Path $here 'multi64d.exe'
 $tool = Join-Path $here 'multi64-test-connector.exe'
-$baseline = Join-Path $here 'sc64-2026-10-08.json'
+$baseline = Join-Path $here 'sc64-baseline.json'
+$zipper = Join-Path $here 'zip-folder.ps1'
 
 # Every multi64d this script starts goes into a Windows job that kills it when the job's last handle
 # closes. The script holds that handle, so closing its window mid-run, or Ctrl+C, cannot leave a
@@ -91,12 +92,16 @@ public static class Multi64Job {
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     static IntPtr job = IntPtr.Zero;
+    // False unless the process is in a job that will kill it: a job that could not be made, or
+    // that could not be told to kill on close, ties nothing to this window.
     public static bool Adopt(IntPtr process) {
         if (job == IntPtr.Zero) {
-            job = CreateJobObject(IntPtr.Zero, null);
+            IntPtr made = CreateJobObject(IntPtr.Zero, null);
+            if (made == IntPtr.Zero) return false;
             ExtendedLimits info = new ExtendedLimits();
             info.Basic.LimitFlags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            SetInformationJobObject(job, 9, ref info, (uint)Marshal.SizeOf(typeof(ExtendedLimits)));
+            if (!SetInformationJobObject(made, 9, ref info, (uint)Marshal.SizeOf(typeof(ExtendedLimits)))) return false;
+            job = made;
         }
         return AssignProcessToJobObject(job, process);
     }
@@ -247,7 +252,8 @@ function Stop-Daemon($p, [string]$phase) {
 }
 
 # Stops every multi64d started from this bundle, saying why it was there. A daemon from this bundle
-# is never the tester's to close: it is one this script started, now or in an earlier run.
+# is never the tester's to close: it is one this script started, now or in an earlier run. Returns
+# the process IDs of any that are still running after everything here has been tried.
 function Stop-Leftovers([string]$why, [string]$afterUnplug) {
     $stuck = @()
     Get-Process multi64d -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $daemon } | ForEach-Object {
@@ -263,19 +269,22 @@ function Stop-Leftovers([string]$why, [string]$afterUnplug) {
         }
         if (Get-Process -Id $id -ErrorAction SilentlyContinue) { $stuck += $id }
     }
-    if ($stuck.Count -eq 0) { return }
+    if ($stuck.Count -eq 0) { return @() }
     # A process Windows has been told to end, twice, and that is still there has a thread waiting in
     # a device driver: here, most likely the cart's USB serial driver, on a transfer the cart never
     # takes. Unplugging the device ends that wait. Whether the process then goes is the evidence.
     Say ("multi64d " + ($stuck -join ', ') + " will not stop: Windows was asked twice and it is still running")
     Ask ("Unplug the cart's USB cable from this PC, wait 5 seconds, " + $afterUnplug + ", then press Enter") | Out-Null
+    $still = @()
     foreach ($id in $stuck) {
         if (Get-Process -Id $id -ErrorAction SilentlyContinue) {
             Say "multi64d $id is STILL running after the cable was unplugged"
+            $still += $id
         } else {
             Say "multi64d $id stopped once the cable was unplugged"
         }
     }
+    return $still
 }
 
 # The suite's first request on its own: put the test ROM in M64T_PROTO, which it accepts from any
@@ -312,151 +321,166 @@ Say ("started " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
 $os = Get-CimInstance Win32_OperatingSystem
 Say ("Windows: " + $os.Caption + " " + $os.Version + " (build " + $os.BuildNumber + "), PowerShell " + $PSVersionTable.PSVersion)
 
-foreach ($f in @($daemon, $tool, $baseline)) {
+foreach ($f in @($daemon, $tool, $baseline, $zipper)) {
     if (-not (Test-Path $f)) { Say "missing $f; unzip the whole bundle and run this from inside it"; exit 1 }
 }
 
-Section 'Other programs using the cart'
-# A daemon from this bundle is one an earlier run left behind (before the job above existed, or
-# from a crash): not the tester's to close, so stop it here.
-Stop-Leftovers 'left over from an earlier run of this script' 'plug it back in'
-while ($true) {
-    $busy = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -in @('multi64d', 'multi64', 'ap64', 'xfer64') }
-    if (-not $busy) { Say 'none running'; break }
-    Say ("running: " + (($busy | ForEach-Object { $_.ProcessName }) -join ', '))
-    Ask 'Close Multi64 (Quit from its tray icon), AP64 and Xfer64, then press Enter' | Out-Null
-}
+# Everything from here to the last phase runs inside one try: whatever goes wrong part-way, the
+# questions, the sweep for daemons still running and the zip below still happen, so a run that
+# failed sends back what it gathered and why it stopped.
+try {
+    Section 'Other programs using the cart'
+    # A daemon from this bundle is one an earlier run left behind (before the job above existed, or
+    # from a crash): not the tester's to close, so stop it here.
+    $stuck = @(Stop-Leftovers 'left over from an earlier run of this script' 'plug it back in')
+    if ($stuck.Count -gt 0) {
+        # Nothing more can be done about it here, and asking the tester to close it would never end.
+        Say ("multi64d " + ($stuck -join ', ') + " still holds the cart's port, so the tests below may not be able to open it. Restarting this PC clears it.")
+    }
+    while ($true) {
+        $busy = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -in @('multi64d', 'multi64', 'ap64', 'xfer64') -and $_.Id -notin $stuck }
+        if (-not $busy) { Say 'none running'; break }
+        Say ("running: " + (($busy | ForEach-Object { $_.ProcessName }) -join ', '))
+        Ask 'Close Multi64 (Quit from its tray icon), AP64 and Xfer64, then press Enter' | Out-Null
+    }
 
-Section 'Serial ports and drivers'
-$ports = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match '\(COM\d+\)' })
-foreach ($d in $ports) { Say ($d.Name + "  " + $d.DeviceID + "  status " + $d.Status) }
-Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceClass -eq 'PORTS' -or $_.DeviceName -match 'USB Serial|FTDI' } |
-    ForEach-Object { Say ("driver: " + $_.DeviceName + "  " + $_.Manufacturer + "  " + $_.DriverVersion + "  " + $_.DriverDate) }
-Run-Logged 'ports.txt' $daemon @('--list-ports') | Out-Null
+    Section 'Serial ports and drivers'
+    $ports = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match '\(COM\d+\)' })
+    foreach ($d in $ports) { Say ($d.Name + "  " + $d.DeviceID + "  status " + $d.Status) }
+    Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceClass -eq 'PORTS' -or $_.DeviceName -match 'USB Serial|FTDI' } |
+        ForEach-Object { Say ("driver: " + $_.DeviceName + "  " + $_.Manufacturer + "  " + $_.DriverVersion + "  " + $_.DriverDate) }
+    Run-Logged 'ports.txt' $daemon @('--list-ports') | Out-Null
 
-# USB IDs from crates/cart-probe: the X7's FT245R is 0403:6001, the SummerCart64 0403:6014. Both
-# are stock FTDI parts, so a match only picks a default; the PRO's is not known, so it is asked for.
-if (-not $Cart) {
-    # With -Port, only that port can say which cart it is.
-    $candidates = $ports
-    if ($Port) { $candidates = @($ports | Where-Object { $_.Name -match ('\(' + [regex]::Escape($Port) + '\)') }) }
-    $x7 = @($candidates | Where-Object { $_.DeviceID -match 'VID_0403.PID_6001' })
-    $sc = @($candidates | Where-Object { $_.DeviceID -match 'VID_0403.PID_6014' })
-    if ($x7.Count + $sc.Count -eq 1) {
-        $Cart = if ($x7.Count -eq 1) { 'ed64' } else { 'sc64' }
-        Say "cart: $Cart, from the only X7 or SummerCart64 USB port plugged in"
-    } else {
-        $pick = (Ask 'Which cart is this: x7, pro or sc64?').Trim().ToLower()
-        $Cart = switch ($pick) { 'x7' { 'ed64' } 'pro' { 'ed64pro' } default { $pick } }
-    }
-} else {
-    Say "cart: $Cart (given)"
-}
-if ($Cart -notin @('ed64', 'ed64pro', 'sc64')) { Say "unknown cart '$Cart'; use x7, pro or sc64"; exit 1 }
-
-if (-not $Port) {
-    $id = switch ($Cart) { 'ed64' { 'VID_0403.PID_6001' } 'sc64' { 'VID_0403.PID_6014' } default { 'no match' } }
-    $match = @($ports | Where-Object { $_.DeviceID -match $id })
-    if ($match.Count -eq 1) {
-        $Port = [regex]::Match($match[0].Name, 'COM\d+').Value
-        Say "using $Port, the only matching port"
-    } else {
-        $Port = (Ask 'Which COM port is the cart (for example COM5)?').Trim().ToUpper()
-    }
-}
-$script:Port = $Port
-
-if (-not $SkipControl -and -not $GameOnly) {
-    if ($Cart -eq 'ed64pro') {
-        # libdragon has no PRO support, so on a PRO the test ROM's USB goes through this repo's own
-        # ed64pro.c: the same unproven mapping as the agent, which makes this no control.
-        Section 'Phase 1 of 3: test ROM run with multi64_test.z64'
-        Say 'On a PRO this ROM uses the same untested link design as the bring-up ROM, so it is a second first-time check, not a known-good control.'
-    } else {
-        Section 'Phase 1 of 3: control run with multi64_test.z64'
-        Say 'This ROM moves USB through libdragon, which has worked on an X7 and on a SummerCart64. It checks your cable, driver and port.'
-    }
-    Ask 'Boot multi64_test.z64 from the cart menu. When its text is on the TV, press Enter' | Out-Null
-    # The purge experiment in this file's header: a daemon that does not purge first, then, only if
-    # the cart says nothing through it, one that does.
-    $phase = 'phase1'
-    $p = Start-Daemon $phase
-    if ($p -ne $null -and -not (Probe-Cart 'phase1-probe.txt')) {
-        Stop-Daemon $p $phase
-        Say 'Starting multi64d again, this time purging the port as it opens it, to see whether that brings the cart back.'
-        $phase = 'phase1-purged'
-        $p = Start-Daemon $phase $true
-        if ($p -ne $null) { Probe-Cart 'phase1-purged-probe.txt' | Out-Null }
-    }
-    if ($p -ne $null) {
-        Run-Logged "$phase-suite.txt" $tool @('suite', '--port', $Port) | Out-Null
-        Stop-Daemon $p $phase
-    }
-}
-
-$p = $null
-if (-not $GameOnly) {
-    Section 'Phase 2 of 3: bring-up run with multi64_bringup.z64'
-    Ask 'Power the console off and on, boot multi64_bringup.z64, wait until its text on the TV stops changing, then press Enter' | Out-Null
-    $p = Start-Daemon 'phase2'
-}
-if ($p -ne $null) {
-    $words = Join-Path $out 'phase2-bringup.json'
-    Run-Logged 'phase2-bringup.txt' $tool @('bringup', '--baseline', $baseline, '--out', $words) | Out-Null
-    $noHello = Select-String -Path (Join-Path $out 'phase2-bringup.txt') -Pattern 'FAIL\s+link\.hello' -Quiet
-    if ($noHello -and $Cart -eq 'ed64') {
-        Section 'Phase 2b: the same with the DMA build'
-        Say 'The ROM never answered through the CPU-word build. Now the DMA build.'
-        Ask 'Press R on the controller once. When the top line on the TV reads "link X7 DMA", press Enter' | Out-Null
-        $dma = Join-Path $out 'phase2b-bringup-dma.json'
-        Run-Logged 'phase2b-bringup-dma.txt' $tool @('bringup', '--baseline', $baseline, '--out', $dma) | Out-Null
-    }
-    Stop-Daemon $p 'phase2'
-}
-
-Section 'Phase 3 of 3 (optional): the AP64 agent inside a game'
-Say 'This needs a game ROM that the AP64 in this folder patched for this cart (README.txt). One patched by an older AP64 carries an older agent, and would not test this one.'
-$hasGame = if ($GameOnly) { 'y' } else { (Ask 'Is such a ROM on the SD card? Type y and press Enter, or just press Enter to skip this part').Trim().ToLower() }
-if ($hasGame -notin @('y', 'yes')) {
-    Say 'phase 3 skipped: no patched ROM'
-} else {
-    Say ("game: " + (Ask 'Which game is it?'))
-    Ask 'Power the console off and on, boot that ROM, wait at its title screen, then press Enter' | Out-Null
-    # The purge experiment again, as in phase 1: a daemon that does not purge first, then, only if
-    # the agent says nothing through it, one that does.
-    $phase = 'phase3'
-    $answered = 0
-    $p = Start-Daemon $phase
-    if ($p -ne $null) {
-        $answered = Probe-Agent 'phase3-hello.txt'
-        if ($answered -eq 0) {
-            Stop-Daemon $p $phase
-            Say 'Starting multi64d again, this time purging the port as it opens it, to see whether that brings the agent back.'
-            $phase = 'phase3-purged'
-            $p = Start-Daemon $phase $true
-            if ($p -ne $null) { $answered = Probe-Agent 'phase3-purged-hello.txt' }
-        }
-    }
-    if ($p -ne $null) {
-        if ($answered -gt 0) {
-            # RDRAM offsets every game has. 0x300 holds what the boot code left (TV type, CIC,
-            # RAM size), which a running game has no reason to change, so its two reads should
-            # match; 0x400 is where a game's own code starts. 4096 bytes is the most one region
-            # may hold.
-            $reads = 'phase3-reads.txt'
-            Run-Logged $reads $tool @('mem-peek', '--addr', '0x300', '--len', '28') | Out-Null
-            Run-Logged $reads $tool @('mem-peek', '--addr', '0x400', '--len', '64') | Out-Null
-            Run-Logged $reads $tool @('mem-peek', '--addr', '0x300', '--len', '28') | Out-Null
-            Run-Logged $reads $tool @('mem-peek', '--addr', '0x400', '--len', '4096') | Out-Null
-            # The ROM header's game name, read from the cart while the game uses it: AP64 reads
-            # the ROM this way when it starts a session.
-            Run-Logged $reads $tool @('mem-rom-peek', '--addr', '0x20', '--len', '20') | Out-Null
+    # USB IDs from crates/cart-probe: the X7's FT245R is 0403:6001, the SummerCart64 0403:6014. Both
+    # are stock FTDI parts, so a match only picks a default; the PRO's is not known, so it is asked for.
+    if (-not $Cart) {
+        # With -Port, only that port can say which cart it is.
+        $candidates = $ports
+        if ($Port) { $candidates = @($ports | Where-Object { $_.Name -match ('\(' + [regex]::Escape($Port) + '\)') }) }
+        $x7 = @($candidates | Where-Object { $_.DeviceID -match 'VID_0403.PID_6001' })
+        $sc = @($candidates | Where-Object { $_.DeviceID -match 'VID_0403.PID_6014' })
+        if ($x7.Count + $sc.Count -eq 1) {
+            $Cart = if ($x7.Count -eq 1) { 'ed64' } else { 'sc64' }
+            Say "cart: $Cart, from the only X7 or SummerCart64 USB port plugged in"
         } else {
-            Say 'The agent answered no HELLO, so the reads are left out.'
+            $pick = (Ask 'Which cart is this: x7, pro or sc64?').Trim().ToLower()
+            $Cart = switch ($pick) { 'x7' { 'ed64' } 'pro' { 'ed64pro' } default { $pick } }
         }
-        Stop-Daemon $p $phase
+    } else {
+        Say "cart: $Cart (given)"
     }
-    Say ("game screen: " + (Ask 'Is the game still running as normal? Describe anything else it shows (or leave empty)'))
+    if ($Cart -notin @('ed64', 'ed64pro', 'sc64')) { throw "unknown cart '$Cart'; use x7, pro or sc64" }
+
+    if (-not $Port) {
+        $id = switch ($Cart) { 'ed64' { 'VID_0403.PID_6001' } 'sc64' { 'VID_0403.PID_6014' } default { 'no match' } }
+        $match = @($ports | Where-Object { $_.DeviceID -match $id })
+        if ($match.Count -eq 1) {
+            $Port = [regex]::Match($match[0].Name, 'COM\d+').Value
+            Say "using $Port, the only matching port"
+        } else {
+            $Port = (Ask 'Which COM port is the cart (for example COM5)?').Trim().ToUpper()
+        }
+    }
+    $script:Port = $Port
+
+    if (-not $SkipControl -and -not $GameOnly) {
+        if ($Cart -eq 'ed64pro') {
+            # libdragon has no PRO support, so on a PRO the test ROM's USB goes through this repo's own
+            # ed64pro.c: the same unproven mapping as the agent, which makes this no control.
+            Section 'Phase 1 of 3: test ROM run with multi64_test.z64'
+            Say 'On a PRO this ROM uses the same untested link design as the bring-up ROM, so it is a second first-time check, not a known-good control.'
+        } else {
+            Section 'Phase 1 of 3: control run with multi64_test.z64'
+            Say 'This ROM moves USB through libdragon, which has worked on an X7 and on a SummerCart64. It checks your cable, driver and port.'
+        }
+        Ask 'Boot multi64_test.z64 from the cart menu. When its text is on the TV, press Enter' | Out-Null
+        # The purge experiment in this file's header: a daemon that does not purge first, then, only if
+        # the cart says nothing through it, one that does.
+        $phase = 'phase1'
+        $p = Start-Daemon $phase
+        if ($p -ne $null -and -not (Probe-Cart 'phase1-probe.txt')) {
+            Stop-Daemon $p $phase
+            Say 'Starting multi64d again, this time purging the port as it opens it, to see whether that brings the cart back.'
+            $phase = 'phase1-purged'
+            $p = Start-Daemon $phase $true
+            if ($p -ne $null) { Probe-Cart 'phase1-purged-probe.txt' | Out-Null }
+        }
+        if ($p -ne $null) {
+            Run-Logged "$phase-suite.txt" $tool @('suite', '--port', $Port) | Out-Null
+            Stop-Daemon $p $phase
+        }
+    }
+
+    $p = $null
+    if (-not $GameOnly) {
+        Section 'Phase 2 of 3: bring-up run with multi64_bringup.z64'
+        Ask 'Power the console off and on, boot multi64_bringup.z64, wait until its text on the TV stops changing, then press Enter' | Out-Null
+        $p = Start-Daemon 'phase2'
+    }
+    if ($p -ne $null) {
+        $words = Join-Path $out 'phase2-bringup.json'
+        Run-Logged 'phase2-bringup.txt' $tool @('bringup', '--baseline', $baseline, '--out', $words) | Out-Null
+        # The file is missing when the tool could not run at all, which is not the DMA build's case.
+        $bringupLog = Join-Path $out 'phase2-bringup.txt'
+        $noHello = (Test-Path $bringupLog) -and (Select-String -Path $bringupLog -Pattern 'FAIL\s+link\.hello' -Quiet)
+        if ($noHello -and $Cart -eq 'ed64') {
+            Section 'Phase 2b: the same with the DMA build'
+            Say 'The ROM never answered through the CPU-word build. Now the DMA build.'
+            Ask 'Press R on the controller once. When the top line on the TV reads "link X7 DMA", press Enter' | Out-Null
+            $dma = Join-Path $out 'phase2b-bringup-dma.json'
+            Run-Logged 'phase2b-bringup-dma.txt' $tool @('bringup', '--baseline', $baseline, '--out', $dma) | Out-Null
+        }
+        Stop-Daemon $p 'phase2'
+    }
+
+    Section 'Phase 3 of 3 (optional): the AP64 agent inside a game'
+    Say 'This needs a game ROM that the AP64 in this folder patched for this cart (README.txt). One patched by an older AP64 carries an older agent, and would not test this one.'
+    $hasGame = if ($GameOnly) { 'y' } else { (Ask 'Is such a ROM on the SD card? Type y and press Enter, or just press Enter to skip this part').Trim().ToLower() }
+    if ($hasGame -notin @('y', 'yes')) {
+        Say 'phase 3 skipped: no patched ROM'
+    } else {
+        Say ("game: " + (Ask 'Which game is it?'))
+        Ask 'Power the console off and on, boot that ROM, wait at its title screen, then press Enter' | Out-Null
+        # The purge experiment again, as in phase 1: a daemon that does not purge first, then, only if
+        # the agent says nothing through it, one that does.
+        $phase = 'phase3'
+        $answered = 0
+        $p = Start-Daemon $phase
+        if ($p -ne $null) {
+            $answered = Probe-Agent 'phase3-hello.txt'
+            if ($answered -eq 0) {
+                Stop-Daemon $p $phase
+                Say 'Starting multi64d again, this time purging the port as it opens it, to see whether that brings the agent back.'
+                $phase = 'phase3-purged'
+                $p = Start-Daemon $phase $true
+                if ($p -ne $null) { $answered = Probe-Agent 'phase3-purged-hello.txt' }
+            }
+        }
+        if ($p -ne $null) {
+            if ($answered -gt 0) {
+                # RDRAM offsets every game has. 0x300 holds what the boot code left (TV type, CIC,
+                # RAM size), which a running game has no reason to change, so its two reads should
+                # match; 0x400 is where a game's own code starts. 4096 bytes is the most one region
+                # may hold.
+                $reads = 'phase3-reads.txt'
+                Run-Logged $reads $tool @('mem-peek', '--addr', '0x300', '--len', '28') | Out-Null
+                Run-Logged $reads $tool @('mem-peek', '--addr', '0x400', '--len', '64') | Out-Null
+                Run-Logged $reads $tool @('mem-peek', '--addr', '0x300', '--len', '28') | Out-Null
+                Run-Logged $reads $tool @('mem-peek', '--addr', '0x400', '--len', '4096') | Out-Null
+                # The ROM header's game name, read from the cart while the game uses it: AP64 reads
+                # the ROM this way when it starts a session.
+                Run-Logged $reads $tool @('mem-rom-peek', '--addr', '0x20', '--len', '20') | Out-Null
+            } else {
+                Say 'The agent answered no HELLO, so the reads are left out.'
+            }
+            Stop-Daemon $p $phase
+        }
+        Say ("game screen: " + (Ask 'Is the game still running as normal? Describe anything else it shows (or leave empty)'))
+    }
+} catch {
+    Say ''
+    Say ("THE RUN STOPPED ON AN ERROR. What it gathered is still zipped below. " + $_.Exception.Message)
+    Say ("" + $_.ScriptStackTrace)
 }
 
 Section 'Cart'
@@ -470,42 +494,12 @@ if (-not $GameOnly) {
 Section 'Done'
 # Nothing this script started may outlive it holding the cart's port and a log. Each daemon was
 # stopped when its phase ended, so anything found here is a fault worth having in the transcript.
-Stop-Leftovers 'still running at the end of the run' 'leave it unplugged'
+Stop-Leftovers 'still running at the end of the run' 'leave it unplugged' | Out-Null
 Say ("finished " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
 $zip = "$out.zip"
-# Not Compress-Archive: Windows PowerShell 5.1's stores paths with backslashes, which unzip tools
-# outside Windows refuse, and so does ZipFile.CreateFromDirectory under powershell.exe. Each entry
-# is named here, with forward slashes.
-Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
-if (Test-Path $zip) { Remove-Item $zip -Force }
-$archive = [System.IO.Compression.ZipFile]::Open($zip, [System.IO.Compression.ZipArchiveMode]::Create)
-$unread = @()
-try {
-    $root = Split-Path $out -Parent
-    Get-ChildItem -Path $out -Recurse -File | ForEach-Object {
-        $name = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
-        # Not CreateEntryFromFile: it refuses a file anything still has open for writing, and on one
-        # tester's PC a daemon log was still held when the zip was made, which lost the whole zip.
-        # Opened this way a file is read whoever else has it open, and one that still cannot be
-        # read is named and left out instead of ending the run.
-        try {
-            $source = [System.IO.File]::Open($_.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
-                ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
-            try {
-                $target = $archive.CreateEntry($name, [System.IO.Compression.CompressionLevel]::Optimal).Open()
-                try { $source.CopyTo($target) } finally { $target.Dispose() }
-            } finally {
-                $source.Dispose()
-            }
-        } catch {
-            $cause = $_.Exception
-            if ($cause.InnerException) { $cause = $cause.InnerException }
-            $unread += $cause.Message
-        }
-    }
-} finally {
-    $archive.Dispose()
-}
+# zip-folder.ps1 names entries with forward slashes, reads a file something else still has open, and
+# returns one line for each file it had to leave out.
+$unread = @(& $zipper -Dir $out -Zip $zip)
 foreach ($message in $unread) { Write-Host "left out of the zip: $message" -ForegroundColor Yellow }
 if ($unread.Count -gt 0) {
     Write-Host "If you can, also send the folder itself: $out" -ForegroundColor Yellow

@@ -41,34 +41,22 @@ rm -rf "$out" "$out.zip"
 mkdir -p "$out"
 cp "$setup" "$ap64_setup" target/release/multi64d.exe target/release/multi64-test-connector.exe "$out/"
 cp n64/test-rom/multi64_test.z64 n64/bringup/multi64_bringup.z64 "$out/"
-cp n64/bringup/baselines/sc64-2026-10-08.json "$out/"
-cp n64/bringup/handover/diagnose.ps1 n64/bringup/handover/diagnose.bat n64/bringup/handover/README.txt "$out/"
+# The newest SummerCart64 baseline, under one name so that diagnose.ps1 need not know its date.
+# Baselines are named sc64-<date>.json, so the last in order is the newest.
+baseline=$(ls n64/bringup/baselines/sc64-*.json | sort | tail -n 1)
+cp "$baseline" "$out/sc64-baseline.json"
+cp n64/bringup/handover/diagnose.ps1 n64/bringup/handover/diagnose.bat n64/bringup/handover/zip-folder.ps1 \
+    n64/bringup/handover/README.txt "$out/"
 
 {
     echo "multi64 $commit ($(git log -1 --format=%cs)), Multi64 $version, AP64 $ap64_version, packed $(date -u +%Y-%m-%dT%H:%MZ)"
+    echo "sc64-baseline.json is $(basename "$baseline")"
     (cd "$out" && sha256sum -- *.exe *.z64 *.json)
 } | sed 's/$/\r/' > "$out/VERSION.txt"
 
-# Not Compress-Archive: Windows PowerShell 5.1's stores paths with backslashes, which unzip tools
-# outside Windows warn about or refuse. Name each entry with forward slashes, as diagnose.ps1 does.
-zipper=$(mktemp --suffix=.ps1)
-cat > "$zipper" <<'PS1'
-param([string]$Dir, [string]$Zip)
-Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
-if (Test-Path $Zip) { Remove-Item $Zip -Force }
-$archive = [System.IO.Compression.ZipFile]::Open($Zip, [System.IO.Compression.ZipArchiveMode]::Create)
-try {
-    $root = Split-Path $Dir -Parent
-    Get-ChildItem -Path $Dir -Recurse -File | ForEach-Object {
-        $entry = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
-        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, $entry) | Out-Null
-    }
-} finally {
-    $archive.Dispose()
-}
-PS1
-powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$zipper")" \
-    -Dir "$(cygpath -w "$root/$out")" -Zip "$(cygpath -w "$root/$out.zip")"
-rm -f "$zipper"
+# The same zip routine diagnose.ps1 uses for its results. -Strict: a bundle with a file left out is
+# no bundle.
+powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$root/n64/bringup/handover/zip-folder.ps1")" \
+    -Dir "$(cygpath -w "$root/$out")" -Zip "$(cygpath -w "$root/$out.zip")" -Strict
 cat "$out/VERSION.txt"
 echo "bundle: $out.zip"

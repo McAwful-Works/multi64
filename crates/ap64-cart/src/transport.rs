@@ -95,23 +95,46 @@ fn other(msg: impl Into<String>) -> io::Error {
 /// it is the one thing that distinguishes "Multi64 is not running" from "the cart has not
 /// answered yet", and a caller reporting those separately needs it.
 pub fn serial_active(ws_url: &str) -> Option<bool> {
-    let body = daemon_root(ws_url)?;
-    if body.contains("\"serialActive\":true") {
-        Some(true)
-    } else if body.contains("\"serialActive\":false") {
-        Some(false)
-    } else {
-        None
-    }
+    daemon_status(ws_url)?.serial_active
 }
 
 /// Which cart the daemon was started for (`sc64`, `ed64` or `ed64pro`: `multi64d --cart`), or
 /// `None` when it does not answer. AP64 defaults its patch to it, so the agent in the ROM talks
 /// to the cart Multi64 is set up for.
 pub fn daemon_cart(ws_url: &str) -> Option<String> {
-    let body = daemon_root(ws_url)?;
-    let rest = &body[body.find("\"cart\":\"")? + "\"cart\":\"".len()..];
-    Some(rest[..rest.find('"')?].to_string())
+    daemon_status(ws_url)?.cart
+}
+
+/// What one `GET /` of the daemon says, for a caller that wants both answers from one request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonStatus {
+    /// See [`serial_active`]. `None` when the answer does not say.
+    pub serial_active: Option<bool>,
+    /// See [`daemon_cart`]. `None` when the answer does not say.
+    pub cart: Option<String>,
+}
+
+/// The daemon's `GET /`, read once, or `None` when it does not answer at all.
+pub fn daemon_status(ws_url: &str) -> Option<DaemonStatus> {
+    Some(parse_status(&daemon_root(ws_url)?))
+}
+
+fn parse_status(body: &str) -> DaemonStatus {
+    let serial_active = if body.contains("\"serialActive\":true") {
+        Some(true)
+    } else if body.contains("\"serialActive\":false") {
+        Some(false)
+    } else {
+        None
+    };
+    let cart = body.find("\"cart\":\"").and_then(|at| {
+        let rest = &body[at + "\"cart\":\"".len()..];
+        Some(rest[..rest.find('"')?].to_string())
+    });
+    DaemonStatus {
+        serial_active,
+        cart,
+    }
 }
 
 /// The daemon's `GET /`, response and all.
@@ -434,5 +457,31 @@ impl Multi64Transport {
             }
             other_msg => Err(other(format!("expected POKE_ACK, got {other_msg:?}"))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_reads_both_fields_from_one_answer() {
+        let body = "HTTP/1.1 200 OK\r\n\r\n{\"service\":\"multi64d\",\"serial\":\"COM4\",\
+                    \"serialActive\":true,\"serialBusy\":false,\"cart\":\"ed64\"}";
+        assert_eq!(
+            parse_status(body),
+            DaemonStatus {
+                serial_active: Some(true),
+                cart: Some("ed64".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn status_from_an_older_daemon_has_no_cart() {
+        let status = parse_status("{\"serialActive\":false}");
+        assert_eq!(status.serial_active, Some(false));
+        assert_eq!(status.cart, None);
+        assert_eq!(parse_status("not json at all").serial_active, None);
     }
 }

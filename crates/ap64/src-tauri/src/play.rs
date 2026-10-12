@@ -944,7 +944,9 @@ fn run(
                     // HELLO it waits for needs the daemon, the serial link and an agent, and any
                     // of the three being absent looks the same from here. The daemon answers a
                     // plain HTTP GET whether or not a cart is attached, so ask it.
-                    let daemon = ap64_cart::transport::serial_active(&url);
+                    // One request serves both this and the cart the hint below needs.
+                    let status = ap64_cart::transport::daemon_status(&url);
+                    let daemon = status.as_ref().and_then(|s| s.serial_active);
                     // Only when the bridge is silent is the app's own state worth the look.
                     let app = daemon.is_none() && multi64_app_running();
                     // And when it is not running either, whether there is one to start: asked
@@ -963,8 +965,8 @@ fn run(
                         }
                     };
                     let hint = (silent.elapsed() >= HINT_AFTER).then(|| {
-                        let cart = ap64_cart::transport::daemon_cart(&url);
-                        Silence::of(&game.profile, cart.as_deref().and_then(Cart::parse))
+                        let cart = status.as_ref().and_then(|s| s.cart.as_deref());
+                        Silence::of(&game.profile, cart.and_then(Cart::parse))
                     });
                     if let Some(hint) = hint {
                         if !std::mem::replace(&mut hint_logged, true) {
