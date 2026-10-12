@@ -211,8 +211,55 @@ function Start-Daemon([string]$phase, [bool]$clearSerial = $false) {
 function Stop-Daemon($p, [string]$phase) {
     if ($p -eq $null) { return }
     Save-Status "$phase-status-end.json"
-    if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+    $id = $p.Id
+    if (-not $p.HasExited) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
+    # Wait for it to be gone, then let go of it: its log files stay open until the process has
+    # exited and this script has released its end of them.
+    [void]$p.WaitForExit(5000)
+    $p.Close()
+    # Asked of Windows, not of the Process object: on one tester's PC a daemon this function had
+    # stopped was still running, and holding its logs, when the script ended.
+    if (Get-Process -Id $id -ErrorAction SilentlyContinue) {
+        Say "multi64d $id is still running after Stop-Process; trying taskkill"
+        $ErrorActionPreference = 'Continue'
+        & taskkill.exe /F /T /PID $id 2>&1 | ForEach-Object { Say ("  " + "$_") }
+        $ErrorActionPreference = 'Stop'
+        Start-Sleep -Seconds 1
+        if (Get-Process -Id $id -ErrorAction SilentlyContinue) { Say "multi64d $id is STILL running" }
+    }
     Start-Sleep -Milliseconds 500
+}
+
+# Stops every multi64d started from this bundle, saying why it was there. A daemon from this bundle
+# is never the tester's to close: it is one this script started, now or in an earlier run.
+function Stop-Leftovers([string]$why, [string]$afterUnplug) {
+    $stuck = @()
+    Get-Process multi64d -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $daemon } | ForEach-Object {
+        $id = $_.Id
+        Say "stopping multi64d $id, $why (started $($_.StartTime.ToString('HH:mm:ss')))"
+        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+        if (Get-Process -Id $id -ErrorAction SilentlyContinue) {
+            $ErrorActionPreference = 'Continue'
+            & taskkill.exe /F /T /PID $id 2>&1 | ForEach-Object { Say ("  " + "$_") }
+            $ErrorActionPreference = 'Stop'
+            Start-Sleep -Seconds 1
+        }
+        if (Get-Process -Id $id -ErrorAction SilentlyContinue) { $stuck += $id }
+    }
+    if ($stuck.Count -eq 0) { return }
+    # A process Windows has been told to end, twice, and that is still there has a thread waiting in
+    # a device driver: here, most likely the cart's USB serial driver, on a transfer the cart never
+    # takes. Unplugging the device ends that wait. Whether the process then goes is the evidence.
+    Say ("multi64d " + ($stuck -join ', ') + " will not stop: Windows was asked twice and it is still running")
+    Ask ("Unplug the cart's USB cable from this PC, wait 5 seconds, " + $afterUnplug + ", then press Enter") | Out-Null
+    foreach ($id in $stuck) {
+        if (Get-Process -Id $id -ErrorAction SilentlyContinue) {
+            Say "multi64d $id is STILL running after the cable was unplugged"
+        } else {
+            Say "multi64d $id stopped once the cable was unplugged"
+        }
+    }
 }
 
 # The suite's first request on its own: put the test ROM in M64T_PROTO, which it accepts from any
@@ -243,11 +290,7 @@ foreach ($f in @($daemon, $tool, $baseline)) {
 Section 'Other programs using the cart'
 # A daemon from this bundle is one an earlier run left behind (before the job above existed, or
 # from a crash): not the tester's to close, so stop it here.
-Get-Process multi64d -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $daemon } | ForEach-Object {
-    Say "stopping multi64d $($_.Id), left over from an earlier run of this script"
-    Stop-Process -Id $_.Id -Force
-    Start-Sleep -Milliseconds 500
-}
+Stop-Leftovers 'left over from an earlier run of this script' 'plug it back in'
 while ($true) {
     $busy = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -in @('multi64d', 'multi64', 'ap64', 'xfer64') }
     if (-not $busy) { Say 'none running'; break }
@@ -346,6 +389,9 @@ $screen = Ask 'Did either ROM stay on a black screen, or stop partway? Describe 
 Say ("screen: " + $screen)
 
 Section 'Done'
+# Nothing this script started may outlive it holding the cart's port and a log. Each daemon was
+# stopped when its phase ended, so anything found here is a fault worth having in the transcript.
+Stop-Leftovers 'still running at the end of the run' 'leave it unplugged'
 Say ("finished " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
 $zip = "$out.zip"
 # Not Compress-Archive: Windows PowerShell 5.1's stores paths with backslashes, which unzip tools
@@ -354,14 +400,36 @@ $zip = "$out.zip"
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 if (Test-Path $zip) { Remove-Item $zip -Force }
 $archive = [System.IO.Compression.ZipFile]::Open($zip, [System.IO.Compression.ZipArchiveMode]::Create)
+$unread = @()
 try {
     $root = Split-Path $out -Parent
     Get-ChildItem -Path $out -Recurse -File | ForEach-Object {
         $name = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
-        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, $name) | Out-Null
+        # Not CreateEntryFromFile: it refuses a file anything still has open for writing, and on one
+        # tester's PC a daemon log was still held when the zip was made, which lost the whole zip.
+        # Opened this way a file is read whoever else has it open, and one that still cannot be
+        # read is named and left out instead of ending the run.
+        try {
+            $source = [System.IO.File]::Open($_.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+                ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+            try {
+                $target = $archive.CreateEntry($name, [System.IO.Compression.CompressionLevel]::Optimal).Open()
+                try { $source.CopyTo($target) } finally { $target.Dispose() }
+            } finally {
+                $source.Dispose()
+            }
+        } catch {
+            $cause = $_.Exception
+            if ($cause.InnerException) { $cause = $cause.InnerException }
+            $unread += $cause.Message
+        }
     }
 } finally {
     $archive.Dispose()
+}
+foreach ($message in $unread) { Write-Host "left out of the zip: $message" -ForegroundColor Yellow }
+if ($unread.Count -gt 0) {
+    Write-Host "If you can, also send the folder itself: $out" -ForegroundColor Yellow
 }
 Write-Host ''
 Write-Host "Send this one file back: $zip" -ForegroundColor Green
