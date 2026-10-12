@@ -19,15 +19,17 @@ fixed in `multi64d`. **1.1 ran on the same X7 later that day,** where the CPU-wo
 every request but one across three load levels. Its SC64 build is the same source as 1.0's, so the
 baseline still stood for it.
 
-**The committed binary is 1.2, and no cart has run it.** It differs from 1.1 in two things. Its two
+**The committed binary is 1.2. It has run on a SummerCart64, and on no X7.** It differs from 1.1
+in two things. Its two
 X7 builds carry the driver as it now is: `ed64_receive` keeps its place in the stream when a busy
 PI or the clock stops it, where it used to report the message lost and read the rest of it as
 headers, and every wait in the driver ends by the console's clock ([l3-over-everdrive-x7.md](../../docs/spec/l3-over-everdrive-x7.md) §4.5
 item 7). And a host's change of `ctl_load` starts the link's maxima afresh even when it names the
 level already in effect, so the first stretch of traffic after boot reports its own longest tick,
 not the longest since boot. Its SC64 and PRO builds are 1.1's driver sources unchanged, but a
-baseline is a run of the whole ROM, and 1.2 has none yet: recording one takes the maintainer's
-cart ([checklist](#1-summercart64-baseline-first-on-the-maintainers-cart)).
+baseline is a run of the whole ROM, so 1.2 has its own, recorded on the maintainer's cart on
+2026-10-12 with every check passing ([Hardware record](#hardware-record)). That run went through
+the SC64 build alone: the two X7 builds, which carry the changed driver, have run on no cart.
 
 **On 2026-10-12 the X7 agent answered inside a game for the first time:** an Ocarina of Time seed
 patched for the X7, left at its title screen, where every `HELLO` and every read was answered
@@ -173,14 +175,14 @@ The values above are placeholders, not measurements. **Z** steps the load (off, 
    them.
 6. Keep the JSON: it is what another cart's run is compared against. Commit it under
    [`baselines/`](baselines/) as `sc64-<date>.json`. The newest by name is the one the bundle
-   ships, as `sc64-baseline.json`, so record a new one whenever the ROM changes. Currently that is
-   [`baselines/sc64-2026-10-12.json`](baselines/sc64-2026-10-12.json), from bring-up ROM 1.1; the
-   first, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json), is from ROM 1.0.
-   **The committed ROM is 1.2 and has no baseline yet**, so this step is owed for it. Until it is
-   done a 1.2 run is compared against 1.1's, and its longest ticks with no load may read lower
-   for a reason that is the ROM's: 1.1's covered everything since boot.
+   ships, as `sc64-baseline.json`, so record a new one whenever the ROM changes. A second one on
+   the same date takes a letter after it, which sorts later. Currently that is
+   [`baselines/sc64-2026-10-12b.json`](baselines/sc64-2026-10-12b.json), from bring-up ROM 1.2,
+   the committed one. [`baselines/sc64-2026-10-12.json`](baselines/sc64-2026-10-12.json) is from
+   ROM 1.1 and [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json) from ROM 1.0.
    When a run and its baseline come from different builds of the ROM, the comparison says so on
-   its first line.
+   its first line: 1.1's longest ticks with no load covered everything since boot, where 1.2's
+   cover that stretch of traffic alone.
 
 Anything else on the SC64 is a fault in this ROM or the tool, not in the cart, and has to be
 fixed before the ROM goes to anyone.
@@ -377,8 +379,28 @@ device list and COM ports that do not exist; no tester has met them yet.
 
 ## Hardware record
 
-Every run of the bring-up ROM below is of 1.1 or 1.0. ROM 1.2, the committed one, has not run on a
-cart, and neither has the X7 driver it carries, in this ROM or in a game.
+Every X7 run of the bring-up ROM below is of 1.1 or 1.0. ROM 1.2, the committed one, has run on
+a SummerCart64 alone, in the first entry; the X7 driver it carries has not run on a cart, in this
+ROM or in a game.
+
+**2026-10-12, SummerCart64, ROM 1.2 and its baseline** (`SCv2`, firmware 2.20 rev 2), ROM SHA-256
+`fe9a9c01e58e09bbc47b1f0119a239f4e011d591d86274179adcee8ea7ae11eb`, at 17:55 -04:00. Loaded with
+`sc64-smoke --boot-rom` and driven by `multi64-test-connector bringup` built at `b93ecf8`, through
+an installed Multi64's bridge, not the bundle. Saved as
+[`baselines/sc64-2026-10-12b.json`](baselines/sc64-2026-10-12b.json).
+
+- **Checks:** none failed. `identify.cart` and `identify.driver_init` passed, as did all eight
+  `blocks.buffer.*`.
+- **Traffic:** no load, 36 of 36, round trip 60/67/74 ms (min/mean/max). Moderate load, 31 of 33,
+  two timeouts; heavy, 30 of 33, three timeouts.
+- **A control write sent twice:** putting the load back to off after the heavy stretch went
+  unanswered once and was sent again, as `note:` says in the run and `notes` in the JSON. It is
+  the first run to show that retry on a cart.
+- **Against 1.1's baseline:** no check changed its outcome. Longest tick with no load 8.3 ms
+  against 8.9 ms; under moderate and heavy load 13.5 and 36.5 ms against 13.4 and 37.8 ms. The
+  no-load figure is not shown to be the ROM's doing: ROM 1.1, run on the same cart with the same
+  tool a few minutes earlier, measured 8.4 ms.
+- **What it does not show:** anything about the X7 builds, which an SC64 cannot run.
 
 **2026-10-12, EverDrive-64 X7, an AP64 session with an Archipelago client: reported, not logged.**
 The same day as the fifth run below, the tester sent a screenshot. No results zip and no bridge log
