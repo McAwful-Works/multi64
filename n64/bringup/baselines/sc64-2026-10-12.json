@@ -1,0 +1,1572 @@
+{
+  "format": 0,
+  "tool": "multi64-test-connector 0.1.0",
+  "started_unix": 1791817867,
+  "daemon": {
+    "serial": "COM4",
+    "cart": "sc64",
+    "serialActive": true
+  },
+  "hello": {
+    "proto": 0,
+    "agent_ver": 256,
+    "rdram_bytes": 8388608,
+    "flags": 7,
+    "rtt_ms": 81.8339
+  },
+  "report_addr": 257584,
+  "boot_report": {
+    "addr": 257584,
+    "format": 0,
+    "size": 5000,
+    "rom_version": "1.1",
+    "frame": 414,
+    "count_hz": 46875000,
+    "ctl_load": 0,
+    "ctl_variant": 0,
+    "ctl_rerun": 0,
+    "cart": 1,
+    "cart_name": "SummerCart64",
+    "variant": 1,
+    "variant_name": "SC64",
+    "load": 0,
+    "rerun_done": 0,
+    "stages": 15,
+    "mem_size": 8388608,
+    "probe_ok": 63,
+    "d64_magic": 49021676,
+    "sc64_ident_locked": 9175180,
+    "ed_reg14_locked": 9175180,
+    "ed_reg04_locked": 9175180,
+    "pro_sysstat": [
+      9175180,
+      9175180
+    ],
+    "init_tried": 22,
+    "init_ok": 2,
+    "ed_reg14_unlocked": 0,
+    "ed_usbcfg_after": 0,
+    "sc64_ident_unlocked": 1396930098,
+    "rom_header": "80371240000000008000040000000000000000000000000000000000000000006d756c74693634206272696e6775700000000000000000000000004e00000000",
+    "timing": [
+      [
+        {
+          "id": 1,
+          "name": "PI_STATUS",
+          "spins": 100000,
+          "ticks_total": 12407,
+          "ticks_max": 14,
+          "ns_per_read": 258.4791666666667,
+          "wait_limit_ms": 25.847916666666666
+        },
+        {
+          "id": 3,
+          "name": "SC64 SR_CMD",
+          "spins": 100000,
+          "ticks_total": 174555,
+          "ticks_max": 803,
+          "ns_per_read": 3636.5625,
+          "wait_limit_ms": 363.65625
+        }
+      ],
+      [
+        {
+          "id": 1,
+          "name": "PI_STATUS",
+          "spins": 100000,
+          "ticks_total": 12405,
+          "ticks_max": 15,
+          "ns_per_read": 258.4375,
+          "wait_limit_ms": 25.84375
+        },
+        {
+          "id": 3,
+          "name": "SC64 SR_CMD",
+          "spins": 100000,
+          "ticks_total": 284220,
+          "ticks_max": 36856,
+          "ns_per_read": 5921.25,
+          "wait_limit_ms": 592.125
+        }
+      ]
+    ],
+    "buf_addr": 536739840,
+    "cond_load": 1,
+    "buffer": [
+      [
+        {
+          "combo": "IO>IO",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 16290,
+          "ticks_read": 14554
+        },
+        {
+          "combo": "IO>DMA",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 16200,
+          "ticks_read": 7882
+        },
+        {
+          "combo": "DMA>IO",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 6237,
+          "ticks_read": 14529
+        },
+        {
+          "combo": "DMA>DMA",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 6060,
+          "ticks_read": 7405
+        }
+      ],
+      [
+        {
+          "combo": "IO>IO",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 16223,
+          "ticks_read": 15230
+        },
+        {
+          "combo": "IO>DMA",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 41658,
+          "ticks_read": 7802
+        },
+        {
+          "combo": "DMA>IO",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 6116,
+          "ticks_read": 14533
+        },
+        {
+          "combo": "DMA>DMA",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 19489,
+          "ticks_read": 7422
+        }
+      ]
+    ],
+    "load_bytes": 0,
+    "load_period_ticks": 93750,
+    "load_started": 0,
+    "load_skipped": 0,
+    "irq_gap_max": 101663,
+    "link": [
+      {
+        "init_calls": 1,
+        "init_ok": 1,
+        "recv_calls": 415,
+        "recv_data": 35,
+        "recv_bytes": 1239,
+        "recv_lost": 0,
+        "read_calls": 35,
+        "read_failed": 0,
+        "send_calls": 34,
+        "send_ok": 34,
+        "send_bytes": 262846,
+        "pio_calls": 0,
+        "pio_failed": 0,
+        "recv_ticks_max": 35413,
+        "send_ticks_max": 338859,
+        "tick_ticks_max": 419254,
+        "tick_ticks_total": 16133036,
+        "agent_ticks": 414,
+        "agent_frames": 34,
+        "agent_ready": 1,
+        "m64p_requests": 34,
+        "m64p_errors": 0,
+        "m64p_last_error": 0
+      },
+      {
+        "init_calls": 0,
+        "init_ok": 0,
+        "recv_calls": 0,
+        "recv_data": 0,
+        "recv_bytes": 0,
+        "recv_lost": 0,
+        "read_calls": 0,
+        "read_failed": 0,
+        "send_calls": 0,
+        "send_ok": 0,
+        "send_bytes": 0,
+        "pio_calls": 2,
+        "pio_failed": 0,
+        "recv_ticks_max": 0,
+        "send_ticks_max": 0,
+        "tick_ticks_max": 0,
+        "tick_ticks_total": 0,
+        "agent_ticks": 0,
+        "agent_frames": 0,
+        "agent_ready": 0,
+        "m64p_requests": 0,
+        "m64p_errors": 0,
+        "m64p_last_error": 0
+      },
+      {
+        "init_calls": 0,
+        "init_ok": 0,
+        "recv_calls": 0,
+        "recv_data": 0,
+        "recv_bytes": 0,
+        "recv_lost": 0,
+        "read_calls": 0,
+        "read_failed": 0,
+        "send_calls": 0,
+        "send_ok": 0,
+        "send_bytes": 0,
+        "pio_calls": 0,
+        "pio_failed": 0,
+        "recv_ticks_max": 0,
+        "send_ticks_max": 0,
+        "tick_ticks_max": 0,
+        "tick_ticks_total": 0,
+        "agent_ticks": 0,
+        "agent_frames": 0,
+        "agent_ready": 0,
+        "m64p_requests": 0,
+        "m64p_errors": 0,
+        "m64p_last_error": 0
+      },
+      {
+        "init_calls": 0,
+        "init_ok": 0,
+        "recv_calls": 0,
+        "recv_data": 0,
+        "recv_bytes": 0,
+        "recv_lost": 0,
+        "read_calls": 0,
+        "read_failed": 0,
+        "send_calls": 0,
+        "send_ok": 0,
+        "send_bytes": 0,
+        "pio_calls": 1,
+        "pio_failed": 0,
+        "recv_ticks_max": 0,
+        "send_ticks_max": 0,
+        "tick_ticks_max": 0,
+        "tick_ticks_total": 0,
+        "agent_ticks": 0,
+        "agent_frames": 0,
+        "agent_ready": 0,
+        "m64p_requests": 0,
+        "m64p_errors": 0,
+        "m64p_last_error": 0
+      }
+    ]
+  },
+  "phases": [
+    {
+      "variant": 1,
+      "variant_name": "SC64",
+      "load": 0,
+      "load_name": "off",
+      "requests": 36,
+      "timeouts": 0,
+      "busy": 0,
+      "wrong": 0,
+      "rtt_ms_min": 59.890100000000004,
+      "rtt_ms_avg": 87.85590277777779,
+      "rtt_ms_max": 210.21980000000002,
+      "delta": {
+        "init_calls": 0,
+        "init_ok": 0,
+        "recv_calls": 194,
+        "recv_data": 37,
+        "recv_bytes": 21318,
+        "recv_lost": 0,
+        "read_calls": 37,
+        "read_failed": 0,
+        "send_calls": 37,
+        "send_ok": 37,
+        "send_bytes": 46020,
+        "pio_calls": 3,
+        "pio_failed": 0,
+        "recv_ticks_max": 35500,
+        "send_ticks_max": 338859,
+        "tick_ticks_max": 419254,
+        "tick_ticks_total": 6738890,
+        "agent_ticks": 194,
+        "agent_frames": 37,
+        "agent_ready": 1,
+        "m64p_requests": 37,
+        "m64p_errors": 0,
+        "m64p_last_error": 0
+      },
+      "after": {
+        "addr": 257584,
+        "format": 0,
+        "size": 5000,
+        "rom_version": "1.1",
+        "frame": 621,
+        "count_hz": 46875000,
+        "ctl_load": 0,
+        "ctl_variant": 0,
+        "ctl_rerun": 0,
+        "cart": 1,
+        "cart_name": "SummerCart64",
+        "variant": 1,
+        "variant_name": "SC64",
+        "load": 0,
+        "rerun_done": 0,
+        "stages": 15,
+        "mem_size": 8388608,
+        "probe_ok": 63,
+        "d64_magic": 49021676,
+        "sc64_ident_locked": 9175180,
+        "ed_reg14_locked": 9175180,
+        "ed_reg04_locked": 9175180,
+        "pro_sysstat": [
+          9175180,
+          9175180
+        ],
+        "init_tried": 22,
+        "init_ok": 2,
+        "ed_reg14_unlocked": 0,
+        "ed_usbcfg_after": 0,
+        "sc64_ident_unlocked": 1396930098,
+        "rom_header": "80371240000000008000040000000000000000000000000000000000000000006d756c74693634206272696e6775700000000000000000000000004e00000000",
+        "timing": [
+          [
+            {
+              "id": 1,
+              "name": "PI_STATUS",
+              "spins": 100000,
+              "ticks_total": 12407,
+              "ticks_max": 14,
+              "ns_per_read": 258.4791666666667,
+              "wait_limit_ms": 25.847916666666666
+            },
+            {
+              "id": 3,
+              "name": "SC64 SR_CMD",
+              "spins": 100000,
+              "ticks_total": 174555,
+              "ticks_max": 803,
+              "ns_per_read": 3636.5625,
+              "wait_limit_ms": 363.65625
+            }
+          ],
+          [
+            {
+              "id": 1,
+              "name": "PI_STATUS",
+              "spins": 100000,
+              "ticks_total": 12405,
+              "ticks_max": 15,
+              "ns_per_read": 258.4375,
+              "wait_limit_ms": 25.84375
+            },
+            {
+              "id": 3,
+              "name": "SC64 SR_CMD",
+              "spins": 100000,
+              "ticks_total": 284220,
+              "ticks_max": 36856,
+              "ns_per_read": 5921.25,
+              "wait_limit_ms": 592.125
+            }
+          ]
+        ],
+        "buf_addr": 536739840,
+        "cond_load": 1,
+        "buffer": [
+          [
+            {
+              "combo": "IO>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 16290,
+              "ticks_read": 14554
+            },
+            {
+              "combo": "IO>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 16200,
+              "ticks_read": 7882
+            },
+            {
+              "combo": "DMA>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 6237,
+              "ticks_read": 14529
+            },
+            {
+              "combo": "DMA>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 6060,
+              "ticks_read": 7405
+            }
+          ],
+          [
+            {
+              "combo": "IO>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 16223,
+              "ticks_read": 15230
+            },
+            {
+              "combo": "IO>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 41658,
+              "ticks_read": 7802
+            },
+            {
+              "combo": "DMA>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 6116,
+              "ticks_read": 14533
+            },
+            {
+              "combo": "DMA>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 19489,
+              "ticks_read": 7422
+            }
+          ]
+        ],
+        "load_bytes": 0,
+        "load_period_ticks": 93750,
+        "load_started": 0,
+        "load_skipped": 0,
+        "irq_gap_max": 101663,
+        "link": [
+          {
+            "init_calls": 1,
+            "init_ok": 1,
+            "recv_calls": 622,
+            "recv_data": 75,
+            "recv_bytes": 22655,
+            "recv_lost": 0,
+            "read_calls": 75,
+            "read_failed": 0,
+            "send_calls": 74,
+            "send_ok": 74,
+            "send_bytes": 309844,
+            "pio_calls": 3,
+            "pio_failed": 0,
+            "recv_ticks_max": 35500,
+            "send_ticks_max": 338859,
+            "tick_ticks_max": 419254,
+            "tick_ticks_total": 23237966,
+            "agent_ticks": 621,
+            "agent_frames": 74,
+            "agent_ready": 1,
+            "m64p_requests": 74,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          },
+          {
+            "init_calls": 0,
+            "init_ok": 0,
+            "recv_calls": 0,
+            "recv_data": 0,
+            "recv_bytes": 0,
+            "recv_lost": 0,
+            "read_calls": 0,
+            "read_failed": 0,
+            "send_calls": 0,
+            "send_ok": 0,
+            "send_bytes": 0,
+            "pio_calls": 2,
+            "pio_failed": 0,
+            "recv_ticks_max": 0,
+            "send_ticks_max": 0,
+            "tick_ticks_max": 0,
+            "tick_ticks_total": 0,
+            "agent_ticks": 0,
+            "agent_frames": 0,
+            "agent_ready": 0,
+            "m64p_requests": 0,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          },
+          {
+            "init_calls": 0,
+            "init_ok": 0,
+            "recv_calls": 0,
+            "recv_data": 0,
+            "recv_bytes": 0,
+            "recv_lost": 0,
+            "read_calls": 0,
+            "read_failed": 0,
+            "send_calls": 0,
+            "send_ok": 0,
+            "send_bytes": 0,
+            "pio_calls": 0,
+            "pio_failed": 0,
+            "recv_ticks_max": 0,
+            "send_ticks_max": 0,
+            "tick_ticks_max": 0,
+            "tick_ticks_total": 0,
+            "agent_ticks": 0,
+            "agent_frames": 0,
+            "agent_ready": 0,
+            "m64p_requests": 0,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          },
+          {
+            "init_calls": 0,
+            "init_ok": 0,
+            "recv_calls": 0,
+            "recv_data": 0,
+            "recv_bytes": 0,
+            "recv_lost": 0,
+            "read_calls": 0,
+            "read_failed": 0,
+            "send_calls": 0,
+            "send_ok": 0,
+            "send_bytes": 0,
+            "pio_calls": 1,
+            "pio_failed": 0,
+            "recv_ticks_max": 0,
+            "send_ticks_max": 0,
+            "tick_ticks_max": 0,
+            "tick_ticks_total": 0,
+            "agent_ticks": 0,
+            "agent_frames": 0,
+            "agent_ready": 0,
+            "m64p_requests": 0,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          }
+        ]
+      }
+    },
+    {
+      "variant": 1,
+      "variant_name": "SC64",
+      "load": 1,
+      "load_name": "moderate",
+      "requests": 34,
+      "timeouts": 3,
+      "busy": 0,
+      "wrong": 0,
+      "rtt_ms_min": 46.1318,
+      "rtt_ms_avg": 139.70878387096775,
+      "rtt_ms_max": 555.5867,
+      "delta": {
+        "init_calls": 0,
+        "init_ok": 0,
+        "recv_calls": 1158,
+        "recv_data": 35,
+        "recv_bytes": 21258,
+        "recv_lost": 0,
+        "read_calls": 35,
+        "read_failed": 0,
+        "send_calls": 35,
+        "send_ok": 30,
+        "send_bytes": 42768,
+        "pio_calls": 3,
+        "pio_failed": 0,
+        "recv_ticks_max": 70608,
+        "send_ticks_max": 524548,
+        "tick_ticks_max": 629037,
+        "tick_ticks_total": 25256334,
+        "agent_ticks": 1158,
+        "agent_frames": 35,
+        "agent_ready": 1,
+        "m64p_requests": 35,
+        "m64p_errors": 0,
+        "m64p_last_error": 0
+      },
+      "after": {
+        "addr": 257584,
+        "format": 0,
+        "size": 5000,
+        "rom_version": "1.1",
+        "frame": 1791,
+        "count_hz": 46875000,
+        "ctl_load": 1,
+        "ctl_variant": 0,
+        "ctl_rerun": 0,
+        "cart": 1,
+        "cart_name": "SummerCart64",
+        "variant": 1,
+        "variant_name": "SC64",
+        "load": 1,
+        "rerun_done": 0,
+        "stages": 15,
+        "mem_size": 8388608,
+        "probe_ok": 63,
+        "d64_magic": 49021676,
+        "sc64_ident_locked": 9175180,
+        "ed_reg14_locked": 9175180,
+        "ed_reg04_locked": 9175180,
+        "pro_sysstat": [
+          9175180,
+          9175180
+        ],
+        "init_tried": 22,
+        "init_ok": 2,
+        "ed_reg14_unlocked": 0,
+        "ed_usbcfg_after": 0,
+        "sc64_ident_unlocked": 1396930098,
+        "rom_header": "80371240000000008000040000000000000000000000000000000000000000006d756c74693634206272696e6775700000000000000000000000004e00000000",
+        "timing": [
+          [
+            {
+              "id": 1,
+              "name": "PI_STATUS",
+              "spins": 100000,
+              "ticks_total": 12407,
+              "ticks_max": 14,
+              "ns_per_read": 258.4791666666667,
+              "wait_limit_ms": 25.847916666666666
+            },
+            {
+              "id": 3,
+              "name": "SC64 SR_CMD",
+              "spins": 100000,
+              "ticks_total": 174555,
+              "ticks_max": 803,
+              "ns_per_read": 3636.5625,
+              "wait_limit_ms": 363.65625
+            }
+          ],
+          [
+            {
+              "id": 1,
+              "name": "PI_STATUS",
+              "spins": 100000,
+              "ticks_total": 12405,
+              "ticks_max": 15,
+              "ns_per_read": 258.4375,
+              "wait_limit_ms": 25.84375
+            },
+            {
+              "id": 3,
+              "name": "SC64 SR_CMD",
+              "spins": 100000,
+              "ticks_total": 284220,
+              "ticks_max": 36856,
+              "ns_per_read": 5921.25,
+              "wait_limit_ms": 592.125
+            }
+          ]
+        ],
+        "buf_addr": 536739840,
+        "cond_load": 1,
+        "buffer": [
+          [
+            {
+              "combo": "IO>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 16290,
+              "ticks_read": 14554
+            },
+            {
+              "combo": "IO>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 16200,
+              "ticks_read": 7882
+            },
+            {
+              "combo": "DMA>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 6237,
+              "ticks_read": 14529
+            },
+            {
+              "combo": "DMA>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 6060,
+              "ticks_read": 7405
+            }
+          ],
+          [
+            {
+              "combo": "IO>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 16223,
+              "ticks_read": 15230
+            },
+            {
+              "combo": "IO>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 41658,
+              "ticks_read": 7802
+            },
+            {
+              "combo": "DMA>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 6116,
+              "ticks_read": 14533
+            },
+            {
+              "combo": "DMA>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 19489,
+              "ticks_read": 7422
+            }
+          ]
+        ],
+        "load_bytes": 4096,
+        "load_period_ticks": 93750,
+        "load_started": 9734,
+        "load_skipped": 0,
+        "irq_gap_max": 100560,
+        "link": [
+          {
+            "init_calls": 1,
+            "init_ok": 1,
+            "recv_calls": 1792,
+            "recv_data": 113,
+            "recv_bytes": 44011,
+            "recv_lost": 0,
+            "read_calls": 113,
+            "read_failed": 0,
+            "send_calls": 112,
+            "send_ok": 107,
+            "send_bytes": 353590,
+            "pio_calls": 6,
+            "pio_failed": 0,
+            "recv_ticks_max": 70608,
+            "send_ticks_max": 524548,
+            "tick_ticks_max": 629037,
+            "tick_ticks_total": 48880999,
+            "agent_ticks": 1791,
+            "agent_frames": 112,
+            "agent_ready": 1,
+            "m64p_requests": 112,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          },
+          {
+            "init_calls": 0,
+            "init_ok": 0,
+            "recv_calls": 0,
+            "recv_data": 0,
+            "recv_bytes": 0,
+            "recv_lost": 0,
+            "read_calls": 0,
+            "read_failed": 0,
+            "send_calls": 0,
+            "send_ok": 0,
+            "send_bytes": 0,
+            "pio_calls": 2,
+            "pio_failed": 0,
+            "recv_ticks_max": 0,
+            "send_ticks_max": 0,
+            "tick_ticks_max": 0,
+            "tick_ticks_total": 0,
+            "agent_ticks": 0,
+            "agent_frames": 0,
+            "agent_ready": 0,
+            "m64p_requests": 0,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          },
+          {
+            "init_calls": 0,
+            "init_ok": 0,
+            "recv_calls": 0,
+            "recv_data": 0,
+            "recv_bytes": 0,
+            "recv_lost": 0,
+            "read_calls": 0,
+            "read_failed": 0,
+            "send_calls": 0,
+            "send_ok": 0,
+            "send_bytes": 0,
+            "pio_calls": 0,
+            "pio_failed": 0,
+            "recv_ticks_max": 0,
+            "send_ticks_max": 0,
+            "tick_ticks_max": 0,
+            "tick_ticks_total": 0,
+            "agent_ticks": 0,
+            "agent_frames": 0,
+            "agent_ready": 0,
+            "m64p_requests": 0,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          },
+          {
+            "init_calls": 0,
+            "init_ok": 0,
+            "recv_calls": 0,
+            "recv_data": 0,
+            "recv_bytes": 0,
+            "recv_lost": 0,
+            "read_calls": 0,
+            "read_failed": 0,
+            "send_calls": 0,
+            "send_ok": 0,
+            "send_bytes": 0,
+            "pio_calls": 1,
+            "pio_failed": 0,
+            "recv_ticks_max": 0,
+            "send_ticks_max": 0,
+            "tick_ticks_max": 0,
+            "tick_ticks_total": 0,
+            "agent_ticks": 0,
+            "agent_frames": 0,
+            "agent_ready": 0,
+            "m64p_requests": 0,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          }
+        ]
+      }
+    },
+    {
+      "variant": 1,
+      "variant_name": "SC64",
+      "load": 2,
+      "load_name": "heavy",
+      "requests": 36,
+      "timeouts": 1,
+      "busy": 0,
+      "wrong": 0,
+      "rtt_ms_min": 59.4475,
+      "rtt_ms_avg": 115.78967999999999,
+      "rtt_ms_max": 291.6844,
+      "delta": {
+        "init_calls": 0,
+        "init_ok": 0,
+        "recv_calls": 514,
+        "recv_data": 37,
+        "recv_bytes": 21318,
+        "recv_lost": 0,
+        "read_calls": 37,
+        "read_failed": 0,
+        "send_calls": 37,
+        "send_ok": 31,
+        "send_bytes": 37668,
+        "pio_calls": 3,
+        "pio_failed": 0,
+        "recv_ticks_max": 182091,
+        "send_ticks_max": 1627616,
+        "tick_ticks_max": 1773502,
+        "tick_ticks_total": 64769098,
+        "agent_ticks": 514,
+        "agent_frames": 37,
+        "agent_ready": 1,
+        "m64p_requests": 37,
+        "m64p_errors": 0,
+        "m64p_last_error": 0
+      },
+      "after": {
+        "addr": 257584,
+        "format": 0,
+        "size": 5000,
+        "rom_version": "1.1",
+        "frame": 2322,
+        "count_hz": 46875000,
+        "ctl_load": 2,
+        "ctl_variant": 0,
+        "ctl_rerun": 0,
+        "cart": 1,
+        "cart_name": "SummerCart64",
+        "variant": 1,
+        "variant_name": "SC64",
+        "load": 2,
+        "rerun_done": 0,
+        "stages": 15,
+        "mem_size": 8388608,
+        "probe_ok": 63,
+        "d64_magic": 49021676,
+        "sc64_ident_locked": 9175180,
+        "ed_reg14_locked": 9175180,
+        "ed_reg04_locked": 9175180,
+        "pro_sysstat": [
+          9175180,
+          9175180
+        ],
+        "init_tried": 22,
+        "init_ok": 2,
+        "ed_reg14_unlocked": 0,
+        "ed_usbcfg_after": 0,
+        "sc64_ident_unlocked": 1396930098,
+        "rom_header": "80371240000000008000040000000000000000000000000000000000000000006d756c74693634206272696e6775700000000000000000000000004e00000000",
+        "timing": [
+          [
+            {
+              "id": 1,
+              "name": "PI_STATUS",
+              "spins": 100000,
+              "ticks_total": 12407,
+              "ticks_max": 14,
+              "ns_per_read": 258.4791666666667,
+              "wait_limit_ms": 25.847916666666666
+            },
+            {
+              "id": 3,
+              "name": "SC64 SR_CMD",
+              "spins": 100000,
+              "ticks_total": 174555,
+              "ticks_max": 803,
+              "ns_per_read": 3636.5625,
+              "wait_limit_ms": 363.65625
+            }
+          ],
+          [
+            {
+              "id": 1,
+              "name": "PI_STATUS",
+              "spins": 100000,
+              "ticks_total": 12405,
+              "ticks_max": 15,
+              "ns_per_read": 258.4375,
+              "wait_limit_ms": 25.84375
+            },
+            {
+              "id": 3,
+              "name": "SC64 SR_CMD",
+              "spins": 100000,
+              "ticks_total": 284220,
+              "ticks_max": 36856,
+              "ns_per_read": 5921.25,
+              "wait_limit_ms": 592.125
+            }
+          ]
+        ],
+        "buf_addr": 536739840,
+        "cond_load": 1,
+        "buffer": [
+          [
+            {
+              "combo": "IO>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 16290,
+              "ticks_read": 14554
+            },
+            {
+              "combo": "IO>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 16200,
+              "ticks_read": 7882
+            },
+            {
+              "combo": "DMA>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 6237,
+              "ticks_read": 14529
+            },
+            {
+              "combo": "DMA>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 6060,
+              "ticks_read": 7405
+            }
+          ],
+          [
+            {
+              "combo": "IO>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 16223,
+              "ticks_read": 15230
+            },
+            {
+              "combo": "IO>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 41658,
+              "ticks_read": 7802
+            },
+            {
+              "combo": "DMA>IO",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 6116,
+              "ticks_read": 14533
+            },
+            {
+              "combo": "DMA>DMA",
+              "result": 1,
+              "result_name": "match",
+              "first_bad": null,
+              "bad_bytes": 0,
+              "ticks_write": 19489,
+              "ticks_read": 7422
+            }
+          ]
+        ],
+        "load_bytes": 16384,
+        "load_period_ticks": 93750,
+        "load_started": 2318,
+        "load_skipped": 2317,
+        "irq_gap_max": 101107,
+        "link": [
+          {
+            "init_calls": 1,
+            "init_ok": 1,
+            "recv_calls": 2323,
+            "recv_data": 153,
+            "recv_bytes": 65427,
+            "recv_lost": 0,
+            "read_calls": 153,
+            "read_failed": 0,
+            "send_calls": 152,
+            "send_ok": 141,
+            "send_bytes": 392236,
+            "pio_calls": 9,
+            "pio_failed": 0,
+            "recv_ticks_max": 182091,
+            "send_ticks_max": 1627616,
+            "tick_ticks_max": 1773502,
+            "tick_ticks_total": 114645429,
+            "agent_ticks": 2322,
+            "agent_frames": 152,
+            "agent_ready": 1,
+            "m64p_requests": 152,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          },
+          {
+            "init_calls": 0,
+            "init_ok": 0,
+            "recv_calls": 0,
+            "recv_data": 0,
+            "recv_bytes": 0,
+            "recv_lost": 0,
+            "read_calls": 0,
+            "read_failed": 0,
+            "send_calls": 0,
+            "send_ok": 0,
+            "send_bytes": 0,
+            "pio_calls": 2,
+            "pio_failed": 0,
+            "recv_ticks_max": 0,
+            "send_ticks_max": 0,
+            "tick_ticks_max": 0,
+            "tick_ticks_total": 0,
+            "agent_ticks": 0,
+            "agent_frames": 0,
+            "agent_ready": 0,
+            "m64p_requests": 0,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          },
+          {
+            "init_calls": 0,
+            "init_ok": 0,
+            "recv_calls": 0,
+            "recv_data": 0,
+            "recv_bytes": 0,
+            "recv_lost": 0,
+            "read_calls": 0,
+            "read_failed": 0,
+            "send_calls": 0,
+            "send_ok": 0,
+            "send_bytes": 0,
+            "pio_calls": 0,
+            "pio_failed": 0,
+            "recv_ticks_max": 0,
+            "send_ticks_max": 0,
+            "tick_ticks_max": 0,
+            "tick_ticks_total": 0,
+            "agent_ticks": 0,
+            "agent_frames": 0,
+            "agent_ready": 0,
+            "m64p_requests": 0,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          },
+          {
+            "init_calls": 0,
+            "init_ok": 0,
+            "recv_calls": 0,
+            "recv_data": 0,
+            "recv_bytes": 0,
+            "recv_lost": 0,
+            "read_calls": 0,
+            "read_failed": 0,
+            "send_calls": 0,
+            "send_ok": 0,
+            "send_bytes": 0,
+            "pio_calls": 1,
+            "pio_failed": 0,
+            "recv_ticks_max": 0,
+            "send_ticks_max": 0,
+            "tick_ticks_max": 0,
+            "tick_ticks_total": 0,
+            "agent_ticks": 0,
+            "agent_frames": 0,
+            "agent_ready": 0,
+            "m64p_requests": 0,
+            "m64p_errors": 0,
+            "m64p_last_error": 0
+          }
+        ]
+      }
+    }
+  ],
+  "final_report": {
+    "addr": 257584,
+    "format": 0,
+    "size": 5000,
+    "rom_version": "1.1",
+    "frame": 2346,
+    "count_hz": 46875000,
+    "ctl_load": 0,
+    "ctl_variant": 1,
+    "ctl_rerun": 0,
+    "cart": 1,
+    "cart_name": "SummerCart64",
+    "variant": 1,
+    "variant_name": "SC64",
+    "load": 0,
+    "rerun_done": 0,
+    "stages": 15,
+    "mem_size": 8388608,
+    "probe_ok": 63,
+    "d64_magic": 49021676,
+    "sc64_ident_locked": 9175180,
+    "ed_reg14_locked": 9175180,
+    "ed_reg04_locked": 9175180,
+    "pro_sysstat": [
+      9175180,
+      9175180
+    ],
+    "init_tried": 22,
+    "init_ok": 2,
+    "ed_reg14_unlocked": 0,
+    "ed_usbcfg_after": 0,
+    "sc64_ident_unlocked": 1396930098,
+    "rom_header": "80371240000000008000040000000000000000000000000000000000000000006d756c74693634206272696e6775700000000000000000000000004e00000000",
+    "timing": [
+      [
+        {
+          "id": 1,
+          "name": "PI_STATUS",
+          "spins": 100000,
+          "ticks_total": 12407,
+          "ticks_max": 14,
+          "ns_per_read": 258.4791666666667,
+          "wait_limit_ms": 25.847916666666666
+        },
+        {
+          "id": 3,
+          "name": "SC64 SR_CMD",
+          "spins": 100000,
+          "ticks_total": 174555,
+          "ticks_max": 803,
+          "ns_per_read": 3636.5625,
+          "wait_limit_ms": 363.65625
+        }
+      ],
+      [
+        {
+          "id": 1,
+          "name": "PI_STATUS",
+          "spins": 100000,
+          "ticks_total": 12405,
+          "ticks_max": 15,
+          "ns_per_read": 258.4375,
+          "wait_limit_ms": 25.84375
+        },
+        {
+          "id": 3,
+          "name": "SC64 SR_CMD",
+          "spins": 100000,
+          "ticks_total": 284220,
+          "ticks_max": 36856,
+          "ns_per_read": 5921.25,
+          "wait_limit_ms": 592.125
+        }
+      ]
+    ],
+    "buf_addr": 536739840,
+    "cond_load": 1,
+    "buffer": [
+      [
+        {
+          "combo": "IO>IO",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 16290,
+          "ticks_read": 14554
+        },
+        {
+          "combo": "IO>DMA",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 16200,
+          "ticks_read": 7882
+        },
+        {
+          "combo": "DMA>IO",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 6237,
+          "ticks_read": 14529
+        },
+        {
+          "combo": "DMA>DMA",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 6060,
+          "ticks_read": 7405
+        }
+      ],
+      [
+        {
+          "combo": "IO>IO",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 16223,
+          "ticks_read": 15230
+        },
+        {
+          "combo": "IO>DMA",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 41658,
+          "ticks_read": 7802
+        },
+        {
+          "combo": "DMA>IO",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 6116,
+          "ticks_read": 14533
+        },
+        {
+          "combo": "DMA>DMA",
+          "result": 1,
+          "result_name": "match",
+          "first_bad": null,
+          "bad_bytes": 0,
+          "ticks_write": 19489,
+          "ticks_read": 7422
+        }
+      ]
+    ],
+    "load_bytes": 0,
+    "load_period_ticks": 93750,
+    "load_started": 0,
+    "load_skipped": 0,
+    "irq_gap_max": 93989,
+    "link": [
+      {
+        "init_calls": 1,
+        "init_ok": 1,
+        "recv_calls": 2347,
+        "recv_data": 159,
+        "recv_bytes": 65614,
+        "recv_lost": 0,
+        "read_calls": 159,
+        "read_failed": 0,
+        "send_calls": 158,
+        "send_ok": 147,
+        "send_bytes": 393296,
+        "pio_calls": 9,
+        "pio_failed": 0,
+        "recv_ticks_max": 121844,
+        "send_ticks_max": 56050,
+        "tick_ticks_max": 122110,
+        "tick_ticks_total": 117220758,
+        "agent_ticks": 2346,
+        "agent_frames": 158,
+        "agent_ready": 1,
+        "m64p_requests": 158,
+        "m64p_errors": 0,
+        "m64p_last_error": 0
+      },
+      {
+        "init_calls": 0,
+        "init_ok": 0,
+        "recv_calls": 0,
+        "recv_data": 0,
+        "recv_bytes": 0,
+        "recv_lost": 0,
+        "read_calls": 0,
+        "read_failed": 0,
+        "send_calls": 0,
+        "send_ok": 0,
+        "send_bytes": 0,
+        "pio_calls": 2,
+        "pio_failed": 0,
+        "recv_ticks_max": 0,
+        "send_ticks_max": 0,
+        "tick_ticks_max": 0,
+        "tick_ticks_total": 0,
+        "agent_ticks": 0,
+        "agent_frames": 0,
+        "agent_ready": 0,
+        "m64p_requests": 0,
+        "m64p_errors": 0,
+        "m64p_last_error": 0
+      },
+      {
+        "init_calls": 0,
+        "init_ok": 0,
+        "recv_calls": 0,
+        "recv_data": 0,
+        "recv_bytes": 0,
+        "recv_lost": 0,
+        "read_calls": 0,
+        "read_failed": 0,
+        "send_calls": 0,
+        "send_ok": 0,
+        "send_bytes": 0,
+        "pio_calls": 0,
+        "pio_failed": 0,
+        "recv_ticks_max": 0,
+        "send_ticks_max": 0,
+        "tick_ticks_max": 0,
+        "tick_ticks_total": 0,
+        "agent_ticks": 0,
+        "agent_frames": 0,
+        "agent_ready": 0,
+        "m64p_requests": 0,
+        "m64p_errors": 0,
+        "m64p_last_error": 0
+      },
+      {
+        "init_calls": 0,
+        "init_ok": 0,
+        "recv_calls": 0,
+        "recv_data": 0,
+        "recv_bytes": 0,
+        "recv_lost": 0,
+        "read_calls": 0,
+        "read_failed": 0,
+        "send_calls": 0,
+        "send_ok": 0,
+        "send_bytes": 0,
+        "pio_calls": 1,
+        "pio_failed": 0,
+        "recv_ticks_max": 0,
+        "send_ticks_max": 0,
+        "tick_ticks_max": 0,
+        "tick_ticks_total": 0,
+        "agent_ticks": 0,
+        "agent_frames": 0,
+        "agent_ready": 0,
+        "m64p_requests": 0,
+        "m64p_errors": 0,
+        "m64p_last_error": 0
+      }
+    ]
+  },
+  "checks": [
+    {
+      "name": "link.hello",
+      "outcome": "pass",
+      "detail": "proto 0 agent 256 rdram 8388608 B flags 0x07, 82 ms"
+    },
+    {
+      "name": "link.report_found",
+      "outcome": "pass",
+      "detail": "at 0x3ee30: bring-up ROM 1.1, cart SummerCart64, link SC64"
+    },
+    {
+      "name": "identify.cart",
+      "outcome": "pass",
+      "detail": "SummerCart64; X-series VERSION/PRO EDID 0x008c008c -> 0x00000000, USBCFG 0x008c008c -> 0x00000000, SC64 IDENT 0x008c008c -> 0x53437632, 64drive 0x02ec02ec"
+    },
+    {
+      "name": "identify.driver_init",
+      "outcome": "pass",
+      "detail": "SC64 driver init answered (tried mask 0x16, answered mask 0x2)"
+    },
+    {
+      "name": "blocks.timing.pi_status.no_load",
+      "outcome": "info",
+      "detail": "PI_STATUS: 258 ns per read, slowest 0.3 us; 100000 spins = 25.8 ms",
+      "value": 258.4791666666667
+    },
+    {
+      "name": "blocks.timing.cart_status.no_load",
+      "outcome": "info",
+      "detail": "SC64 SR_CMD: 3637 ns per read, slowest 17.1 us; 100000 spins = 363.7 ms",
+      "value": 3636.5625
+    },
+    {
+      "name": "blocks.buffer.IO>IO.no_load",
+      "outcome": "pass",
+      "detail": "match at 0x1ffe0000, write 348 us, read 310 us"
+    },
+    {
+      "name": "blocks.buffer.IO>DMA.no_load",
+      "outcome": "pass",
+      "detail": "match at 0x1ffe0000, write 346 us, read 168 us"
+    },
+    {
+      "name": "blocks.buffer.DMA>IO.no_load",
+      "outcome": "pass",
+      "detail": "match at 0x1ffe0000, write 133 us, read 310 us"
+    },
+    {
+      "name": "blocks.buffer.DMA>DMA.no_load",
+      "outcome": "pass",
+      "detail": "match at 0x1ffe0000, write 129 us, read 158 us"
+    },
+    {
+      "name": "blocks.timing.pi_status.under_load",
+      "outcome": "info",
+      "detail": "PI_STATUS: 258 ns per read, slowest 0.3 us; 100000 spins = 25.8 ms",
+      "value": 258.4375
+    },
+    {
+      "name": "blocks.timing.cart_status.under_load",
+      "outcome": "info",
+      "detail": "SC64 SR_CMD: 5921 ns per read, slowest 786.3 us; 100000 spins = 592.1 ms",
+      "value": 5921.25
+    },
+    {
+      "name": "blocks.buffer.IO>IO.under_load",
+      "outcome": "pass",
+      "detail": "match at 0x1ffe0000, write 346 us, read 325 us"
+    },
+    {
+      "name": "blocks.buffer.IO>DMA.under_load",
+      "outcome": "pass",
+      "detail": "match at 0x1ffe0000, write 889 us, read 166 us"
+    },
+    {
+      "name": "blocks.buffer.DMA>IO.under_load",
+      "outcome": "pass",
+      "detail": "match at 0x1ffe0000, write 130 us, read 310 us"
+    },
+    {
+      "name": "blocks.buffer.DMA>DMA.under_load",
+      "outcome": "pass",
+      "detail": "match at 0x1ffe0000, write 416 us, read 158 us"
+    },
+    {
+      "name": "link.default.load_off.traffic",
+      "outcome": "pass",
+      "detail": "SC64: 36 requests, 0 timeouts, 0 busy, 0 wrong; rtt 60/88/210 ms",
+      "value": 87.85590277777779
+    },
+    {
+      "name": "link.default.load_off.driver",
+      "outcome": "info",
+      "detail": "lost 0 send failed 0 read failed 0 pi_io busy 0/3 m64p errors 0; longest tick 8944 us, receive 757 us, send 7229 us; irq gap 2169 us (period 2000), load DMAs 0 skipped 0",
+      "value": 8944.085333333333
+    },
+    {
+      "name": "link.default.load_moderate.traffic",
+      "outcome": "info",
+      "detail": "SC64: 34 requests, 3 timeouts, 0 busy, 0 wrong; rtt 46/140/556 ms",
+      "value": 139.70878387096775
+    },
+    {
+      "name": "link.default.load_moderate.driver",
+      "outcome": "info",
+      "detail": "lost 0 send failed 5 read failed 0 pi_io busy 0/3 m64p errors 0; longest tick 13419 us, receive 1506 us, send 11190 us; irq gap 2145 us (period 2000), load DMAs 9734 skipped 0",
+      "value": 13419.456
+    },
+    {
+      "name": "link.default.load_heavy.traffic",
+      "outcome": "info",
+      "detail": "SC64: 36 requests, 1 timeouts, 0 busy, 0 wrong; rtt 59/116/292 ms",
+      "value": 115.78967999999999
+    },
+    {
+      "name": "link.default.load_heavy.driver",
+      "outcome": "info",
+      "detail": "lost 0 send failed 6 read failed 0 pi_io busy 0/3 m64p errors 0; longest tick 37835 us, receive 3885 us, send 34722 us; irq gap 2157 us (period 2000), load DMAs 2318 skipped 2317",
+      "value": 37834.70933333333
+    }
+  ],
+  "notes": []
+}

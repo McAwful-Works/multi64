@@ -99,7 +99,8 @@ same commit.
 
 ## Reading the screen
 
-The screen shows everything that does not need a link. Photograph it before running anything.
+The screen shows everything that does not need a link, which is all there is to go on when the
+link never comes up.
 
 On the way up, each start-up and stage step prints a line as it begins (`boot: timer`,
 `identify: X7 init`, `blocks 0: buffer 2` and so on), so a ROM that hangs leaves the step it hung
@@ -145,19 +146,23 @@ The values above are placeholders, not measurements. **Z** steps the load (off, 
    screen before any ROM code ran. Afterward, `--boot-menu` puts the menu back; until then the
    cart keeps skipping it. See
    [Loading a ROM onto a SummerCart64](../README.md#loading-a-rom-onto-a-summercart64).
-4. Photograph the screen.
-5. Run:
+4. Run:
 
    ```sh
    target/release/multi64-test-connector bringup --out bringup-sc64-baseline.json
    ```
 
-6. What a working SC64 shows: `identify.cart` and `identify.driver_init` PASS; all eight
+5. What a working SC64 shows: `identify.cart` and `identify.driver_init` PASS; all eight
    `blocks.buffer.*` checks PASS; `link.default.load_off.traffic` PASS. Under moderate and heavy
    load a few timeouts are normal, because the agent gives up on a busy PI by design rather than
    stall the game; they are reported as INFO with their count, which varies from run to run.
-7. Keep the JSON and the photo. They are what the X7 run is compared against. The 2026-10-08
-   baseline is committed as [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json).
+6. Keep the JSON: it is what another cart's run is compared against. Commit it under
+   [`baselines/`](baselines/) as `sc64-<date>.json`. The newest by name is the one the bundle
+   ships, as `sc64-baseline.json`, so record a new one whenever the ROM changes. Currently that is
+   [`baselines/sc64-2026-10-12.json`](baselines/sc64-2026-10-12.json), from bring-up ROM 1.1; the
+   first, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json), is from ROM 1.0.
+   When a run and its baseline come from different builds of the ROM, the comparison says so on
+   its first line.
 
 Anything else on the SC64 is a fault in this ROM or the tool, not in the cart, and has to be
 fixed before the ROM goes to anyone.
@@ -179,10 +184,11 @@ It writes `target/handover/cart-diagnostics-<commit>/` and a zip of it, holding:
 - `multi64d.exe`, the same build as the one inside the Multi64 installer;
 - `multi64-test-connector.exe`;
 - `multi64_test.z64` and `multi64_bringup.z64`, the committed ROMs;
-- the SC64 baseline, [`baselines/sc64-2026-10-08.json`](baselines/sc64-2026-10-08.json);
-- [`diagnose.bat`](handover/diagnose.bat), [`diagnose.ps1`](handover/diagnose.ps1) and the tester's
-  [`README.txt`](handover/README.txt);
-- `VERSION.txt`, which records the commit and every file's SHA-256.
+- `sc64-baseline.json`, a copy of the newest `baselines/sc64-<date>.json`;
+- [`diagnose.bat`](handover/diagnose.bat), [`diagnose.ps1`](handover/diagnose.ps1),
+  [`zip-folder.ps1`](handover/zip-folder.ps1), which zips both the results and the bundle itself,
+  and the tester's [`README.txt`](handover/README.txt);
+- `VERSION.txt`, which records the commit, which baseline was copied, and every file's SHA-256.
 
 The tester copies the two ROMs to the SD card, closes Multi64, AP64 and Xfer64, and double-clicks
 `diagnose.bat`, which walks them through the run. For phase 3 they first install the bundle's AP64,
@@ -274,8 +280,15 @@ is not known. So the script no longer trusts one attempt:
 - a daemon that survives both is most likely waiting in the cart's USB serial driver, so the script
   asks the tester to unplug the cart's USB cable and records whether the process then goes, which
   is the evidence for or against that;
+- a daemon that is still there after the unplug is left out of the "close Multi64" question at the
+  start of a run, which it would otherwise never let end, and the transcript says its port may be
+  held;
 - the zip step reads files whoever else has them open, and one that still cannot be read is named
   on screen and left out, with a request to send the folder as well.
+
+The phases run inside one `try`. An error part-way, such as a tool that an antivirus program will
+not let run, is written to the transcript with where it happened, and the closing questions, the
+sweep for daemons and the zip still follow, so a failed run sends back what it gathered.
 
 The script picks the cart and its port by the USB IDs in `crates/cart-probe` (X7 `0403:6001`,
 SummerCart64 `0403:6014`) when exactly one such port is plugged in, and asks otherwise; the PRO's

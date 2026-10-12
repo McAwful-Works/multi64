@@ -1264,7 +1264,7 @@ pub async fn run_bringup<F: FnMut(String) + Send>(
         let c = Check::new(
             "link.hello",
             Outcome::Fail,
-            "no HELLO_ACK: the agent never answered. Photograph the bring-up screen; it shows what the ROM found without a link.",
+            "no HELLO_ACK: the agent never answered. The ROM's own screen shows what it found without a link.",
         );
         record(&mut run, c, log);
         return Ok(run);
@@ -1377,6 +1377,16 @@ pub async fn run_bringup<F: FnMut(String) + Send>(
 /// the measured values side by side. Empty when everything matches.
 pub fn compare(run: &BringupRun, baseline: &BringupRun) -> Vec<String> {
     let mut lines = Vec::new();
+    // A baseline from another build of the ROM still compares, but a difference may then be the
+    // ROM's rather than the cart's, so say which two builds these are.
+    if let (Some(here), Some(there)) = (&run.boot_report, &baseline.boot_report) {
+        if here.rom_version != there.rom_version {
+            lines.push(format!(
+                "ROM  this run is bring-up ROM {}, the baseline {}: a difference below may be the ROM's, not the cart's",
+                here.rom_version, there.rom_version
+            ));
+        }
+    }
     for b in &baseline.checks {
         match run.checks.iter().find(|c| c.name == b.name) {
             None => lines.push(format!("MISSING  {}  (baseline: {:?})", b.name, b.outcome)),
@@ -1534,6 +1544,32 @@ mod tests {
         assert!(lines.iter().any(|l| l.starts_with("NEW  c")));
         assert!(lines.iter().any(|l| l.contains("(2.50x)")));
         assert!(compare(&base, &base).iter().all(|l| l.starts_with("VALUE")));
+    }
+
+    #[test]
+    fn compare_says_when_the_baseline_is_another_rom_build() {
+        let run = |rom: u32| {
+            let mut bytes = synthetic(0x1000);
+            bytes[0x14..0x18].copy_from_slice(&rom.to_be_bytes());
+            BringupRun {
+                format: RUN_FORMAT,
+                tool: String::new(),
+                started_unix: 0,
+                daemon: None,
+                hello: None,
+                report_addr: None,
+                boot_report: Some(Report::parse(0x1000, &bytes).unwrap()),
+                phases: vec![],
+                final_report: None,
+                checks: vec![],
+                notes: vec![],
+            }
+        };
+        let (old, new) = (run(0x0001_0000), run(0x0001_0001));
+        let lines = compare(&new, &old);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("ROM  this run is bring-up ROM 1.1, the baseline 1.0"));
+        assert!(compare(&new, &new).is_empty());
     }
 
     #[test]
