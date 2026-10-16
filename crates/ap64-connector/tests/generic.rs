@@ -147,7 +147,8 @@ fn serves_domains_guards_and_writes() {
             r#"[{"type":"GUARD","address":8192,"expected_data":"AAAAAA==","domain":"RDRAM"},{"type":"WRITE","address":12288,"value":"/w==","domain":"RDRAM"}]"#,
             // ROM writes and unknown domains are refused, not invented.
             r#"[{"type":"WRITE","address":0,"value":"AQ==","domain":"ROM"},{"type":"READ","address":0,"size":1,"domain":"EEPROM"}]"#,
-            r#"[{"type":"DISPLAY_MESSAGE","message":"Got Roast Chicken"},{"type":"LOCK"},{"type":"UNLOCK"}]"#,
+            // GoldenEye 007's world also sends LOADOUT_TRACKER, for an overlay its own Lua draws.
+            r#"[{"type":"DISPLAY_MESSAGE","message":"Got Roast Chicken"},{"type":"LOCK"},{"type":"UNLOCK"},{"type":"LOADOUT_TRACKER","enabled":true,"missions":[]}]"#,
             // ROM from the cart: the System Bus mirror of 0x20, a read in the same batch as an
             // RDRAM guard, and a read past the window, which fails only that request.
             r#"[{"type":"READ","address":268435488,"size":5,"domain":"System Bus"},{"type":"GUARD","address":4096,"expected_data":"3q2+7w==","domain":"RDRAM"},{"type":"READ","address":6144,"size":1,"domain":"ROM"},{"type":"READ","address":8190,"size":4,"domain":"ROM"},{"type":"HASH"}]"#,
@@ -212,7 +213,12 @@ fn serves_domains_guards_and_writes() {
         assert_eq!(r.matches("\"type\":\"ERROR\"").count(), 2, "batch 4: {r}");
 
         let r = &replies[5];
-        for want in ["DISPLAY_MESSAGE_RESPONSE", "LOCKED", "UNLOCKED"] {
+        for want in [
+            "DISPLAY_MESSAGE_RESPONSE",
+            "LOCKED",
+            "UNLOCKED",
+            "LOADOUT_TRACKER_RESPONSE",
+        ] {
             assert!(r.contains(want), "batch 5 lacks {want}: {r}");
         }
         assert!(messages

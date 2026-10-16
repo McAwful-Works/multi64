@@ -14,7 +14,10 @@ game_code = "NGEE"
 version = 0
 cic = "6102"
 randomizer = "NotFamilyJules's GoldenEye 007 world"
-connector = "generic"     # provisional: its Lua's frame logic is in game.c; its connector is step 4 (#395)
+# Its client is a BizHawk Client handler, so the generic connector serves it; its one custom
+# request, LOADOUT_TRACKER (an overlay its Lua draws on BizHawk's window), is acknowledged
+# there. Its Lua's game logic runs on the N64 instead (agent/goldeneye/game.c).
+connector = "generic"
 
 # The release this was measured against; a different one installed is noted, not refused.
 [measured]

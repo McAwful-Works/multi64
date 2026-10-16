@@ -56,6 +56,11 @@ What changed, and why:
 * LOCK. A console cannot be paused. LOCK and UNLOCK are acknowledged; each batch
   still sees its own snapshot.
 
+* LOADOUT_TRACKER. Not upstream's: GoldenEye 007's world sends it to its own Lua,
+  which draws a loadout checklist over BizHawk's window and never touches game
+  memory with it. A console has no window to draw on, so it is acknowledged as
+  that Lua acknowledges it. A client that never sends it is unaffected.
+
 Provided by AP64 (crates/ap64-connector): the global `ap64`, and `json` via require.
 ]]
 
@@ -258,6 +263,11 @@ local request_handlers = {
     ["SET_MESSAGE_INTERVAL"] = function (req)
         message_interval = req["value"]
         return { type = "SET_MESSAGE_INTERVAL_RESPONSE" }
+    end,
+
+    ["LOADOUT_TRACKER"] = function (req)
+        -- GoldenEye 007's overlay for BizHawk's window; nothing on a console to draw it on.
+        return { type = "LOADOUT_TRACKER_RESPONSE" }
     end,
 
     ["default"] = function (req)
