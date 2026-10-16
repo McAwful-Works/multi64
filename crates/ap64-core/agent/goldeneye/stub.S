@@ -43,7 +43,19 @@
         .set    noat
         .text
         .globl  agent_hook_stub
+/* Two entries at fixed offsets, so the profile can name them without the build's layout:
+   stub+0 for the frame hook's jal, stub+8 for the j that replaces the world's loader. */
 agent_hook_stub:
+        b       hook_main
+        nop
+world_loader_entry:
+        b       world_loader
+        nop
+        .if     (world_loader_entry - agent_hook_stub) - 8
+        .error  "the world loader's entry must be stub+8: the profile's j targets it"
+        .endif
+
+hook_main:
         addiu   $sp, $sp, -24
         sw      $ra, 20($sp)
         CALL    0x7000BD0C              /* joyConsumeSamplesWrapper, the call this jal replaced */
@@ -114,6 +126,57 @@ done:
         lw      $ra, 20($sp)
         jr      $ra
         addiu   $sp, $sp, 24
+
+/*
+ * The world's payload loader, done safely. The world's own (0x7F009A34, in the paged game
+ * segment) is entered with `j` from each of its hooks, with the real target in $t9 and the
+ * hooked call's arguments still in $a0-$a3 and on the caller's stack. Once, it copies the
+ * world's 2,944-byte payload from ROM 0xBFB000 to 0x8007F400 (inside the game's BSS) with
+ * CPU loads from the cartridge, then jumps to $t9. On a console those loads can collide
+ * with a PI DMA the game has in flight (audio streams from ROM), and the stores went
+ * through the D-cache straight into a jump. The profile turns the loader's first two
+ * instructions into `j` here instead.
+ *
+ * Same contract: if the payload's first word is still zero (the game's BSS clear zeroed
+ * it), copy it with the game's romCopy, which invalidates the D-cache over the target and
+ * DMAs through the PI manager, then invalidate the I-cache over it, since it is code about
+ * to run. Every register the hooked call might still need is put back, and the stack is
+ * where it was, before the jump to $t9.
+ */
+world_loader:
+        lui     $t0, 0x8008
+        lw      $t0, -0x0C00($t0)       /* 0x8007F400: the payload's first word */
+        bnez    $t0, 2f
+        nop
+        addiu   $sp, $sp, -40
+        sw      $a0, 16($sp)
+        sw      $a1, 20($sp)
+        sw      $a2, 24($sp)
+        sw      $a3, 28($sp)
+        sw      $ra, 32($sp)
+        sw      $t9, 36($sp)
+        lui     $a0, 0x8008
+        addiu   $a0, $a0, -0x0C00       /* target 0x8007F400 */
+        lui     $a1, 0x00C0
+        addiu   $a1, $a1, -0x5000       /* ROM 0xBFB000 */
+        CALL    0x70005C1C              /* romCopy(target, rom, size) */
+        addiu   $a2, $zero, 0x0B80      /* 2,944 bytes */
+        lui     $t0, 0x8008
+        addiu   $t0, $t0, -0x0C00
+        addiu   $t1, $t0, 0x0B80
+1:      cache   0x10, 0($t0)            /* Hit_Invalidate_I, 32-byte lines */
+        sltu    $t2, $t0, $t1
+        bnez    $t2, 1b
+        addiu   $t0, $t0, 32
+        lw      $a0, 16($sp)
+        lw      $a1, 20($sp)
+        lw      $a2, 24($sp)
+        lw      $a3, 28($sp)
+        lw      $ra, 32($sp)
+        lw      $t9, 36($sp)
+        addiu   $sp, $sp, 40
+2:      jr      $t9
+        nop
 
 /* The image check's state, IMAGE_CHECK_STATE's three words, addressed through KSEG0. */
         .align  2

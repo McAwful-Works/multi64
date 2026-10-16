@@ -59,34 +59,27 @@ sha1 = "1a5e39acafe2e643c369ba3bfc3909f79ce9ad0b"
 hint = "The randomizer changed the routine the stub loads the agent with."
 
 # The world's lazy loader (0x7F009A34, ROM 0x3E564) copies its 2,944-byte payload from ROM
-# 0xBFB000, through the uncached cartridge window, to 0x8007F400 inside the game's BSS, then
-# jumps into it. It stores through the D-cache (KSEG0), so on a console the jump fetches code
-# that has not reached RAM yet, and the ROM freezes at the splash screen; an emulator has no
-# caches. Storing through KSEG1 instead puts every word in RAM at once, and the copied code
-# has never run, so no stale I-cache line can hold it. With this one word the world's seed
-# boots on a console into a mission (#395). The loader's other words are pinned around it.
+# 0xBFB000 to 0x8007F400, inside the game's BSS, with CPU loads from the cartridge, then
+# jumps into it. On a console that froze the ROM at the splash screen: the stores went
+# through the D-cache, so the jump fetched code that had not reached RAM yet (an emulator has
+# no caches). Its CPU loads could also collide with a PI DMA the game has in flight. So its
+# first two instructions become a jump to the stub's own loader (stub+8), which copies the
+# payload with the game's romCopy through the PI manager and invalidates the I-cache over it
+# (stub.S). The rest of the world's loader is never reached again; all of it is pinned.
 [[require]]
 kind = "sha1"
-label = "The world's payload loader (before the destination)"
-at = 0x3E564
-len = 0x8
-sha1 = "f864dd2ed73cd05d16c163fe0180dc35112a0377"
-hint = "This release of the world loads its payload differently from the one AP64 was measured against."
-
-[[require]]
-kind = "sha1"
-label = "The world's payload loader (after the destination)"
-at = 0x3E570
-len = 0x2C
-sha1 = "1f563b9f1affeb40099541a6fce42b4e1567d3f5"
+label = "The world's payload loader (after its first two instructions)"
+at = 0x3E56C
+len = 0x30
+sha1 = "574003a0c60127f30c881409fde2c65cd530e9ba"
 hint = "This release of the world loads its payload differently from the one AP64 was measured against."
 
 [[write]]
 kind = "replace"
-label = "The world's payload loader: copy through uncached RAM"
-at = 0x3E56C            # lui t1, 0x8008  ->  lui t1, 0xA008: the copy's destination in KSEG1
-from = "3c098008"
-bytes = "3c09a008"
+label = "The world's payload loader: AP64's, through the PI manager"
+at = 0x3E564            # lui t0, 0xB0C0 / addiu t0, t0, -0x5000  ->  j 0x7001F394 (stub+8) / nop
+from = "3c08b0c02508b000"
+bytes = "08007ce500000000"
 
 [[write]]
 kind = "blob"
@@ -95,12 +88,12 @@ at = 0x1FF8C
 file = "stub.bin"
 max_len = 0x320
 
-# The stub's lui/addiu of AGENT_ROM (stub + 0x5C).
+# The stub's lui/addiu of AGENT_ROM (stub + 0x6C).
 [[write]]
 kind = "imm"
 label = "Where the agent is, for the stub"
-hi = 0x1FFE8
-lo = 0x1FFEC
+hi = 0x1FFF8
+lo = 0x1FFFC
 value = "agent_rom"
 
 [[write]]

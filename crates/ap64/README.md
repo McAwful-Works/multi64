@@ -166,8 +166,10 @@ testing:
 - **GoldenEye 007 (US)**, NotFamilyJules's GoldenEye 007 world, in progress (#395). As
   released, the world's ROM freezes on a console at the splash screen: its loader copies the
   world's code into RAM through the data cache and jumps straight into it, which only an
-  emulator forgives. The profile changes that one instruction to copy through uncached RAM,
-  and the seed then boots and plays on a console. The world needs an Expansion Pak for the
+  emulator forgives, and it reads the cartridge with CPU loads while the game may have its
+  own DMA in flight. The profile points that loader at AP64's own, in the hook stub, which
+  copies the code with the game's DMA routine and invalidates the instruction cache over it;
+  the seed then boots and plays on a console. The world needs an Expansion Pak for the
   game itself. GoldenEye pages its game code in from ROM through the TLB, 8 KB at a time,
   so the hook stub sits in the boot code, which stays resident, over a Controller Pak
   function the game never uses (it saves to EEPROM). The agent loads and answers on a
