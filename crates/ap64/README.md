@@ -142,9 +142,10 @@ Bomberman 64: The Second Attack and Star Fox 64 on 2026-09-27):
   Mission Accomplished and Mission Complete, with laser upgrades, rings and bombs received and
   landing, over one connection that held for the whole session.
 
-Written and working, but **not offered in the app**, because the game cannot be played
-through for a reason outside AP64. Kept in the tree and checked by the same tests as the
-rest (`ap64_core::withheld`), so re-offering it is a one-line change:
+Written, but **not offered in the app**, because the game cannot be played through yet.
+Kept in the tree and checked by the same tests as the rest (`ap64_core::withheld`), so
+offering one is a one-line change. `ap64-patch --withheld` checks and patches them, for
+testing:
 
 - **Castlevania: Legacy of Darkness (US)**, Archipelago's CVLoD world, through BizHawk Client.
   The same Konami engine as Castlevania 64, but relinked: two thirds of CV64's code is still
@@ -162,6 +163,17 @@ rest (`ap64_core::withheld`), so re-offering it is a one-line change:
   It is a bug in the CVLoD world (seen on v2.0.2). AP64 refuses the seed rather than patch a
   game it knows freezes; the profile moves back into `builtin` when a seed can be played
   through.
+- **GoldenEye 007 (US)**, NotFamilyJules's GoldenEye 007 world, in progress (#395). As
+  released, the world's ROM freezes on a console at the splash screen: its loader copies the
+  world's code into RAM through the data cache and jumps straight into it, which only an
+  emulator forgives. The profile changes that one instruction to copy through uncached RAM,
+  and the seed then boots and plays on a console. The world needs an Expansion Pak for the
+  game itself. GoldenEye pages its game code in from ROM through the TLB, 8 KB at a time,
+  so the hook stub sits in the boot code, which stays resident, over a Controller Pak
+  function the game never uses (it saves to EEPROM). The agent loads and answers on a
+  SummerCart64 from inside a mission. What is missing is the game logic the world's BizHawk
+  Lua runs every frame (pickups, mailboxes, the debrief guard), which a console needs done
+  on the N64 itself.
 
 ## What the window shows
 

@@ -1,0 +1,110 @@
+# GoldenEye 007 (US), as patched by NotFamilyJules's Archipelago world (goldeneye_ap,
+# measured at main 21302eb1). Addresses from the n64decomp/007 decomp, whose ge007.u.sha1 is
+# this ROM's. Two uncompressed code segments, both TLB-mapped: boot/lib code at ROM 0x1000
+# runs at 0x70000400, and the game at ROM 0x34B30 runs at 0x7F000000.
+# Blobs: crates/ap64-core/agent/build.sh goldeneye (see BUILD_REV). Measurements: #395.
+#
+# The world needs an Expansion Pak for the game itself: its patch moves the game's stacks
+# and buffers up 4 MB, to 0x807B.../0x807E....
+
+id = "goldeneye"
+name = "GoldenEye 007"
+release = "US"
+game_code = "NGEE"
+version = 0
+cic = "6102"
+randomizer = "NotFamilyJules's GoldenEye 007 world"
+connector = "generic"     # provisional: its Lua does frame logic of its own (#395)
+
+# The release this was measured against; a different one installed is noted, not refused.
+[measured]
+world = "goldeneye.apworld"
+version = "0.1.1"
+
+[agent]
+image = "agent.bin"
+rom = 0xC00000          # past the 12 MB image; the world's data ends at 0xBFF83C
+vram = 0x80480000       # Expansion Pak, measured untouched and bracketed by nothing
+min_ram = 0x800000      # the world needs the Pak; without one the stub skips the agent
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0x70F0             # bossMainloop: jal joyConsumeSamplesWrapper (0x7000BD0C) at 0x700064F0
+equals = 0x0C002F43
+hint = "The randomizer changed GoldenEye's main loop, where the hook goes."
+
+[[require]]
+kind = "sha1"
+label = "Space for the hook stub"
+at = 0x1FF8C            # a libultra Controller Pak file function (0x7001F38C), which nothing calls
+len = 0x320
+sha1 = "802fe2b2950ab3b9bcc5e292b573b07e297e7e00"
+hint = "Something now occupies the dead code the stub goes in. Re-run the dead-space measurement before moving it."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0xC90C             # joyConsumeSamplesWrapper, 0x7000BD0C
+len = 0x7C
+sha1 = "5db4b3f0dc05841774a7c835d293de0c3ee27689"
+hint = "The randomizer changed the code the hook passes each frame through to."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine"
+at = 0x6790             # doRomCopy, romReceiveMesg and romCopy (0x70005C1C), 0x70005B90..0x70005C44
+len = 0xB4
+sha1 = "1a5e39acafe2e643c369ba3bfc3909f79ce9ad0b"
+hint = "The randomizer changed the routine the stub loads the agent with."
+
+# The world's lazy loader (0x7F009A34, ROM 0x3E564) copies its 2,944-byte payload from ROM
+# 0xBFB000, through the uncached cartridge window, to 0x8007F400 inside the game's BSS, then
+# jumps into it. It stores through the D-cache (KSEG0), so on a console the jump fetches code
+# that has not reached RAM yet, and the ROM freezes at the splash screen; an emulator has no
+# caches. Storing through KSEG1 instead puts every word in RAM at once, and the copied code
+# has never run, so no stale I-cache line can hold it. With this one word the world's seed
+# boots on a console into a mission (#395). The loader's other words are pinned around it.
+[[require]]
+kind = "sha1"
+label = "The world's payload loader (before the destination)"
+at = 0x3E564
+len = 0x8
+sha1 = "f864dd2ed73cd05d16c163fe0180dc35112a0377"
+hint = "This release of the world loads its payload differently from the one AP64 was measured against."
+
+[[require]]
+kind = "sha1"
+label = "The world's payload loader (after the destination)"
+at = 0x3E570
+len = 0x2C
+sha1 = "1f563b9f1affeb40099541a6fce42b4e1567d3f5"
+hint = "This release of the world loads its payload differently from the one AP64 was measured against."
+
+[[write]]
+kind = "replace"
+label = "The world's payload loader: copy through uncached RAM"
+at = 0x3E56C            # lui t1, 0x8008  ->  lui t1, 0xA008: the copy's destination in KSEG1
+from = "3c098008"
+bytes = "3c09a008"
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0x1FF8C
+file = "stub.bin"
+max_len = 0x320
+
+# The stub's lui/addiu of AGENT_ROM (stub + 0x5C).
+[[write]]
+kind = "imm"
+label = "Where the agent is, for the stub"
+hi = 0x1FFE8
+lo = 0x1FFEC
+value = "agent_rom"
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0x70F0
+target = 0x7001F38C

@@ -385,7 +385,9 @@ cargo run -p ap64-cli --release -- <seed.z64> --check   # or target/release/ap64
 ```
 
 **`--check` already reports every pin and the room left for the agent.** Do not write a
-script to do this; it has been written twice by mistake.
+script to do this; it has been written twice by mistake. Add `--withheld` for a profile
+held in `ap64_core::withheld()` while its integration is unfinished; without it the patcher
+only knows the games the app offers.
 
 Then `agent-probe.lua` in BizHawk on the patched ROM: it reads `layout.env`, so it needs
 `GAME` set at its top. `magic=0x4D363450` and `text=intact` with ticks climbing once per

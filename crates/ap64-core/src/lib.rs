@@ -95,16 +95,22 @@ pub fn builtin() -> Result<Vec<Bundle>, String> {
 }
 
 /// Profiles kept in the tree but not offered, because the game cannot be played through
-/// for a reason outside AP64. Held here rather than deleted so they stay compiled, parsed
-/// and checked against their blobs by the same tests as the rest; moving one into
-/// [`builtin`] is all that is needed when its reason goes away.
+/// yet. Held here rather than deleted so they stay compiled, parsed and checked against
+/// their blobs by the same tests as the rest; moving one into [`builtin`] is all that is
+/// needed when its reason goes away.
 ///
 /// - `cvlod` — Castlevania: Legacy of Darkness. The splice and the agent work on a cart,
 ///   but a seed freezes, in attract mode at a fixed point and again during play. The same
 ///   seed with no agent in it freezes at the same point in an emulator and the retail ROM
 ///   does not, so the fault is in Archipelago's CVLoD world (seen on v2.0.2), not here.
+/// - `goldeneye` — GoldenEye 007, in progress (#395). The profile places the agent and fixes
+///   the world's payload loader for a console, but the world's Lua also runs game logic
+///   every frame, which nothing on a console does yet.
 pub fn withheld() -> Result<Vec<Bundle>, String> {
-    Ok(vec![builtin!("cvlod", ["agent.bin", "stub.bin"])])
+    Ok(vec![
+        builtin!("cvlod", ["agent.bin", "stub.bin"]),
+        builtin!("goldeneye", ["agent.bin", "stub.bin"]),
+    ])
 }
 
 /// A ROM file as loaded: normalized to big-endian, with what could be learned from it.
@@ -361,7 +367,7 @@ mod tests {
         }
         assert_eq!(
             seen,
-            10 * Cart::ALL.len(),
+            11 * Cart::ALL.len(),
             "every profile whose stub copies the agent lets it move, for every cart"
         );
     }

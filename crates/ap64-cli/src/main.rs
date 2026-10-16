@@ -1,10 +1,11 @@
-//! ap64-patch <seed> [-o <out.z64>] [--cart sc64|ed64|ed64pro] [--check]
+//! ap64-patch <seed> [-o <out.z64>] [--cart sc64|ed64|ed64pro] [--check] [--withheld]
 //!
 //! Detect the game, verify the seed against its profile, and write the seed with the
 //! agent spliced in (by default beside it, as `<stem>-agent.z64`). `--check` only verifies.
 //! `--cart` picks the flash cart the agent is built for: `sc64` (the default, and the only one
 //! whose agent has had a game played through it), or the experimental `ed64` (EverDrive-64 X7)
-//! and `ed64pro`.
+//! and `ed64pro`. `--withheld` also considers the profiles AP64 keeps but does not offer
+//! (`ap64_core::withheld`), for testing a game whose integration is not finished.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -30,7 +31,7 @@ fn print_report(r: &Report) {
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let (mut input, mut output, mut check_only) = (None, None, false);
+    let (mut input, mut output, mut check_only, mut with_withheld) = (None, None, false, false);
     let mut cart = Cart::Sc64;
     while let Some(a) = args.next() {
         match a.to_str() {
@@ -38,6 +39,7 @@ fn run() -> Result<(), String> {
                 output = Some(PathBuf::from(args.next().ok_or("-o needs a path")?))
             }
             Some("--check") => check_only = true,
+            Some("--withheld") => with_withheld = true,
             Some("--cart") => {
                 let id = args.next().ok_or("--cart needs sc64, ed64 or ed64pro")?;
                 let id = id.to_string_lossy();
@@ -45,19 +47,22 @@ fn run() -> Result<(), String> {
                     .ok_or_else(|| format!("unknown cart {id:?}: sc64, ed64 or ed64pro"))?;
             }
             Some("-h") | Some("--help") => {
-                println!(
-                    "usage: ap64-patch <seed> [-o <out.z64>] [--cart sc64|ed64|ed64pro] [--check]"
-                );
+                println!("usage: ap64-patch <seed> [-o <out.z64>] [--cart sc64|ed64|ed64pro] [--check] [--withheld]");
                 return Ok(());
             }
             _ if input.is_none() => input = Some(PathBuf::from(a)),
             _ => return Err(format!("unexpected argument {a:?}")),
         }
     }
-    let input = input
-        .ok_or("usage: ap64-patch <seed> [-o <out.z64>] [--cart sc64|ed64|ed64pro] [--check]")?;
+    let input = input.ok_or(
+        "usage: ap64-patch <seed> [-o <out.z64>] [--cart sc64|ed64|ed64pro] [--check] [--withheld]",
+    )?;
 
-    let bundles = builds_for(&builtin()?, cart);
+    let mut profiles = builtin()?;
+    if with_withheld {
+        profiles.extend(ap64_core::withheld()?);
+    }
+    let bundles = builds_for(&profiles, cart);
     let mut rom = std::fs::read(&input).map_err(|e| format!("{}: {e}", input.display()))?;
     let mut d = detect(&bundles, &mut rom).map_err(|e| format!("{}: {e}", input.display()))?;
     // A seed its world finishes after the patch (ap64_core::adjust) is finished here first.
