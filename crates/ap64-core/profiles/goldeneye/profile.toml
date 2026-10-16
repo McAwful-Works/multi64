@@ -14,7 +14,7 @@ game_code = "NGEE"
 version = 0
 cic = "6102"
 randomizer = "NotFamilyJules's GoldenEye 007 world"
-connector = "generic"     # provisional: its Lua does frame logic of its own (#395)
+connector = "generic"     # provisional: its Lua's frame logic is in game.c; its connector is step 4 (#395)
 
 # The release this was measured against; a different one installed is noted, not refused.
 [measured]
@@ -33,6 +33,21 @@ label = "Frame hook site"
 at = 0x70F0             # bossMainloop: jal joyConsumeSamplesWrapper (0x7000BD0C) at 0x700064F0
 equals = 0x0C002F43
 hint = "The randomizer changed GoldenEye's main loop, where the hook goes."
+
+[[require]]
+kind = "word"
+label = "Frame-end hook site"
+at = 0x73C8             # bossMainloop: jal dynSwapBuffers (0x7F0BD738) at 0x700067C8, after lvlRender
+equals = 0x0FC2F5CE
+hint = "The randomizer changed GoldenEye's main loop, where the frame-end hook goes."
+
+[[require]]
+kind = "sha1"
+label = "Function the frame-end hook calls"
+at = 0xF2268            # dynSwapBuffers, 0x7F0BD738 (game segment, ROM base 0x34B30)
+len = 0x3C
+sha1 = "c8f07819bb688ad1c871ccea62b631a4acce3a49"
+hint = "The randomizer changed the code the frame-end hook passes through to."
 
 [[require]]
 kind = "sha1"
@@ -88,16 +103,22 @@ at = 0x1FF8C
 file = "stub.bin"
 max_len = 0x320
 
-# The stub's lui/addiu of AGENT_ROM (stub + 0x6C).
+# The stub's lui/addiu of AGENT_ROM (stub + 0x74).
 [[write]]
 kind = "imm"
 label = "Where the agent is, for the stub"
-hi = 0x1FFF8
-lo = 0x1FFFC
+hi = 0x20000
+lo = 0x20004
 value = "agent_rom"
 
 [[write]]
 kind = "jal"
 label = "Frame hook"
 at = 0x70F0
-target = 0x7001F38C
+target = 0x7001F38C     # stub+0: the agent, and game.c's game_frame_start
+
+[[write]]
+kind = "jal"
+label = "Frame-end hook"
+at = 0x73C8
+target = 0x7001F39C     # stub+0x10: game.c's game_frame_end, then dynSwapBuffers

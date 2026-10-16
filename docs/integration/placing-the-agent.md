@@ -184,6 +184,13 @@ it jumps to has to be in RAM by then:
 - **Without one**, the hook stub has to go over code that is loaded at boot and never executed:
   a dead debug function is ideal. Code a patch loads later (from a logo screen, say) is **not**
   usable for a hook that runs before it — the call would jump into RAM that is not there yet.
+- **And it has to stay there.** Some games demand-page code through the TLB: GoldenEye 007
+  maps its game segment at `0x7F000000` and loads it 8 KB at a time from ROM into a pool of
+  pages it recycles. A stub over dead code there is reloaded from ROM whenever its page is
+  recycled, losing anything it wrote, and a store into a code page can fault. GoldenEye's
+  first stub went there and froze the game at its first stage change. Its stub now sits in
+  the boot/lib segment, which is resident, and writes its state through the KSEG0 alias of
+  the same RAM, so no TLB mapping decides whether a store lands.
 
 ### 3.3 Proving code is dead
 
@@ -195,6 +202,11 @@ Before writing over a function:
   splicer accepts;
 - say what you could not scan. Compressed overlays cannot be searched as bytes; if the evidence
   is "no references in the uncompressed segments", write that, not "unused".
+
+A scan with no hits is still only a shortlist. In GoldenEye, whose code is entirely
+uncompressed, a function with no `jal`, no address pair and no stored pointer anywhere in the
+ROM ran 2,112 times in play, reached through an address computed some other way. Count calls
+in play (`count-calls.lua`) before writing over anything.
 
 For a few hundred bytes of padding inside a busy segment, the page-level map from
 `ram-usage.lua` cannot help: the 4 KB page around them is in use whatever they do.

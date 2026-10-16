@@ -173,9 +173,13 @@ testing:
   game itself. GoldenEye pages its game code in from ROM through the TLB, 8 KB at a time,
   so the hook stub sits in the boot code, which stays resident, over a Controller Pak
   function the game never uses (it saves to EEPROM). The agent loads and answers on a
-  SummerCart64 from inside a mission. What is missing is the game logic the world's BizHawk
-  Lua runs every frame (pickups, mailboxes, the debrief guard), which a console needs done
-  on the N64 itself.
+  SummerCart64 from inside a mission. The game logic the world's BizHawk Lua runs every frame
+  (pickups, the world's mailboxes, the debrief guard) is ported to C
+  (`agent/goldeneye/game.c`) and runs on the N64 from two hooks in the main loop, one before
+  the game's update and one after it renders. GoldenEye's main loop stops while a level
+  loads, so the mission-start resets happen on the mission's first frame rather than during
+  the load, as they would under BizHawk. Still to come: the connector for the world's client
+  and a full session.
 
 ## What the window shows
 

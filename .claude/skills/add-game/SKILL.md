@@ -84,7 +84,14 @@ trip, about 67 ms. Compare that against a 16.7 ms frame before agreeing to a for
 
 GoldenEye 007 was parked at this step. Its lua is a fork of the generic connector that also
 walks an inventory linked list and rewrites objects on `onframestart`, and its ROM patch
-removes the native paths that did that work, so none of it is optional.
+removes the native paths that did that work, so none of it is optional. It is now being
+done the only way a console allows (#395): the Lua's frame logic is ported to C in
+`agent/<game>/game.c`, which `build.sh` links into that game's agent when it exists, and
+the stub calls it from the hooks it needs -- GoldenEye's runs before the game's update and
+after it renders, as the Lua's `onframestart` and `onframeend` do. Port function for
+function and name the Lua lines each one covers: the world's next release changes the Lua,
+and the port has to be compared against it again, since the profile pins the ROM and not
+the Lua.
 
 ## 2. Build a seed to work against
 
@@ -328,8 +335,8 @@ over 45,420 frames. Two things that looked free and were not: zero runs after
 
 ## 6. Write it
 
-`agent/<game>/game.env` and `stub.S`, then `agent/build.sh <game>` (needs the
-mips64-ultra-elf toolchain in WSL), then `profiles/<game>/profile.toml` by hand, then
+`agent/<game>/game.env` and `stub.S` (and `game.c`, if the world's Lua does game logic of its
+own, §1), then `agent/build.sh <game>` (needs the mips64-ultra-elf toolchain in WSL), then `profiles/<game>/profile.toml` by hand, then
 register it in `ap64-core::builtin()`. Comment `game.env` with *why* each address is safe
 — that comment is the evidence for a decision nobody will remember.
 

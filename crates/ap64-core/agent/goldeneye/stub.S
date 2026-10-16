@@ -43,16 +43,23 @@
         .set    noat
         .text
         .globl  agent_hook_stub
-/* Two entries at fixed offsets, so the profile can name them without the build's layout:
-   stub+0 for the frame hook's jal, stub+8 for the j that replaces the world's loader. */
+/* Three entries at fixed offsets, so the profile can name them without the build's layout:
+   stub+0 for the frame-start hook's jal, stub+8 for the j that replaces the world's loader,
+   and stub+0x10 for the frame-end hook's jal. */
 agent_hook_stub:
         b       hook_main
         nop
 world_loader_entry:
         b       world_loader
         nop
+frame_end_entry:
+        b       frame_end_main
+        nop
         .if     (world_loader_entry - agent_hook_stub) - 8
         .error  "the world loader's entry must be stub+8: the profile's j targets it"
+        .endif
+        .if     (frame_end_entry - agent_hook_stub) - 0x10
+        .error  "the frame-end hook's entry must be stub+0x10: the profile's jal targets it"
         .endif
 
 hook_main:
@@ -119,10 +126,46 @@ zero:
         addiu   $t0, $t0, 4
 
 tick:
-        IMAGE_CHECK done                /* the next slice of the agent's code */
+        IMAGE_CHECK done                /* the next slice of the agent's code, game.c's too */
+        CALL    game_frame_start        /* the world's Lua's onframestart, before the update */
+        nop
         CALL    agent_tick
         nop
 done:
+        lw      $ra, 20($sp)
+        jr      $ra
+        addiu   $sp, $sp, 24
+
+/*
+ * Frame-end hook: bossMainloop's `jal dynSwapBuffers` at 0x700067C8, after lvlRender, where
+ * props tick and pickups happen. Measured at exactly the frame-start hook's rate (5,919
+ * calls each over 9,390 frames). dynSwapBuffers (0x7F0BD738) takes no arguments and the
+ * loop's next call overwrites v0. game_frame_end() is the world's Lua's onframeend; it runs
+ * only when the agent is loaded and the image check has not stood the stub down, and the
+ * original call always runs after it.
+ */
+frame_end_main:
+        addiu   $sp, $sp, -24
+        sw      $ra, 20($sp)
+        lui     $t0, 0x8000
+        lw      $t0, 0x318($t0)         /* osMemSize */
+        lui     $t1, %hi(AGENT_MIN_RAM)
+        addiu   $t1, $t1, %lo(AGENT_MIN_RAM)
+        sltu    $t0, $t0, $t1
+        bnez    $t0, swap
+        nop
+        IMAGE_STOOD_DOWN swap
+        lui     $t1, 0x4D36
+        ori     $t1, $t1, 0x3450        /* 'M64P' */
+        lui     $t0, %hi(AGENT_MAGIC_ADDR)
+        lw      $t0, %lo(AGENT_MAGIC_ADDR)($t0)
+        bne     $t0, $t1, swap
+        nop
+        CALL    game_frame_end
+        nop
+swap:
+        CALL    0x7F0BD738              /* dynSwapBuffers, the call this jal replaced */
+        nop
         lw      $ra, 20($sp)
         jr      $ra
         addiu   $sp, $sp, 24
