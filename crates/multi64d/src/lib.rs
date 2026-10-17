@@ -3,6 +3,7 @@
 //! - **`GET /`** — metadata, including whether the daemon holds the serial link (`serialActive`). Waits at most [`ROOT_LOCK_TIMEOUT`] for the link; one still in use after that is reported as held and busy (`serialBusy`) rather than waited out.
 //! - **`POST /v1/serial/release`** — drop the serial link so another process (e.g. Xfer64) can open the COM port. WebSocket writes are ignored while released. If the link is still in use after [`RELEASE_LOCK_TIMEOUT`] (a long write, a slow reopen), answers **`503`** and does not release, then or later.
 //! - **`POST /v1/serial/resume`** — reopen the same serial device and continue serving. If the link is still in use after [`RESUME_LOCK_TIMEOUT`], answers **`503`** and does not resume, then or later.
+//! - **`GET /ws`** — the L3 stream. A client message over [`MAX_WS_MESSAGE_BYTES`] closes the socket with `1009`; a client that falls behind the cart's chunks is closed with `1013`.
 //!
 //! Full API details: **`docs/spec/daemon-api-v1.md`**.
 
@@ -53,6 +54,13 @@ pub const RESUME_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 /// `docs/spec/daemon-api-v1.md` §1.1). Outlasts a reader iteration (50 ms) and is well under the
 /// 2 s Xfer64 gives this request.
 pub const ROOT_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Largest WebSocket message `/ws` takes from a client: one L3 frame at the protocol's ceiling, a
+/// 16-byte header and a 1 MiB payload (`docs/spec/l3-bridge-protocol-v1.md` §2, §6). The L3 stream
+/// may be split across messages at any octet, so no client needs more, and the daemon holds the
+/// link for the whole of each message it writes to the cart (`docs/spec/daemon-api-v1.md` §4).
+pub const MAX_WS_MESSAGE_BYTES: usize =
+    multi64_l3::HEADER_LEN + multi64_l3::MAX_PAYLOAD_CEILING as usize;
 
 /// How long to wait before retrying `open` after the link faulted (cart unplugged, device reset).
 const REOPEN_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -426,7 +434,11 @@ async fn post_serial_resume(State(state): State<Arc<AppState>>) -> impl IntoResp
 }
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, state))
+    // Only the message is capped, not the frame (the library's 16 MiB stays): a message is checked
+    // once its frame has been read in full, so the client is not still sending when the Close goes
+    // out, and reads it rather than a reset.
+    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_ws(socket, state))
 }
 
 /// Send a Close with `code` and `reason`; the caller then drops the socket.
@@ -707,7 +719,18 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(e)) => {
                         let s = e.to_string();
-                        if s.contains("Connection reset without closing handshake") {
+                        // tungstenite's `CapacityError::MessageTooLong`, which axum passes on only
+                        // as text. It sends no Close of its own, and nothing of the message has
+                        // reached the cart.
+                        if s.contains("Message too long") {
+                            tracing::warn!(error = %e, max = MAX_WS_MESSAGE_BYTES, "websocket message too big; closing the socket");
+                            close_with(
+                                &mut socket,
+                                close_code::SIZE,
+                                format!("message over {MAX_WS_MESSAGE_BYTES} bytes; send the L3 stream in smaller messages"),
+                            )
+                            .await;
+                        } else if s.contains("Connection reset without closing handshake") {
                             tracing::debug!(error = %e, "websocket client disconnected (no close handshake)");
                         } else {
                             tracing::warn!(error = %e, "websocket");

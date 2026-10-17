@@ -1,8 +1,8 @@
 //! `/ws` over a real loopback socket, with a down link so no cart is needed. What the daemon would
 //! have read from a cart is put on its broadcast directly.
 
-use futures_util::StreamExt;
-use multi64d::{build_app, AppState, CartKind, LinkState, SerialConfig};
+use futures_util::{SinkExt, StreamExt};
+use multi64d::{build_app, AppState, CartKind, LinkState, SerialConfig, MAX_WS_MESSAGE_BYTES};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -109,5 +109,44 @@ async fn a_client_that_keeps_up_gets_every_chunk_in_order() {
             Message::Binary(b) => assert_eq!(b.as_ref(), [i; 8]),
             other => panic!("expected chunk {i}, got {other:?}"),
         }
+    }
+}
+
+#[tokio::test]
+async fn a_message_over_the_limit_closes_the_socket_with_message_too_big() {
+    // There was no limit but the library's 64 MiB, and one message is written to the cart under
+    // the link lock: tens of minutes on an EverDrive PRO, with release and resume answering 503.
+    let (url, _from_cart) = serve(16).await;
+    let mut ws = connect(&url).await;
+    ws.send(Message::binary(vec![0x5A; MAX_WS_MESSAGE_BYTES + 1]))
+        .await
+        .unwrap();
+    let mut data = Vec::new();
+    match next_control(&mut ws, &mut data).await {
+        Message::Close(Some(frame)) => {
+            assert_eq!(frame.code, CloseCode::Size, "{frame:?}");
+            assert!(
+                frame.reason.contains(&MAX_WS_MESSAGE_BYTES.to_string()),
+                "the reason gives the limit: {frame:?}"
+            );
+        }
+        other => panic!("expected a Close, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_message_at_the_limit_is_accepted() {
+    // One L3 frame at the protocol's ceiling: a 16-byte header and a 1 MiB payload.
+    assert_eq!(MAX_WS_MESSAGE_BYTES, 16 + 1_048_576);
+    let (url, _from_cart) = serve(16).await;
+    let mut ws = connect(&url).await;
+    ws.send(Message::binary(vec![0x5A; MAX_WS_MESSAGE_BYTES]))
+        .await
+        .unwrap();
+    ws.send(Message::text(r#"{"type":"ping"}"#)).await.unwrap();
+    let mut data = Vec::new();
+    match next_control(&mut ws, &mut data).await {
+        Message::Text(t) => assert_eq!(t.as_str(), r#"{"type":"pong"}"#),
+        other => panic!("expected the pong, got {other:?}"),
     }
 }
