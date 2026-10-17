@@ -55,6 +55,8 @@ async function serveFrontend() {
  * - `settings`: fields merged into the settings file
  * - `ports`: the port names the backend enumerates; `window.__TAURI_PORTS__` replaces it mid-run
  * - `running`: the bridge is running, started for `runningCart` (the backend's label)
+ * - `starting`: the backend reports a start under way (from the tray, or auto-start)
+ * - `holdStart`: `daemon_start` answers only when `window.__FINISH_START__()` is called
  */
 function installTauriStub(scenario = {}) {
   const sc = scenario || {};
@@ -85,6 +87,7 @@ function installTauriStub(scenario = {}) {
     get_serial_port_options: () => portOptions(),
     get_daemon_status: (a) => ({
       running: sc.running === true,
+      starting: sc.starting === true,
       healthy: sc.running === true,
       listen: settings.listen,
       message: "",
@@ -92,6 +95,9 @@ function installTauriStub(scenario = {}) {
       ...(a.withPorts ? { portOptions: portOptions() } : {}),
     }),
     get_daemon_logs: () => [],
+    daemon_start: () => sc.holdStart
+      ? new Promise((resolve) => { window.__FINISH_START__ = () => resolve(null); })
+      : null,
   };
 
   window.__TAURI__ = {
@@ -175,6 +181,38 @@ async function openSettings(p) {
   const card = await statusCard(p);
   check("a stopped bridge's Status card offers Start but not Stop",
     card.bridge === "Stopped" && card.cart === "SummerCart64" && !card.start && card.stop, JSON.stringify(card));
+  await p.close();
+}
+
+// --- A start in progress -----------------------------------------------------
+{
+  // A second Start queued behind the first in the backend, then killed the daemon the first had
+  // spawned and probed every port again.
+  const p = await openScenario({ holdStart: true });
+  await p.click("#btn-start");
+  const during = await statusCard(p);
+  // A disabled button ignores clicks, so this is the click the user can no longer make.
+  await p.evaluate(() => document.getElementById("btn-start").click());
+  // A status poll while the start is pending must not offer Start again.
+  const polls = (await callsOf(p, "get_daemon_status")).length;
+  await p.click("#btn-refresh");
+  await until(p, ([n]) => window.__TAURI_CALLS__.filter((c) => c.cmd === "get_daemon_status").length > n, [polls]);
+  await p.waitForTimeout(100);
+  const polled = await statusCard(p);
+  const starts = (await callsOf(p, "daemon_start")).length;
+  check("a Start in progress shows Starting… and offers no second Start, poll or no poll",
+    during.bridge === "Starting…" && during.start && polled.bridge === "Starting…" && polled.start && starts === 1,
+    JSON.stringify({ during, polled, starts }));
+  await p.evaluate(() => window.__FINISH_START__());
+  const after = await until(p, () => !document.getElementById("btn-start").disabled);
+  check("and Start comes back once that start has answered", after);
+  await p.close();
+}
+{
+  const p = await openScenario({ starting: true });
+  const card = await statusCard(p);
+  check("a start the backend reports (tray, auto-start) shows Starting… with neither action offered",
+    card.bridge === "Starting…" && card.start && card.stop, JSON.stringify(card));
   await p.close();
 }
 
