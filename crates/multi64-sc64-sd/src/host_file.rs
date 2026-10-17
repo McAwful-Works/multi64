@@ -17,10 +17,11 @@ const BUF_BYTES: usize = 512 * 1024;
 /// Write `dest` from `write`, replacing any file already there only once the new one is complete.
 ///
 /// `write` gets a buffered writer over a temporary file in `dest`'s folder, named
-/// `.<name>.<pid>-<n>.partial`. When it returns `Ok`, the buffer is flushed, the file is synced,
-/// and it is renamed over `dest`. When anything fails — `write` itself (a cancel is an
-/// [`io::ErrorKind::Interrupted`] error from it), the flush, the sync or the rename — the temporary
-/// file is removed, `dest` is left exactly as it was, and the error is returned.
+/// `.<name>.<pid>-<n>.partial`, with the name cut short if the whole would be too long. When it
+/// returns `Ok`, the buffer is flushed, the file is synced, and it is renamed over `dest`. When
+/// anything fails — `write` itself (a cancel is an [`io::ErrorKind::Interrupted`] error from it),
+/// the flush, the sync or the rename — the temporary file is removed, `dest` is left exactly as it
+/// was, and the error is returned.
 ///
 /// A crash or power loss part-way can leave the temporary file behind, never a truncated `dest`.
 pub fn write_host_file(
@@ -57,13 +58,25 @@ fn temp_path_beside(dest: &Path) -> io::Result<PathBuf> {
             format!("not a file path: {}", dest.display()),
         )
     })?;
-    let tmp_name = format!(
-        ".{}.{}-{}.partial",
-        name.to_string_lossy(),
+    let suffix = format!(
+        ".{}-{}.partial",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     );
-    Ok(dest.with_file_name(tmp_name))
+    // As much of the name as fits with the dot and the suffix in the 255 a name may have:
+    // counted in UTF-8 bytes, the limit on Linux, which is never fewer than the UTF-16 units
+    // Windows counts. The name is only there to say which file this was.
+    let room = 255 - 1 - suffix.len();
+    let name = name.to_string_lossy();
+    let mut bytes = 0;
+    let kept: String = name
+        .chars()
+        .take_while(|c| {
+            bytes += c.len_utf8();
+            bytes <= room
+        })
+        .collect();
+    Ok(dest.with_file_name(format!(".{kept}{suffix}")))
 }
 
 #[cfg(test)]
@@ -110,6 +123,19 @@ mod tests {
         write_host_file(&dest, |w| w.write_all(b"new")).unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"new");
         assert_eq!(dir.names(), ["game.z64"], "no temporary file is left");
+    }
+
+    /// A name as long as the folder allows can be written. The temporary file beside it used to
+    /// add the dot, the process id and `.partial` to the whole name, which went past the 255 a
+    /// name may have, so the copy failed though the name it was copying to was legal.
+    #[test]
+    fn a_name_at_the_length_limit_can_be_written() {
+        let dir = Scratch::new("long");
+        let name = format!("{}.z64", "a".repeat(250));
+        let dest = dir.0.join(&name);
+        write_host_file(&dest, |w| w.write_all(b"data")).expect("write it");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"data");
+        assert_eq!(dir.names(), [name], "no temporary file is left");
     }
 
     /// A cancel part-way through a Replace used to truncate the original first and then delete it.

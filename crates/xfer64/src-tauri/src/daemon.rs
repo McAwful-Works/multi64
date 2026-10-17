@@ -8,11 +8,21 @@ use tauri::State;
 
 fn with_http_base(listen: &str, path: &str) -> String {
     let base = listen.trim().trim_end_matches('/');
-    if base.starts_with("http://") || base.starts_with("https://") {
-        format!("{base}{path}")
+    let (scheme, authority) = match base.split_once("://") {
+        Some((scheme, rest)) => (scheme, rest),
+        None => ("http", base),
+    };
+    // Multi64's Listen can be a wildcard, for other PCs to reach the bridge. That is an address to
+    // listen on, not one to dial (Windows refuses a connect to it), so it is dialed on loopback,
+    // as Multi64's own health check does.
+    let authority = if let Some(port) = authority.strip_prefix("0.0.0.0") {
+        format!("127.0.0.1{port}")
+    } else if let Some(port) = authority.strip_prefix("[::]") {
+        format!("[::1]{port}")
     } else {
-        format!("http://{base}{path}")
-    }
+        authority.to_string()
+    };
+    format!("{scheme}://{authority}{path}")
 }
 
 /// `listen` spelled one way, so the pauses [`ExplorerCartSerialState`] records under it match
@@ -23,11 +33,27 @@ pub(crate) fn listen_key(listen: &str) -> String {
 
 /// ureq 3 moved timeouts from the request builder to agent config, so each call
 /// builds a one-shot agent carrying its own deadline.
+///
+/// A status other than 2xx comes back as a response, not as ureq's own error: every caller here
+/// reads the status itself, and a refusal's body is the daemon's reason (daemon API §1.2), which
+/// ureq's error, `http status: 503`, left out.
 fn daemon_agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
+        .http_status_as_error(false)
         .build()
         .into()
+}
+
+/// The plain-text reason in a refusal's body, ready to follow its status, or nothing.
+fn refusal_reason(resp: &mut ureq::http::Response<ureq::Body>) -> String {
+    let body = resp.body_mut().read_to_string().unwrap_or_default();
+    let body = body.trim();
+    if body.is_empty() {
+        String::new()
+    } else {
+        format!(": {body}")
+    }
 }
 
 fn daemon_get_root(listen: &str) -> Result<serde_json::Value, String> {
@@ -166,13 +192,16 @@ pub async fn explorer_daemon_probe(
 
 pub fn explorer_daemon_release_listen(listen: &str) -> Result<(), String> {
     let url = with_http_base(listen, "/v1/serial/release");
-    let resp = daemon_agent(Duration::from_secs(5))
+    let mut resp = daemon_agent(Duration::from_secs(5))
         .post(&url)
         .send_empty()
         .map_err(|e| format!("POST {url}: {e}"))?;
     let status = resp.status().as_u16();
     if status != 200 {
-        return Err(format!("Couldn't pause the Multi64 bridge: HTTP {status}"));
+        return Err(format!(
+            "Couldn't pause the Multi64 bridge: HTTP {status}{}",
+            refusal_reason(&mut resp)
+        ));
     }
     Ok(())
 }
@@ -215,9 +244,9 @@ pub fn explorer_daemon_resume_listen(listen: &str) -> Result<(), String> {
         .map_err(|e| format!("POST {url}: {e}"))?;
     let status = resp.status().as_u16();
     if status != 200 {
-        let hint = resp.body_mut().read_to_string().unwrap_or_default();
         return Err(format!(
-            "Couldn't resume the Multi64 bridge: HTTP {status} {hint}"
+            "Couldn't resume the Multi64 bridge: HTTP {status}{}",
+            refusal_reason(&mut resp)
         ));
     }
     Ok(())
@@ -307,6 +336,71 @@ mod tests {
         ] {
             assert!(!root_holds_port(&root, "COM4"), "{root}");
         }
+    }
+
+    /// A stand-in that answers every request with `status` and the plain-text `body`, as multi64d
+    /// answers a release it could not apply (daemon API §1.2).
+    fn daemon_refusing(status: &'static str, body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut req = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        listen
+    }
+
+    /// A release or resume multi64d refuses says why, in its own words. ureq 3 turns any status
+    /// but 2xx into an error of its own by default, which used to say only `http status: 503`.
+    #[test]
+    fn a_refused_release_or_resume_says_what_the_daemon_said() {
+        let busy = daemon_refusing(
+            "503 Service Unavailable",
+            "serial link busy; not released, try again",
+        );
+        let e = explorer_daemon_release_listen(&busy).unwrap_err();
+        assert!(e.contains("Couldn't pause the Multi64 bridge"), "{e}");
+        assert!(e.contains("serial link busy"), "{e}");
+
+        let denied = daemon_refusing("500 Internal Server Error", "open COM4: Access is denied.");
+        let e = explorer_daemon_resume_listen(&denied).unwrap_err();
+        assert!(e.contains("Couldn't resume the Multi64 bridge"), "{e}");
+        assert!(e.contains("Access is denied"), "{e}");
+    }
+
+    /// Multi64's Listen can be a wildcard (`0.0.0.0:38765`, for other PCs to reach it), and a
+    /// wildcard is something to listen on, not an address to dial: it is dialed on loopback, as
+    /// Multi64's own health check does.
+    #[test]
+    fn a_wildcard_listen_address_is_dialed_on_loopback() {
+        assert_eq!(
+            with_http_base("0.0.0.0:38765", "/health"),
+            "http://127.0.0.1:38765/health"
+        );
+        assert_eq!(
+            with_http_base("http://0.0.0.0:38765/", "/"),
+            "http://127.0.0.1:38765/"
+        );
+        assert_eq!(with_http_base("[::]:38765", "/"), "http://[::1]:38765/");
+        assert_eq!(
+            with_http_base("http://192.168.1.5:38765", "/"),
+            "http://192.168.1.5:38765/"
+        );
     }
 
     /// A daemon that does not answer holds nothing.

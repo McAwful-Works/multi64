@@ -22,7 +22,9 @@ running, and that the staged copy is not reused once the cart may have changed (
 refresh of the Cart pane). Around closing: each window reports to the backend while it is busy, a
 close the backend held mid-operation makes the main window ask whether to cancel it and Quick
 upload cancel its upload, and either then asks the backend to close once everything has stopped.
-Properties and the EverDrive SD base scan are checked to read the cart with the bridge paused.
+Properties and the EverDrive SD base scan are checked to read the cart with the bridge paused. A
+This PC folder that finishes reading after another has been opened is checked not to replace the
+newer listing.
 
 And the keyboard: each dialog opens on the control it should, Tab and Shift+Tab wrap inside the
 topmost one, Escape closes only that one and focus returns to what opened it (or into the dialog

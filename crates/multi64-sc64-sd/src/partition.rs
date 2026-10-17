@@ -35,11 +35,13 @@ use std::sync::{Arc, Mutex};
 /// [`crate::link::SD_CARD_BUFFER_MAX_BYTES`] caps one USB SD read/write batch; a full chunk may use two.
 const STREAM_CHUNK: usize = 256 * 1024;
 
-/// exFAT directory entry type bytes (see Microsoft exFAT / hadris `entry_type`).
-/// Type-byte bit 7. Clear means the slot is unused: `0x00` (end of directory), or a deleted
-/// entry such as `0x05`, `0x40`, `0x41`.
+/// exFAT File entry attribute bits.
 const EXFAT_ATTR_DIRECTORY: u16 = 0x10;
 const EXFAT_ATTR_ARCHIVE: u16 = 0x20;
+/// exFAT directory entry type bytes (see Microsoft exFAT / hadris `entry_type`).
+///
+/// Type-byte bit 7. Clear means the slot is unused: `0x00` (end of directory), or a deleted
+/// entry such as `0x05`, `0x40`, `0x41`.
 const EXFAT_ENTRY_IN_USE: u8 = 0x80;
 const EXFAT_ENTRY_FILE_DIRECTORY: u8 = 0x85;
 const EXFAT_ENTRY_STREAM_EXT: u8 = 0xC0;
@@ -475,8 +477,8 @@ impl Sc64SdSession {
     }
 
     /// `len` is the source's length, which the caller has from `std::fs::metadata`. exFAT needs it
-    /// up front to allocate the file's clusters in one go; FAT32 grows its chain as it writes and
-    /// ignores it.
+    /// up front to allocate the file's clusters in one go; FAT32 grows its chain as it writes.
+    /// Both refuse a source that turns out not to be that long (#220).
     fn write_cart_file_streaming(
         &self,
         rel_path: &str,
@@ -497,7 +499,7 @@ impl Sc64SdSession {
                 progress,
             )
         } else {
-            self.write_file_fat_streaming(rel_path, data, progress)
+            self.write_file_fat_streaming(rel_path, len, data, progress)
         };
         // No cleanup here on cancel. Both writes remove their own partial work, and on a replace
         // the file at `rel_path` is still the untouched original: removing it, as this once did,
@@ -508,6 +510,7 @@ impl Sc64SdSession {
     fn write_file_fat_streaming(
         &self,
         rel_path: &str,
+        len: u64,
         data: &mut impl Read,
         progress: &mut impl FnMut(u64) -> bool,
     ) -> io::Result<()> {
@@ -516,7 +519,7 @@ impl Sc64SdSession {
             self.partition_start_sector,
             self.partition_bytes,
         );
-        write_file_fat_streaming_impl(disk, rel_path, data, progress)
+        write_file_fat_streaming_impl(disk, rel_path, len, data, progress)
     }
 }
 
@@ -836,6 +839,7 @@ fn copy_cart_dir_to_host_with_progress_ed64(
 fn write_file_fat_streaming_impl<D: Read + Write + Seek>(
     disk: D,
     rel_path: &str,
+    len: u64,
     data: &mut impl Read,
     progress: &mut impl FnMut(u64) -> bool,
 ) -> io::Result<()> {
@@ -845,6 +849,9 @@ fn write_file_fat_streaming_impl<D: Read + Write + Seek>(
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty path"));
     }
     let (name, parents) = parts.split_last().unwrap();
+    for p in &parts {
+        refuse_dot_name(p)?;
+    }
     {
         let mut dir = fs.root_dir();
         for p in parents {
@@ -857,7 +864,15 @@ fn write_file_fat_streaming_impl<D: Read + Write + Seek>(
         // stays whole until the copy is complete (#200). Only then is the original removed and
         // the copy renamed over it. fatfs has no atomic replace, so that last step still has a
         // window, but it is two directory-entry updates rather than the whole transfer.
-        let replacing = dir.open_file(name).is_ok();
+        //
+        // Only "not found" means there is no original. Any other failure to look (a read error)
+        // is returned: taken for absent, the copy was created under the original's own name, and
+        // fatfs opens an existing file there without truncating it, so it went over the original.
+        let replacing = match dir.open_file(name) {
+            Ok(_) => true,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e),
+        };
         let target = if replacing {
             let temp = fat_replace_temp_name(name);
             // Left by a replace that was interrupted between its last two steps before.
@@ -871,15 +886,32 @@ fn write_file_fat_streaming_impl<D: Read + Write + Seek>(
             // `create_file` opens an existing file without truncating it.
             f.truncate()?;
             let mut buf = vec![0u8; STREAM_CHUNK];
+            let mut written = 0u64;
             loop {
                 let n = data.read(&mut buf)?;
                 if n == 0 {
                     break;
                 }
+                written += n as u64;
+                // A source that grew since it was measured is refused, as exFAT refuses one
+                // (#220), rather than written as whatever it has become.
+                if written > len {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "the file grew while it was being copied; copy it again once it has \
+                         stopped changing",
+                    ));
+                }
                 f.write_all(&buf[..n])?;
                 if !progress(n as u64) {
                     return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
                 }
+            }
+            if written != len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("source supplied {written} bytes where {len} were expected"),
+                ));
             }
             // fatfs writes the file's size into its directory entry on flush. `Drop` only logs a
             // failure, which would pass a short file off as a finished copy (#129).
@@ -907,20 +939,26 @@ fn write_file_fat_streaming_impl<D: Read + Write + Seek>(
 }
 
 /// The temporary name a FAT32 replacement of `name` is written under before it is renamed into
-/// place: a prefix no ordinary file carries, and short enough for a 255-unit long file name.
+/// place: a prefix no ordinary file carries, and short enough for the 255-byte limit fatfs checks,
+/// which also keeps it within FAT's 255 units.
 fn fat_replace_temp_name(name: &str) -> String {
     fat_temp_name("~multi64-replace-", name)
 }
 
-/// `prefix` and as much of `name` as fits a 255-unit long file name with it.
+/// `prefix` and as much of `name` as fits a long file name with it.
+///
+/// Budgeted in UTF-8 bytes, which is what fatfs checks (`validate_long_name` refuses more than
+/// 255), not only in the 255 UTF-16 units FAT allows: a character never takes more units than
+/// bytes, so a name within one is within both. Counted in units, a name of accented letters fit
+/// FAT's limit and not fatfs's, and its replacement failed with "File name too long".
 fn fat_temp_name(prefix: &str, name: &str) -> String {
-    let room = 255 - prefix.encode_utf16().count();
-    let mut units = 0;
+    let room = 255 - prefix.len();
+    let mut bytes = 0;
     let kept: String = name
         .chars()
         .take_while(|c| {
-            units += c.len_utf16();
-            units <= room
+            bytes += c.len_utf8();
+            bytes <= room
         })
         .collect();
     format!("{prefix}{kept}")
@@ -1728,9 +1766,8 @@ fn exfat_compute_entry_set_checksum(entries: &[[u8; 32]]) -> u16 {
     checksum
 }
 
-const EXFAT_STREAM_EXT: u8 = 0xC0;
 /// Stream extension with the **In-Use** bit (bit 7) cleared — required when the file is deleted.
-const EXFAT_STREAM_EXT_DELETED: u8 = EXFAT_STREAM_EXT & 0x7f;
+const EXFAT_STREAM_EXT_DELETED: u8 = EXFAT_ENTRY_STREAM_EXT & !EXFAT_ENTRY_IN_USE;
 
 /// Mark the file directory entry deleted (`0x05`), mark **secondaries** deleted (clear bit 7:
 /// `0xC0`→`0x40`, `0xC1`→`0x41` per Microsoft exFAT), invalidate the stream (zero lengths /
@@ -1817,8 +1854,9 @@ fn exfat_free_entry_clusters(
 /// `write_at`, but entries from directory iteration store **directory-stream-relative** offsets
 /// (`exfat/dir.rs`), while `create_file` sets **volume-absolute** offsets (`fs.rs`). Deletes of
 /// files opened via `open_path` therefore write `0x05` to the wrong byte and never remove the
-/// listing entry. We find the entry set on disk with [`exfat_locate_entry_set`], then free
-/// clusters, mark deleted, fix checksum, and sync the bitmap — matching hadris intent.
+/// listing entry. We find the entry set on disk with [`exfat_locate_entry_set`], then mark it
+/// deleted (checksum fixed), free its clusters, and sync the bitmap — matching hadris intent. The
+/// entry goes first; see the comment in the body.
 fn exfat_delete_entry_resolved(
     fs: &ExFatFs<PartitionDiskUnion>,
     entry_path: &str,
@@ -1855,15 +1893,26 @@ fn exfat_delete_entry_resolved(
         part_bytes,
     )?;
 
-    trace("exFAT: free file/directory clusters…");
-    exfat_free_entry_clusters(fs, vol, part_start, part_bytes, entry)?;
-    trace("exFAT: free clusters OK");
-
+    // The entry goes before its clusters. Freeing a file the FAT describes writes FREE over its
+    // chain on the card at once, so in the other order a failure between the two left an entry
+    // pointing at a chain that was gone. This way round the worst is space lost to clusters no
+    // entry names, which a disk check recovers.
     trace("exFAT: finalize deleted entry set (0x05, zero stream, checksum)…");
     exfat_finalize_deleted_entry_set(vol, part_start, part_bytes, &dir, primary_slot, trace)?;
     trace("exFAT: deleted entry set finalized OK");
+
+    trace("exFAT: free file/directory clusters…");
+    let freed = exfat_free_entry_clusters(fs, vol, part_start, part_bytes, entry);
     trace("exFAT: sync_bitmap…");
-    fs.sync_bitmap().map_err(exfat_err)?;
+    // Whatever was freed is persisted, even if not all of it was.
+    let synced = fs.sync_bitmap().map_err(exfat_err);
+    freed.map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("deleted it, but could not free all of the space it used: {e}"),
+        )
+    })?;
+    synced?;
     trace("exFAT: sync_bitmap OK");
     Ok(())
 }
@@ -1913,6 +1962,7 @@ fn mkdir_fat_impl<D: Read + Write + Seek>(disk: D, path: &str) -> io::Result<()>
     {
         let mut dir = fs.root_dir();
         for p in parts {
+            refuse_dot_name(p)?;
             dir = match dir.open_dir(p) {
                 Ok(d) => d,
                 Err(_) => dir.create_dir(p)?,
@@ -1942,6 +1992,7 @@ fn rename_fat_impl<D: Read + Write + Seek>(
         for p in parts {
             dir = dir.open_dir(p)?;
         }
+        refuse_dot_name(name_to)?;
         if name_from != name_to && fat_names_equal(name_from, name_to) {
             fat_rename_case_only(&dir, name_from, name_to)?;
         } else {
@@ -2082,8 +2133,43 @@ fn rename_cart_exfat(
         let read_at = exfat_volume_reader(vol, part_start, part_bytes);
         let dest_slot = exfat_find_free_entry_run(&dir, new_total, old_slots, read_at)?;
         let dest_offsets = dir.offsets(dest_slot, new_total)?;
+        // What the free slots held, so the new set can be taken back out (below).
+        let mut free_before = Vec::with_capacity(new_total);
+        {
+            let mut disk = vol.partition_disk_ro(part_start, part_bytes);
+            for &offset in &dest_offsets {
+                let mut slot = [0u8; 32];
+                disk.seek(SeekFrom::Start(offset))?;
+                disk.read_exact(&mut slot)?;
+                free_before.push(slot);
+            }
+        }
         exfat_write_entry_slabs_at(vol, part_start, part_bytes, &dest_offsets, &new_slabs)?;
-        exfat_mark_slots_deleted(vol, part_start, part_bytes, &old_offsets, &old_entries)?;
+        if let Err(e) =
+            exfat_mark_slots_deleted(vol, part_start, part_bytes, &old_offsets, &old_entries)
+        {
+            // Two live sets now name the same clusters, and deleting either would free the
+            // other's data. Take the new one back out, leaving the file under its old name.
+            return Err(
+                match exfat_write_entry_slabs_at(
+                    vol,
+                    part_start,
+                    part_bytes,
+                    &dest_offsets,
+                    &free_before,
+                ) {
+                    Ok(()) => e,
+                    Err(undo) => io::Error::new(
+                        e.kind(),
+                        format!(
+                            "the file now has two names in this folder that share its data, and \
+                             the second could not be taken back out ({undo}); delete neither, and \
+                             run a disk check on the card (chkdsk on Windows): {e}"
+                        ),
+                    ),
+                },
+            );
+        }
     }
     // No bitmap write: a rename moves directory entries within the folder's own clusters, and takes
     // or frees none, so there is nothing to persist, and the whole-bitmap write was the dominant
@@ -2224,6 +2310,10 @@ fn exfat_create_dir_in(
             base,
             &vec![0u8; cluster_bytes as usize],
         )?;
+        // Its cluster is marked on the card before an entry names it, as a file's are
+        // (`exfat_create_file_in`): the other way round, a failure between the two left a folder
+        // over a cluster the bitmap called free, which the next file was given.
+        fs.sync_bitmap().map_err(exfat_err)?;
         let slabs = exfat_build_new_entry_set_bytes(
             fs,
             name,
@@ -2295,12 +2385,11 @@ fn exfat_undo_failed_create(
 /// Walk `parts` below the root, creating each folder that does not exist yet, and return the
 /// path they make up.
 ///
-/// A folder's entry set reaches the card as soon as it is made, but its cluster is only marked in
-/// hadris's in-memory bitmap. So when anything was created, the bitmap is written before this
-/// returns, **on failure too** (#213): a later folder that cannot be made (an invalid name, a full
-/// directory, a USB error) otherwise leaves the earlier ones on the card over clusters the on-disk
-/// bitmap still calls free, to be handed out again. When nothing was created there is nothing to
-/// persist, and the whole-bitmap write, the dominant cost of an operation (#196), is skipped.
+/// Each folder's cluster is marked in the bitmap on the card before its entry set is written
+/// ([`exfat_create_dir_in`]), so a later folder that cannot be made (an invalid name, a full
+/// directory, a USB error) leaves the earlier ones whole, never over clusters the on-disk bitmap
+/// calls free (#213). When nothing was created nothing was written, and the whole-bitmap write,
+/// the dominant cost of an operation (#196), is skipped.
 fn exfat_create_missing_dirs(
     fs: &ExFatFs<PartitionDiskUnion>,
     info: &hadris_fat::exfat::ExFatInfo,
@@ -2309,41 +2398,29 @@ fn exfat_create_missing_dirs(
     part_bytes: u64,
     parts: &[&str],
 ) -> io::Result<String> {
-    let mut made_a_directory = false;
     let mut path_prefix = String::new();
-    let walked = (|| -> io::Result<()> {
-        for p in parts {
-            let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
-            let parent = exfat_resolve_dir_slots(&mut read_at, info, &path_prefix)?;
-            let existing = exfat_list_entries(&parent, &mut read_at)?
-                .into_iter()
-                .find(|e| fat_names_equal(&e.name, p));
-            match existing {
-                Some(e) if e.is_dir() => {}
-                Some(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "a file already exists with that name",
-                    ))
-                }
-                None => {
-                    exfat_create_dir_in(fs, info, vol, part_start, part_bytes, &parent, p)?;
-                    made_a_directory = true;
-                }
+    for p in parts {
+        let mut read_at = exfat_volume_reader(vol, part_start, part_bytes);
+        let parent = exfat_resolve_dir_slots(&mut read_at, info, &path_prefix)?;
+        let existing = exfat_list_entries(&parent, &mut read_at)?
+            .into_iter()
+            .find(|e| fat_names_equal(&e.name, p));
+        match existing {
+            Some(e) if e.is_dir() => {}
+            Some(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "a file already exists with that name",
+                ))
             }
-            if !path_prefix.is_empty() {
-                path_prefix.push('/');
+            None => {
+                exfat_create_dir_in(fs, info, vol, part_start, part_bytes, &parent, p)?;
             }
-            path_prefix.push_str(p);
         }
-        Ok(())
-    })();
-    if made_a_directory {
-        let synced = fs.sync_bitmap().map_err(exfat_err);
-        walked?;
-        synced?;
-    } else {
-        walked?;
+        if !path_prefix.is_empty() {
+            path_prefix.push('/');
+        }
+        path_prefix.push_str(p);
     }
     Ok(path_prefix)
 }
@@ -2535,6 +2612,12 @@ fn exfat_create_file_in(
                  changing",
             ));
         }
+        // The new clusters are marked in the bitmap on the card before any entry names them. In
+        // the other order a failure between the two (a USB timeout, a pulled cable) left a file on
+        // the card over clusters its bitmap called free, which the next import was given (#214's
+        // hazard, in the window #214 did not close). This way round the worst is space lost
+        // until the undo below gives it back.
+        fs.sync_bitmap().map_err(exfat_err)?;
         // An empty file has no allocation: first cluster 0, length 0, reported as contiguous, which
         // is how hadris's own `create_file` left the empty files already on this project's cards.
         let first_cluster = clusters.first().copied().unwrap_or(0);
@@ -2565,14 +2648,14 @@ fn exfat_create_file_in(
         ));
     }
 
-    // From here the new file is the one on the card. The original's clusters are unreferenced; a
-    // failure to release them costs space, not data, and must not roll the new file back.
-    let freed = match replacing {
-        Some(old) => exfat_free_entry_clusters(fs, vol, part_start, part_bytes, old),
-        None => Ok(()),
+    // From here the new file is the one on the card, its clusters already marked. The original's
+    // clusters are unreferenced; a failure to release them costs space, not data, and must not
+    // roll the new file back.
+    let Some(old) = replacing else {
+        return Ok(());
     };
-    // Whether or not that worked: the new file's clusters are marked only in memory until this
-    // runs, and a card that has the entry without them hands them out again (#214).
+    let freed = exfat_free_entry_clusters(fs, vol, part_start, part_bytes, old);
+    // Whether or not that worked in full, what it freed is persisted.
     fs.sync_bitmap().map_err(exfat_err)?;
     freed.map_err(|e| {
         io::Error::new(
@@ -2710,7 +2793,23 @@ fn exfat_release_file_clusters(
     let _ = fs.sync_bitmap();
 }
 
+/// Refuse `.` and `..` as the name of anything made or renamed on the card.
+///
+/// They name a folder and its parent, never an entry of their own. exFAT has no such entries, so
+/// it would write one, and every listing leaves the name out, so a file renamed to `..` was gone
+/// from view with no way to rename it back. On FAT a path through `..` would walk up a level.
+pub(crate) fn refuse_dot_name(name: &str) -> io::Result<()> {
+    if name == "." || name == ".." {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("\"{name}\" cannot be the name of a file or folder"),
+        ));
+    }
+    Ok(())
+}
+
 fn exfat_validate_rename_name(name: &str) -> io::Result<()> {
+    refuse_dot_name(name)?;
     let len = name.encode_utf16().count();
     if len == 0 || len > EXFAT_MAX_FILENAME_LEN {
         return Err(io::Error::new(
@@ -4374,6 +4473,7 @@ mod fs_tests {
         let err = write_file_fat_streaming_impl(
             disk,
             "rom.z64",
+            5000,
             &mut Cursor::new(&[7u8; 5000][..]),
             // Every data byte is on the card; only the metadata writes after this fail.
             &mut |_| {
@@ -4383,6 +4483,116 @@ mod fs_tests {
         )
         .expect_err("a lost directory-entry write must not report success");
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
+
+    /// A RAM disk whose reads fail wherever `fail(position)` says, as an SC64 USB timeout would.
+    struct FlakyReadDisk<F: FnMut(u64) -> bool> {
+        inner: RamPartitionDisk,
+        fail: F,
+    }
+
+    impl<F: FnMut(u64) -> bool> Read for FlakyReadDisk<F> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let pos = self.inner.stream_position()?;
+            if (self.fail)(pos) {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "injected read failure",
+                ));
+            }
+            self.inner.read(buf)
+        }
+    }
+
+    impl<F: FnMut(u64) -> bool> Seek for FlakyReadDisk<F> {
+        fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    impl<F: FnMut(u64) -> bool> Write for FlakyReadDisk<F> {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.inner.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    /// Where a FAT test image's root directory is, in bytes: the fixed root region of FAT12/16,
+    /// or the root cluster of FAT32, from the boot sector.
+    fn fat_root_dir_bytes(arc: &Image) -> std::ops::Range<u64> {
+        let g = arc.lock().unwrap();
+        let u16_at = |at: usize| u64::from(u16::from_le_bytes([g[at], g[at + 1]]));
+        let u32_at = |at: usize| u64::from(u32::from_le_bytes(g[at..at + 4].try_into().unwrap()));
+        let (bps, spc, reserved, fats) =
+            (u16_at(11), u64::from(g[13]), u16_at(14), u64::from(g[16]));
+        let fat16_size = u16_at(22);
+        if fat16_size != 0 {
+            let start = (reserved + fats * fat16_size) * bps;
+            start..start + u16_at(17) * 32
+        } else {
+            let data = (reserved + fats * u32_at(36)) * bps;
+            let start = data + (u32_at(44) - 2) * spc * bps;
+            start..start + spc * bps
+        }
+    }
+
+    /// A replace whose look for the original hits a read error does not take the original to be
+    /// absent. It used to: the file was then created under its own name, which fatfs opens
+    /// without truncating when it exists, and the next line emptied it, so the copy went over the
+    /// original in place, the loss #200 exists to prevent.
+    #[test]
+    fn fat_a_replace_whose_lookup_fails_leaves_the_original() {
+        let arc = fat_image();
+        fat_write(&arc, "rom.z64", b"original", &mut |_| true).unwrap();
+        let root = fat_root_dir_bytes(&arc);
+        let mut failed = false;
+        let disk = FlakyReadDisk {
+            inner: RamPartitionDisk::new_writable(Arc::clone(&arc)),
+            // Only the first read of the root's entries: the look for the original.
+            fail: move |pos| {
+                let fail = !failed && root.contains(&pos);
+                failed |= fail;
+                fail
+            },
+        };
+        let r = write_file_fat_streaming_impl(
+            disk,
+            "rom.z64",
+            3,
+            &mut Cursor::new(&b"new"[..]),
+            &mut |_| true,
+        );
+        assert!(
+            r.is_err(),
+            "a lookup that failed was taken for no file there"
+        );
+        assert_eq!(fat_read(&arc, "rom.z64"), b"original");
+    }
+
+    /// A source that is not the length it was measured at is refused, as exFAT refuses one
+    /// (#220), rather than written as whatever it turned out to be.
+    #[test]
+    fn fat_a_source_not_its_stated_length_is_refused() {
+        for (stated, body) in [(10u64, &b"short"[..]), (2, &b"longer"[..])] {
+            let arc = fat_image();
+            let err = write_file_fat_streaming_impl(
+                RamPartitionDisk::new_writable(Arc::clone(&arc)),
+                "rom.z64",
+                stated,
+                &mut Cursor::new(body),
+                &mut |_| true,
+            )
+            .expect_err("a source of the wrong length");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+            assert!(
+                !fat_root_names(&arc).iter().any(|n| n == "rom.z64"),
+                "a {}-byte source stated as {stated} was kept",
+                body.len()
+            );
+        }
     }
 
     fn fat_root_names(arc: &Image) -> Vec<String> {
@@ -4402,6 +4612,7 @@ mod fs_tests {
         write_file_fat_streaming_impl(
             RamPartitionDisk::new_writable(Arc::clone(arc)),
             path,
+            body.len() as u64,
             &mut Cursor::new(body),
             &mut |n| progress(n),
         )
@@ -4473,11 +4684,29 @@ mod fs_tests {
     #[test]
     fn fat_replace_temp_name_fits_and_differs() {
         use super::fat_replace_temp_name;
-        for name in ["a.z64", &"x".repeat(250), &"é".repeat(255)] {
+        for name in [
+            "a.z64",
+            &"x".repeat(250),
+            &"é".repeat(255),
+            &"😀".repeat(100),
+        ] {
             let t = fat_replace_temp_name(name);
             assert!(t.encode_utf16().count() <= 255, "{t}");
+            // What fatfs itself checks (`validate_long_name`).
+            assert!(t.len() <= 255, "{} bytes: {t}", t.len());
             assert_ne!(t, name);
         }
+    }
+
+    /// A file whose name is long in UTF-8 can be replaced, as it could be written: the temporary
+    /// name it is written under first fits fatfs's 255-byte limit as well as the 255-unit one.
+    #[test]
+    fn fat_a_long_accented_name_can_be_replaced() {
+        let arc = fat_image();
+        let name = format!("{}.z64", "é".repeat(120));
+        fat_write(&arc, &name, b"old", &mut |_| true).unwrap();
+        fat_write(&arc, &name, b"new", &mut |_| true).expect("replace it");
+        assert_eq!(fat_read(&arc, &name), b"new");
     }
 
     /// Each flaky case needs a fresh image: a failed unmount leaves the volume marked dirty, and
@@ -4512,6 +4741,7 @@ mod fs_tests {
         write_file_fat_streaming_impl(
             RamPartitionDisk::new_writable(Arc::clone(&arc)),
             "a.txt",
+            1,
             &mut Cursor::new(&b"a"[..]),
             &mut |_| true,
         )
@@ -5086,19 +5316,19 @@ mod fs_tests {
 
     /// A directory created on the way to a file that then fails must still own its cluster.
     ///
-    /// The two halves of creating a directory persist at different times: the entry set is written
-    /// straight to the volume, while the cluster behind it is only marked in hadris's in-memory
-    /// allocation bitmap until something flushes it. If the file create then fails and nothing
-    /// flushes, the card carries a directory whose cluster is still marked free — and the next
-    /// allocation hands the same cluster to something else.
+    /// hadris marks a cluster only in its in-memory allocation bitmap until something flushes it,
+    /// while the entry set goes straight to the volume. So the bitmap is written before the
+    /// directory's entry set (`exfat_create_dir_in`): if the file create then fails, the card does
+    /// not carry a directory whose cluster is still marked free for the next allocation to hand to
+    /// something else.
     ///
     /// The leaf name here is rejected **before** anything is allocated for the file, which is what
     /// makes it the case that bites: the rollback for a failed file flushes the bitmap as a side
     /// effect and so happens to persist the directory too, but a failure earlier than the
     /// allocation never reaches it.
     ///
-    /// Fail-first, demonstrated: drop the bitmap sync from `exfat_create_missing_dirs`
-    /// and this fails with the directory present but the allocated count unchanged.
+    /// Fail-first, demonstrated (when the sync was the last step of `exfat_create_missing_dirs`):
+    /// with it dropped, this fails with the directory present but the allocated count unchanged.
     #[test]
     fn exfat_a_directory_made_for_a_failed_import_keeps_its_cluster() {
         let (arc, vol, part_bytes) =
@@ -5131,11 +5361,180 @@ mod fs_tests {
         );
     }
 
+    /// An import whose bitmap write fails, as a cable pulled during it would, leaves no entry on
+    /// the card. The entry used to go first: the card then held a file over clusters its bitmap
+    /// called free, and the next import was given exactly those clusters (allocation is first-fit),
+    /// writing over it.
+    #[test]
+    fn exfat_an_import_whose_bitmap_write_fails_leaves_no_entry() {
+        let (arc, _, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        let regions = ExfatRegions::of(&arc);
+        let vol = flaky_cached_volume(&arc, move |lba| regions.is_bitmap(lba));
+
+        write_file_exfat_streaming(
+            &vol,
+            0,
+            part_bytes,
+            "game.z64",
+            4,
+            &mut Cursor::new(&b"data"[..]),
+            &mut |_| true,
+        )
+        .expect_err("the bitmap write fails");
+
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .expect("list the root");
+        assert!(
+            !listed.iter().any(|e| e.name == "game.z64"),
+            "the file is on the card over clusters its bitmap calls free: {listed:?}"
+        );
+    }
+
+    /// The same for a folder: one whose bitmap write fails is not on the card, so its cluster
+    /// cannot be handed to the next file while the folder still claims it.
+    #[test]
+    fn exfat_a_folder_whose_bitmap_write_fails_is_not_made() {
+        let (arc, _, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        let regions = ExfatRegions::of(&arc);
+        let vol = flaky_cached_volume(&arc, move |lba| regions.is_bitmap(lba));
+
+        mkdir_cart_exfat(&vol, 0, part_bytes, "Saves").expect_err("the bitmap write fails");
+
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+            .expect("list the root");
+        assert!(
+            !listed.iter().any(|e| e.name == "Saves"),
+            "the folder is on the card over a cluster its bitmap calls free: {listed:?}"
+        );
+    }
+
+    /// A delete whose entry write fails leaves the file whole. Its clusters used to be freed
+    /// first, which for a file the FAT describes writes FREE over its chain at once, so the entry
+    /// that stayed pointed at a chain that was gone.
+    #[test]
+    fn exfat_a_delete_whose_entry_write_fails_leaves_the_file_whole() {
+        let fx = exfat_fragmented_volume();
+        let data: Vec<u8> = (0..fx.info.bytes_per_cluster * 3 + 1000)
+            .map(|k| 0x5A ^ (k % 239) as u8)
+            .collect();
+        write_file_exfat_streaming(
+            &fx.vol,
+            0,
+            fx.part_bytes,
+            "frag.bin",
+            data.len() as u64,
+            &mut Cursor::new(&data[..]),
+            &mut |_| true,
+        )
+        .expect("import into fragmented free space");
+        let regions = ExfatRegions::of(&fx.arc);
+        let vol = flaky_cached_volume(&fx.arc, move |lba| regions.is_root(lba));
+
+        remove_cart_path_exfat_unified(vol, 0, fx.part_bytes, "frag.bin", &mut |_| {})
+            .expect_err("the entry write fails");
+
+        let back = read_file_exfat(
+            RamPartitionDisk::new_readonly(Arc::clone(&fx.arc)),
+            "frag.bin",
+        )
+        .expect("the file is still there, and readable");
+        assert!(back == data, "the file's contents changed");
+    }
+
+    /// `.` and `..` are refused as names (`refuse_dot_name`), so nothing is renamed or made out of
+    /// view of every listing.
+    #[test]
+    fn exfat_dot_names_are_refused() {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        exfat_write(&vol, part_bytes, "game.z64", 4, b"data", &mut |_| true).unwrap();
+        for bad in [".", ".."] {
+            let err = rename_cart_exfat(&vol, 0, part_bytes, "game.z64", bad)
+                .expect_err("renamed to a dot name");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{bad}: {err}");
+            mkdir_cart_exfat(&vol, 0, part_bytes, &format!("Saves/{bad}"))
+                .expect_err("made a folder with a dot name");
+        }
+        // The listing leaves dot names out, so a file renamed to one was gone from view for good.
+        let listed: Vec<String> =
+            list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+                .unwrap()
+                .into_iter()
+                .map(|e| e.name)
+                .collect();
+        assert!(listed.contains(&"game.z64".to_string()), "{listed:?}");
+    }
+
+    /// The same on FAT, where a path through `..` would walk up a folder.
+    #[test]
+    fn fat_dot_names_are_refused() {
+        let arc = fat_image();
+        fat_write(&arc, "game.z64", b"data", &mut |_| true).unwrap();
+        for bad in [".", ".."] {
+            let err = rename_fat_impl(
+                RamPartitionDisk::new_writable(Arc::clone(&arc)),
+                "/",
+                "game.z64",
+                bad,
+            )
+            .expect_err("renamed to a dot name");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{bad}: {err}");
+        }
+        assert!(fat_root_names(&arc).iter().any(|n| n == "game.z64"));
+    }
+
+    /// A rename that needs more slots writes the new entry set beside the old one, then marks the
+    /// old one deleted. When that second write fails, the new set is taken back out, rather than
+    /// left as a second live entry for the same clusters, where deleting either frees the other's
+    /// data.
+    #[test]
+    fn exfat_a_longer_rename_that_fails_part_way_leaves_one_entry() {
+        let (arc, vol, part_bytes) =
+            exfat_image(&ExFatFormatOptions::new().with_sectors_per_cluster(1));
+        exfat_write(&vol, part_bytes, "a.z64", 4, b"data", &mut |_| true).unwrap();
+        let regions = ExfatRegions::of(&arc);
+        // The first entry write (the new set) goes through; the next (marking the old one
+        // deleted) fails; any after that, the undo, go through.
+        let mut root_writes = 0;
+        let flaky = flaky_cached_volume(&arc, move |lba| {
+            if !regions.is_root(lba) {
+                return false;
+            }
+            root_writes += 1;
+            root_writes == 2
+        });
+
+        rename_cart_exfat(
+            &flaky,
+            0,
+            part_bytes,
+            "a.z64",
+            "a much longer name that needs more slots.z64",
+        )
+        .expect_err("marking the old set deleted fails");
+
+        let names: Vec<String> =
+            list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/")
+                .expect("list the root")
+                .into_iter()
+                .map(|e| e.name)
+                .collect();
+        assert_eq!(
+            names,
+            ["a.z64"],
+            "two entries now share one file's clusters"
+        );
+    }
+
     /// Where a test image's FAT and root directory are, as sector numbers, so a
     /// [`flaky_cached_volume`] can fail writes by what they touch.
     struct ExfatRegions {
         fat: std::ops::Range<u64>,
         root: std::ops::Range<u64>,
+        /// The allocation bitmap, from the root's bitmap entry (type 0x81).
+        bitmap: std::ops::Range<u64>,
     }
 
     impl ExfatRegions {
@@ -5148,10 +5547,22 @@ mod fs_tests {
             let fat_end = fat_start + info.fat_length * u64::from(info.fat_count) / 512;
             let root_start = info.cluster_to_offset(info.root_cluster) / 512;
             let root_end = root_start + info.bytes_per_cluster as u64 / 512;
+            let entry = raw_dir_slots(arc, &info, &[info.root_cluster])
+                .into_iter()
+                .find(|s| s[0] == 0x81)
+                .expect("the root has a bitmap entry");
+            let first = u32::from_le_bytes(entry[20..24].try_into().unwrap());
+            let len = u64::from_le_bytes(entry[24..32].try_into().unwrap());
+            let bitmap_start = info.cluster_to_offset(first) / 512;
             Self {
                 fat: fat_start..fat_end,
                 root: root_start..root_end,
+                bitmap: bitmap_start..bitmap_start + len.div_ceil(512),
             }
+        }
+
+        fn is_bitmap(&self, lba: u64) -> bool {
+            self.bitmap.contains(&lba)
         }
 
         fn is_fat(&self, lba: u64) -> bool {
@@ -6697,6 +7108,7 @@ mod fs_tests {
         write_file_fat_streaming_impl(
             RamPartitionDisk::new_writable(Arc::clone(&arc)),
             "hello.txt",
+            17,
             &mut Cursor::new(&b"roundtrip payload"[..]),
             &mut |_| true,
         )
@@ -6750,6 +7162,7 @@ mod fs_tests {
         write_file_fat_streaming_impl(
             RamPartitionDisk::new_writable(Arc::clone(&arc)),
             "rom.z64",
+            payload.len() as u64,
             &mut Cursor::new(&payload[..]),
             &mut |_| true,
         )

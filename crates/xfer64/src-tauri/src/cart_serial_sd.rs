@@ -25,7 +25,8 @@ use crate::explorer::ExplorerPathCache;
 use crate::progress::{emit_explorer_progress, emit_explorer_progress_full};
 use multi64_ed64_link as ed64_link;
 use multi64_sc64_sd::{
-    cart_path_parts, CartSession, Ed64ProSdSession, Ed64SdSession, Sc64SdSession,
+    cart_path_parts, fat_name_key, CartSession, Ed64ProSdSession, Ed64SdSession, Sc64SdSession,
+    SessionEntry,
 };
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -1430,10 +1431,7 @@ pub async fn cart_serial_path_info(
                 return Err("Choose a file or folder.".into());
             }
             let entries = session.list_dir(&parent).map_err(|e| e.to_string())?;
-            let entry = entries
-                .into_iter()
-                .find(|e| e.name == name || e.name.eq_ignore_ascii_case(&name))
-                .ok_or_else(|| "Path not found.".to_string())?;
+            let entry = entry_named(entries, &name).ok_or_else(|| "Path not found.".to_string())?;
             Ok(UsbFsEntry {
                 name: entry.name,
                 path: entry.path,
@@ -1816,6 +1814,43 @@ mod auto_port_tests {
             .unwrap();
         }
         assert_eq!(runs.get(), 2);
+    }
+}
+
+/// The entry of `entries` that `name` names on the card: FAT and exFAT names match ignoring case as
+/// the card folds it, accented letters included (`fat_name_key`), which ASCII case alone does not
+/// (#131's kind of bug).
+fn entry_named(entries: Vec<SessionEntry>, name: &str) -> Option<SessionEntry> {
+    let key = fat_name_key(name);
+    entries.into_iter().find(|e| fat_name_key(&e.name) == key)
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::{entry_named, SessionEntry};
+
+    fn entry(name: &str) -> SessionEntry {
+        SessionEntry {
+            name: name.into(),
+            path: format!("roms/{name}"),
+            is_dir: false,
+            size: 1,
+            hidden: false,
+        }
+    }
+
+    #[test]
+    fn a_name_is_found_however_its_letters_are_cased() {
+        let entries = vec![entry("Pokémon Stadium.z64"), entry("Zelda.z64")];
+        assert_eq!(
+            entry_named(entries.clone(), "zelda.Z64").map(|e| e.name),
+            Some("Zelda.z64".into())
+        );
+        assert_eq!(
+            entry_named(entries.clone(), "POKÉMON STADIUM.Z64").map(|e| e.name),
+            Some("Pokémon Stadium.z64".into())
+        );
+        assert!(entry_named(entries, "Mario.z64").is_none());
     }
 }
 

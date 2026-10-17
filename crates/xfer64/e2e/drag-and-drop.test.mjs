@@ -125,7 +125,14 @@ function installTauriStub(scenario = {}) {
       if (listFails(a.path)) throw new Error("Couldn't open the serial port: access denied.");
       return listing(cartEntries);
     },
-    fs_list_dir_page: () => listing(window.__TAURI_LONG_PC__ ? longPcEntries : pcEntries),
+    // `sc.pcFolders` lists a folder of its own, by path, and can take `delay` ms to: a network share
+    // or a huge folder, slower than the one opened after it.
+    fs_parent: (a) => String(a.path).replace(/\\[^\\]+$/, ""),
+    fs_list_dir_page: (a) => {
+      const f = (sc.pcFolders || {})[a.path];
+      if (f) return new Promise((resolve) => setTimeout(() => resolve(listing(f.entries)), f.delay || 0));
+      return listing(window.__TAURI_LONG_PC__ ? longPcEntries : pcEntries);
+    },
     cart_serial_path_info: (a) => ({ name: String(a.path).split("/").pop(), path: a.path, isDir: false, size: 8388608, hidden: false }),
     // The EverDrive SD base scan, finding nothing: it ends in an alert.
     cart_serial_probe_ed64_linear_base: () => ({ candidates: [], basesChecked: 12 }),
@@ -1392,6 +1399,32 @@ const busyReports = (calls) => calls.filter((c) => c.cmd === "explorer_set_busy"
   const plain = await read();
   check("a plain cancel reads only \"Import cancelled.\"",
     cancelledAgain && plain.text === "Import cancelled.", JSON.stringify(plain));
+  await p.close();
+}
+
+{
+  // A slow folder is opened, and before it has been read the user goes Back. The slow listing
+  // that lands afterwards is not shown: the pane lists, and remembers, the folder it is in.
+  const slow = "C:\\dl\\patches";
+  const p = await openScenario("index.html", {
+    localStorage: { "multi64.explorer.pcPath": "C:\\dl" },
+    pcFolders: {
+      [slow]: { delay: 800, entries: [{ name: "slow.bin", path: `${slow}\\slow.bin`, isDir: false, size: 1, modifiedMs: 1, hidden: false }] },
+    },
+  });
+  await until(p, () => !!document.querySelector('#tbody-pc tr[data-path$="patches"]'));
+  // Past the start-up reads, which hold the panes.
+  await p.waitForTimeout(1500);
+  await p.dblclick(PC_FOLDER);
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "fs_list_dir_page" && c.args.path === "C:\\dl\\patches"));
+  await p.click('[data-action="back"][data-pane="pc"]');
+  await p.waitForTimeout(1500);
+  const shown = await p.evaluate(() => [...document.querySelectorAll("#tbody-pc tr[data-path]")].map((tr) => tr.dataset.path));
+  check("a folder read after the one opened since does not replace its listing",
+    shown.includes("C:\\dl\\banjo.z64") && !shown.some((s) => s.endsWith("slow.bin")),
+    JSON.stringify(shown));
+  check("and the folder remembered is the one shown",
+    (await p.evaluate(() => localStorage.getItem("multi64.explorer.pcPath"))) === "C:\\dl");
   await p.close();
 }
 
