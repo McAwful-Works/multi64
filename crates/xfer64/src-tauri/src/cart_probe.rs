@@ -10,7 +10,8 @@
 //!    (`multi64_cart_probe::probe_order`).
 //!
 //! Before either, with Serial port on Auto too, a running `multi64d` is asked which cart and port
-//! it holds (`daemon::daemon_cart_hint`); these tiers run only when it names none.
+//! it holds (`daemon::daemon_cart_hint`); these tiers run only when it names none, and when no
+//! cart an earlier probe found is still remembered (`cart_serial_sd::auto_detected_port`).
 
 use multi64_cart_probe::DetectedCart;
 

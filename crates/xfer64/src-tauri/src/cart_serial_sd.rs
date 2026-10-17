@@ -124,6 +124,18 @@ pub struct ExplorerCartSerialState {
     /// The multi64d address a window last probed ([`crate::daemon`] records it on every probe),
     /// which Auto's cart hint asks. Shared, so a command's detached copy records into this one.
     probed_listen: Arc<Mutex<Option<String>>>,
+    /// The cart Auto last found by probing ports, reused by later commands while it keeps working
+    /// and the serial ports stay the same. See [`auto_detected_port`].
+    auto_port: Arc<Mutex<Option<RememberedAutoPort>>>,
+}
+
+/// A cart port Auto found, with the serial ports there were when it did.
+#[derive(Clone, Debug)]
+struct RememberedAutoPort {
+    port: String,
+    kind: DetectedCartKind,
+    /// Every serial port's name then, sorted.
+    ports: Vec<String>,
 }
 
 impl ExplorerCartSerialState {
@@ -134,6 +146,7 @@ impl ExplorerCartSerialState {
             cart_list_cache: Arc::new(Mutex::new(None)),
             port_lock: Arc::new(Mutex::new(())),
             probed_listen: Arc::new(Mutex::new(None)),
+            auto_port: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -168,12 +181,35 @@ impl ExplorerCartSerialState {
             cart_list_cache: Arc::clone(&self.cart_list_cache),
             port_lock: Arc::clone(&self.port_lock),
             probed_listen: Arc::clone(&self.probed_listen),
+            auto_port: Arc::clone(&self.auto_port),
         })
     }
 
+    /// Forget every probe result, including the port Auto found.
     pub fn invalidate_probe_cache(&self) {
         if let Ok(mut g) = self.probe_cache.lock() {
             *g = None;
+        }
+        if let Ok(mut g) = self.auto_port.lock() {
+            *g = None;
+        }
+    }
+
+    /// Forget the port Auto found, if it is `port`; returns whether it was. Called when a session
+    /// on that port fails to open, so the next resolve probes again.
+    fn forget_auto_port(&self, port: &str) -> bool {
+        let Ok(mut g) = self.auto_port.lock() else {
+            return false;
+        };
+        if g.as_ref().is_some_and(|r| r.port == port) {
+            *g = None;
+            drop(g);
+            if let Ok(mut p) = self.probe_cache.lock() {
+                *p = None;
+            }
+            true
+        } else {
+            false
         }
     }
 
@@ -273,9 +309,9 @@ fn probe_with_cache(
 
 /// Decide the SD role, and return the port when deciding required resolving one.
 ///
-/// Auto mode has to resolve a port to probe it, and `detect_best_auto_port` force-probes every
-/// serial device in turn. Handing that port back lets [`with_session`] reuse it instead of
-/// repeating the whole scan, which previously happened on every cart operation.
+/// Auto mode has to resolve a port to probe it, and `detect_best_auto_port` force-probes serial
+/// devices in turn until a cart answers, unless [`auto_detected_port`] still remembers the one it
+/// found. Handing that port back lets [`with_session`] reuse it instead of resolving it twice.
 fn effective_sd_role_and_port(
     settings: &ExplorerSettingsSnapshot,
     st: &ExplorerCartSerialState,
@@ -423,6 +459,55 @@ fn detect_best_auto_port(
 
     // If no signature match is found, fall back to metadata heuristic.
     Ok(suggest_port(settings))
+}
+
+/// Every serial port's name, sorted: what [`RememberedAutoPort`] compares to notice a port coming
+/// or going.
+fn serial_port_names() -> Vec<String> {
+    let mut names: Vec<String> = serialport::available_ports()
+        .map(|v| v.into_iter().map(|p| p.port_name).collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// Auto's port when no `multi64d` names one: the cart port found last time, while `ports_now` are
+/// the serial ports there were then, or else what `detect` finds.
+///
+/// `detect` is [`detect_best_auto_port`] in the app, which opens every candidate port until a cart
+/// answers. Running it for every cart command reset any other serial device on each one (an
+/// Arduino reboots when its port is opened) and cost seconds when the cart was not the first
+/// candidate. A port is remembered only when a probe identified a cart on it, never for the
+/// heuristic fallback, and is forgotten when a session on it fails to open
+/// ([`ExplorerCartSerialState::forget_auto_port`]) or the probe cache is cleared.
+fn auto_detected_port(
+    st: &ExplorerCartSerialState,
+    ports_now: Vec<String>,
+    detect: impl FnOnce() -> Result<Option<String>, String>,
+) -> Result<Option<String>, String> {
+    let remembered = st.auto_port.lock().map_err(|e| e.to_string())?.clone();
+    if let Some(r) = remembered {
+        if r.ports == ports_now {
+            if let Ok(mut g) = st.probe_cache.lock() {
+                *g = Some((r.port.clone(), r.kind));
+            }
+            return Ok(Some(r.port));
+        }
+    }
+    let found = detect()?;
+    let identified = st
+        .probe_cache
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .filter(|(p, k)| Some(p) == found.as_ref() && *k != DetectedCartKind::Unknown);
+    *st.auto_port.lock().map_err(|e| e.to_string())? =
+        identified.map(|(port, kind)| RememberedAutoPort {
+            port,
+            kind,
+            ports: ports_now,
+        });
+    Ok(found)
 }
 
 /// Ask a running multi64d which cart it holds and on which port, at [`ExplorerCartSerialState::hint_listen`].
@@ -687,7 +772,9 @@ fn resolve_port_probed(
         }
     }
     let auto_port = if auto {
-        detect_best_auto_port(st, settings)?
+        auto_detected_port(st, serial_port_names(), || {
+            detect_best_auto_port(st, settings)
+        })?
     } else {
         suggest_port(settings)
     };
@@ -719,57 +806,17 @@ pub(crate) fn with_session<T, F>(
 where
     F: FnOnce(&CartSession) -> Result<T, String>,
 {
-    let (role, resolved_port) = effective_sd_role_and_port(settings, st)?;
-    if matches!(role, CartSdRole::Ed64NoLinear) {
-        dev.log(format!(
-            "{context}: skipped (EverDrive — no linear ROM base configured)"
-        ));
-        return Err(ED64_BETA_SD_MSG.to_string());
-    }
-    // Reuse the port auto mode already resolved; only explicit modes still need to resolve.
-    let port = match resolved_port {
-        Some(p) => p,
-        None => resolve_port(st, settings)?,
-    };
-    // Taken only now: resolving the port above may probe, and the probe takes this same lock.
-    let _port = lock_port(st);
-    let session = match role {
-        CartSdRole::Sc64 => {
-            dev.log(format!("{context}: open SC64 SD session (port={port})"));
-            CartSession::Sc64(Sc64SdSession::open(&port, 115200).map_err(|e| {
-                let msg = e.to_string();
-                dev.log(format!("{context}: SD session open FAILED: {msg}"));
-                msg
-            })?)
-        }
-        CartSdRole::Ed64Linear => {
-            let base = settings.ed64_rom_linear_base.ok_or_else(|| {
-                "internal: Ed64Linear role without ed64_rom_linear_base".to_string()
-            })?;
+    let (session, _port) = match open_session(dev, context, st, settings) {
+        Ok(opened) => opened,
+        // A port Auto remembered from an earlier command no longer opens: the cart may have
+        // moved, or another device taken its name. Find it again, once, rather than fail.
+        Err((Some(port), _)) if st.forget_auto_port(&port) => {
             dev.log(format!(
-                "{context}: open EverDrive SD session (port={port}, rom_linear_base=0x{base:08x})"
+                "{context}: the cart Auto found on {port} did not open; detecting again"
             ));
-            CartSession::Ed64(Ed64SdSession::open(&port, 115200, base).map_err(|e| {
-                let msg = e.to_string();
-                dev.log(format!(
-                    "{context}: EverDrive SD session open FAILED: {msg}"
-                ));
-                msg
-            })?)
+            open_session(dev, context, st, settings).map_err(|(_, msg)| msg)?
         }
-        CartSdRole::Ed64Pro => {
-            dev.log(format!(
-                "{context}: open EverDrive-64 PRO session (port={port}, experimental)"
-            ));
-            CartSession::Ed64Pro(Ed64ProSdSession::open(&port).map_err(|e| {
-                let msg = e.to_string();
-                dev.log(format!(
-                    "{context}: EverDrive-64 PRO session open FAILED: {msg}"
-                ));
-                msg
-            })?)
-        }
-        CartSdRole::Ed64NoLinear => unreachable!(),
+        Err((_, msg)) => return Err(msg),
     };
     let guard = SdSessionCloseGuard::new(session, dev.clone(), context);
     let out = f(guard.session());
@@ -790,6 +837,75 @@ where
         dev.log(format!("{context}: {err}"));
     }
     out
+}
+
+/// Why [`open_session`] failed, and the port it was opening when it got that far.
+type OpenFailure = (Option<String>, String);
+
+/// Open the SD session [`with_session`] works in, with the port lock held for it.
+fn open_session<'a>(
+    dev: &ExplorerDevLog,
+    context: &'static str,
+    st: &'a ExplorerCartSerialState,
+    settings: &ExplorerSettingsSnapshot,
+) -> Result<(CartSession, std::sync::MutexGuard<'a, ()>), OpenFailure> {
+    let (role, resolved_port) = effective_sd_role_and_port(settings, st).map_err(|e| (None, e))?;
+    if matches!(role, CartSdRole::Ed64NoLinear) {
+        dev.log(format!(
+            "{context}: skipped (EverDrive — no linear ROM base configured)"
+        ));
+        return Err((None, ED64_BETA_SD_MSG.to_string()));
+    }
+    // Reuse the port auto mode already resolved; only explicit modes still need to resolve.
+    let port = match resolved_port {
+        Some(p) => p,
+        None => resolve_port(st, settings).map_err(|e| (None, e))?,
+    };
+    // Taken only now: resolving the port above may probe, and the probe takes this same lock.
+    let port_guard = lock_port(st);
+    let failed = |msg: String| (Some(port.clone()), msg);
+    let session = match role {
+        CartSdRole::Sc64 => {
+            dev.log(format!("{context}: open SC64 SD session (port={port})"));
+            CartSession::Sc64(Sc64SdSession::open(&port, 115200).map_err(|e| {
+                let msg = e.to_string();
+                dev.log(format!("{context}: SD session open FAILED: {msg}"));
+                failed(msg)
+            })?)
+        }
+        CartSdRole::Ed64Linear => {
+            let base = settings.ed64_rom_linear_base.ok_or_else(|| {
+                (
+                    None,
+                    "internal: Ed64Linear role without ed64_rom_linear_base".to_string(),
+                )
+            })?;
+            dev.log(format!(
+                "{context}: open EverDrive SD session (port={port}, rom_linear_base=0x{base:08x})"
+            ));
+            CartSession::Ed64(Ed64SdSession::open(&port, 115200, base).map_err(|e| {
+                let msg = e.to_string();
+                dev.log(format!(
+                    "{context}: EverDrive SD session open FAILED: {msg}"
+                ));
+                failed(msg)
+            })?)
+        }
+        CartSdRole::Ed64Pro => {
+            dev.log(format!(
+                "{context}: open EverDrive-64 PRO session (port={port}, experimental)"
+            ));
+            CartSession::Ed64Pro(Ed64ProSdSession::open(&port).map_err(|e| {
+                let msg = e.to_string();
+                dev.log(format!(
+                    "{context}: EverDrive-64 PRO session open FAILED: {msg}"
+                ));
+                failed(msg)
+            })?)
+        }
+        CartSdRole::Ed64NoLinear => unreachable!(),
+    };
+    Ok((session, port_guard))
 }
 
 /// Run cart work on the blocking pool with a detached copy of [`ExplorerCartSerialState`].
@@ -1416,6 +1532,97 @@ pub async fn cart_serial_import_copy_batch(
     // close failed. Keeping the cache would leave the pane showing a stale listing.
     st.invalidate_cart_list_cache();
     res
+}
+
+#[cfg(test)]
+mod auto_port_tests {
+    use super::{auto_detected_port, DetectedCartKind, ExplorerCartSerialState};
+    use std::cell::Cell;
+
+    fn ports(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Stands in for `detect_best_auto_port`: records a probe that found `found` on `port`, as
+    /// the real one leaves in `probe_cache`, and counts how often it ran.
+    fn detect<'a>(
+        st: &'a ExplorerCartSerialState,
+        runs: &'a Cell<u32>,
+        port: &'a str,
+        found: DetectedCartKind,
+    ) -> impl FnOnce() -> Result<Option<String>, String> + 'a {
+        move || {
+            runs.set(runs.get() + 1);
+            *st.probe_cache.lock().unwrap() = Some((port.to_string(), found));
+            Ok(Some(port.to_string()))
+        }
+    }
+
+    /// Auto opens every serial port only to find the cart: once, and again when the ports change
+    /// or the port it found stops opening, not for every cart command.
+    ///
+    /// Fail-first, demonstrated: with `auto_detected_port` running `detect` every time, as Auto
+    /// did for every command while multi64d was down, the second resolve probed again and `runs`
+    /// was 2.
+    #[test]
+    fn auto_reuses_the_port_it_found_while_the_ports_stay_the_same() {
+        let st = ExplorerCartSerialState::new();
+        let runs = Cell::new(0);
+        let both = ports(&["COM3", "COM5"]);
+        let found = |names: &[String]| {
+            auto_detected_port(
+                &st,
+                names.to_vec(),
+                detect(&st, &runs, "COM5", DetectedCartKind::Sc64),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(found(&both).as_deref(), Some("COM5"));
+        // Something else probed since; the remembered cart is put back for the role decision.
+        *st.probe_cache.lock().unwrap() = Some(("COM3".into(), DetectedCartKind::Unknown));
+        assert_eq!(found(&both).as_deref(), Some("COM5"));
+        assert_eq!(runs.get(), 1, "the same ports: nothing probed");
+        assert_eq!(
+            *st.probe_cache.lock().unwrap(),
+            Some(("COM5".into(), DetectedCartKind::Sc64))
+        );
+
+        found(&ports(&["COM3", "COM5", "COM7"]));
+        assert_eq!(runs.get(), 2, "a port appeared: detect again");
+
+        let three = ports(&["COM3", "COM5", "COM7"]);
+        found(&three);
+        assert_eq!(runs.get(), 2);
+        assert!(!st.forget_auto_port("COM3"), "not the port it found");
+        assert!(st.forget_auto_port("COM5"));
+        found(&three);
+        assert_eq!(runs.get(), 3, "the port it found failed: detect again");
+
+        st.invalidate_probe_cache();
+        found(&three);
+        assert_eq!(runs.get(), 4, "a cleared probe cache forgets it too");
+    }
+
+    /// The heuristic fallback, a port no probe identified, is never remembered.
+    ///
+    /// Fail-first, demonstrated: remembering whatever `detect` returned, identified or not, this
+    /// probed once where it must probe twice.
+    #[test]
+    fn auto_does_not_remember_a_port_no_probe_identified() {
+        let st = ExplorerCartSerialState::new();
+        let runs = Cell::new(0);
+        let names = ports(&["COM3"]);
+        for _ in 0..2 {
+            auto_detected_port(
+                &st,
+                names.clone(),
+                detect(&st, &runs, "COM3", DetectedCartKind::Unknown),
+            )
+            .unwrap();
+        }
+        assert_eq!(runs.get(), 2);
+    }
 }
 
 #[cfg(test)]
