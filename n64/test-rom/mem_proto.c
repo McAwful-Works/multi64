@@ -119,7 +119,7 @@ static void handle_hello(void)
     int n;
     int len = 8;
     uint32_t rom = m64p_cart_rom_size();
-    uint8_t flags = (uint8_t)M64P_FLAG_WRITABLE;
+    uint8_t flags = (uint8_t)(M64P_FLAG_WRITABLE | M64P_BUILD_FLAGS);
 
     n = app_header(app, M64P_MSG_HELLO_ACK);
     app[n] = (uint8_t)M64P_PROTO_VERSION;
@@ -560,7 +560,7 @@ static void handle_peekrom(const uint8_t *body, size_t body_len)
     m64p_transport_send(reply, out);
 }
 
-int m64p_handle(const uint8_t *p, size_t plen)
+int M64P_DISPATCH(const uint8_t *p, size_t plen)
 {
     uint8_t msg;
     const uint8_t *body;
@@ -646,3 +646,60 @@ void m64p_reset_stats(void)
     s_errors = 0;
     s_last_error = 0;
 }
+
+#ifdef M64P_POKE_ONCE
+/*
+ * A write sent again (spec 4.4).
+ *
+ * The agent serves one request per frame, in order, so a POKEV whose reply the host gave up on is
+ * still applied when the game reaches the hook. A host that then sends it again cannot know
+ * whether the first copy arrived. This lets it find out safely: a POKEV carrying the rid of the
+ * request served just before it, when that request was a POKEV this agent applied, is answered
+ * with the same POKE_ACK and writes nothing. A mailbox the game emptied after the first copy is
+ * not filled again.
+ *
+ * One write is held, and only until the agent serves any other M64P request -- a POKEV under
+ * another rid, a read, a WATCH, HELLO. A host resends at once or not at all, so that is all it
+ * needs, and it is why a rid that comes round again after the counter wraps is never mistaken for
+ * a repeat. The bytes are not compared: the rid is the host's word that this is the same write.
+ * Four bytes of RAM.
+ */
+static uint8_t s_poke_held;    /* the request served last was a POKEV this agent applied... */
+static uint8_t s_poke_applied; /* ...whose POKE_ACK carried this count... */
+static uint16_t s_poke_rid;    /* ...under this rid */
+
+#define M64P_MAGIC_WORD                                                                            \
+    (((uint32_t)M64P_MAGIC0 << 24) | ((uint32_t)M64P_MAGIC1 << 16) | ((uint32_t)M64P_MAGIC2 << 8) | \
+     (uint32_t)M64P_MAGIC3)
+
+int m64p_handle(const uint8_t *p, size_t plen)
+{
+    uint32_t errors = s_errors;
+    /* magic, msg, rid:u16 and n:u8: a POKEV with a rid to compare */
+    int poke = plen >= 8U && p[4] == M64P_MSG_POKEV && read_be32(p) == M64P_MAGIC_WORD;
+    uint8_t app[5 + 3];
+
+    if (poke && s_poke_held && read_be16(p + 5) == s_poke_rid) {
+        /* The host's copy of the write just served: acknowledge it again, and write nothing. */
+        s_requests++;
+        (void)app_header(app, M64P_MSG_POKE_ACK);
+        app[5] = p[5];
+        app[6] = p[6];
+        app[7] = s_poke_applied;
+        m64p_transport_send(app, 8);
+        return 1;
+    }
+    if (!m64p_dispatch(p, plen)) {
+        return 0; /* not M64P, so not a request: the hold stands */
+    }
+    /* Whatever this was, it is now the request served last. handle_pokev() validates the whole
+       request before it writes a byte, and answers ERR without writing anything when that fails,
+       so a POKEV that raised no error is one whose every region landed. */
+    s_poke_held = (uint8_t)(poke && s_errors == errors);
+    if (s_poke_held) {
+        s_poke_rid = read_be16(p + 5);
+        s_poke_applied = p[7];
+    }
+    return 1;
+}
+#endif

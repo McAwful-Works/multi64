@@ -49,7 +49,10 @@ ROM calls it.
 
 **What runs.** Four complete agent builds, each made from the agent's own source files
 (`agent.c`, a driver, `pi_io.c`, `cart_rom.c`, `mem_proto.c`) with the agent's own flags from
-[`../agent/flags.mk`](../agent/flags.mk):
+[`../agent/flags.mk`](../agent/flags.mk). They leave out the agent's
+[repeated-write switch](../agent/README.md#repeated-writes), `M64P_POKE_ONCE`, which is not a
+flag there and which this ROM, built before it, has never had; their `HELLO_ACK` leaves bit `3`
+clear:
 
 | Variant | Driver | Prefix |
 |---|---|---|

@@ -46,6 +46,36 @@
 #define M64P_FLAG_CART_ROM 0x02U
 /** `HELLO_ACK` flags bit 2: this agent watches slots, and `watch_slots` follows rom_bytes. */
 #define M64P_FLAG_WATCH 0x04U
+/** `HELLO_ACK` flags bit 3: a `POKEV` repeating the rid of the write served just before it is
+    acknowledged again, not applied again (spec 4.4). Set only by an M64P_POKE_ONCE build. */
+#define M64P_FLAG_POKE_ONCE 0x08U
+
+/*
+ * M64P_POKE_ONCE, a build switch: with it, m64p_handle() recognizes a POKEV the host sent again
+ * and acknowledges it without writing it a second time, and HELLO_ACK sets bit 3 to say so
+ * (spec 4.4). Every build of the game-resident agent defines it (n64/agent's Makefile and
+ * templates/link-flat.sh, crates/ap64-core/agent/build.sh). The test ROM and n64/bringup's ROM do
+ * not, so they leave bit 3 clear, which is all a host needs to know to keep from sending them a
+ * write twice. Without it, this module behaves exactly as it did before the switch existed.
+ *
+ * It reaches mem_proto.c through the two macros below rather than #ifdef blocks inside the
+ * functions it changes, and everything it adds sits after the file's last function. That is so a
+ * build without it compiles mem_proto.c line for line as before: the test ROM's image carries a
+ * symbol table that records the source line of every function, so a line added above one changes
+ * multi64_test.z64, and n64/README.md's hardware record is for that exact image. The next change
+ * to mem_proto.c that has to move a line will need the test ROM rebuilt anyway, and can fold this
+ * into the functions then.
+ */
+#ifdef M64P_POKE_ONCE
+/** HELLO_ACK flags this build sets beyond those every build decides at run time. */
+#define M64P_BUILD_FLAGS M64P_FLAG_POKE_ONCE
+/** The request dispatcher's name. m64p_handle() is then the wrapper at the end of mem_proto.c. */
+#define M64P_DISPATCH m64p_dispatch
+int m64p_dispatch(const uint8_t *p, size_t plen);
+#else
+#define M64P_BUILD_FLAGS 0U
+#define M64P_DISPATCH m64p_handle
+#endif
 
 /** Spec §4 limits. Exceeding any of them is an error, never a truncation. */
 #define M64P_MAX_REGIONS 32
