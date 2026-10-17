@@ -1963,11 +1963,21 @@ fn fat_rename_case_only<T: fatfs::ReadWriteSeek>(
     name_from: &str,
     name_to: &str,
 ) -> io::Result<()> {
+    fat_rename_case_only_via(name_from, name_to, |from, to| dir.rename(from, dir, to))
+}
+
+/// [`fat_rename_case_only`] with each of its renames made by `rename(from, to)`, so that a test
+/// can fail one step on its own: nothing on a RAM disk fails the second rename but not the undo.
+fn fat_rename_case_only_via(
+    name_from: &str,
+    name_to: &str,
+    mut rename: impl FnMut(&str, &str) -> io::Result<()>,
+) -> io::Result<()> {
     let temp = fat_rename_temp_name(name_from);
     // Fails with `AlreadyExists` rather than replace a file that happens to carry the name.
-    dir.rename(name_from, dir, &temp)?;
-    if let Err(e) = dir.rename(&temp, dir, name_to) {
-        return match dir.rename(&temp, dir, name_from) {
+    rename(name_from, &temp)?;
+    if let Err(e) = rename(&temp, name_to) {
+        return match rename(&temp, name_from) {
             Ok(()) => Err(e),
             Err(undo) => Err(io::Error::new(
                 e.kind(),
@@ -4259,14 +4269,14 @@ mod tests {
 mod fs_tests {
     use super::{
         detect_partition_start, exfat_find_entry_set, exfat_find_free_entry_run,
-        exfat_read_entry_set, list_dir_exfat, list_dir_fat, mkdir_cart_exfat, mkdir_fat_impl,
-        partition_volume_bytes, read_file_exfat, read_file_fat, remove_cart_path_exfat_unified,
-        rename_cart_exfat, rename_fat_impl, write_file_exfat_streaming,
-        write_file_fat_streaming_impl, CachedRamTransport, ExfatDirSlots, ExfatEntryIdentity,
-        ExfatSlotReader, ExfatVolumeSource,
+        exfat_read_entry_set, fat_rename_case_only_via, fat_rename_temp_name, list_dir_exfat,
+        list_dir_fat, mkdir_cart_exfat, mkdir_fat_impl, partition_volume_bytes, read_file_exfat,
+        read_file_fat, remove_cart_path_exfat_unified, rename_cart_exfat, rename_fat_impl,
+        write_file_exfat_streaming, write_file_fat_streaming_impl, CachedRamTransport,
+        ExfatDirSlots, ExfatEntryIdentity, ExfatSlotReader, ExfatVolumeSource,
     };
     use crate::mem_disk::RamPartitionDisk;
-    use fatfs::FormatVolumeOptions;
+    use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
     use hadris_fat::exfat::{format_exfat, ExFatFormatOptions, ExFatFs, ExFatInfo};
     use sha2::{Digest, Sha256};
     use std::cell::RefCell;
@@ -4545,6 +4555,56 @@ mod fs_tests {
         names.sort();
         assert_eq!(names, ["SAVES", "game.z64"]);
         assert_eq!(fat_read(&arc, "game.z64"), b"rom bytes");
+    }
+
+    /// A case-only rename whose second step fails puts the original name back, reports the
+    /// second step's error, and leaves no temporary entry. Should the undo fail as well, the error
+    /// names the temporary name the entry is left under.
+    ///
+    /// Fail-first, demonstrated: with the undo removed, the root lists
+    /// `~multi64-rename-GAME.Z64` and no `GAME.Z64`.
+    #[test]
+    fn fat_case_only_rename_undoes_its_first_step_when_the_second_fails() {
+        let arc = fat_image();
+        fat_write(&arc, "GAME.Z64", b"rom bytes", &mut |_| true).unwrap();
+        let temp = fat_rename_temp_name("GAME.Z64");
+
+        // Fails the renames numbered in `fail` (1 = to the temporary name, 2 = to the new name,
+        // 3 = the undo) and makes the others on the RAM disk.
+        let rename_failing = |fail: &[usize]| -> io::Error {
+            let fs = FileSystem::new(
+                RamPartitionDisk::new_writable(Arc::clone(&arc)),
+                FsOptions::new(),
+            )
+            .unwrap();
+            let err = {
+                let dir = fs.root_dir();
+                let mut n = 0;
+                fat_rename_case_only_via("GAME.Z64", "game.z64", |from, to| {
+                    n += 1;
+                    if fail.contains(&n) {
+                        Err(io::Error::other(format!("injected failure of rename {n}")))
+                    } else {
+                        dir.rename(from, &dir, to)
+                    }
+                })
+                .expect_err("a failed step fails the rename")
+            };
+            fs.unmount().unwrap();
+            err
+        };
+
+        let err = rename_failing(&[2]);
+        assert_eq!(err.to_string(), "injected failure of rename 2");
+        assert_eq!(fat_root_names(&arc), ["GAME.Z64"], "no temporary entry");
+        assert_eq!(fat_read(&arc, "GAME.Z64"), b"rom bytes");
+
+        let err = rename_failing(&[2, 3]);
+        assert!(
+            err.to_string().contains(&format!("is now \"{temp}\"")),
+            "{err}"
+        );
+        assert_eq!(fat_root_names(&arc), [temp]);
     }
 
     /// Every 32-byte slot of the directory stored in `chain`, read straight from the image.

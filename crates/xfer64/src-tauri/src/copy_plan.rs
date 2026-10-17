@@ -2,7 +2,7 @@
 //!
 //! Cart walks use [`CartSession`](multi64_sc64_sd::CartSession) so the same logic applies to SC64 and EverDrive sessions.
 
-use crate::explorer::same_entry;
+use crate::explorer::same_file;
 use multi64_sc64_sd::{cart_path_parts, fat_name_key, CartSession, SessionEntry};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -223,9 +223,10 @@ pub fn build_fs_copy_plan(
             .ok_or_else(|| "Invalid source path.".to_string())?;
         let target = dest_dir.join(name);
         // Dropped into the folder it is already in, under another spelling of that folder (a
-        // `subst` drive, a junction, an 8.3 name) that the frontend's string comparison missed:
-        // nothing to do, as for the same spelling.
-        if same_entry(src, &target) {
+        // `subst` drive, a junction, an 8.3 name) that the frontend's string comparison missed,
+        // or into one that has a hard link to it under its own name: nothing to do, as for the
+        // same spelling.
+        if same_file(src, &target) {
             continue;
         }
         if meta.is_dir() && is_inside(dest_dir, src) {
@@ -724,6 +725,26 @@ mod tests {
         let err =
             build_fs_copy_plan(std::slice::from_ref(&src), &src_again.join("inner")).unwrap_err();
         assert!(err.contains("into itself"), "{err}");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// A file dropped into a folder that already has a hard link to it under its own name is
+    /// already there: nothing to do, rather than a Replace prompt for a copy onto itself.
+    ///
+    /// Fail-first, demonstrated: with the canonical-path check alone, the plan held one step
+    /// copying `game.z64` onto its own hard link, flagged as a conflict.
+    #[test]
+    fn fs_plan_skips_a_file_whose_hard_link_is_already_there() {
+        let tmp = std::env::temp_dir().join(format!("xfer64_plan_link_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let (src, dst) = (tmp.join("src"), tmp.join("dst"));
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(src.join("game.z64"), b"rom").unwrap();
+        fs::hard_link(src.join("game.z64"), dst.join("game.z64")).unwrap();
+
+        let plan = build_fs_copy_plan(&[src.join("game.z64")], &dst).unwrap();
+        assert!(plan.is_empty(), "{plan:?}");
         let _ = fs::remove_dir_all(&tmp);
     }
 
