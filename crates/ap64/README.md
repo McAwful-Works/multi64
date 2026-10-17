@@ -311,6 +311,9 @@ cargo run -p ap64-cli -- <seed.z64> --check    # verify only
 cargo run -p ap64-cli -- <seed.z64> --cart ed64    # for an EverDrive-64 X7 (experimental)
 ```
 
+`-o <out.z64>` writes somewhere else. Neither the window nor the command line writes over the
+seed itself, whatever case, short name or `..` the output path spells it with.
+
 **The agent is built for one flash cart**, because it drives one: the SummerCart64, the
 EverDrive-64 X7 or the EverDrive-64 PRO. The Patch dialog asks which, as **Flash cart**. It
 defaults to the cart Multi64 is set up for when Multi64 is running, and otherwise to the last
