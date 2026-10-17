@@ -119,7 +119,7 @@ pub fn fix_client(apworld: &[u8]) -> Result<Vec<u8>, String> {
     let mut dst = ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..src.len() {
         let f = src.by_index_raw(i).map_err(|e| e.to_string())?;
-        let name = f.name().to_string();
+        let name = f.name().map_err(|e| e.to_string())?.into_owned();
         // Compiled before the change; left in place, Python could keep running the old code.
         if name.starts_with(PYCACHE) && name.ends_with(".pyc") {
             continue;

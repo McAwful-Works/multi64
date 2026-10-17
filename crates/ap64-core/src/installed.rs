@@ -44,6 +44,8 @@ pub fn apworld_version(apworld: &[u8]) -> Option<String> {
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(apworld)).ok()?;
     let name = z
         .file_names()
+        // A name that does not decode cannot be the one this looks for.
+        .filter_map(Result::ok)
         .find(|n| n.ends_with("archipelago.json") && n.matches('/').count() <= 1)?
         .to_string();
     let mut text = String::new();

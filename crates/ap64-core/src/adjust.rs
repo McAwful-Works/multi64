@@ -276,6 +276,8 @@ fn bmtsa_files(apworld: &[u8], version: &str) -> Result<Vec<Vec<u8>>, String> {
         .map_err(|e| format!("{BMTSA_APWORLD} is not a readable apworld: {e}"))?;
     let top = z
         .file_names()
+        // A name that does not decode cannot be the one this looks for.
+        .filter_map(Result::ok)
         .find(|n| n.ends_with("/adjust.py") && n.matches('/').count() == 1)
         .map(|n| n.trim_end_matches("adjust.py").to_string())
         .ok_or_else(|| format!("{BMTSA_APWORLD} {version} has no ROM adjuster (adjust.py)"))?;
