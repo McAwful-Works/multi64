@@ -381,6 +381,20 @@ mod tests {
         fn read_rom_many(&mut self, _: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
             Err(io::ErrorKind::Unsupported.into())
         }
+        fn generation(&self) -> u32 {
+            0
+        }
+        // No watch: live memory, which is what a connector falls back to.
+        fn set_watch(&mut self, _: ap64_cart::watch::Watch) {}
+        fn take_watched(&mut self) -> Option<Vec<u8>> {
+            None
+        }
+        fn sample_watch(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+            None
+        }
     }
 
     /// Pass until the relay has dialed: the first pass only finds the buffers.
@@ -576,6 +590,20 @@ mod tests {
         }
         fn read_rom_many(&mut self, _: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
             Err(io::ErrorKind::Unsupported.into())
+        }
+        fn generation(&self) -> u32 {
+            0
+        }
+        // No watch: live memory, which is what a connector falls back to.
+        fn set_watch(&mut self, _: ap64_cart::watch::Watch) {}
+        fn take_watched(&mut self) -> Option<Vec<u8>> {
+            None
+        }
+        fn sample_watch(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+            None
         }
     }
 

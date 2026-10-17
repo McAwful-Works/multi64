@@ -326,30 +326,6 @@ pub fn fix_client(
     ))
 }
 
-/// A [`Multi64`] the session can still read counters from after the connector owns it.
-struct SharedCart(Rc<RefCell<Multi64>>);
-
-impl Backend for SharedCart {
-    fn rdram_size(&self) -> u32 {
-        self.0.borrow().rdram_size()
-    }
-    fn read_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
-        self.0.borrow_mut().read_many(r)
-    }
-    fn write_many(&mut self, w: &[(u32, &[u8])]) -> io::Result<()> {
-        self.0.borrow_mut().write_many(w)
-    }
-    fn rom_window(&self) -> Option<u32> {
-        self.0.borrow().rom_window()
-    }
-    fn read_rom_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
-        self.0.borrow_mut().read_rom_many(r)
-    }
-    fn generation(&self) -> u32 {
-        self.0.borrow().generation()
-    }
-}
-
 /// The file table in the cart's ROM at `table`, read a piece at a time up to its end.
 fn cart_table(cart: &mut Multi64, table: u32) -> Result<Vec<DmaEntry>, String> {
     const STEP: usize = 0x1000;
@@ -1142,12 +1118,15 @@ fn run(
             }));
         }
 
+        // Shared, so the session can still read counters once the connector holds it. The
+        // shared cart is the cart: `Rc<RefCell<_>>` forwards every `Backend` method, the
+        // watch included.
         let cart = Rc::new(RefCell::new(cart));
         // A native connector has no script to load: AP64 answers its client itself.
         let connector = match kind {
             Kind::Native(_) => None,
             Kind::Script(script) => {
-                match Connector::new(&script, Box::new(SharedCart(cart.clone())), log.clone()) {
+                match Connector::new(&script, Box::new(cart.clone()), log.clone()) {
                     Ok(c) => Some(c),
                     Err(e) => {
                         log(format!("the connector script would not load: {e}"));
@@ -1317,10 +1296,10 @@ fn run(
             // the handler's own borrows above never overlap one of these.
             (Kind::Native(native), _) => match &native.protocol {
                 Protocol::RetroArch(opts) => {
-                    retroarch::serve(&mut SharedCart(cart.clone()), opts, &stop, &mut on_event)
+                    retroarch::serve(&mut cart.clone(), opts, &stop, &mut on_event)
                 }
                 Protocol::Relay(opts) => {
-                    relay::serve(&mut SharedCart(cart.clone()), opts, &stop, &mut on_event)
+                    relay::serve(&mut cart.clone(), opts, &stop, &mut on_event)
                 }
             },
             (Kind::Script(_), None) => unreachable!("a script session loads its script first"),

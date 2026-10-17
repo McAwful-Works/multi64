@@ -13,6 +13,7 @@
 //! The cache is dropped whenever the link to the cart restarts, since that is when the
 //! console may have been reset or another game loaded.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::rc::Rc;
@@ -43,30 +44,65 @@ pub trait Backend {
     fn read_rom_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>>;
 
     /// Changes each time the link to the cart restarts. Anything derived from the ROM
-    /// (a hash, a header) must be read again when it does.
-    fn generation(&self) -> u32 {
-        0
-    }
+    /// (a hash, a header) must be read again when it does, and anything decided from what
+    /// was read before it changed must not be written after.
+    ///
+    /// None of these methods has a default. A wrapper that forgot one would compile and
+    /// quietly do nothing: the Play card's once forwarded six methods, the watch fell to
+    /// no-op defaults, and OoT's watch never reached the cart. Without defaults, every
+    /// implementer says what it does. A backend that never reconnects returns a constant.
+    fn generation(&self) -> u32;
 
     /// Watch a slot the game rewrites faster than the connector reads it ([`crate::watch`]).
     ///
     /// The region is then read alongside every batch of reads, and each change it catches
-    /// is queued for [`Backend::take_watched`]. A backend that does not implement this
-    /// serves live memory, which is what a connector falls back to anyway.
-    fn set_watch(&mut self, _watch: Watch) {}
+    /// is queued for [`Backend::take_watched`]. A backend that does not watch makes this do
+    /// nothing and serves live memory, which is what a connector falls back to anyway.
+    fn set_watch(&mut self, watch: Watch);
 
-    /// The oldest change to the watched slot the connector has not been shown.
-    fn take_watched(&mut self) -> Option<Vec<u8>> {
-        None
-    }
+    /// The oldest change to the watched slot the connector has not been shown, or `None`
+    /// for live memory.
+    fn take_watched(&mut self) -> Option<Vec<u8>>;
 
     /// Read the watched slot now, outside any batch. For time that would be spent idle.
-    fn sample_watch(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+    fn sample_watch(&mut self) -> io::Result<()>;
 
+    /// What the watch has seen, or `None` when no watch is set (or this backend never
+    /// watches).
+    fn watch_stats(&self) -> Option<WatchStats>;
+}
+
+/// A backend shared with its owner, who can still read it after a connector holds it.
+impl<B: Backend + ?Sized> Backend for Rc<RefCell<B>> {
+    fn rdram_size(&self) -> u32 {
+        self.borrow().rdram_size()
+    }
+    fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        self.borrow_mut().read_many(regions)
+    }
+    fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
+        self.borrow_mut().write_many(writes)
+    }
+    fn rom_window(&self) -> Option<u32> {
+        self.borrow().rom_window()
+    }
+    fn read_rom_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        self.borrow_mut().read_rom_many(regions)
+    }
+    fn generation(&self) -> u32 {
+        self.borrow().generation()
+    }
+    fn set_watch(&mut self, watch: Watch) {
+        self.borrow_mut().set_watch(watch)
+    }
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        self.borrow_mut().take_watched()
+    }
+    fn sample_watch(&mut self) -> io::Result<()> {
+        self.borrow_mut().sample_watch()
+    }
     fn watch_stats(&self) -> Option<WatchStats> {
-        None
+        self.borrow().watch_stats()
     }
 }
 
@@ -159,6 +195,11 @@ impl Backend for RamImage {
                 Ok(rom[addr as usize..addr as usize + len].to_vec())
             })
             .collect()
+    }
+
+    /// An image is never reconnected.
+    fn generation(&self) -> u32 {
+        0
     }
 
     fn set_watch(&mut self, watch: Watch) {
@@ -1157,6 +1198,38 @@ mod tests {
             vec![vec![1, 2, 3], vec![4, 5]]
         );
         assert!(stitch(vec![vec![1]], &[2]).is_err());
+    }
+
+    /// A shared backend is the backend: every method reaches the one inside, the watch
+    /// included. The Play card's wrapper once forwarded six methods and let the watch fall
+    /// to no-op defaults, so OoT's `ap64.watch` never reached the cart and nothing was
+    /// ever queued.
+    #[test]
+    fn a_shared_backend_forwards_every_method_the_watch_included() {
+        let mut ram = vec![0u8; 0x100];
+        ram[0x10] = 0x11;
+        let inner = Rc::new(RefCell::new(RamImage::with_rom(ram, vec![0xAB; 0x20])));
+        let mut shared: Rc<RefCell<RamImage>> = inner.clone();
+        let cart: &mut dyn Backend = &mut shared;
+
+        assert_eq!(cart.rdram_size(), 0x100);
+        assert_eq!(cart.rom_window(), Some(0x20));
+        assert_eq!(cart.read_rom_many(&[(0, 2)]).unwrap(), vec![vec![0xAB; 2]]);
+        assert_eq!(cart.generation(), 0);
+        cart.write_many(&[(0x20, &[7])]).unwrap();
+        assert_eq!(cart.read_many(&[(0x20, 1)]).unwrap(), vec![vec![7]]);
+
+        cart.set_watch(Watch::new(0x40, 1, None));
+        assert!(
+            cart.watch_stats().is_some(),
+            "the watch reached the backend"
+        );
+        cart.sample_watch().unwrap(); // the baseline
+        inner.borrow_mut().ram[0x40] = 5;
+        cart.sample_watch().unwrap();
+        assert_eq!(cart.take_watched(), Some(vec![5]), "a change was queued");
+        assert_eq!(cart.take_watched(), None);
+        assert_eq!(cart.watch_stats().unwrap().replayed, 1);
     }
 
     #[test]

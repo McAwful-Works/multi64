@@ -79,6 +79,9 @@ impl Backend for Counted {
     fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
         self.ram.borrow().watch_stats()
     }
+    fn generation(&self) -> u32 {
+        0
+    }
 }
 
 fn block(items: &[u16]) -> String {
@@ -191,6 +194,20 @@ impl Backend for TearOnce {
     }
     fn read_rom_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
         Ok(r.iter().map(|&(_, l)| vec![0; l]).collect())
+    }
+    fn generation(&self) -> u32 {
+        0
+    }
+    // No watch: live memory, which is what a connector falls back to.
+    fn set_watch(&mut self, _: ap64_cart::watch::Watch) {}
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+    fn sample_watch(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+        None
     }
 }
 

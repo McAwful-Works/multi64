@@ -17,27 +17,6 @@ use ap64_connector::{Connector, GENERIC};
 use common::{on_a_free_port, port_was_taken};
 use sha1::{Digest, Sha1};
 
-/// A RAM image the test can still look at after handing it to the connector.
-struct Shared(Rc<RefCell<RamImage>>);
-
-impl Backend for Shared {
-    fn rdram_size(&self) -> u32 {
-        self.0.borrow().rdram_size()
-    }
-    fn read_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
-        self.0.borrow_mut().read_many(r)
-    }
-    fn write_many(&mut self, w: &[(u32, &[u8])]) -> io::Result<()> {
-        self.0.borrow_mut().write_many(w)
-    }
-    fn rom_window(&self) -> Option<u32> {
-        self.0.borrow().rom_window()
-    }
-    fn read_rom_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
-        self.0.borrow_mut().read_rom_many(r)
-    }
-}
-
 /// A cart that has gone for good: every read fails, as after the reconnect deadline.
 struct Dead;
 
@@ -56,6 +35,20 @@ impl Backend for Dead {
     }
     fn read_rom_many(&mut self, _: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
         Err(io::Error::other("cart ROM read: gave up after 300s"))
+    }
+    fn generation(&self) -> u32 {
+        0
+    }
+    // No watch: live memory, which is what a connector falls back to.
+    fn set_watch(&mut self, _: ap64_cart::watch::Watch) {}
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+    fn sample_watch(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+        None
     }
 }
 
@@ -132,7 +125,7 @@ fn serves_domains_guards_and_writes() {
             let m = messages.clone();
             Arc::new(move |s: String| m.lock().unwrap().push(s))
         };
-        let connector = Connector::new(&GENERIC, Box::new(Shared(ram.clone())), log).unwrap();
+        let connector = Connector::new(&GENERIC, Box::new(ram.clone()), log).unwrap();
 
         let done = Arc::new(AtomicBool::new(false));
         let lines = [

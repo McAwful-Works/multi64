@@ -726,6 +726,20 @@ mod tests {
         fn read_rom_many(&mut self, _: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
             unimplemented!()
         }
+        fn generation(&self) -> u32 {
+            0
+        }
+        // No watch: live memory, which is what a connector falls back to.
+        fn set_watch(&mut self, _: ap64_cart::watch::Watch) {}
+        fn take_watched(&mut self) -> Option<Vec<u8>> {
+            None
+        }
+        fn sample_watch(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+            None
+        }
     }
 
     /// A window the client has just asked for is fetched before the writes queued ahead of it,
