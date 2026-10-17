@@ -1,6 +1,6 @@
 # L3 APPLICATION — RDRAM peek/poke (M64P, v0)
 
-**Spec-Revision:** 1  
+**Spec-Revision:** 4  
 
 Payloads carried in L3 `DATA` frames on **`CHANNEL = APPLICATION` (`0x00`)** that let a host read and write **console RDRAM**, and read the **cartridge ROM**, while a ROM runs.
 
@@ -237,6 +237,6 @@ An agent that predates a request type answers it with `E_MALFORMED`, as any unkn
 | Spec-Revision | Change |
 |---------------|--------|
 | **1** | M64P v0: `HELLO`, `PEEKV`, `POKEV`. No change to the L3 byte contract — this is an APPLICATION payload, so **Protocol-Major/Minor are unaffected**. Per-request byte cap set to 7936 (§4) after hardware measurement showed latency is per-exchange, not per-byte. |
-| *unassigned* | `PEEKROM` / `PEEKROM_RESP` (§4.2), `HELLO_ACK` `flags` bit `1` and `rom_bytes`, `E_UNSUPPORTED`, `E_BUSY`. Additive: `proto` stays **0**, every earlier field keeps its offset, and an agent without `PEEKROM` still conforms. L3 **Protocol-Major/Minor are unaffected**. The Spec-Revision number is the maintainer's to assign. |
-| *unassigned* | `WATCH` / `WATCH_ACK` and the `PEEKV_RESP` trailer (§4.3), `HELLO_ACK` `flags` bit `2` and `watch_slots`. Additive: `proto` stays **0**, the trailer appears only for a host that asked for it, and an agent that does not watch still conforms. L3 **Protocol-Major/Minor are unaffected**. The Spec-Revision number is the maintainer's to assign. |
-| *unassigned* | Repeated writes (§4.4): `HELLO_ACK` `flags` bit `3`, the agent's held write, and the rules for a host that sends a `POKEV` again. Additive: `proto` stays **0**, no message or field is added, bit `3` appends nothing, and an agent with it clear still conforms; a host must then never send a `POKEV` twice, which §4.4 now says outright. L3 **Protocol-Major/Minor are unaffected**. The Spec-Revision number is the maintainer's to assign. |
+| **2** | `PEEKROM` / `PEEKROM_RESP` (§4.2), `HELLO_ACK` `flags` bit `1` and `rom_bytes`, `E_UNSUPPORTED`, `E_BUSY`. Additive: `proto` stays **0**, every earlier field keeps its offset, and an agent without `PEEKROM` still conforms. L3 **Protocol-Major/Minor are unaffected**. |
+| **3** | `WATCH` / `WATCH_ACK` and the `PEEKV_RESP` trailer (§4.3), `HELLO_ACK` `flags` bit `2` and `watch_slots`. Additive: `proto` stays **0**, the trailer appears only for a host that asked for it, and an agent that does not watch still conforms. L3 **Protocol-Major/Minor are unaffected**. |
+| **4** | Repeated writes (§4.4): `HELLO_ACK` `flags` bit `3`, the agent's held write, the rules for a host that sends a `POKEV` again, and the rule that every host talking to an agent with bit `3` sends another M64P request before its first `POKEV` on a link it has had no reply on. Additive: `proto` stays **0**, no message or field is added, bit `3` appends nothing, and an agent with it clear still conforms; a host must then never send a `POKEV` twice, which §4.4 now says outright. L3 **Protocol-Major/Minor are unaffected**. |
