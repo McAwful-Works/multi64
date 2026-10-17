@@ -2424,10 +2424,19 @@ async function loadCartPane(opts = {}) {
 }
 
 /**
+ * Folder loads started on This PC, so one that ends after a later one began shows nothing. Going
+ * elsewhere is allowed while a folder is being read, and a slow folder (a network share, a huge
+ * one) used to land after the next, listing its files under the other's path. The cart pane needs
+ * no such count: its reads share one port and are served in the order they were asked.
+ */
+let pcLoadSeq = 0;
+
+/**
  * @param {{ preserveSelection?: boolean, forceRefresh?: boolean }} [opts]
  * `forceRefresh` — bypass Rust PC list cache on the first page (e.g. F5).
  */
 async function loadPcPane(opts = {}) {
+  const seq = ++pcLoadSeq;
   beginPaneLoading("pc", "Reading folder…");
   updateExplorerControls();
   try {
@@ -2454,6 +2463,7 @@ async function loadPcPane(opts = {}) {
     }
     try {
       const entries = await listPcDirPaged(p, forceRefresh);
+      if (seq !== pcLoadSeq) return;
       const visible = sortEntriesForPane("pc", filterHiddenEntries(entries, showHiddenForPane("pc")));
       if (!preserveSelection) {
         state.pc.selected.clear();
@@ -2471,6 +2481,7 @@ async function loadPcPane(opts = {}) {
       if (statusMeta) statusMeta.textContent = countNoun(visible.length, "item");
       localStorage.setItem(LS_PC, p);
     } catch (err) {
+      if (seq !== pcLoadSeq) return;
       abandonInlineRenameIfPane("pc");
       state.pc.listEntries = [];
       lastVirtualRange.pc = null;

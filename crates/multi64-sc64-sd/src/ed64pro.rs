@@ -7,7 +7,7 @@
 //! Xfer64 can treat both carts the same. See workspace `docs/spec/ed64-pro-usb-host.md`.
 
 use crate::host_file::write_host_file;
-use crate::partition::{cart_path_parts, fat_names_equal, SessionEntry};
+use crate::partition::{cart_path_parts, fat_names_equal, refuse_dot_name, SessionEntry};
 use multi64_ed64pro_link::{
     dir_option, open_mode, Ed64Pro, Error as LinkError, FileInfo, Transport,
 };
@@ -208,6 +208,7 @@ impl<T: Transport> Ed64ProSdSession<T> {
     pub fn mkdir_cart(&self, path: &str) -> io::Result<()> {
         let mut prefix = String::new();
         for part in pro_path(path).split('/').filter(|s| !s.is_empty()) {
+            refuse_dot_name(part)?;
             prefix = join(&prefix, part);
             match self.cart_path_entry_kind(&prefix)? {
                 Some(true) => {}
@@ -248,6 +249,7 @@ impl<T: Transport> Ed64ProSdSession<T> {
                 "empty path segment",
             ));
         }
+        refuse_dot_name(&name_to)?;
         if name_from == name_to {
             return Ok(());
         }
@@ -705,6 +707,23 @@ mod tests {
 
     fn pattern(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i * 31 % 251) as u8).collect()
+    }
+
+    /// `.` and `..` are refused as names here as on an SC64's card (`refuse_dot_name`).
+    #[test]
+    fn dot_names_are_refused() {
+        let s = session(FakeEd64Pro::new().with_file("Game.z64", b"n64"));
+        for bad in [".", ".."] {
+            let err = s
+                .rename_cart("Game.z64", bad)
+                .expect_err("renamed to a dot name");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{bad}: {err}");
+            let err = s
+                .mkdir_cart(&format!("Saves/{bad}"))
+                .expect_err("made a folder with a dot name");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{bad}: {err}");
+        }
+        assert_eq!(s.cart_path_entry_kind("Game.z64").unwrap(), Some(false));
     }
 
     #[test]
