@@ -71,7 +71,7 @@ The menu tracks state live: starting or stopping the bridge from the window upda
 
 ### Restarting while Xfer64 is using the cart
 
-Xfer64 pauses the bridge while it works with the cart ([daemon API §1.2](../../docs/spec/daemon-api-v1.md#12-serial-yield-xfer64)). That pause lives in the daemon process, so a bridge restarted meanwhile, by a Save that changes its settings or by **Restart bridge**, knows nothing of it. The new daemon cannot open the port Xfer64 holds, so it starts without the cart and tries the port again every second, and it can take the port between two of Xfer64's commands, failing the rest of what Xfer64 was doing. Do not restart the bridge while Xfer64 is copying or listing files on the cart.
+Xfer64 pauses the bridge while it works with the cart ([daemon API §1.2](../../docs/spec/daemon-api-v1.md#12-serial-yield-xfer64)). That pause lives in the daemon process, so a bridge restarted meanwhile, by a Save that changes its settings or by **Restart bridge**, knows nothing of it. The new daemon cannot open the port Xfer64 holds, so it starts without the cart and tries the port again every second, and it can take the port between two of Xfer64's commands. When Xfer64 then finds the port taken by the bridge it paused, it pauses the new bridge too, tries the port once more and carries on, and resumes the bridge when it is done, as usual. With developer mode on, Xfer64's developer log says so: the bridge had taken the port back, and Xfer64 asked it to release again. A command whose second try fails too still fails, with the error it would have had without the retry.
 
 ## Appearance
 

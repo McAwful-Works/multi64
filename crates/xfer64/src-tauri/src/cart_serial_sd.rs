@@ -127,6 +127,10 @@ pub struct ExplorerCartSerialState {
     /// The cart Auto last found by probing ports, reused by later commands while it keeps working
     /// and the serial ports stay the same. See [`auto_detected_port`].
     auto_port: Arc<Mutex<Option<RememberedAutoPort>>>,
+    /// Xfer64's own pauses of multi64d not yet resumed: each address with how many operations
+    /// have released it there and not yet asked to resume. Shared, since the release, the cart
+    /// commands and the resume each run on their own detached copy. See [`open_with_retries`].
+    bridge_pauses: Arc<Mutex<Vec<(String, u32)>>>,
 }
 
 /// A cart port Auto found, with the serial ports there were when it did.
@@ -147,7 +151,41 @@ impl ExplorerCartSerialState {
             port_lock: Arc::new(Mutex::new(())),
             probed_listen: Arc::new(Mutex::new(None)),
             auto_port: Arc::new(Mutex::new(None)),
+            bridge_pauses: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Record that an operation is releasing multi64d at `listen`. Called before the request is
+    /// sent, since every release attempt, even one that fails, is paired with a resume.
+    pub(crate) fn note_bridge_release(&self, listen: &str) {
+        let key = crate::daemon::listen_key(listen);
+        if let Ok(mut g) = self.bridge_pauses.lock() {
+            match g.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, n)) => *n += 1,
+                None => g.push((key, 1)),
+            }
+        }
+    }
+
+    /// Record that an operation that released multi64d at `listen` is resuming it.
+    pub(crate) fn note_bridge_resume(&self, listen: &str) {
+        let key = crate::daemon::listen_key(listen);
+        if let Ok(mut g) = self.bridge_pauses.lock() {
+            if let Some(i) = g.iter().position(|(k, _)| *k == key) {
+                g[i].1 -= 1;
+                if g[i].1 == 0 {
+                    g.remove(i);
+                }
+            }
+        }
+    }
+
+    /// The multi64d addresses Xfer64 has released and not yet resumed.
+    pub(crate) fn paused_bridges(&self) -> Vec<String> {
+        self.bridge_pauses
+            .lock()
+            .map(|g| g.iter().map(|(k, _)| k.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Remember the multi64d address just probed, so Auto's cart hint asks that daemon.
@@ -182,6 +220,7 @@ impl ExplorerCartSerialState {
             port_lock: Arc::clone(&self.port_lock),
             probed_listen: Arc::clone(&self.probed_listen),
             auto_port: Arc::clone(&self.auto_port),
+            bridge_pauses: Arc::clone(&self.bridge_pauses),
         })
     }
 
@@ -806,18 +845,10 @@ pub(crate) fn with_session<T, F>(
 where
     F: FnOnce(&CartSession) -> Result<T, String>,
 {
-    let (session, _port) = match open_session(dev, context, st, settings) {
-        Ok(opened) => opened,
-        // A port Auto remembered from an earlier command no longer opens: the cart may have
-        // moved, or another device taken its name. Find it again, once, rather than fail.
-        Err((Some(port), _)) if st.forget_auto_port(&port) => {
-            dev.log(format!(
-                "{context}: the cart Auto found on {port} did not open; detecting again"
-            ));
-            open_session(dev, context, st, settings).map_err(|(_, msg)| msg)?
-        }
-        Err((_, msg)) => return Err(msg),
-    };
+    let (session, _port) =
+        open_with_retries(&|m| dev.log(m), context, st, port_open_refused, || {
+            open_session(dev, context, st, settings)
+        })?;
     let guard = SdSessionCloseGuard::new(session, dev.clone(), context);
     let out = f(guard.session());
     if let Err(e) = guard.close_explicit() {
@@ -841,6 +872,147 @@ where
 
 /// Why [`open_session`] failed, and the port it was opening when it got that far.
 type OpenFailure = (Option<String>, String);
+
+/// Where the retries below write their lines: the cart log ([`ExplorerDevLog::log`]) in the app.
+/// A closure rather than the log itself, so tests can read what was written without the log's
+/// webview events, whose code the test binary cannot load on Windows.
+type CartLog<'a> = &'a dyn Fn(String);
+
+/// Run `open`, and when it fails on a port, retry it once in either of two cases.
+///
+/// - **The Multi64 bridge took the port back** during Xfer64's own pause of it, and
+///   [`rerelease_if_bridge_took_port`] has asked it to release again.
+/// - **The port Auto remembered from an earlier command no longer opens**: the cart may have
+///   moved, or another device taken its name. Auto forgets it and detects again.
+///
+/// Either way `open` runs at most twice. When a retry after a second release fails too, the first
+/// error is the one reported, as it was before there was a retry. `port_refused` is passed on to
+/// [`rerelease_if_bridge_took_port`].
+fn open_with_retries<O>(
+    log: CartLog<'_>,
+    context: &'static str,
+    st: &ExplorerCartSerialState,
+    port_refused: impl Fn(&str) -> bool,
+    mut open: impl FnMut() -> Result<O, OpenFailure>,
+) -> Result<O, String> {
+    let (port, msg) = match open() {
+        Ok(opened) => return Ok(opened),
+        Err((Some(port), msg)) => (port, msg),
+        Err((None, msg)) => return Err(msg),
+    };
+    if rerelease_if_bridge_took_port(log, context, st, &port, port_refused) {
+        return open().map_err(|(_, retry)| {
+            log_failed_retry(log, context, &port, &retry);
+            msg
+        });
+    }
+    if st.forget_auto_port(&port) {
+        log(format!(
+            "{context}: the cart Auto found on {port} did not open; detecting again"
+        ));
+        return open().map_err(|(_, retry)| retry);
+    }
+    Err(msg)
+}
+
+/// After cart work failed on `port`, ask the Multi64 bridge to release again if it has taken
+/// `port` back during Xfer64's own pause of it ([`bridge_took_port_back`]). Returns whether it
+/// did, and so whether the caller should retry its work, once.
+///
+/// A bridge restarted while Xfer64 had it released knows nothing of that release, and retries the
+/// port about once per second, so it can take the port in the gap between two of an operation's
+/// cart commands (daemon API §1.2). A new bridge honors a release like any other, and the
+/// operation's own resume, at its end, hands the port back to it as usual. This release is not
+/// counted as another pause, since that one resume answers for both.
+fn rerelease_if_bridge_took_port(
+    log: CartLog<'_>,
+    context: &'static str,
+    st: &ExplorerCartSerialState,
+    port: &str,
+    port_refused: impl Fn(&str) -> bool,
+) -> bool {
+    let Some(listen) = bridge_took_port_back(st, port, port_refused) else {
+        return false;
+    };
+    log(format!(
+        "{context}: the Multi64 bridge had taken {port} back; asked it to release again"
+    ));
+    match crate::daemon::explorer_daemon_release_listen(&listen) {
+        Ok(()) => true,
+        Err(e) => {
+            log(format!("{context}: the second release failed: {e}"));
+            false
+        }
+    }
+}
+
+fn log_failed_retry(log: CartLog<'_>, context: &str, port: &str, retry: &str) {
+    log(format!(
+        "{context}: the retry on {port} after the second release failed too: {retry}"
+    ));
+}
+
+/// The multi64d address to ask to release again, when the bridge Xfer64 paused has taken `port`
+/// back: Xfer64 has released a bridge and not yet resumed it, that bridge reports holding `port`
+/// (`serialActive` in its `GET /`), and the OS refuses to open `port` because something holds it.
+///
+/// Checked in that order, so outside a pause nothing is asked at all, and the port is opened to
+/// test it only once a bridge has said it holds that port, when the open cannot succeed. The
+/// session's own error is not read: its text is the OS's, which Windows translates, and the cart
+/// crates keep no error kind with it.
+fn bridge_took_port_back(
+    st: &ExplorerCartSerialState,
+    port: &str,
+    port_refused: impl Fn(&str) -> bool,
+) -> Option<String> {
+    st.paused_bridges()
+        .into_iter()
+        .find(|listen| crate::daemon::daemon_holds_port(listen, port))
+        .filter(|_| port_refused(port))
+}
+
+/// Whether the OS refuses to open `port` because another process holds it.
+///
+/// On Windows, `serialport` reports a port that is in use, one that does not exist and one access
+/// is denied to as one kind, with the system's translated message, so the port is opened once
+/// more here to read the system error itself: `ERROR_ACCESS_DENIED`, which is what a serial port
+/// another process has open answers, or `ERROR_SHARING_VIOLATION`.
+#[cfg(windows)]
+fn port_open_refused(port: &str) -> bool {
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let path = if port.starts_with(r"\\") {
+        port.to_string()
+    } else {
+        format!(r"\\.\{port}")
+    };
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(_) => false,
+        Err(e) => matches!(
+            e.raw_os_error(),
+            Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+        ),
+    }
+}
+
+/// Whether the OS refuses to open `port` because another process holds it: `serialport`'s
+/// `NoDevice`, which on these platforms means the port is busy or locked (`EBUSY`, or its
+/// exclusive `flock` taken), or permission denied.
+#[cfg(not(windows))]
+fn port_open_refused(port: &str) -> bool {
+    match serialport::new(port, 115200).open() {
+        Ok(_) => false,
+        Err(e) => matches!(
+            e.kind(),
+            serialport::ErrorKind::NoDevice
+                | serialport::ErrorKind::Io(io::ErrorKind::PermissionDenied)
+        ),
+    }
+}
 
 /// Open the SD session [`with_session`] works in, with the port lock held for it.
 fn open_session<'a>(
@@ -1056,11 +1228,13 @@ pub async fn cart_serial_probe_ed64_linear_base(
     st: State<'_, ExplorerCartSerialState>,
     settings: State<'_, ExplorerSettingsState>,
     cancel: State<'_, ExplorerCancelState>,
+    dev: State<'_, ExplorerDevLog>,
 ) -> Result<Ed64LinearProbeResult, String> {
     let snap = settings.snapshot();
     let cancel = ExplorerCancelState::clone(&cancel);
+    let dev = (*dev).clone();
     spawn_with_cart_state(&st, "cart_serial_probe_ed64_linear_base", move |st| {
-        probe_ed64_linear_base_blocking(st, &snap, &cancel)
+        probe_ed64_linear_base_blocking(st, &snap, &cancel, &dev)
     })
     .await
 }
@@ -1069,6 +1243,7 @@ fn probe_ed64_linear_base_blocking(
     st: &ExplorerCartSerialState,
     snap: &ExplorerSettingsSnapshot,
     cancel: &ExplorerCancelState,
+    dev: &ExplorerDevLog,
 ) -> Result<Ed64LinearProbeResult, String> {
     let (port, already_probed) = resolve_port_probed(st, snap)?;
     let kind = probe_with_cache(st, &port, !already_probed)?;
@@ -1090,12 +1265,31 @@ fn probe_ed64_linear_base_blocking(
         .map(|v| format!("0x{v:08x}"))
         .collect();
     let preferred = snap.ed64_rom_linear_base;
-    let (candidates, bases_checked) = {
+    let context = "cart_serial_probe_ed64_linear_base";
+    let scan = || {
         let _port = lock_port(st);
         ed64_link::probe_ed64_sd_linear_bases_with_cancel(&port, 115200, preferred, || {
             !cancel.is_cancelled()
         })
-        .map_err(|e| map_cart_io_error("SD base scan", e))?
+        .map_err(|e| {
+            let cancelled = e.kind() == io::ErrorKind::Interrupted;
+            (cancelled, map_cart_io_error("SD base scan", e))
+        })
+    };
+    // Retried once if the bridge took the port back ([`rerelease_if_bridge_took_port`]); never
+    // after a cancel.
+    let log = |m| dev.log(m);
+    let (candidates, bases_checked) = match scan() {
+        Ok(found) => found,
+        Err((false, msg))
+            if rerelease_if_bridge_took_port(&log, context, st, &port, port_open_refused) =>
+        {
+            scan().map_err(|(_, retry)| {
+                log_failed_retry(&log, context, &port, &retry);
+                msg
+            })?
+        }
+        Err((_, msg)) => return Err(msg),
     };
     Ok(Ed64LinearProbeResult {
         candidates,
@@ -1622,6 +1816,206 @@ mod auto_port_tests {
             .unwrap();
         }
         assert_eq!(runs.get(), 2);
+    }
+}
+
+/// [`open_with_retries`] against a fake multi64d: when a bridge Xfer64 paused has taken the port
+/// back, it is asked to release again and the open retried once, and in no other case.
+#[cfg(test)]
+mod bridge_recovery_tests {
+    use super::{
+        open_with_retries, port_open_refused, DetectedCartKind, ExplorerCartSerialState,
+        OpenFailure, RememberedAutoPort,
+    };
+    use crate::daemon::fake::daemon_answering;
+    use std::cell::{Cell, RefCell};
+    use std::sync::{Arc, Mutex};
+
+    const HOLDS_COM_TEST: &str = r#"{"serial":"COM_TEST","serialActive":true,"cart":"sc64"}"#;
+    const DENIED: &str = "serial open: Access is denied.";
+
+    /// The cart log's lines, as [`open_with_retries`] wrote them.
+    type Lines = RefCell<Vec<String>>;
+
+    fn dev() -> Lines {
+        Lines::default()
+    }
+
+    /// An address nothing listens on: a bridge that is not running.
+    fn closed_listen() -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = format!("http://{}", l.local_addr().unwrap());
+        drop(l);
+        listen
+    }
+
+    /// Run [`open_with_retries`] with opens that fail on COM_TEST until `ok_on`, if ever. Returns
+    /// the outcome, how many opens ran and how many times the port itself was tested.
+    fn run(
+        st: &ExplorerCartSerialState,
+        dev: &Lines,
+        refused: bool,
+        ok_on: Option<u32>,
+    ) -> (Result<u32, String>, u32, u32) {
+        let opens = Cell::new(0);
+        let tested = Cell::new(0);
+        let result = open_with_retries(
+            &|m| dev.borrow_mut().push(m),
+            "test",
+            st,
+            |port| {
+                assert_eq!(port, "COM_TEST");
+                tested.set(tested.get() + 1);
+                refused
+            },
+            || -> Result<u32, OpenFailure> {
+                opens.set(opens.get() + 1);
+                if Some(opens.get()) == ok_on {
+                    Ok(opens.get())
+                } else if opens.get() == 1 {
+                    Err((Some("COM_TEST".into()), DENIED.into()))
+                } else {
+                    Err((Some("COM_TEST".into()), format!("open {}", opens.get())))
+                }
+            },
+        );
+        (result, opens.get(), tested.get())
+    }
+
+    fn requests(seen: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+        seen.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn a_port_the_bridge_took_back_mid_pause_is_released_again_and_reopened() {
+        let (listen, seen) = daemon_answering(HOLDS_COM_TEST);
+        let st = ExplorerCartSerialState::new();
+        st.note_bridge_release(&listen);
+        let dev = dev();
+
+        assert_eq!(run(&st, &dev, true, Some(2)), (Ok(2), 2, 1));
+        assert_eq!(requests(&seen), ["GET /", "POST /v1/serial/release"]);
+        assert!(
+            dev.borrow().iter().any(|l| l
+                == "test: the Multi64 bridge had taken COM_TEST back; asked it to release again"),
+            "{:?}",
+            dev.borrow()
+        );
+        assert_eq!(
+            st.paused_bridges(),
+            [listen],
+            "the second release is part of the same pause, which one resume ends"
+        );
+    }
+
+    #[test]
+    fn a_retry_that_fails_too_reports_the_first_error_and_is_not_repeated() {
+        let (listen, seen) = daemon_answering(HOLDS_COM_TEST);
+        let st = ExplorerCartSerialState::new();
+        st.note_bridge_release(&listen);
+        let dev = dev();
+
+        assert_eq!(run(&st, &dev, true, None), (Err(DENIED.into()), 2, 1));
+        assert_eq!(requests(&seen), ["GET /", "POST /v1/serial/release"]);
+        assert!(dev
+            .borrow()
+            .iter()
+            .any(|l| l.contains("failed too: open 2")));
+    }
+
+    /// Outside a pause of its own, Xfer64 never releases a bridge, nor even asks it anything.
+    #[test]
+    fn nothing_is_asked_outside_a_pause() {
+        let (listen, seen) = daemon_answering(HOLDS_COM_TEST);
+        let st = ExplorerCartSerialState::new();
+        assert_eq!(run(&st, &dev(), true, Some(2)), (Err(DENIED.into()), 1, 0));
+
+        st.note_bridge_release(&listen);
+        st.note_bridge_resume(&listen);
+        assert_eq!(
+            run(&st, &dev(), true, Some(2)),
+            (Err(DENIED.into()), 1, 0),
+            "nor once that pause has been resumed"
+        );
+        assert!(requests(&seen).is_empty());
+    }
+
+    /// A bridge that holds another port, or none, did not take this one: no release, no retry,
+    /// and the port is not opened to test it.
+    #[test]
+    fn a_bridge_without_this_port_is_left_alone() {
+        for root in [
+            r#"{"serial":"COM_OTHER","serialActive":true,"cart":"sc64"}"#,
+            r#"{"serial":"COM_TEST","serialActive":false,"cart":"sc64"}"#,
+        ] {
+            let (listen, seen) = daemon_answering(root);
+            let st = ExplorerCartSerialState::new();
+            st.note_bridge_release(&listen);
+            assert_eq!(
+                run(&st, &dev(), true, Some(2)),
+                (Err(DENIED.into()), 1, 0),
+                "{root}"
+            );
+            assert_eq!(requests(&seen), ["GET /"], "{root}");
+        }
+    }
+
+    #[test]
+    fn a_bridge_that_is_not_running_is_left_alone() {
+        let st = ExplorerCartSerialState::new();
+        st.note_bridge_release(&closed_listen());
+        assert_eq!(run(&st, &dev(), true, Some(2)), (Err(DENIED.into()), 1, 0));
+    }
+
+    /// The bridge says it holds the port, but the OS would open it: the open failed for another
+    /// reason, which another release would not change.
+    #[test]
+    fn a_port_the_os_does_not_refuse_is_not_released() {
+        let (listen, seen) = daemon_answering(HOLDS_COM_TEST);
+        let st = ExplorerCartSerialState::new();
+        st.note_bridge_release(&listen);
+        assert_eq!(run(&st, &dev(), false, Some(2)), (Err(DENIED.into()), 1, 1));
+        assert_eq!(requests(&seen), ["GET /"]);
+    }
+
+    #[test]
+    fn a_failure_before_any_port_was_chosen_asks_nothing() {
+        let (listen, seen) = daemon_answering(HOLDS_COM_TEST);
+        let st = ExplorerCartSerialState::new();
+        st.note_bridge_release(&listen);
+        let opens = Cell::new(0);
+        let result: Result<(), String> = open_with_retries(
+            &|_| {},
+            "test",
+            &st,
+            |_| panic!("tested a port"),
+            || {
+                opens.set(opens.get() + 1);
+                Err((None, "No cart found.".into()))
+            },
+        );
+        assert_eq!(result, Err("No cart found.".into()));
+        assert_eq!(opens.get(), 1);
+        assert!(requests(&seen).is_empty());
+    }
+
+    /// The retry Auto already had, for a remembered port that no longer opens, is unchanged.
+    #[test]
+    fn a_remembered_auto_port_that_fails_is_still_detected_again() {
+        let st = ExplorerCartSerialState::new();
+        *st.auto_port.lock().unwrap() = Some(RememberedAutoPort {
+            port: "COM_TEST".into(),
+            kind: DetectedCartKind::Sc64,
+            ports: Vec::new(),
+        });
+        assert_eq!(run(&st, &dev(), true, Some(2)), (Ok(2), 2, 0));
+        assert!(st.auto_port.lock().unwrap().is_none());
+    }
+
+    /// A port that does not exist is missing, not held by anyone.
+    #[test]
+    fn a_port_that_does_not_exist_is_not_refused() {
+        assert!(!port_open_refused("COM_XFER64_TEST_NO_SUCH_PORT"));
     }
 }
 

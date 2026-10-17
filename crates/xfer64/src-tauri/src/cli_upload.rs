@@ -361,9 +361,11 @@ pub fn run_headless_import_upload(
 
     let (result, resume_error) = with_daemon_released(
         should_release(&probe),
-        || daemon::explorer_daemon_release_listen(&listen),
+        // Through `st`, so the upload's cart commands know the bridge is paused for them and can
+        // ask it to release again if a restarted bridge takes the port back mid-upload.
+        || daemon::release_bridge(&st, &listen),
         upload,
-        || daemon::explorer_daemon_resume_listen(&listen),
+        || daemon::resume_bridge(&st, &listen),
     );
     let summary = attach_resume_failure(result, resume_error)?;
     if let Some(warning) = &summary.resume_warning {
