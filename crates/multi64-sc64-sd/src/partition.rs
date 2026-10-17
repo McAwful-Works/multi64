@@ -909,8 +909,12 @@ fn write_file_fat_streaming_impl<D: Read + Write + Seek>(
 /// The temporary name a FAT32 replacement of `name` is written under before it is renamed into
 /// place: a prefix no ordinary file carries, and short enough for a 255-unit long file name.
 fn fat_replace_temp_name(name: &str) -> String {
-    const PREFIX: &str = "~multi64-replace-";
-    let room = 255 - PREFIX.len();
+    fat_temp_name("~multi64-replace-", name)
+}
+
+/// `prefix` and as much of `name` as fits a 255-unit long file name with it.
+fn fat_temp_name(prefix: &str, name: &str) -> String {
+    let room = 255 - prefix.encode_utf16().count();
     let mut units = 0;
     let kept: String = name
         .chars()
@@ -919,7 +923,7 @@ fn fat_replace_temp_name(name: &str) -> String {
             units <= room
         })
         .collect();
-    format!("{PREFIX}{kept}")
+    format!("{prefix}{kept}")
 }
 
 /// Write `len` bytes of `data` to `rel_path`, creating any missing parent directories.
@@ -1932,10 +1936,49 @@ fn rename_fat_impl<D: Read + Write + Seek>(
         for p in parts {
             dir = dir.open_dir(p)?;
         }
-        dir.rename(name_from, &dir, name_to)?;
+        if name_from != name_to && fat_names_equal(name_from, name_to) {
+            fat_rename_case_only(&dir, name_from, name_to)?;
+        } else {
+            dir.rename(name_from, &dir, name_to)?;
+        }
     }
     // See `mkdir_fat_impl`: an unmount failure must reach the caller (#129).
     fs.unmount()
+}
+
+/// A rename that changes only the case of a name, by way of a temporary name.
+///
+/// fatfs looks the destination up ignoring case, finds the source itself and returns `Ok` having
+/// changed nothing, so `GAME.z64` → `game.z64` reported success and left the old name. Renaming to
+/// a name no ordinary file carries and then to the new one writes the new name. Should the second
+/// step fail, the first is undone; if that fails too, the error names where the entry now is.
+fn fat_rename_case_only<T: fatfs::ReadWriteSeek>(
+    dir: &fatfs::Dir<'_, T>,
+    name_from: &str,
+    name_to: &str,
+) -> io::Result<()> {
+    let temp = fat_rename_temp_name(name_from);
+    // Fails with `AlreadyExists` rather than replace a file that happens to carry the name.
+    dir.rename(name_from, dir, &temp)?;
+    if let Err(e) = dir.rename(&temp, dir, name_to) {
+        return match dir.rename(&temp, dir, name_from) {
+            Ok(()) => Err(e),
+            Err(undo) => Err(io::Error::new(
+                e.kind(),
+                format!(
+                    "\"{name_from}\" could not be renamed to \"{name_to}\" ({e}), and is now \
+                     \"{temp}\" on the card: putting its name back failed too ({undo})"
+                ),
+            )),
+        };
+    }
+    Ok(())
+}
+
+/// The temporary name a case-only FAT rename of `name` passes through: as
+/// [`fat_replace_temp_name`], with a prefix of its own.
+fn fat_rename_temp_name(name: &str) -> String {
+    fat_temp_name("~multi64-rename-", name)
 }
 
 fn rename_cart_exfat(
@@ -4410,6 +4453,33 @@ mod fs_tests {
         let err = rename_fat_impl(flaky_unmount(&arc), "", "b.txt", "c.txt")
             .expect_err("rename must report the unmount");
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
+
+    /// A rename that changes only case renames, for a file and for a folder, keeping the file's
+    /// bytes and leaving no temporary name behind.
+    ///
+    /// Fail-first, demonstrated: with `rename_fat_impl` calling `dir.rename` for every rename, as
+    /// it did, fatfs finds the source when it looks the destination up, returns `Ok`, and the root
+    /// still lists `GAME.Z64`.
+    #[test]
+    fn fat_case_only_rename_changes_the_name() {
+        let arc = fat_image();
+        fat_write(&arc, "GAME.Z64", b"rom bytes", &mut |_| true).unwrap();
+        mkdir_fat_impl(RamPartitionDisk::new_writable(Arc::clone(&arc)), "Saves").unwrap();
+
+        for (from, to) in [("GAME.Z64", "game.z64"), ("Saves", "SAVES")] {
+            rename_fat_impl(
+                RamPartitionDisk::new_writable(Arc::clone(&arc)),
+                "",
+                from,
+                to,
+            )
+            .unwrap();
+        }
+        let mut names = fat_root_names(&arc);
+        names.sort();
+        assert_eq!(names, ["SAVES", "game.z64"]);
+        assert_eq!(fat_read(&arc, "game.z64"), b"rom bytes");
     }
 
     /// Every 32-byte slot of the directory stored in `chain`, read straight from the image.
