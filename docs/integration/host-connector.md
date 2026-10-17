@@ -86,6 +86,14 @@ M64P makes each request atomic against the running game
 ([spec §4.1](../spec/memory-l3-application-v0.md#41-consistency)); the stand-in has to make each
 *batch* one request.
 
+Clients also write a structure field by field: GoldenEye 007's rewrites Bond's whole inventory as
+five 4-byte regions a slot, far past one request's 32 regions. Sent as several requests, those
+writes land over several frames, and the game runs on a half-written structure; with a big enough
+loadout GoldenEye crashed. So merge touching and overlapping writes into contiguous runs, the last
+write to a byte winning and no gap filled, and send them as one request when they fit. Merged runs
+are in address order, which across two requests could put a flag ahead of the data it announces,
+so use them only when the batch fits one request; a larger one goes out in the client's order.
+
 ## 5. The ROM comes from the cart
 
 Clients read the ROM too: to recognize the game, to find seed data and a login key, to detect a ROM

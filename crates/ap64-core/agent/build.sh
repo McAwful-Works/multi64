@@ -8,7 +8,10 @@
 #   build.sh <game>          e.g. build.sh cv64
 #
 # <game>/game.env gives STUB_VRAM, STUB_MAX, AGENT_VRAM, AGENT_ROM and AGENT_MIN_RAM, and
-# <game>/stub.S is the hook stub. The agent is this repo's own: n64/agent, with the M64P
+# <game>/stub.S is the hook stub. An optional <game>/game.c is game logic the world's own
+# emulator script runs and a console has to do itself (GoldenEye's): it is linked into the
+# agent image, so the stub's image check covers it too, and its functions reach the stub
+# through the same symbols as agent_tick. The agent is this repo's own: n64/agent, with the M64P
 # handler it shares with the test ROM from n64/test-rom. It is linked here as a flat image
 # with this build's flags, so its sources are compiled directly, not through its Makefile.
 # The cart is chosen the way that Makefile's CART= does: one driver per build, and for an
@@ -32,7 +35,7 @@ if [ -n "${AGENT_REV:-}" ]; then
     REV=$AGENT_REV
 else
     REV=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)
-    if [ -n "$(git -C "$REPO" status --porcelain -- n64/agent n64/test-rom 2>/dev/null)" ]; then
+    if [ -n "$(git -C "$REPO" status --porcelain -- n64/agent n64/test-rom "$GDIR" 2>/dev/null)" ]; then
         REV="$REV-dirty"
     fi
 fi
@@ -55,16 +58,22 @@ build_cart() {
         tr -d '\r' < "$REPO/n64/test-rom/$f" > "$B/src/$f"
     done
     tr -d '\r' < "$HERE/common/host.c" > "$B/src/host.c"
+    local GAMEOBJ=""
+    if [ -f "$GDIR/game.c" ]; then
+        tr -d '\r' < "$GDIR/game.c" > "$B/src/game.c"
+        GAMEOBJ=game
+    fi
     tr -d '\r' < "$HERE/common/agent.ld" > "$B/agent.ld"
     tr -d '\r' < "$GDIR/stub.S" > "$B/stub.S"
     tr -d '\r' < "$HERE/common/image_check.inc" > "$B/image_check.inc"
 
-    for f in agent "$DRV" cart_rom pi_io mem_proto host; do
+    for f in agent "$DRV" cart_rom pi_io mem_proto host $GAMEOBJ; do
         ${P}gcc $CFLAGS $DEF -I"$B/src" -c "$B/src/$f.c" -o "$B/$f.o"
     done
 
     ${P}ld -T "$B/agent.ld" --defsym AGENT_VRAM=$VRAM -o "$B/agent.elf" \
-        "$B/host.o" "$B/agent.o" "$B/$DRV.o" "$B/cart_rom.o" "$B/pi_io.o" "$B/mem_proto.o"
+        "$B/host.o" "$B/agent.o" "$B/$DRV.o" "$B/cart_rom.o" "$B/pi_io.o" "$B/mem_proto.o" \
+        ${GAMEOBJ:+"$B/game.o"}
     ${P}objcopy -O binary --only-section=.text --only-section=.rodata --only-section=.data \
         "$B/agent.elf" "$B/agent.bin"
 

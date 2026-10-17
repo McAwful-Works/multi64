@@ -89,15 +89,16 @@ pub fn builtin() -> Result<Vec<Bundle>, String> {
         builtin!("bmhero", ["agent.bin", "stub.bin"]),
         builtin!("bmtsa", ["agent.bin", "stub.bin"]),
         builtin!("sf64", ["agent.bin", "stub.bin"]),
+        builtin!("goldeneye", ["agent.bin", "stub.bin"]),
     ];
     bundles.sort_by_key(|b| library_key(&b.profile.name));
     Ok(bundles)
 }
 
 /// Profiles kept in the tree but not offered, because the game cannot be played through
-/// for a reason outside AP64. Held here rather than deleted so they stay compiled, parsed
-/// and checked against their blobs by the same tests as the rest; moving one into
-/// [`builtin`] is all that is needed when its reason goes away.
+/// yet. Held here rather than deleted so they stay compiled, parsed and checked against
+/// their blobs by the same tests as the rest; moving one into [`builtin`] is all that is
+/// needed when its reason goes away.
 ///
 /// - `cvlod` — Castlevania: Legacy of Darkness. The splice and the agent work on a cart,
 ///   but a seed freezes, in attract mode at a fixed point and again during play. The same
@@ -361,7 +362,7 @@ mod tests {
         }
         assert_eq!(
             seen,
-            10 * Cart::ALL.len(),
+            11 * Cart::ALL.len(),
             "every profile whose stub copies the agent lets it move, for every cart"
         );
     }
@@ -422,7 +423,7 @@ mod tests {
                 .profile
                 .silence_may_be_the_pak()
         };
-        for id in ["oot", "bt", "dk64"] {
+        for id in ["oot", "bt", "dk64", "goldeneye"] {
             assert!(!silent_pak(id), "{id} does not run without a Pak");
         }
         for id in ["cv64", "mk64", "bm64", "sf64"] {
@@ -520,6 +521,7 @@ mod tests {
                 "Bomberman Hero",
                 "Castlevania 64",
                 "Donkey Kong 64",
+                "GoldenEye 007",
                 "Kirby 64 - The Crystal Shards",
                 "The Legend of Zelda: Ocarina of Time",
                 "Mario Kart 64",

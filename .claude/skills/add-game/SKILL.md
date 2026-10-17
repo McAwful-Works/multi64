@@ -5,9 +5,9 @@ description: Add a new game to AP64 - checking its Archipelago world is one the 
 
 # Adding a game to AP64
 
-Eleven games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
-Mario Kart 64, Donkey Kong 64, all three Bombermans (64, The Second Attack and Hero) and Star
-Fox 64, with Legacy of Darkness written and held back in
+Twelve games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
+Mario Kart 64, Donkey Kong 64, all three Bombermans (64, The Second Attack and Hero), Star
+Fox 64 and GoldenEye 007, with Legacy of Darkness written and held back in
 `ap64_core::withheld()`.
 Each took a day or two, and most of that was spent on things this file now answers.
 
@@ -84,7 +84,14 @@ trip, about 67 ms. Compare that against a 16.7 ms frame before agreeing to a for
 
 GoldenEye 007 was parked at this step. Its lua is a fork of the generic connector that also
 walks an inventory linked list and rewrites objects on `onframestart`, and its ROM patch
-removes the native paths that did that work, so none of it is optional.
+removes the native paths that did that work, so none of it is optional. It is done the only
+way a console allows (#395): the Lua's frame logic is ported to C in
+`agent/<game>/game.c`, which `build.sh` links into that game's agent when it exists, and
+the stub calls it from the hooks it needs -- GoldenEye's runs before the game's update and
+after it renders, as the Lua's `onframestart` and `onframeend` do. Port function for
+function and name the Lua lines each one covers: the world's next release changes the Lua,
+and the port has to be compared against it again, since the profile pins the ROM and not
+the Lua.
 
 ## 2. Build a seed to work against
 
@@ -328,8 +335,8 @@ over 45,420 frames. Two things that looked free and were not: zero runs after
 
 ## 6. Write it
 
-`agent/<game>/game.env` and `stub.S`, then `agent/build.sh <game>` (needs the
-mips64-ultra-elf toolchain in WSL), then `profiles/<game>/profile.toml` by hand, then
+`agent/<game>/game.env` and `stub.S` (and `game.c`, if the world's Lua does game logic of its
+own, §1), then `agent/build.sh <game>` (needs the mips64-ultra-elf toolchain in WSL), then `profiles/<game>/profile.toml` by hand, then
 register it in `ap64-core::builtin()`. Comment `game.env` with *why* each address is safe
 — that comment is the evidence for a decision nobody will remember.
 
@@ -385,7 +392,9 @@ cargo run -p ap64-cli --release -- <seed.z64> --check   # or target/release/ap64
 ```
 
 **`--check` already reports every pin and the room left for the agent.** Do not write a
-script to do this; it has been written twice by mistake.
+script to do this; it has been written twice by mistake. Add `--withheld` for a profile
+held in `ap64_core::withheld()` while its integration is unfinished; without it the patcher
+only knows the games the app offers.
 
 Then `agent-probe.lua` in BizHawk on the patched ROM: it reads `layout.env`, so it needs
 `GAME` set at its top. `magic=0x4D363450` and `text=intact` with ticks climbing once per

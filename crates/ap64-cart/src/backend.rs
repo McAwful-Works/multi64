@@ -3,7 +3,10 @@
 //!
 //! Every operation takes a whole batch, because over USB the cost is per exchange, not
 //! per byte: a connector names every region a request needs and gets them in as few
-//! wire requests as the M64P limits allow, in the order asked, with nothing added.
+//! wire requests as the M64P limits allow, with nothing added. Reads go in the order asked.
+//! Writes are merged into contiguous runs first, never writing a byte nobody asked for, so a
+//! batch written field by field lands in one request, and so within one game frame; only a
+//! batch too big for one request either way keeps the client's order.
 //!
 //! The ROM is read from the cart itself (M64P `PEEKROM`) and cached: it cannot change
 //! while the console runs, and clients read it far more often than it could be fetched.
@@ -27,7 +30,9 @@ pub trait Backend {
     /// One block per region, in order.
     fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>>;
 
-    /// All of `writes`, in order.
+    /// All of `writes`, with the effect of applying them in order: the last write to a byte
+    /// wins. The cart backend may send them merged into address-ordered runs, as one request
+    /// when they fit.
     fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()>;
 
     /// The cartridge ROM window that can be read, from offset 0; `None` when the cart's
@@ -796,15 +801,27 @@ impl Backend for Multi64 {
         // Validate and split everything first, so a rejected address fails before any
         // of the batch has been sent.
         let size = self.rdram_size();
-        let mut chunks: Vec<(u32, &[u8])> = Vec::new();
         for &(addr, data) in writes {
             check(addr, data.len(), size)?;
-            chunks.extend(
-                data.chunks(m64p::MAX_REGION_BYTES)
-                    .enumerate()
-                    .map(|(i, c)| (addr + (i * m64p::MAX_REGION_BYTES) as u32, c)),
-            );
         }
+        // The agent serves one request per game frame, so a batch that needs two requests
+        // lands across two frames, and the game runs in between with half of it written.
+        // Clients write structures field by field: GoldenEye's rewrites Bond's whole
+        // inventory pool as five 4-byte regions a slot, far past one request's region
+        // limit, and the game walked the half-rewritten list and crashed. Merged into
+        // contiguous runs, the same batch is a handful of regions and goes out as one.
+        //
+        // Merged runs are in address order, not the client's. That is harmless inside one
+        // request; across two it could put a flag ahead of the data it announces. So the
+        // merged form is used only when it fits one request, and a batch too big for one
+        // either way goes out as before, in the client's order.
+        let merged = coalesce(writes);
+        let merged_chunks = chunks_of(merged.iter().map(|(a, d)| (*a, d.as_slice())));
+        let chunks = if fits_one_request(&merged_chunks) {
+            merged_chunks
+        } else {
+            chunks_of(writes.iter().copied())
+        };
         let mut batch: Vec<(u32, &[u8])> = Vec::new();
         let mut bytes = 0usize;
         for c in chunks {
@@ -823,6 +840,47 @@ impl Backend for Multi64 {
         }
         Ok(())
     }
+}
+
+/// Writes cut to the largest region one request carries, in the order given.
+fn chunks_of<'a>(writes: impl Iterator<Item = (u32, &'a [u8])>) -> Vec<(u32, &'a [u8])> {
+    let mut chunks = Vec::new();
+    for (addr, data) in writes {
+        chunks.extend(
+            data.chunks(m64p::MAX_REGION_BYTES)
+                .enumerate()
+                .map(|(i, c)| (addr + (i * m64p::MAX_REGION_BYTES) as u32, c)),
+        );
+    }
+    chunks
+}
+
+/// Whether `chunks` go out as a single request.
+fn fits_one_request(chunks: &[(u32, &[u8])]) -> bool {
+    chunks.len() <= m64p::MAX_REGIONS
+        && chunks.iter().map(|c| c.1.len()).sum::<usize>() <= m64p::MAX_TOTAL_BYTES
+}
+
+/// `writes` as the fewest contiguous runs with the same effect: every byte gets the value of
+/// the last write to it, as applying them in order would, and runs that touch or overlap are
+/// joined. Bytes no write names are never included, so nothing is written that was not asked
+/// for. In address order; within one request the agent writes every region before the game
+/// runs again, so their order does not matter.
+fn coalesce(writes: &[(u32, &[u8])]) -> Vec<(u32, Vec<u8>)> {
+    let mut bytes = std::collections::BTreeMap::new();
+    for &(addr, data) in writes {
+        for (i, b) in data.iter().enumerate() {
+            bytes.insert(addr + i as u32, *b);
+        }
+    }
+    let mut runs: Vec<(u32, Vec<u8>)> = Vec::new();
+    for (a, b) in bytes {
+        match runs.last_mut() {
+            Some((start, run)) if *start + run.len() as u32 == a => run.push(b),
+            _ => runs.push((a, vec![b])),
+        }
+    }
+    runs
 }
 
 /// Split regions into wire-legal chunks, remembering how many chunks each became so
@@ -969,6 +1027,45 @@ mod tests {
             line.starts_with("cart: 1 more stall in the 2.0 s"),
             "{line}"
         );
+    }
+
+    /// A structure written field by field goes out as one run, the last write to a byte wins,
+    /// and bytes nobody wrote are never filled in to join two runs.
+    #[test]
+    fn writes_are_merged_into_the_fewest_runs_with_the_same_effect() {
+        // GoldenEye's startup loadout: every slot of a 0x14-byte inventory pool, five
+        // 4-byte fields each, then the list head elsewhere.
+        let field = [0u8, 0, 0, 1];
+        let mut writes: Vec<(u32, &[u8])> = Vec::new();
+        for slot in 0..40u32 {
+            for f in 0..5u32 {
+                writes.push((0x10_0000 + slot * 0x14 + f * 4, &field));
+            }
+        }
+        writes.push((0x20_0000, &[0xAA, 0xBB, 0xCC, 0xDD]));
+        assert!(
+            writes.len() > m64p::MAX_REGIONS,
+            "the batch that used to be split"
+        );
+        let runs = coalesce(&writes);
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        assert_eq!((runs[0].0, runs[0].1.len()), (0x10_0000, 40 * 0x14));
+        assert_eq!(runs[1], (0x20_0000, vec![0xAA, 0xBB, 0xCC, 0xDD]));
+
+        // Overlap: the later write wins, as it would applied in order.
+        let runs = coalesce(&[(0x100, &[1, 2, 3, 4][..]), (0x102, &[9, 9][..])]);
+        assert_eq!(runs, vec![(0x100, vec![1, 2, 9, 9])]);
+
+        // A gap stays a gap.
+        let runs = coalesce(&[(0x100, &[1][..]), (0x102, &[2][..])]);
+        assert_eq!(runs, vec![(0x100, vec![1]), (0x102, vec![2])]);
+
+        // What decides between the merged batch and the client's order.
+        let one = coalesce(&writes);
+        assert!(fits_one_request(&chunks_of(
+            one.iter().map(|(a, d)| (*a, d.as_slice()))
+        )));
+        assert!(!fits_one_request(&chunks_of(writes.iter().copied())));
     }
 
     /// The three regions read from Paper Mario on hardware go out as one request, as
