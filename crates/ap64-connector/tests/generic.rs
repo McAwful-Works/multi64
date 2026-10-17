@@ -450,3 +450,91 @@ fn a_batch_whose_link_restarted_does_not_write() {
         .iter()
         .any(|l| l.contains("loading the generic connector again")));
 }
+
+/// Send `line` on `s` and read one line back, or say why there was none.
+fn ask(s: &TcpStream, line: &str) -> Result<String, String> {
+    let mut w = s;
+    w.write_all(format!("{line}\n").as_bytes()).unwrap();
+    let mut reply = String::new();
+    match BufReader::new(s).read_line(&mut reply) {
+        Ok(0) => Err("closed".into()),
+        Ok(_) => Ok(reply.trim_end().to_string()),
+        Err(e) => Err(e.kind().to_string()),
+    }
+}
+
+/// Connect to `port`, giving up once `done` is set or after 5 s. By time, not by tries:
+/// Windows takes about 2 s to refuse a connection to a localhost port nobody listens on.
+fn dial(port: u16, done: &AtomicBool) -> Option<TcpStream> {
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    while std::time::Instant::now() < until {
+        if let Ok(s) = TcpStream::connect_timeout(&at, Duration::from_millis(500)) {
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            return Some(s);
+        }
+        if done.load(Ordering::SeqCst) {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    None
+}
+
+/// A line the script raises on is the client's problem, not the cart's: that client is let
+/// go, with a reset it recovers from, and the session goes on serving the one that comes
+/// back. It used to end the session as a cart failure, which in AP64 means reconnecting to
+/// the cart and losing the client anyway.
+#[test]
+fn a_line_the_script_cannot_answer_lets_the_client_go_and_the_session_goes_on() {
+    on_a_free_port(|port| {
+        let ram = Rc::new(RefCell::new(RamImage::with_rom(
+            vec![0u8; 0x80_0000],
+            rom(),
+        )));
+        let connector = Connector::new(&GENERIC, Box::new(ram), ap64_cart::quiet()).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let asking = {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                let Some(first) = dial(port, &done) else {
+                    done.store(true, Ordering::SeqCst);
+                    return None;
+                };
+                let bad = ask(&first, "this is not json");
+                let again = dial(port, &done).map(|s| (ask(&s, "VERSION"), s));
+                done.store(true, Ordering::SeqCst);
+                Some((bad, again))
+            })
+        };
+        let mut events = Vec::new();
+        let served = serve(&connector, &[port], &done, &mut |e| events.push(e));
+        if let Err(e) = &served {
+            if port_was_taken(e) {
+                done.store(true, Ordering::SeqCst);
+                let _ = asking.join();
+                return Err(e.clone());
+            }
+        }
+        let (bad, again) = asking.join().unwrap().expect("serve listened");
+        served.expect("the session goes on");
+        assert!(
+            bad.is_err(),
+            "no reply to a line nobody can answer: {bad:?}"
+        );
+        let (again, _held) = again.expect("the client could connect again");
+        assert_eq!(
+            again.as_deref(),
+            Ok("1"),
+            "the client that came back is served"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::ClientDisconnected(why)
+                if why.contains("could not be answered"))),
+            "{events:?}"
+        );
+        Ok(())
+    });
+}

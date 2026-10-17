@@ -27,7 +27,8 @@
 //! | `log(str)`, `message(str)` | a line for AP64's log; a message meant for the player |
 //!
 //! A cart failure (the backend has already retried and reconnected, and given up) is
-//! fatal: it ends the session, even if the script caught the error.
+//! fatal: it ends the session, even if the script caught the error. Any other error the
+//! script raises fails only the line it was handling ([`Unanswered`]).
 //!
 //! A link that restarted is not a failure, but nothing decided before it is written after it:
 //! the console may have been reset in between. A line during which the link restarted has its
@@ -290,7 +291,12 @@ impl Connector {
     }
 
     /// One line from the client in, the line to send back out (no newline).
-    pub fn handle(&self, message: &str) -> Result<String, String> {
+    ///
+    /// [`Unanswered::Line`] when only this line failed: a script error, a line that is not
+    /// what the script expects, a bad address, a write the link restarted under. The cart is
+    /// fine, and the next line is answered as usual. [`Unanswered::Fatal`] when the session is
+    /// over: the cart has failed, or the script cannot be run against it.
+    pub fn handle(&self, message: &str) -> Result<String, Unanswered> {
         let generation = self.backend.borrow().generation();
         if generation != *self.loaded_at.borrow() {
             (self.log)(format!(
@@ -303,7 +309,8 @@ impl Connector {
                 &self.log,
                 &self.fatal,
                 &self.batch,
-            )?;
+            )
+            .map_err(Unanswered::Fatal)?;
             *self.loaded_at.borrow_mut() = generation;
         }
         self.batch.set(generation);
@@ -311,12 +318,32 @@ impl Connector {
         let handle: mlua::Function = lua
             .globals()
             .get("handle")
-            .map_err(|_| "the connector script defines no handle()".to_string())?;
+            .map_err(|_| Unanswered::Fatal("the connector script defines no handle()".into()))?;
         let result = handle.call::<String>(message);
         if let Some(e) = self.fatal.borrow_mut().take() {
-            return Err(e);
+            return Err(Unanswered::Fatal(e));
         }
-        result.map_err(|e| format!("connector: {e}"))
+        result.map_err(|e| Unanswered::Line(format!("connector: {e}")))
+    }
+}
+
+/// Why [`Connector::handle`] has no line to send back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unanswered {
+    /// The session is over: the cart failed (the backend retried, reconnected and gave up),
+    /// or the script cannot be loaded or run against it.
+    Fatal(String),
+    /// This line, and only this line, could not be answered. Not the cart's failure, so not
+    /// the session's: an Archipelago client that sends a malformed line, or a script that
+    /// raises on one, would otherwise cost a full reconnect to the cart.
+    Line(String),
+}
+
+impl std::fmt::Display for Unanswered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unanswered::Fatal(e) | Unanswered::Line(e) => f.write_str(e),
+        }
     }
 }
 
