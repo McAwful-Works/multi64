@@ -341,8 +341,8 @@ fn setup_of(fix: &ap64_connector::ClientFix, paths: &[PathBuf]) -> ClientSetup {
 }
 
 /// What the player is told, beside a fix, about the copies it will not change: one AP64 does not
-/// recognize is left as it is ([`fix_copies`]), and one that could not be read cannot be
-/// checked. Which copies, and the detail of why, are in Developer details (`technical`).
+/// recognize is left as it is ([`fix_copies`]), and so is one that could not be read, which also
+/// cannot be checked. Which copies, and the detail of why, are in Developer details (`technical`).
 fn left_alone(fix: &ap64_connector::ClientFix, copies: &[(String, Installed)]) -> String {
     use ap64_connector::ClientState;
     let count = |f: fn(&Installed) -> bool| copies.iter().filter(|(_, c)| f(c)).count();
@@ -365,11 +365,11 @@ fn left_alone(fix: &ap64_connector::ClientFix, copies: &[(String, Installed)]) -
         0 => {}
         1 => told.push(format!(
             "One other copy of {file} could not be read, so AP64 cannot tell whether it needs \
-             the fix"
+             the fix and will leave it as it is"
         )),
         n => told.push(format!(
             "{n} other copies of {file} could not be read, so AP64 cannot tell whether they \
-             need the fix"
+             need the fix and will leave them as they are"
         )),
     }
     told.join(". ")
@@ -387,8 +387,9 @@ pub fn fix_client(
 }
 
 /// [`fix_client`] for the copies at `paths`: each one that needs the fix gets it, with its
-/// original saved in `backups` first. Copies that are ready, or that the fix does not know,
-/// are left as they are.
+/// original saved in `backups` first. Copies that are ready, that the fix does not know, or that
+/// cannot be read are left as they are, and the last are named in what the player is told: one
+/// copy AP64 cannot read must not keep it from fixing the ones it can.
 fn fix_copies(
     fix: &ap64_connector::ClientFix,
     paths: &[PathBuf],
@@ -399,16 +400,29 @@ fn fix_copies(
         return Err(format!("{} is not installed in Archipelago", fix.file));
     }
     let mut changes = Vec::new();
+    let mut unread = Vec::new();
     for path in paths {
-        let original =
-            std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+        let original = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                unread.push(format!("{} ({e})", path.display()));
+                continue;
+            }
+        };
         if (fix.state)(&original) == ClientState::NeedsFix {
             let fixed = (fix.apply)(&original)?;
             changes.push((path, original, fixed));
         }
     }
     if changes.is_empty() {
-        return Err(format!("no installed copy of {} needs the fix", fix.file));
+        return Err(match unread.as_slice() {
+            [] => format!("no installed copy of {} needs the fix", fix.file),
+            _ => format!(
+                "no copy of {} that AP64 could read needs the fix; it could not read {}",
+                fix.file,
+                unread.join(", ")
+            ),
+        });
     }
     std::fs::create_dir_all(backups).map_err(|e| format!("making {}: {e}", backups.display()))?;
     let stamp = std::time::SystemTime::now()
@@ -443,7 +457,15 @@ fn fix_copies(
         }
         saved.push(backup.display().to_string());
     }
-    Ok(if saved.len() == 1 {
+    let skipped = match unread.as_slice() {
+        [] => String::new(),
+        [one] => format!(". AP64 could not read {one}, so it left that copy as it is"),
+        many => format!(
+            ". AP64 could not read {}, so it left those copies as they are",
+            many.join(", ")
+        ),
+    };
+    let told = if saved.len() == 1 {
         format!(
             "Fixed. Restart the Archipelago Launcher before opening the AP client. The original \
              is saved as {}",
@@ -456,7 +478,8 @@ fn fix_copies(
             saved.len(),
             saved.join(", ")
         )
-    })
+    };
+    Ok(format!("{told}{skipped}"))
 }
 
 /// The file table in the cart's ROM at `table`, read a piece at a time up to its end.
@@ -1826,6 +1849,30 @@ mod tests {
         fix_copies(&TEXT_FIX, &paths, &backups).unwrap();
         assert_eq!(std::fs::read(&paths[0]).unwrap(), b"ready");
         assert_eq!(std::fs::read(&paths[1]).unwrap(), b"something else");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A copy AP64 cannot read must not stop it fixing the ones it can: the readable copy is
+    /// fixed and backed up, the unreadable one is left alone, and the player is told which.
+    #[test]
+    fn a_copy_that_cannot_be_read_is_skipped_not_fatal() {
+        let (dir, mut paths) = two_installs("client-fix-unread", b"needs", b"needs");
+        // A path that names nothing reads as an error, like a locked or vanished file.
+        let gone = dir.join("gone").join("w.apworld");
+        paths[1] = gone.clone();
+        let backups = dir.join("backups");
+        let told = fix_copies(&TEXT_FIX, &paths, &backups).unwrap();
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), b"ready");
+        assert!(told.starts_with("Fixed."), "{told}");
+        assert!(
+            told.contains("could not read") && told.contains(&gone.display().to_string()),
+            "the skipped copy is named: {told}"
+        );
+        assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 1);
+
+        // With nothing readable that needs it, the reason says so instead of "nothing to fix".
+        let err = fix_copies(&TEXT_FIX, &[gone], &backups).unwrap_err();
+        assert!(err.contains("could not read"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
