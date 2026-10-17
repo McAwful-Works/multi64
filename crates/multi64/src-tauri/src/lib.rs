@@ -749,6 +749,155 @@ fn stopped_message(plan: &StartPlan) -> String {
     }
 }
 
+/// How often auto-start looks again while it waits. A look enumerates ports, which sends nothing;
+/// only a change in what is plugged in leads to a start, so a probe never repeats on a timer.
+const AUTO_START_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Set while auto-start is waiting to start the bridge; the stopped Note says what for.
+static AUTO_START_WAITING: AtomicBool = AtomicBool::new(false);
+
+/// Set once any start has spawned the daemon. Auto-start's job is then done: a bridge the user
+/// stops afterwards stays stopped.
+static SPAWNED_ONCE: AtomicBool = AtomicBool::new(false);
+
+fn auto_start_waiting() -> bool {
+    AUTO_START_WAITING.load(Ordering::SeqCst)
+}
+
+/// A start auto-start made and that failed: what the plan was and which ports were plugged in.
+#[derive(Debug, Clone)]
+struct AutoStartAttempt {
+    plan: StartPlan,
+    ports: Vec<String>,
+}
+
+/// Whether auto-start should try a start now, given its last failed one (`None` before the first).
+///
+/// Auto-start used to try once and, on Auto-detect with no cart found, give up for good, so a cart
+/// that was unplugged at sign-in, or whose USB had not enumerated yet, was never picked up. Trying
+/// again on a timer would send the probe's test commands to every serial port every few seconds,
+/// so a failed start is tried again only when something it depended on has changed:
+///
+/// - **Ready** (the cart and port are known, and multi64d waits for a missing cart by itself):
+///   when the plan differs, such as a SummerCart64 just found by its USB IDs.
+/// - **Probe on one port**: when that port appears.
+/// - **Probe on every port**: when a port appears that was not there before.
+/// - **Blocked**, or the listen address taken: never, since Start would fail at once. Auto-start
+///   goes on looking, so it starts once the reason has gone.
+fn auto_start_should_try(
+    last: Option<&AutoStartAttempt>,
+    plan: &StartPlan,
+    ports: &[String],
+    listen_in_use: bool,
+) -> bool {
+    if listen_in_use || matches!(plan, StartPlan::Blocked(_)) {
+        return false;
+    }
+    let Some(last) = last else {
+        return true;
+    };
+    let new_port = |p: &String| !last.ports.contains(p);
+    match plan {
+        StartPlan::Ready { .. } => *plan != last.plan,
+        StartPlan::Probe(Some(port)) => {
+            *plan != last.plan || ports.iter().any(|p| p == port && new_port(p))
+        }
+        StartPlan::Probe(None) => *plan != last.plan || ports.iter().any(new_port),
+        StartPlan::Blocked(_) => false,
+    }
+}
+
+/// What the stopped Note adds while auto-start waits on `plan`, or nothing when Start would just
+/// work and auto-start is about to try it.
+fn auto_start_note(plan: &StartPlan) -> Option<&'static str> {
+    match plan {
+        StartPlan::Ready { .. } => None,
+        StartPlan::Probe(_) => Some("Auto-start tries again when a serial port is plugged in."),
+        StartPlan::Blocked(_) => Some("Auto-start starts the bridge once that is resolved."),
+    }
+}
+
+/// Clears [`AUTO_START_WAITING`] however [`auto_start`] ends.
+struct AutoStartWaiting;
+
+impl Drop for AutoStartWaiting {
+    fn drop(&mut self) {
+        AUTO_START_WAITING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// "Start the bridge when Multi64 opens": start it, and keep looking until something has started
+/// it, Multi64 exits, or the setting is turned off. See [`auto_start_should_try`] for when a failed
+/// start is tried again.
+fn auto_start(app: AppHandle) {
+    AUTO_START_WAITING.store(true, Ordering::SeqCst);
+    let _waiting = AutoStartWaiting;
+    // Let the window come up first.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let mut last: Option<AutoStartAttempt> = None;
+    // The reason last logged for not trying, so the log gets each one once, not every look.
+    let mut said: Option<String> = None;
+    loop {
+        if shutting_down() || SPAWNED_ONCE.load(Ordering::SeqCst) {
+            return;
+        }
+        let Some(state) = app.try_state::<AppState>() else {
+            return;
+        };
+        let settings = state.settings.lock().clone();
+        if !settings.auto_start_daemon {
+            return;
+        }
+        if !start_in_progress() && !daemon_is_running(&state.daemon) {
+            let found = serialport::available_ports().unwrap_or_default();
+            let ports: Vec<String> = found.iter().map(|p| p.port_name.clone()).collect();
+            let plan = plan_start(settings.serial_port.as_deref(), settings.cart, || found);
+            let listen_in_use = listen_in_use_recently(&settings.listen);
+            if auto_start_should_try(last.as_ref(), &plan, &ports, listen_in_use) {
+                said = None;
+                match start_daemon(&app, &state) {
+                    Ok(Started::Spawned) => return,
+                    // Another start is running; look again once it is over.
+                    Ok(Started::AlreadyStarting) => {}
+                    Err(e) => {
+                        push_log(&state.daemon, format!("Start failed: {e}"));
+                        if let Some(note) = auto_start_note(&plan) {
+                            push_log(&state.daemon, note.to_string());
+                        }
+                        last = Some(AutoStartAttempt { plan, ports });
+                        let _ = app.emit("daemon-changed", ());
+                    }
+                }
+            } else {
+                let why = if listen_in_use {
+                    Some(listen_in_use_message(&settings.listen))
+                } else if let StartPlan::Blocked(why) = &plan {
+                    Some(why.clone())
+                } else {
+                    None
+                };
+                if why.is_some() && why != said {
+                    // Skipping the auto-start used to leave no trace; the log now says why.
+                    push_log(
+                        &state.daemon,
+                        format!(
+                            "multi64d not started: {}",
+                            why.as_deref().unwrap_or_default()
+                        ),
+                    );
+                    said = why;
+                    let _ = app.emit("daemon-changed", ());
+                }
+            }
+        }
+        // In short steps, so Exit is not kept waiting for a whole recheck.
+        let until = std::time::Instant::now() + AUTO_START_RECHECK;
+        while std::time::Instant::now() < until && !shutting_down() {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+}
+
 fn daemon_health_url(listen: &str) -> String {
     format!("http://{}/health", connect_addr(listen))
 }
@@ -1267,6 +1416,8 @@ fn start_daemon_locked(
 
     let mut inner = daemon.lock();
     inner.child = Some(child);
+    // Auto-start is done once anything has started the bridge, whoever stops it later.
+    SPAWNED_ONCE.store(true, Ordering::SeqCst);
     inner.serial = Some(serial);
     inner.cart = cart;
     Ok(())
@@ -1488,10 +1639,12 @@ async fn get_daemon_status(
 
 /// The stopped Note and, when `with_ports`, the port options, from at most one call to
 /// `enumerate` however many of them need the ports.
+/// `auto_start_waiting` adds what auto-start is waiting for ([`auto_start_note`]) to a stopped Note.
 fn note_and_port_options(
     running: bool,
     settings: &Settings,
     with_ports: bool,
+    auto_start_waiting: bool,
     enumerate: impl FnOnce() -> Vec<serialport::SerialPortInfo>,
 ) -> (String, Option<SerialPortOptions>) {
     let mut enumerate = Some(enumerate);
@@ -1504,11 +1657,14 @@ fn note_and_port_options(
     let message = if !running {
         // Name what Start would do, or why it cannot. Without a saved port this enumerates,
         // which only happens while stopped; it never probes a port.
-        stopped_message(&plan_start(
-            settings.serial_port.as_deref(),
-            settings.cart,
-            &mut ports,
-        ))
+        let plan = plan_start(settings.serial_port.as_deref(), settings.cart, &mut ports);
+        let message = stopped_message(&plan);
+        match auto_start_note(&plan).filter(|_| auto_start_waiting) {
+            Some(note) if message.is_empty() => note.to_string(),
+            Some(note) if message.ends_with('.') => format!("{message} {note}"),
+            Some(note) => format!("{message}. {note}"),
+            None => message,
+        }
     } else {
         // The Bridge and Health rows already say running and whether it responds.
         String::new()
@@ -1532,9 +1688,11 @@ fn daemon_status(state: &AppState, with_ports: bool) -> DaemonStatus {
         settings.cart.label().to_string()
     };
     let healthy = running && check_health(&listen);
-    let (mut message, port_options) = note_and_port_options(running, &settings, with_ports, || {
-        serialport::available_ports().unwrap_or_default()
-    });
+    let waiting = auto_start_waiting();
+    let (mut message, port_options) =
+        note_and_port_options(running, &settings, with_ports, waiting, || {
+            serialport::available_ports().unwrap_or_default()
+        });
     // A failed auto-start is otherwise only in the log, behind Developer mode (#146).
     if !running && listen_in_use_recently(&listen) {
         message = listen_in_use_message(&listen);
@@ -1836,7 +1994,6 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             let st: tauri::State<'_, AppState> = app.state();
-            let daemon_for_setup = Arc::clone(&st.daemon);
 
             // Read the flag into a local and drop the guard before the block: `build_tray_menu`
             // locks `settings` itself, and `parking_lot::Mutex` is not reentrant. Rust drops an
@@ -1938,26 +2095,10 @@ pub fn run() {
             }
 
             if settings_for_setup.auto_start_daemon {
-                match start_plan(&settings_for_setup) {
-                    // Skipping the auto-start used to leave no trace; the log now says why.
-                    StartPlan::Blocked(why) => {
-                        push_log(&daemon_for_setup, format!("multi64d not started: {why}"))
-                    }
-                    // A thread of its own: Auto-detect may probe ports for seconds.
-                    _ => {
-                        let h = handle.clone();
-                        std::thread::spawn(move || {
-                            std::thread::sleep(std::time::Duration::from_millis(400));
-                            let Some(s) = h.try_state::<AppState>() else {
-                                return;
-                            };
-                            if let Err(e) = start_daemon(&h, &s) {
-                                push_log(&s.daemon, format!("Start failed: {e}"));
-                            }
-                            let _ = h.emit("daemon-changed", ());
-                        });
-                    }
-                }
+                // A thread of its own: Auto-detect may probe ports for seconds, and auto-start
+                // keeps looking until a cart turns up.
+                let h = handle.clone();
+                std::thread::spawn(move || auto_start(h));
             }
 
             Ok(())
@@ -2822,10 +2963,11 @@ mod port_selection_tests {
         for (running, saved, cart, with_ports, want) in cases {
             let calls = std::cell::Cell::new(0);
             let settings = settings_for(saved, cart);
-            let (message, options) = note_and_port_options(running, &settings, with_ports, || {
-                calls.set(calls.get() + 1);
-                vec![ch340("COM5"), sc64_windows("COM4")]
-            });
+            let (message, options) =
+                note_and_port_options(running, &settings, with_ports, false, || {
+                    calls.set(calls.get() + 1);
+                    vec![ch340("COM5"), sc64_windows("COM4")]
+                });
             let case = (running, saved, cart, with_ports);
             assert_eq!(calls.get(), want, "{case:?}");
             assert_eq!(options.is_some(), with_ports, "{case:?}");
@@ -2843,10 +2985,139 @@ mod port_selection_tests {
     fn a_status_poll_note_and_options_agree() {
         let settings = settings_for(None, CartSetting::Sc64);
         let (message, options) =
-            note_and_port_options(false, &settings, true, || vec![ch340("COM5")]);
+            note_and_port_options(false, &settings, true, false, || vec![ch340("COM5")]);
         let options = options.unwrap();
         assert_eq!(Some(message), options.auto_warning);
         assert_eq!(options.ports, ["COM5"]);
+    }
+
+    fn names(ports: &[&str]) -> Vec<String> {
+        ports.iter().map(|p| p.to_string()).collect()
+    }
+
+    fn failed(plan: StartPlan, ports: &[&str]) -> AutoStartAttempt {
+        AutoStartAttempt {
+            plan,
+            ports: names(ports),
+        }
+    }
+
+    /// The first look tries whatever can start, and nothing that cannot.
+    #[test]
+    fn auto_start_tries_at_once_unless_start_cannot_work() {
+        let ports = names(&["COM3"]);
+        assert!(auto_start_should_try(
+            None,
+            &ready(DaemonCart::Sc64, "COM4", true),
+            &ports,
+            false
+        ));
+        assert!(auto_start_should_try(
+            None,
+            &StartPlan::Probe(None),
+            &ports,
+            false
+        ));
+        assert!(!auto_start_should_try(
+            None,
+            &StartPlan::Blocked("two carts".into()),
+            &ports,
+            false
+        ));
+        assert!(
+            !auto_start_should_try(None, &StartPlan::Probe(None), &ports, true),
+            "Start fails at once while the listen address is taken"
+        );
+    }
+
+    /// Sign-in with the cart unplugged: auto-start probed, found nothing and gave up for good, so
+    /// plugging the cart in later did nothing. It tries again once something is plugged in.
+    #[test]
+    fn auto_start_tries_again_when_a_cart_turns_up() {
+        let last = failed(StartPlan::Probe(None), &["COM1"]);
+        // A SummerCart64 plugged in is found by its USB IDs, with nothing sent.
+        assert!(auto_start_should_try(
+            Some(&last),
+            &ready(DaemonCart::Sc64, "COM4", true),
+            &names(&["COM1", "COM4"]),
+            false
+        ));
+        // Any other new port is probed.
+        assert!(auto_start_should_try(
+            Some(&last),
+            &StartPlan::Probe(None),
+            &names(&["COM1", "COM6"]),
+            false
+        ));
+        // The saved port, once it appears.
+        let last = failed(StartPlan::Probe(Some("COM6".into())), &["COM1"]);
+        assert!(auto_start_should_try(
+            Some(&last),
+            &StartPlan::Probe(Some("COM6".into())),
+            &names(&["COM1", "COM6"]),
+            false
+        ));
+    }
+
+    /// Without a change, a probe is never sent again: the ports it wrote to would get the cart test
+    /// commands every few seconds for as long as Multi64 waits.
+    #[test]
+    fn auto_start_does_not_probe_again_while_nothing_changes() {
+        let last = failed(StartPlan::Probe(None), &["COM1", "COM3"]);
+        for now in [&["COM1", "COM3"][..], &["COM1"], &["COM3", "COM1"]] {
+            assert!(
+                !auto_start_should_try(Some(&last), &StartPlan::Probe(None), &names(now), false),
+                "{now:?}"
+            );
+        }
+        // A port that is not the saved one does not matter to a probe of the saved one.
+        let last = failed(StartPlan::Probe(Some("COM6".into())), &["COM1"]);
+        assert!(!auto_start_should_try(
+            Some(&last),
+            &StartPlan::Probe(Some("COM6".into())),
+            &names(&["COM1", "COM7"]),
+            false
+        ));
+        // A start that failed with everything known (multi64d missing, say) fails the same way again.
+        let plan = ready(DaemonCart::Sc64, "COM4", false);
+        let last = failed(plan.clone(), &["COM4"]);
+        assert!(!auto_start_should_try(
+            Some(&last),
+            &plan,
+            &names(&["COM4", "COM5"]),
+            false
+        ));
+        assert!(auto_start_should_try(
+            Some(&last),
+            &ready(DaemonCart::Sc64, "COM5", false),
+            &names(&["COM4", "COM5"]),
+            false
+        ));
+    }
+
+    /// While auto-start waits, the stopped Note says what for.
+    #[test]
+    fn a_waiting_auto_start_is_named_in_the_note() {
+        let settings = settings_for(None, CartSetting::Auto);
+        let (waiting, _) =
+            note_and_port_options(false, &settings, false, true, || vec![ch340("COM5")]);
+        assert_eq!(
+            waiting,
+            "No SummerCart64 on USB; Start bridge will look for a cart on each serial port. \
+             Auto-start tries again when a serial port is plugged in."
+        );
+        let (idle, _) =
+            note_and_port_options(false, &settings, false, false, || vec![ch340("COM5")]);
+        assert_eq!(
+            idle,
+            "No SummerCart64 on USB; Start bridge will look for a cart on each serial port"
+        );
+        let blocked = settings_for(None, CartSetting::Sc64);
+        let (note, _) = note_and_port_options(false, &blocked, false, true, || vec![ch340("COM5")]);
+        assert!(
+            note.ends_with("automatically. Auto-start starts the bridge once that is resolved."),
+            "{note}"
+        );
     }
 
     /// No cart and two carts both leave `auto` empty with a warning; only two carts is ambiguous,
