@@ -134,7 +134,7 @@ Server responds with:
 
 - **Ordering:** Binary chunks from the cart are sent to the client **in order**. Multiple WebSocket clients receive a **broadcast** of the same outbound binary chunks (fan-out).
 - **Inbound:** Any client may send binary data; writes are **serialized** against the single serial link (mutex + blocking I/O).
-- **Backpressure:** Slow WebSocket clients may **lag**; the server uses a bounded broadcast buffer and may **drop** old outbound chunks (`Lagged`); clients should keep up or reconnect.
+- **Backpressure:** The daemon keeps a bounded buffer of chunks from the cart for its WebSocket clients. A client that falls so far behind that chunks meant for it are overwritten is **disconnected**: the daemon sends a Close frame with code **1013** (Try Again Later) and a reason saying it fell behind and how many chunks were dropped, then closes the socket. Everything that client received before the Close is complete and in order, and nothing after the gap is sent to it, so no client reads an L3 stream with a hole in it. A client that wants the stream reconnects and resynchronizes on the next frame boundary, as across a fault (§1.3). Other clients are not affected.
 
 ---
 

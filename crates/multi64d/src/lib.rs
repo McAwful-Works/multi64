@@ -8,7 +8,7 @@
 
 pub mod config;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
@@ -429,6 +429,17 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) ->
     ws.on_upgrade(move |socket| handle_ws(socket, state))
 }
 
+/// Send a Close with `code` and `reason`; the caller then drops the socket.
+async fn close_with(socket: &mut WebSocket, code: u16, reason: String) {
+    let frame = CloseFrame {
+        code,
+        reason: reason.into(),
+    };
+    if let Err(e) = socket.send(Message::Close(Some(frame))).await {
+        tracing::debug!(error = %e, "websocket close");
+    }
+}
+
 enum ReadChunk {
     Data(Vec<u8>),
     /// Link is up but had nothing queued this iteration.
@@ -714,8 +725,18 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
                             break;
                         }
                     }
+                    // The chunks this client missed are gone, so what followed them would read as
+                    // one L3 stream with a hole in it. Close instead, so the gap is visible and
+                    // the client reconnects and resynchronizes (daemon-api-v1.md §4).
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(skipped, "client lagged; dropping old cart data");
+                        tracing::warn!(skipped, "websocket client fell behind the cart stream; closing it");
+                        close_with(
+                            &mut socket,
+                            close_code::AGAIN,
+                            format!("fell behind the cart stream; {skipped} chunks dropped, reconnect"),
+                        )
+                        .await;
+                        break;
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
