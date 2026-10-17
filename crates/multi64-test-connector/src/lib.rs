@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use multi64_l3::{Channel, Frame, FrameFlags, FrameType, StreamDecoder};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 use tokio_tungstenite::connect_async;
@@ -210,6 +210,32 @@ fn build_m64p_payload(msg: u8, body: &[u8]) -> Vec<u8> {
     p.push(msg);
     p.extend_from_slice(body);
     p
+}
+
+/// The `rid` for the next M64P request: one counter per process, so no two requests this process
+/// sends in a row share one. That is what spec §4.4 asks of a host, so an agent that sets
+/// `HELLO_ACK` bit 3 never takes a new write from here for a copy of the one before it. (Every
+/// request used to be `rid` 1, so two writes in a row looked like one write sent twice.) A wrap
+/// may reuse a `rid` freely: by then the agent has served other requests.
+fn next_rid() -> u16 {
+    static NEXT: AtomicU16 = AtomicU16::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// `POKEV` payload for one region, under a fresh [`next_rid`].
+fn m64p_poke_payload(addr: u32, data: &[u8]) -> Vec<u8> {
+    build_m64p_payload(M64P_MSG_POKEV, &m64p_poke_body(next_rid(), &[(addr, data)]))
+}
+
+/// What `mem-poke` sends before its write: a `HELLO`.
+///
+/// A new process cannot know the last request the agent served. If that was a `POKEV` under the
+/// `rid` this one's write gets -- the previous `mem-poke` run's, say -- an agent that sets
+/// `HELLO_ACK` bit 3 would take the write for a copy of it, acknowledge it and not apply it. Any
+/// other M64P request ends that hold (spec §4.4), and `HELLO` is the one with no side effect on
+/// memory.
+fn mem_poke_preamble() -> Vec<u8> {
+    build_m64p_payload(M64P_MSG_HELLO, &[])
 }
 
 /// `PEEKV` body: `rid`, region count, then each `addr`/`len` (spec §2).
@@ -857,7 +883,7 @@ async fn peek(
     let (msg, body) = app_round_trip(
         write,
         read,
-        build_m64p_payload(req, &m64p_peek_body(1, &[(addr, len)])),
+        build_m64p_payload(req, &m64p_peek_body(next_rid(), &[(addr, len)])),
         what,
         recv_to,
         Expect {
@@ -887,7 +913,7 @@ async fn poke_region(
     let (msg, body) = app_round_trip(
         write,
         read,
-        build_m64p_payload(M64P_MSG_POKEV, &m64p_poke_body(1, &[(addr, data)])),
+        m64p_poke_payload(addr, data),
         what,
         recv_to,
         Expect {
@@ -1428,6 +1454,24 @@ pub async fn run_connector_command<F: FnMut(String) + Send>(
             if data.is_empty() {
                 anyhow::bail!("--hex must supply at least one byte to write");
             }
+            // First, so this write cannot be mistaken for a copy of one the agent served last.
+            let mut quiet = |_: String| {};
+            let (msg, _) = app_round_trip(
+                &mut write,
+                &mut read,
+                mem_poke_preamble(),
+                "M64P HELLO (before the write)",
+                recv_to,
+                Expect {
+                    magic: M64P_MAGIC,
+                    msgs: &[M64P_MSG_HELLO_ACK, M64P_MSG_ERR],
+                },
+                &mut quiet,
+            )
+            .await?;
+            if msg == M64P_MSG_ERR {
+                anyhow::bail!("M64P HELLO before the write returned ERR");
+            }
             poke_region(&mut write, &mut read, recv_to, addr, &data, "M64P POKEV").await?;
             log_line!(log, "OK: wrote {} bytes at 0x{:08X}", data.len(), addr);
         }
@@ -1942,6 +1986,29 @@ mod hex_tests {
         let d = DiagSnapshot::parse(&diag_body(1, &[])).unwrap();
         assert_eq!(d.tx_failures, None);
         assert!(!d.summary().contains("tx_failures"), "{}", d.summary());
+    }
+
+    /// Two writes in a row must not share a `rid`: an agent that sets `HELLO_ACK` bit 3 would take
+    /// the second for a copy of the first and not apply it (spec §4.4).
+    #[test]
+    fn two_writes_in_a_row_never_share_a_rid() {
+        let rid = |p: &[u8]| u16::from_be_bytes([p[5], p[6]]);
+        let a = m64p_poke_payload(0x10, &[1]);
+        let b = m64p_poke_payload(0x10, &[1]);
+        assert_eq!(a[4], M64P_MSG_POKEV);
+        assert_ne!(
+            rid(&a),
+            rid(&b),
+            "the same rid twice reads as one write sent twice"
+        );
+    }
+
+    /// `mem-poke` opens with a request that ends any hold the agent kept from the run before.
+    #[test]
+    fn mem_poke_opens_with_a_hello() {
+        let p = mem_poke_preamble();
+        assert_eq!(&p[..4], &M64P_MAGIC);
+        assert_eq!(p[4], M64P_MSG_HELLO);
     }
 
     #[test]
