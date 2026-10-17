@@ -170,7 +170,71 @@ fn normalize_settings(mut s: Settings) -> Settings {
     if !s.tray_enabled {
         s.start_minimized = false;
     }
+    // Lenient: a file written before Save checked the address keeps what it said, and Save then
+    // reports it (see `apply_settings`).
+    if let Ok(listen) = normalize_listen(&s.listen) {
+        s.listen = listen;
+    }
     s
+}
+
+/// Settings → Listen as multi64d's `--listen` takes it: `host:port`.
+///
+/// The health check used to accept `http://host:port` while the same text went to `--listen`
+/// unchanged, where the daemon could not bind it. A `http://` prefix and a trailing `/` are
+/// dropped; anything the daemon could not bind is refused. Empty means the default.
+fn normalize_listen(listen: &str) -> Result<String, String> {
+    let typed = listen.trim();
+    if typed.starts_with("https://") {
+        return Err(format!(
+            "Listen: the bridge serves plain HTTP on this PC, so give host:port, such as {DEFAULT_LISTEN} (got \"{typed}\")."
+        ));
+    }
+    let addr = typed
+        .strip_prefix("http://")
+        .unwrap_or(typed)
+        .trim_end_matches('/');
+    if addr.is_empty() {
+        return Ok(DEFAULT_LISTEN.to_string());
+    }
+    let valid = match addr.parse::<std::net::SocketAddr>() {
+        Ok(sock) => sock.port() != 0,
+        // A host name, such as `localhost:38765`. A bare IPv6 address needs brackets.
+        Err(_) => addr.rsplit_once(':').is_some_and(|(host, port)| {
+            !host.is_empty()
+                && !host.contains([':', '/', '[', ']'])
+                && !host.chars().any(char::is_whitespace)
+                && port.parse::<u16>().is_ok_and(|p| p != 0)
+        }),
+    };
+    if valid {
+        Ok(addr.to_string())
+    } else {
+        Err(format!(
+            "Listen must be host:port, such as {DEFAULT_LISTEN} (got \"{typed}\")."
+        ))
+    }
+}
+
+/// `listen` as an address to connect to: `host:port`, with a wildcard (`0.0.0.0`, `[::]`), which
+/// the daemon binds to but Windows will not connect to, replaced by loopback.
+fn connect_addr(listen: &str) -> String {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    let addr = listen
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+    match addr.parse::<SocketAddr>() {
+        Ok(mut sock) if sock.ip().is_unspecified() => {
+            sock.set_ip(match sock.ip() {
+                IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+                IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+            });
+            sock.to_string()
+        }
+        _ => addr.to_string(),
+    }
 }
 
 impl Default for Settings {
@@ -684,12 +748,7 @@ fn stopped_message(plan: &StartPlan) -> String {
 }
 
 fn daemon_health_url(listen: &str) -> String {
-    let base = listen.trim();
-    if base.starts_with("http://") || base.starts_with("https://") {
-        format!("{base}/health")
-    } else {
-        format!("http://{base}/health")
-    }
+    format!("http://{}/health", connect_addr(listen))
 }
 
 /// One agent for the process, not one per call.
@@ -774,24 +833,13 @@ fn begin_shutdown() {
 /// A connect rather than a trial bind, which could briefly take the address from a daemon being
 /// started. The timeout is short because a refused loopback connect takes about 2 s on Windows,
 /// while one that is accepted completes in well under a millisecond. An address given as a
-/// wildcard is tried on loopback.
+/// wildcard is tried on loopback ([`connect_addr`]), as the health check is.
 fn listen_address_in_use(listen: &str) -> bool {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
-    let host = listen
-        .trim()
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .trim_end_matches('/');
-    let Ok(addrs) = host.to_socket_addrs() else {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let Ok(addrs) = connect_addr(listen).to_socket_addrs() else {
         return false;
     };
-    addrs.into_iter().any(|mut addr| {
-        if addr.ip().is_unspecified() {
-            addr.set_ip(match addr.ip() {
-                IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
-                IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
-            });
-        }
+    addrs.into_iter().any(|addr| {
         TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(150)).is_ok()
     })
 }
@@ -1197,7 +1245,9 @@ async fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), S
 }
 
 fn apply_settings(app: &AppHandle, state: &AppState, settings: Settings) -> Result<(), String> {
-    let settings = normalize_settings(settings);
+    // Before anything is written: the daemon cannot bind an address `normalize_listen` refuses.
+    let listen = normalize_listen(&settings.listen)?;
+    let settings = normalize_settings(Settings { listen, ..settings });
     let prev = { state.settings.lock().clone() };
     commit_settings(
         &prev,
@@ -2049,6 +2099,75 @@ mod tests {
         assert!(checks.recent(A, t0, |_| true));
         assert!(!checks.fresh(A, t0, |_| false));
         assert!(!checks.recent(A, t0, never));
+    }
+
+    /// A wildcard Listen address is where the daemon binds, not an address to connect to: Windows
+    /// refuses a connect to 0.0.0.0, so the bridge never showed as healthy.
+    #[test]
+    fn a_wildcard_listen_address_is_checked_on_loopback() {
+        assert_eq!(
+            daemon_health_url("0.0.0.0:38765"),
+            "http://127.0.0.1:38765/health"
+        );
+        assert_eq!(daemon_health_url("[::]:38765"), "http://[::1]:38765/health");
+        assert_eq!(
+            daemon_health_url("127.0.0.1:38765"),
+            "http://127.0.0.1:38765/health"
+        );
+        assert_eq!(
+            daemon_health_url("localhost:38765"),
+            "http://localhost:38765/health"
+        );
+    }
+
+    /// The health check accepted `http://host:port`, but the same text reached `--listen`, where
+    /// multi64d cannot bind it.
+    #[test]
+    fn listen_reaches_the_daemon_as_host_and_port() {
+        for typed in [
+            "http://127.0.0.1:38765",
+            "http://127.0.0.1:38765/",
+            " 127.0.0.1:38765 ",
+        ] {
+            let s = normalize_settings(Settings {
+                listen: typed.to_string(),
+                ..Settings::default()
+            });
+            let args = daemon_args("COM4", DaemonCart::Sc64, &s);
+            let at = args.iter().position(|a| a == "--listen").unwrap();
+            assert_eq!(args[at + 1], "127.0.0.1:38765", "{typed:?}");
+        }
+    }
+
+    /// Save refuses a Listen address multi64d could not bind, rather than starting a bridge that
+    /// exits at once.
+    #[test]
+    fn save_refuses_a_listen_address_the_daemon_cannot_bind() {
+        for good in [
+            "127.0.0.1:38765",
+            "0.0.0.0:38765",
+            "[::1]:38765",
+            "localhost:9000",
+        ] {
+            assert_eq!(normalize_listen(good).as_deref(), Ok(good), "{good}");
+        }
+        assert_eq!(
+            normalize_listen("http://127.0.0.1:38765/").as_deref(),
+            Ok("127.0.0.1:38765")
+        );
+        assert_eq!(normalize_listen("").as_deref(), Ok(DEFAULT_LISTEN));
+        for bad in [
+            "https://127.0.0.1:38765",
+            "127.0.0.1",
+            "127.0.0.1:0",
+            "127.0.0.1:99999",
+            ":38765",
+            "::1:38765",
+            "127.0.0.1:38765/ws",
+            "host name:38765",
+        ] {
+            assert!(normalize_listen(bad).is_err(), "{bad}");
+        }
     }
 
     /// The baud the user picks must reach multi64d; it was collected and never passed.
