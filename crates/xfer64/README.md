@@ -12,7 +12,8 @@ them.
 
 There is no drive letter: Xfer64 reads FAT32 and exFAT off the card itself and holds the serial
 port while it works. When Multi64's bridge is running it steps aside for each operation and
-hands the port back afterward.
+hands the port back afterward. If the bridge is restarted meanwhile and the new one takes the
+port, Xfer64 asks it to step aside too, tries the port once more and carries on.
 
 ## Which carts work
 

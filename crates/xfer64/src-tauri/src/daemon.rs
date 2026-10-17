@@ -15,6 +15,12 @@ fn with_http_base(listen: &str, path: &str) -> String {
     }
 }
 
+/// `listen` spelled one way, so the pauses [`ExplorerCartSerialState`] records under it match
+/// whether or not a caller wrote the scheme or a trailing `/`.
+pub(crate) fn listen_key(listen: &str) -> String {
+    with_http_base(listen, "")
+}
+
 /// ureq 3 moved timeouts from the request builder to agent config, so each call
 /// builds a one-shot agent carrying its own deadline.
 fn daemon_agent(timeout: Duration) -> ureq::Agent {
@@ -96,6 +102,25 @@ fn cart_hint_from_root(
     Some((port.clone(), kind))
 }
 
+/// Whether the multi64d at `listen` reports holding `port` now: its `GET /` names that `serial`
+/// with `serialActive` true (daemon API §1.1). A daemon that does not answer holds nothing.
+pub(crate) fn daemon_holds_port(listen: &str, port: &str) -> bool {
+    daemon_get_root(listen)
+        .map(|root| root_holds_port(&root, port))
+        .unwrap_or(false)
+}
+
+/// [`daemon_holds_port`] once the daemon has answered `root`. `COM4` and `\\.\com4` are one port.
+fn root_holds_port(root: &serde_json::Value, port: &str) -> bool {
+    let bare = |p: &str| {
+        let p = p.trim();
+        p.strip_prefix(r"\\.\").unwrap_or(p).to_ascii_uppercase()
+    };
+    let active = root.get("serialActive").and_then(|v| v.as_bool()) == Some(true);
+    let serial = root.get("serial").and_then(|v| v.as_str()).map(bare);
+    active && !bare(port).is_empty() && serial == Some(bare(port))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonProbe {
@@ -152,12 +177,34 @@ pub fn explorer_daemon_release_listen(listen: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Pause multi64d at `listen` for an operation, and record in `st` that this operation has paused
+/// it until [`resume_bridge`]. The pause is recorded before the request goes out, since a resume
+/// follows every release attempt, even one that failed.
+///
+/// While it is recorded, a cart command whose port the bridge has taken back asks it to release
+/// again (`cart_serial_sd::open_with_retries`): a bridge restarted meanwhile knows nothing of this
+/// release (daemon API §1.2).
+pub fn release_bridge(st: &ExplorerCartSerialState, listen: &str) -> Result<(), String> {
+    st.note_bridge_release(listen);
+    explorer_daemon_release_listen(listen)
+}
+
+/// Resume multi64d at `listen` after [`release_bridge`], ending that operation's pause in `st`.
+pub fn resume_bridge(st: &ExplorerCartSerialState, listen: &str) -> Result<(), String> {
+    st.note_bridge_resume(listen);
+    explorer_daemon_resume_listen(listen)
+}
+
 /// `async` so the 5 s release timeout cannot stall the window event loop.
 #[tauri::command]
-pub async fn explorer_daemon_release(listen: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || explorer_daemon_release_listen(&listen))
-        .await
-        .map_err(|e| format!("bridge release task: {e}"))?
+pub async fn explorer_daemon_release(
+    st: State<'_, ExplorerCartSerialState>,
+    listen: String,
+) -> Result<(), String> {
+    cart_serial_sd::spawn_with_cart_state(&st, "bridge release", move |st| {
+        release_bridge(st, &listen)
+    })
+    .await
 }
 
 pub fn explorer_daemon_resume_listen(listen: &str) -> Result<(), String> {
@@ -178,22 +225,25 @@ pub fn explorer_daemon_resume_listen(listen: &str) -> Result<(), String> {
 
 /// `async` so the 10 s resume timeout cannot stall the window event loop.
 #[tauri::command]
-pub async fn explorer_daemon_resume(listen: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || explorer_daemon_resume_listen(&listen))
-        .await
-        .map_err(|e| format!("bridge resume task: {e}"))?
+pub async fn explorer_daemon_resume(
+    st: State<'_, ExplorerCartSerialState>,
+    listen: String,
+) -> Result<(), String> {
+    cart_serial_sd::spawn_with_cart_state(&st, "bridge resume", move |st| {
+        resume_bridge(st, &listen)
+    })
+    .await
 }
 
+/// A multi64d stand-in for tests elsewhere in the crate.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
+pub(crate) mod fake {
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
 
-    /// A multi64d stand-in on an ephemeral port: answers `/health` and `GET /` (naming a port that
-    /// is not plugged in, so no hint results) and logs each request's path.
-    fn fake_daemon() -> (String, Arc<Mutex<Vec<String>>>) {
+    /// A multi64d stand-in on an ephemeral port that answers `GET /` with `root` and every other
+    /// request with `200 ok`, and logs each request as `METHOD path`.
+    pub(crate) fn daemon_answering(root: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let listen = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -210,13 +260,11 @@ mod tests {
                     }
                 }
                 let head = String::from_utf8_lossy(&req);
-                let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
-                let body = if path == "/" {
-                    r#"{"serial":"COM_NOT_PLUGGED_IN","serialActive":true,"cart":"sc64"}"#
-                } else {
-                    "ok"
-                };
-                log.lock().unwrap().push(path);
+                let mut words = head.split_whitespace();
+                let method = words.next().unwrap_or("").to_string();
+                let path = words.next().unwrap_or("").to_string();
+                let body = if path == "/" { root } else { "ok" };
+                log.lock().unwrap().push(format!("{method} {path}"));
                 let _ = write!(
                     stream,
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -225,6 +273,98 @@ mod tests {
             }
         });
         (listen, seen)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    /// [`fake::daemon_answering`] naming a port that is not plugged in, so no hint results.
+    fn fake_daemon() -> (String, Arc<Mutex<Vec<String>>>) {
+        fake::daemon_answering(
+            r#"{"serial":"COM_NOT_PLUGGED_IN","serialActive":true,"cart":"sc64"}"#,
+        )
+    }
+
+    /// The bridge holds a port only while `serialActive` is true, and only the one it names,
+    /// however that is spelled.
+    #[test]
+    fn a_daemon_holds_only_the_active_port_it_names() {
+        let active = json!({"serial": "COM4", "serialActive": true, "cart": "sc64"});
+        assert!(root_holds_port(&active, "COM4"));
+        assert!(root_holds_port(&active, r"\\.\com4"));
+        assert!(!root_holds_port(&active, "COM5"), "another port");
+        assert!(!root_holds_port(&active, ""));
+        for root in [
+            json!({"serial": "COM4", "serialActive": false}),
+            json!({"serial": "COM4"}),
+            json!({"serial": "COM4", "serialActive": "true"}),
+            json!({"serial": "", "serialActive": true}),
+            json!({"serialActive": true}),
+        ] {
+            assert!(!root_holds_port(&root, "COM4"), "{root}");
+        }
+    }
+
+    /// A daemon that does not answer holds nothing.
+    #[test]
+    fn a_daemon_that_is_not_running_holds_no_port() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        assert!(!daemon_holds_port(&listen, "COM4"));
+    }
+
+    /// Each release is recorded until its resume, under one spelling of the address, so
+    /// overlapping operations keep the pause until the last of them resumes.
+    #[test]
+    fn a_pause_lasts_from_the_release_to_its_resume() {
+        let (listen, seen) = fake_daemon();
+        let st = ExplorerCartSerialState::new();
+        assert!(st.paused_bridges().is_empty());
+
+        let bare = listen.trim_start_matches("http://").to_string();
+        release_bridge(&st, &listen).unwrap();
+        release_bridge(&st.detached().unwrap(), &format!("{bare}/")).unwrap();
+        let paused = std::slice::from_ref(&listen);
+        assert_eq!(st.paused_bridges(), paused);
+
+        resume_bridge(&st, &bare).unwrap();
+        assert_eq!(st.paused_bridges(), paused, "one still under way");
+        resume_bridge(&st, &listen).unwrap();
+        assert!(st.paused_bridges().is_empty());
+        resume_bridge(&st, &listen).unwrap();
+        assert!(
+            st.paused_bridges().is_empty(),
+            "an extra resume is harmless"
+        );
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                "POST /v1/serial/release",
+                "POST /v1/serial/release",
+                "POST /v1/serial/resume",
+                "POST /v1/serial/resume",
+                "POST /v1/serial/resume",
+            ]
+        );
+    }
+
+    /// A release that fails is still recorded, since its resume follows anyway.
+    #[test]
+    fn a_failed_release_is_a_pause_until_its_resume() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let st = ExplorerCartSerialState::new();
+        assert!(release_bridge(&st, &listen).is_err());
+        assert_eq!(st.paused_bridges(), std::slice::from_ref(&listen));
+        assert!(resume_bridge(&st, &listen).is_err());
+        assert!(st.paused_bridges().is_empty());
     }
 
     /// #179 follow-up: Auto's cart hint asks multi64d at the address the window probed it at, not
@@ -251,7 +391,10 @@ mod tests {
         assert_eq!(st.hint_listen(), listen);
 
         assert_eq!(cart_serial_sd::auto_cart_hint(&st), None);
-        assert_eq!(*seen.lock().unwrap(), ["/health", "/health", "/"]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["GET /health", "GET /health", "GET /"]
+        );
     }
 
     fn ports(names: &[&str]) -> Vec<String> {
