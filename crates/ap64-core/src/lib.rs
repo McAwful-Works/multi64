@@ -89,6 +89,7 @@ pub fn builtin() -> Result<Vec<Bundle>, String> {
         builtin!("bmhero", ["agent.bin", "stub.bin"]),
         builtin!("bmtsa", ["agent.bin", "stub.bin"]),
         builtin!("sf64", ["agent.bin", "stub.bin"]),
+        builtin!("goldeneye", ["agent.bin", "stub.bin"]),
     ];
     bundles.sort_by_key(|b| library_key(&b.profile.name));
     Ok(bundles)
@@ -103,14 +104,8 @@ pub fn builtin() -> Result<Vec<Bundle>, String> {
 ///   but a seed freezes, in attract mode at a fixed point and again during play. The same
 ///   seed with no agent in it freezes at the same point in an emulator and the retail ROM
 ///   does not, so the fault is in Archipelago's CVLoD world (seen on v2.0.2), not here.
-/// - `goldeneye` — GoldenEye 007, in progress (#395). The profile places the agent and fixes
-///   the world's payload loader for a console, but the world's Lua also runs game logic
-///   every frame, which nothing on a console does yet.
 pub fn withheld() -> Result<Vec<Bundle>, String> {
-    Ok(vec![
-        builtin!("cvlod", ["agent.bin", "stub.bin"]),
-        builtin!("goldeneye", ["agent.bin", "stub.bin"]),
-    ])
+    Ok(vec![builtin!("cvlod", ["agent.bin", "stub.bin"])])
 }
 
 /// A ROM file as loaded: normalized to big-endian, with what could be learned from it.
@@ -428,7 +423,7 @@ mod tests {
                 .profile
                 .silence_may_be_the_pak()
         };
-        for id in ["oot", "bt", "dk64"] {
+        for id in ["oot", "bt", "dk64", "goldeneye"] {
             assert!(!silent_pak(id), "{id} does not run without a Pak");
         }
         for id in ["cv64", "mk64", "bm64", "sf64"] {
@@ -526,6 +521,7 @@ mod tests {
                 "Bomberman Hero",
                 "Castlevania 64",
                 "Donkey Kong 64",
+                "GoldenEye 007",
                 "Kirby 64 - The Crystal Shards",
                 "The Legend of Zelda: Ocarina of Time",
                 "Mario Kart 64",

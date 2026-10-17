@@ -21,7 +21,7 @@ Play Archipelago N64 seeds on a real console, from Windows. AP64 does two jobs:
 Supported today, each patched and played on a SummerCart64 with checks sent and items
 received (the first three on 2026-09-18, Kirby 64 on 2026-09-21, Banjo-Tooie and Mario Kart 64
 on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26, Bomberman Hero,
-Bomberman 64: The Second Attack and Star Fox 64 on 2026-09-27):
+Bomberman 64: The Second Attack and Star Fox 64 on 2026-09-27, GoldenEye 007 on 2026-10-16):
 
 - **Castlevania 64 (US 1.0)**, through Archipelago's BizHawk Client.
 - **Paper Mario (US 1.0)** with the Paper Mario Randomizer, through BizHawk Client.
@@ -141,6 +141,36 @@ Bomberman 64: The Second Attack and Star Fox 64 on 2026-09-27):
   keep it on the buffers the relay reads. Played for 8 checks across Sector X, among them both
   Mission Accomplished and Mission Complete, with laser upgrades, rings and bombs received and
   landing, over one connection that held for the whole session.
+- **GoldenEye 007 (US)**, NotFamilyJules's GoldenEye 007 world, through its GoldenEye 007
+  Client (BizHawk Client also runs it). The world needs an Expansion Pak for the game itself:
+  its patch moves the game's stacks up 4 MB. As released, its ROM freezes on a console at the
+  splash screen: its loader copies the world's code into RAM through the data cache and jumps
+  straight into it, which only an emulator forgives, and reads the cartridge with CPU loads
+  while the game may have its own DMA in flight. AP64 points that loader at its own, in the
+  hook stub, which copies the code with the game's DMA routine and invalidates the
+  instruction cache over it. GoldenEye pages its game code in from ROM through the TLB, 8 KB
+  at a time, so the stub sits in the boot code, which stays resident, over a Controller Pak
+  function the game never uses (it saves to EEPROM).
+
+  The world's BizHawk Lua also runs game logic every frame that its ROM relies on: it turns
+  on-screen weapon pickups into the world's token item and consumes it before the next
+  frame, resets the world's mailboxes when a mission starts, holds the debrief screens, and
+  shows the mission's tank. A console runs no Lua, so that logic is ported to C
+  (`agent/goldeneye/game.c`) and runs on the N64 from two hooks in the main loop, one before
+  the game's update and one after it renders. GoldenEye's main loop stops while a level
+  loads, so the mission-start resets happen on the mission's first frame rather than during
+  the load. Its client's one request outside the BizHawk protocol, `LOADOUT_TRACKER`, drives
+  an overlay on BizHawk's window and is acknowledged.
+
+  The client writes each mission's loadout by rewriting Bond's whole inventory field by
+  field, which needs more than one request to the agent. Applied over several frames, the
+  game ran with half of it written and crashed once the loadout was big enough; AP64 now
+  merges a batch into contiguous runs, so it lands in one frame as it does under BizHawk.
+  Played for 25 checks across Dam, Surface 1, Caverns and Depot, among them whole tables of
+  weapons picked up together, objectives and mission clears, with missions unlocking,
+  progressive weapons in every starting loadout and the debrief returning to the mission map.
+  The world's client can stop polling while it still shows connected; the notes at Start
+  say to reopen it.
 
 Written, but **not offered in the app**, because the game cannot be played through yet.
 Kept in the tree and checked by the same tests as the rest (`ap64_core::withheld`), so
@@ -160,26 +190,9 @@ testing:
   the cart, the client connects and checks come through. **But a seed freezes**, in attract
   mode at a fixed point and again during play. That freeze is not AP64's: the same seed with
   no agent spliced into it freezes at the same point in BizHawk, and the retail ROM does not.
-  It is a bug in the CVLoD world (seen on v2.0.2). AP64 refuses the seed rather than patch a
-  game it knows freezes; the profile moves back into `builtin` when a seed can be played
+  It is a bug in the CVLoD world (seen on v2.0.2). The app refuses the seed rather than patch
+  a game it knows freezes (`ap64-patch --withheld` will, for testing); the profile moves back into `builtin` when a seed can be played
   through.
-- **GoldenEye 007 (US)**, NotFamilyJules's GoldenEye 007 world, in progress (#395). As
-  released, the world's ROM freezes on a console at the splash screen: its loader copies the
-  world's code into RAM through the data cache and jumps straight into it, which only an
-  emulator forgives, and it reads the cartridge with CPU loads while the game may have its
-  own DMA in flight. The profile points that loader at AP64's own, in the hook stub, which
-  copies the code with the game's DMA routine and invalidates the instruction cache over it;
-  the seed then boots and plays on a console. The world needs an Expansion Pak for the
-  game itself. GoldenEye pages its game code in from ROM through the TLB, 8 KB at a time,
-  so the hook stub sits in the boot code, which stays resident, over a Controller Pak
-  function the game never uses (it saves to EEPROM). The agent loads and answers on a
-  SummerCart64 from inside a mission. The game logic the world's BizHawk Lua runs every frame
-  (pickups, the world's mailboxes, the debrief guard) is ported to C
-  (`agent/goldeneye/game.c`) and runs on the N64 from two hooks in the main loop, one before
-  the game's update and one after it renders. GoldenEye's main loop stops while a level
-  loads, so the mission-start resets happen on the mission's first frame rather than during
-  the load, as they would under BizHawk. Still to come: the connector for the world's client
-  and a full session.
 
 ## What the window shows
 
@@ -249,8 +262,8 @@ and the session log says so once:
   game that runs without an Expansion Pak, the log adds that a missing Pak would also do it.
 - On the SummerCart64, for a game that runs without an Expansion Pak, it names the Pak as the
   likely cause.
-- For a game that does not run without one (Ocarina of Time, Banjo-Tooie, Donkey Kong 64:
-  `game_needs_expansion_pak` in its profile), a running game has the Pak, so the status asks
+- For a game that does not run without one (Ocarina of Time, Banjo-Tooie, Donkey Kong 64,
+  GoldenEye 007: `game_needs_expansion_pak` in its profile), a running game has the Pak, so the status asks
   instead whether the ROM is the one AP64 added the agent to.
 
 Before a session begins, Start may ask about two things, one at a time. First, a fix the game's
@@ -374,7 +387,7 @@ agent and the specs name no game; everything that does lives in these crates.
 | [`crates/ap64`](.) | The Tauri 2 app (`src-tauri/` + plain-JS `src/`, no bundler), `e2e/` headless checks |
 | [`crates/ap64-core`](../ap64-core) | ROM byte orders, the CIC-6101/6102/6103/6105 header checksum, profiles, verify/apply |
 | `crates/ap64-core/profiles/<game>/` | `profile.toml` plus the agent image and hook stub it writes, with the build's `layout.env`: the SummerCart64's build here, the EverDrives' in `ed64/` and `ed64pro/` |
-| `crates/ap64-core/agent/` | `build.sh <game>`, and per game a `game.env` and hand-written `stub.S` |
+| `crates/ap64-core/agent/` | `build.sh <game>`, and per game a `game.env` and hand-written `stub.S`, and a `game.c` where the world's Lua does game logic of its own (GoldenEye) |
 | `crates/ap64-core/tools/<game>/` | BizHawk probe scripts for checking a patched ROM before it goes on a cart |
 | [`crates/ap64-cli`](../ap64-cli) | `ap64-patch`, a thin command line over the core |
 | [`crates/ap64-cart`](../ap64-cart) | M64P over multi64d: RDRAM reads and writes, cart ROM reads (cached), retry and reconnect |

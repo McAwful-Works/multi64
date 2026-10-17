@@ -3,7 +3,10 @@
 //!
 //! Every operation takes a whole batch, because over USB the cost is per exchange, not
 //! per byte: a connector names every region a request needs and gets them in as few
-//! wire requests as the M64P limits allow, in the order asked, with nothing added.
+//! wire requests as the M64P limits allow, with nothing added. Reads go in the order asked.
+//! Writes are merged into contiguous runs first, never writing a byte nobody asked for, so a
+//! batch written field by field lands in one request, and so within one game frame; only a
+//! batch too big for one request either way keeps the client's order.
 //!
 //! The ROM is read from the cart itself (M64P `PEEKROM`) and cached: it cannot change
 //! while the console runs, and clients read it far more often than it could be fetched.
@@ -27,7 +30,9 @@ pub trait Backend {
     /// One block per region, in order.
     fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>>;
 
-    /// All of `writes`, in order.
+    /// All of `writes`, with the effect of applying them in order: the last write to a byte
+    /// wins. The cart backend may send them merged into address-ordered runs, as one request
+    /// when they fit.
     fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()>;
 
     /// The cartridge ROM window that can be read, from offset 0; `None` when the cart's

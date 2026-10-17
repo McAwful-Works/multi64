@@ -5,9 +5,9 @@ description: Add a new game to AP64 - checking its Archipelago world is one the 
 
 # Adding a game to AP64
 
-Eleven games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
-Mario Kart 64, Donkey Kong 64, all three Bombermans (64, The Second Attack and Hero) and Star
-Fox 64, with Legacy of Darkness written and held back in
+Twelve games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
+Mario Kart 64, Donkey Kong 64, all three Bombermans (64, The Second Attack and Hero), Star
+Fox 64 and GoldenEye 007, with Legacy of Darkness written and held back in
 `ap64_core::withheld()`.
 Each took a day or two, and most of that was spent on things this file now answers.
 
@@ -84,8 +84,8 @@ trip, about 67 ms. Compare that against a 16.7 ms frame before agreeing to a for
 
 GoldenEye 007 was parked at this step. Its lua is a fork of the generic connector that also
 walks an inventory linked list and rewrites objects on `onframestart`, and its ROM patch
-removes the native paths that did that work, so none of it is optional. It is now being
-done the only way a console allows (#395): the Lua's frame logic is ported to C in
+removes the native paths that did that work, so none of it is optional. It is done the only
+way a console allows (#395): the Lua's frame logic is ported to C in
 `agent/<game>/game.c`, which `build.sh` links into that game's agent when it exists, and
 the stub calls it from the hooks it needs -- GoldenEye's runs before the game's update and
 after it renders, as the Lua's `onframestart` and `onframeend` do. Port function for
