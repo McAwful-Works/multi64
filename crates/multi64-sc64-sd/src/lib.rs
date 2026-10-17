@@ -35,6 +35,7 @@
 mod cart_session;
 #[cfg(feature = "ed64")]
 mod ed64_linear;
+mod host_file;
 mod link;
 mod mem_disk;
 mod partition;
@@ -47,6 +48,7 @@ mod ed64pro;
 pub use ed64_linear::Ed64RomLinear;
 #[cfg(feature = "ed64pro")]
 pub use ed64pro::Ed64ProSdSession;
+pub use host_file::write_host_file;
 pub use link::{Sc64Link, SdCardTransport, SD_CARD_BUFFER_ADDR, SD_CARD_BUFFER_MAX_BYTES};
 #[cfg(feature = "ed64")]
 pub use partition::Ed64SdSession;

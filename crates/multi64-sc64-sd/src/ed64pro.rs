@@ -6,11 +6,12 @@
 //! [`crate::Sc64SdSession`] — recursion, `skip_existing`, cancellation and partial-file cleanup — so
 //! Xfer64 can treat both carts the same. See workspace `docs/spec/ed64-pro-usb-host.md`.
 
+use crate::host_file::write_host_file;
 use crate::partition::{cart_path_parts, fat_names_equal, SessionEntry};
 use multi64_ed64pro_link::{
     dir_option, open_mode, Ed64Pro, Error as LinkError, FileInfo, Transport,
 };
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -342,9 +343,10 @@ impl<T: Transport> Ed64ProSdSession<T> {
         let mut dev = self.dev()?;
         dev.file_open(&pro_path(cart_file), open_mode::READ)
             .map_err(link_err)?;
-        let result = (|| -> io::Result<()> {
+        // Into a temporary file that replaces `dest` only once complete, so a cancelled or failed
+        // Replace keeps the original, as on the SC64.
+        let result = write_host_file(dest, |out| {
             let mut remaining = dev.file_available().map_err(link_err)?;
-            let mut out = BufWriter::new(std::fs::File::create(dest)?);
             let mut buf = vec![0u8; CHUNK];
             while remaining > 0 {
                 let n = remaining.min(CHUNK as u64) as usize;
@@ -355,18 +357,10 @@ impl<T: Transport> Ed64ProSdSession<T> {
                     return Err(cancelled());
                 }
             }
-            out.flush()
-        })();
+            Ok(())
+        });
         let closed = dev.file_close().map_err(link_err);
-        match result {
-            Err(e) => {
-                if e.kind() == io::ErrorKind::Interrupted {
-                    let _ = std::fs::remove_file(dest);
-                }
-                Err(e)
-            }
-            Ok(()) => closed,
-        }
+        result.and(closed)
     }
 
     fn import_dir(
@@ -775,6 +769,33 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Interrupted);
         assert!(!dest.exists());
+    }
+
+    /// Choosing Replace and then Cancel used to truncate the PC's copy first and then delete it.
+    #[test]
+    fn a_cancelled_replace_on_the_pc_keeps_the_original() {
+        let s = session(FakeEd64Pro::new().with_file("big.z64", &pattern(CHUNK * 3)));
+        let out = Scratch::new("export-replace-cancel");
+        let dest = out.0.join("big.z64");
+        std::fs::write(&dest, b"the PC's own copy").unwrap();
+        let mut chunks = 0;
+        let err = s
+            .copy_cart_entry_to_host_with_progress("big.z64", &dest, false, |_| {
+                chunks += 1;
+                chunks < 2
+            })
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"the PC's own copy");
+        let left: Vec<_> = std::fs::read_dir(&out.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["big.z64"], "no temporary file is left behind");
+
+        s.copy_cart_entry_to_host_with_progress("big.z64", &dest, false, |_| true)
+            .unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), pattern(CHUNK * 3));
     }
 
     #[test]
