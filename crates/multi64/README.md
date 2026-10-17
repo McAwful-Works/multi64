@@ -14,12 +14,14 @@ Multi64's installer carries only Multi64 and `multi64d`.
 A native L3 client, such as `multi64-test-connector`, can use the same WebSocket AP64 does; the
 daemon it runs is specified in [`daemon-api-v1.md`](../../docs/spec/daemon-api-v1.md). A browser
 page cannot unless its origin is allowed: it sends an `Origin` header, and the daemon answers `403`
-to any origin it was not told to allow ([§1.4](../../docs/spec/daemon-api-v1.md#14-origin-policy)). Multi64 passes the
-serial port, baud, cart and listen address on the command line, but the daemon it starts inherits
-Multi64's environment and looks for a config file as a hand-run one does
-([§5](../../docs/spec/daemon-api-v1.md#5-cli-and-configuration-reference)), so an allowed origin
-can come from `MULTI64D_ALLOW_ORIGIN`, a `MULTI64D_CONFIG` file, a `multi64d.toml` in Multi64's
-working directory, or `%APPDATA%\multi64d\config.toml`.
+to any origin it was not told to allow ([§1.4](../../docs/spec/daemon-api-v1.md#14-origin-policy)). The daemon Multi64
+starts allows none. It runs on what Multi64 passes it: the serial port, baud, cart and listen
+address on the command line, and `--no-config-file`, so it loads neither a `multi64d.toml` nor
+`%APPDATA%\multi64d\config.toml` ([§5](../../docs/spec/daemon-api-v1.md#5-cli-and-configuration-reference)).
+Every `MULTI64D_*` variable is removed from its environment, and it runs in its own directory. A
+config file is for a daemon you run yourself, as in
+[Running `multi64d` as a background service](../../docs/run-as-service.md); stop Multi64's bridge
+first, since both want the cart's serial port and the listen address.
 
 ## Status
 
@@ -50,7 +52,7 @@ start would kill the daemon the first one spawned. **Stop bridge** is offered on
 - **Minimize to tray when closing the window** (default on): closing hides the window to the tray instead of exiting, but only while the tray icon is there to bring it back; without one, closing exits. Exit from the tray with **Exit Multi64**.
 - **Start with the window hidden** (default off) opens Multi64 in the tray only. It needs the tray, and is turned off with it.
 - **A second launch** does not start another Multi64: it shows, unminimizes and focuses the window of the one running.
-- **Developer mode** (default off) adds the Developer card, with the last 400 lines of `multi64d`'s output, and the **Bridge logging** setting: **Default** (info), **Debug** (the cart link crates and `multi64d` at debug), **Serial trace** (`--serial-trace`: every cart read, with its bytes) or **Verbose** (`multi64d` at debug, plus Serial trace). Multi64 removes `RUST_LOG` and `MULTI64D_SERIAL_TRACE` from the daemon's environment, so the preset alone decides.
+- **Developer mode** (default off) adds the Developer card, with the last 400 lines of `multi64d`'s output, and the **Bridge logging** setting: **Default** (info), **Debug** (the cart link crates and `multi64d` at debug), **Serial trace** (`--serial-trace`: every cart read, with its bytes) or **Verbose** (`multi64d` at debug, plus Serial trace). Multi64 removes `RUST_LOG` and every `MULTI64D_*` variable, `MULTI64D_SERIAL_TRACE` among them, from the daemon's environment, so the preset alone decides.
 
 ### Tray
 

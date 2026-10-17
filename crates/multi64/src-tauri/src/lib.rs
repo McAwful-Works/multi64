@@ -4,8 +4,9 @@ use auto_launch::{AutoLaunch, AutoLaunchBuilder};
 use multi64_cart_probe::{usb_is_sc64, DetectedCart};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -1347,6 +1348,46 @@ fn daemon_args(serial: &str, cart: DaemonCart, settings: &Settings) -> Vec<Strin
     ]
 }
 
+/// The command that starts `multi64d` at `daemon_path`. `inherited` names the variables in
+/// Multi64's own environment, which the child would otherwise inherit.
+///
+/// The daemon runs on what Multi64 passes it and nothing else. Every `MULTI64D_*` variable is
+/// removed, `--no-config-file` keeps it from loading `./multi64d.toml` or
+/// `%APPDATA%\multi64d\config.toml`, and it runs in its own directory rather than Multi64's. Before,
+/// a developer's `MULTI64D_ALLOW_ORIGIN` or `allow_origin` silently widened its origin guard, and a
+/// config file that did not parse made it exit at once.
+fn daemon_command(
+    daemon_path: &Path,
+    serial: &str,
+    cart: DaemonCart,
+    settings: &Settings,
+    inherited: impl IntoIterator<Item = OsString>,
+) -> Command {
+    let mut cmd = Command::new(daemon_path);
+    // Windows treats variable names without regard to case, and so does `env_remove` there.
+    for name in inherited {
+        if name
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("MULTI64D_")
+        {
+            cmd.env_remove(name);
+        }
+    }
+    if let Some(dir) = daemon_path.parent() {
+        cmd.current_dir(dir);
+    }
+    cmd.env("NO_COLOR", "1")
+        .args(daemon_args(serial, cart, settings))
+        .arg("--no-config-file")
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stdin(Stdio::null());
+    apply_multi64d_log_preset(&mut cmd, settings.multi64d_log_preset);
+    command_no_window(&mut cmd);
+    cmd
+}
+
 /// Whether `a` and `b` start `multi64d` differently. Serial port, baud, cart, listen address and
 /// log preset are command-line arguments fixed at spawn, so a running daemon keeps the old ones
 /// until it is restarted.
@@ -1477,14 +1518,13 @@ fn start_daemon_locked(
     }
 
     let daemon_path = resolve_multi64d_path(app)?;
-    let mut cmd = Command::new(&daemon_path);
-    cmd.env("NO_COLOR", "1")
-        .args(daemon_args(&serial, cart, settings))
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stdin(Stdio::null());
-    apply_multi64d_log_preset(&mut cmd, settings.multi64d_log_preset);
-    command_no_window(&mut cmd);
+    let mut cmd = daemon_command(
+        &daemon_path,
+        &serial,
+        cart,
+        settings,
+        std::env::vars_os().map(|(name, _)| name),
+    );
 
     // Probing can take seconds; an Exit clicked meanwhile must not get a daemon it then kills.
     if shutting_down() {
@@ -2382,6 +2422,69 @@ mod tests {
         assert_eq!(flag(&ed64, "--baud"), "57600");
         let pro = daemon_args("COM8", DaemonCart::Ed64Pro, &Settings::default());
         assert_eq!(flag(&pro, "--cart"), "ed64pro");
+    }
+
+    /// The daemon Multi64 starts runs on what Multi64 passes it and nothing else: a developer's
+    /// `MULTI64D_ALLOW_ORIGIN` weakened its origin guard, and a config file it found by looking
+    /// could stop it starting at all.
+    #[test]
+    fn the_daemon_inherits_no_multi64d_configuration() {
+        let dir = std::env::temp_dir().join("multi64-test-daemon-dir");
+        let exe = dir.join("multi64d.exe");
+        let inherited = [
+            "MULTI64D_ALLOW_ORIGIN",
+            "MULTI64D_CLEAR_SERIAL",
+            "MULTI64D_CONFIG",
+            "MULTI64D_SERIAL",
+            "multi64d_listen",
+            "RUST_LOG",
+            "PATH",
+            "MULTI64_THEME",
+        ]
+        .map(OsString::from);
+        let cmd = daemon_command(
+            &exe,
+            "COM4",
+            DaemonCart::Sc64,
+            &Settings::default(),
+            inherited,
+        );
+        let envs: Vec<(String, Option<String>)> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        let removed = |name: &str| envs.iter().any(|(k, v)| k == name && v.is_none());
+        for name in [
+            "MULTI64D_ALLOW_ORIGIN",
+            "MULTI64D_CLEAR_SERIAL",
+            "MULTI64D_CONFIG",
+            "MULTI64D_SERIAL",
+            "multi64d_listen",
+            "RUST_LOG",
+        ] {
+            assert!(removed(name), "{name} must not reach the daemon: {envs:?}");
+        }
+        for name in ["PATH", "MULTI64_THEME"] {
+            assert!(
+                !envs.iter().any(|(k, _)| k == name),
+                "{name} is not the daemon's: {envs:?}"
+            );
+        }
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy()).collect();
+        assert!(
+            args.iter().any(|a| a == "--no-config-file"),
+            "no config file is looked for: {args:?}"
+        );
+        assert_eq!(
+            cmd.get_current_dir(),
+            Some(dir.as_path()),
+            "not Multi64's working directory"
+        );
     }
 
     /// `auto` is a Multi64 setting, never a daemon argument; the fixed values are the daemon's.
