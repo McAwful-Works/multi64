@@ -86,7 +86,7 @@ The daemon writes directly to flash-cart hardware and binds loopback, which puts
 - A request **with** an `Origin` header is allowed only if that exact origin was configured via `--allow-origin` / `MULTI64D_ALLOW_ORIGIN` / `allow_origin` (§5). Otherwise the daemon answers `403 Forbidden` before routing, `/ws` included.
 - The allow-list is **empty by default**, and CORS response headers are emitted for allow-listed origins only.
 
-This is not authentication: any *native* process on the host can still reach the daemon, just as it could open the COM port directly.
+This is not authentication: any *native* process on the host can still reach the daemon, just as it could open the COM port directly. Bound with `--listen` to an address other than loopback, a wildcard such as `0.0.0.0` included, the daemon is reachable from other machines as well, and any of them can write to the cart and release its serial port, since a request without an `Origin` header is let in. The daemon allows this but logs a warning at startup saying so.
 
 ---
 

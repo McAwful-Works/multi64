@@ -247,6 +247,14 @@ async fn main() -> anyhow::Result<()> {
         cart = %resolved.cart,
         "multi64d started (cart reader runs always; WebSocket clients receive broadcast from cart)"
     );
+    // Allowed, since a LAN setup may want it, but never silently.
+    let bound = listener.local_addr()?;
+    if multi64d::reachable_from_other_hosts(bound) {
+        tracing::warn!(
+            listen = %bound,
+            "listening where other machines can reach it: a request without an Origin header is not authenticated, so anyone who reaches this address can write to the cart and release its serial port (docs/spec/daemon-api-v1.md 1.4)"
+        );
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }

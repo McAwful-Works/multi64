@@ -307,6 +307,14 @@ async fn origin_guard(State(state): State<Arc<AppState>>, req: Request, next: Ne
         .into_response()
 }
 
+/// Whether a daemon bound to `addr` can be reached from other machines: anything but loopback, a
+/// wildcard (`0.0.0.0`, `[::]`) included. [`origin_guard`] lets in every request without an
+/// `Origin` header, so there anyone who reaches the port can write to the cart and release it; the
+/// binary warns at startup (`docs/spec/daemon-api-v1.md` §1.4).
+pub fn reachable_from_other_hosts(addr: std::net::SocketAddr) -> bool {
+    !addr.ip().to_canonical().is_loopback()
+}
+
 /// CORS for the allow-listed origins only. With an empty list no `Access-Control-Allow-Origin`
 /// header is emitted at all, so a browser cannot read any response — matching [`origin_guard`],
 /// which rejects those requests outright.
@@ -951,6 +959,28 @@ mod tests {
             sc64.failed(CartKind::Sc64, true, t0);
         }
         assert!(sc64.may_attempt(t0));
+    }
+
+    #[test]
+    fn only_loopback_is_out_of_reach_of_other_hosts() {
+        for loopback in [
+            "127.0.0.1:38765",
+            "127.8.9.10:1",
+            "[::1]:38765",
+            "[::ffff:127.0.0.1]:1",
+        ] {
+            let addr = loopback.parse().unwrap();
+            assert!(!reachable_from_other_hosts(addr), "{loopback}");
+        }
+        for reachable in [
+            "0.0.0.0:38765",
+            "[::]:38765",
+            "192.168.1.20:38765",
+            "[fe80::1]:1",
+        ] {
+            let addr = reachable.parse().unwrap();
+            assert!(reachable_from_other_hosts(addr), "{reachable}");
+        }
     }
 
     #[test]

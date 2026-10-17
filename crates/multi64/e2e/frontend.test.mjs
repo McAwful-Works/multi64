@@ -310,6 +310,42 @@ async function openSettings(p) {
   await p.close();
 }
 
+// --- Settings: a Listen address other PCs can reach ----------------------------
+{
+  // The bridge has no password, and a request without an Origin header is always let in, so an
+  // address on the network gives anyone there the cart. Warned about, not refused.
+  const p = await openScenario({ settings: { listen: "0.0.0.0:38765" } });
+  await openSettings(p);
+  const hint = () => p.evaluate(() => {
+    const h = document.getElementById("listen-hint");
+    return h ? { hidden: h.hidden, warning: h.classList.contains("hint-warning"), text: h.textContent } : null;
+  });
+  const saved = await hint();
+  check("a saved Listen address other PCs can reach is warned about when Settings opens",
+    saved && !saved.hidden && saved.warning && saved.text.includes("network"), JSON.stringify(saved));
+  const typed = async (value) => {
+    await p.fill("#listen", value);
+    return hint();
+  };
+  const results = {};
+  for (const v of ["127.0.0.1:38765", "localhost:38765", "[::1]:38765", "http://127.0.0.2:9000/", "", "not an address"]) {
+    results[v] = await typed(v);
+  }
+  check("and no warning for loopback, or for text Save would refuse anyway",
+    Object.values(results).every((h) => h && h.hidden), JSON.stringify(results));
+  const lan = {};
+  for (const v of ["192.168.1.20:38765", "[::]:38765", "my-pc:38765", "http://10.0.0.5:38765"]) {
+    lan[v] = await typed(v);
+  }
+  check("and a warning as soon as such an address is typed",
+    Object.values(lan).every((h) => h && !h.hidden && h.warning), JSON.stringify(lan));
+  await p.click("#btn-save");
+  const closed = await until(p, () => document.getElementById("settings-panel").hidden);
+  const sent = (await callsOf(p, "set_settings")).at(-1)?.args.settings.listen;
+  check("and Save still saves it", closed && sent === "http://10.0.0.5:38765", JSON.stringify({ closed, sent }));
+  await p.close();
+}
+
 // --- Save: a restart that fails ------------------------------------------------
 {
   // The settings are saved and the dialog closes, but the restart's failure used to be only in the
