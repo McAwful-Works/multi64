@@ -1612,6 +1612,18 @@ fn apply_settings(app: &AppHandle, state: &AppState, settings: Settings) -> Resu
         *saved = settings.clone();
         start_in_progress()
     };
+    // The icon follows the setting now rather than at the next launch. The settings are saved
+    // whatever happens here, so a failure is logged rather than reported as a failed Save; without
+    // an icon, closing the window exits rather than hiding it (`hides_to_tray`).
+    if settings.tray_enabled != app.tray_by_id(TRAY_ID).is_some() {
+        if let Err(e) = apply_tray_setting(app, settings.tray_enabled) {
+            tracing_warn(&format!("could not create the tray icon: {e}"));
+            push_log(
+                &state.daemon,
+                format!("Could not create the tray icon: {e}"),
+            );
+        }
+    }
     // A running daemon keeps the spawn arguments it was started with. Saving used to appear to
     // apply them while the bridge quietly stayed on the previous port.
     if spawn_args_differ(&settings, &prev) && !start_running && daemon_is_running(&state.daemon) {
@@ -2073,9 +2085,119 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )
 }
 
+/// The notification-area icon's id. There is only ever this one.
+const TRAY_ID: &str = "tray";
+
+/// Whether closing the window hides it rather than exiting. Only with an icon there to bring it
+/// back: the setting is read live, and the icon used to be created at launch only, so turning
+/// the tray on and saving, then closing, hid the window with no icon and no way to reach it.
+fn hides_to_tray(settings: &Settings, tray_exists: bool) -> bool {
+    tray_exists && settings.tray_enabled && settings.minimize_to_tray_on_close
+}
+
+/// Create the notification-area icon if there is none. Callable from any thread: Tauri builds it
+/// on the main thread and waits.
+fn install_tray(app: &AppHandle) -> Result<(), String> {
+    if app.tray_by_id(TRAY_ID).is_some() {
+        return Ok(());
+    }
+    let menu = build_tray_menu(app).map_err(|e| format!("tray menu: {e}"))?;
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or("missing default window icon")?;
+    TrayIconBuilder::with_id(TRAY_ID)
+        .icon(icon)
+        .menu(&menu)
+        // Right-click opens the menu; left-click is left free so double-click can raise the
+        // window. With the menu on left-click the first click of a double-click pops the menu,
+        // which makes the gesture unusable.
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        // Menu clicks reach `handle_tray_menu_event`, registered once in `run`.
+        .build(app)
+        .map(drop)
+        .map_err(|e| format!("tray icon: {e}"))
+}
+
+/// Remove the notification-area icon, if there is one. The icon goes when its last handle is
+/// dropped, which has to happen on the main thread, where it was made.
+fn remove_tray(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || drop(handle.remove_tray_by_id(TRAY_ID)));
+}
+
+/// Make the icon match Settings → "Use notification area" after a Save.
+fn apply_tray_setting(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled {
+        install_tray(app)
+    } else {
+        remove_tray(app);
+        Ok(())
+    }
+}
+
+/// A click on one of the tray menu's items.
+fn handle_tray_menu_event(app: &AppHandle, id: &str) {
+    match id {
+        // Off the event loop (#147): `kill_daemon` waits on DAEMON_OPS, which a start holds for
+        // its whole Auto-detect probe. The flag makes that start stop probing at its next read,
+        // without spawning.
+        "quit" => {
+            begin_shutdown();
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Some(s) = app.try_state::<AppState>() {
+                    kill_daemon(&s.daemon);
+                }
+                app.exit(0);
+            });
+        }
+        "show" => show_main_window(app),
+        // Off the event loop: starting can probe serial ports for seconds.
+        "toggle" => {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let Some(s) = app.try_state::<AppState>() else {
+                    return;
+                };
+                if daemon_is_running(&s.daemon) {
+                    kill_daemon(&s.daemon);
+                } else if let Err(e) = start_daemon(&app, &s) {
+                    push_log(&s.daemon, format!("Start failed: {e}"));
+                }
+                let _ = app.emit("daemon-changed", ());
+            });
+        }
+        "restart" => {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let Some(s) = app.try_state::<AppState>() else {
+                    return;
+                };
+                // A start kills the running daemon first, under DAEMON_OPS.
+                if let Err(e) = start_daemon(&app, &s) {
+                    push_log(&s.daemon, format!("Restart failed: {e}"));
+                }
+                let _ = app.emit("daemon-changed", ());
+            });
+        }
+        // "status" is disabled and cannot be clicked.
+        _ => {}
+    }
+}
+
 /// Rebuild the tray menu so its labels match current state. No-op when the tray is disabled.
 fn refresh_tray_menu(app: &AppHandle) {
-    let Some(tray) = app.tray_by_id("tray") else {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
     match build_tray_menu(app) {
@@ -2103,11 +2225,9 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // A second launch raises this window, unminimizing it too, as the tray's Show window does.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
+            show_main_window(app);
         }))
         .manage(state)
         .invoke_handler(tauri::generate_handler![
@@ -2125,87 +2245,24 @@ pub fn run() {
             let handle = app.handle().clone();
             let st: tauri::State<'_, AppState> = app.state();
 
+            // Once for the app's life, not per icon: a handler given to `TrayIconBuilder` is added
+            // to the app-wide list and stays there when the icon is removed, so an icon created
+            // again by Save would have run every tray command twice.
+            app.on_menu_event(|app, event| handle_tray_menu_event(app, event.id.as_ref()));
+            // The window emits `daemon-changed` too, so the tray tracks state regardless of
+            // which one started or stopped the daemon. A no-op while there is no icon.
+            let tray_handle = handle.clone();
+            handle.listen("daemon-changed", move |_| {
+                refresh_tray_menu(&tray_handle);
+            });
+
             // Read the flag into a local and drop the guard before the block: `build_tray_menu`
             // locks `settings` itself, and `parking_lot::Mutex` is not reentrant. Rust drops an
             // `if` condition's temporaries before the block, so holding it here would be fine
             // today -- but changing this to `if let`/`match` later would deadlock at startup.
             let tray_enabled = { st.settings.lock().tray_enabled };
             if tray_enabled {
-                let menu = build_tray_menu(&handle)?;
-                let icon = app
-                    .default_window_icon()
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("missing default window icon"))?;
-                let _tray = TrayIconBuilder::with_id("tray")
-                    .icon(icon)
-                    .menu(&menu)
-                    // Right-click opens the menu; left-click is left free so double-click can
-                    // raise the window. With the menu on left-click the first click of a
-                    // double-click pops the menu, which makes the gesture unusable.
-                    .show_menu_on_left_click(false)
-                    .on_tray_icon_event(|tray, event| {
-                        if let TrayIconEvent::DoubleClick {
-                            button: MouseButton::Left,
-                            ..
-                        } = event
-                        {
-                            show_main_window(tray.app_handle());
-                        }
-                    })
-                    .on_menu_event(move |app, event| match event.id.as_ref() {
-                        // Off the event loop (#147): `kill_daemon` waits on DAEMON_OPS, which a
-                        // start holds for its whole Auto-detect probe. The flag makes that start
-                        // stop probing at its next read, without spawning.
-                        "quit" => {
-                            begin_shutdown();
-                            let app = app.clone();
-                            tauri::async_runtime::spawn_blocking(move || {
-                                if let Some(s) = app.try_state::<AppState>() {
-                                    kill_daemon(&s.daemon);
-                                }
-                                app.exit(0);
-                            });
-                        }
-                        "show" => show_main_window(app),
-                        // Off the event loop: starting can probe serial ports for seconds.
-                        "toggle" => {
-                            let app = app.clone();
-                            tauri::async_runtime::spawn_blocking(move || {
-                                let Some(s) = app.try_state::<AppState>() else {
-                                    return;
-                                };
-                                if daemon_is_running(&s.daemon) {
-                                    kill_daemon(&s.daemon);
-                                } else if let Err(e) = start_daemon(&app, &s) {
-                                    push_log(&s.daemon, format!("Start failed: {e}"));
-                                }
-                                let _ = app.emit("daemon-changed", ());
-                            });
-                        }
-                        "restart" => {
-                            let app = app.clone();
-                            tauri::async_runtime::spawn_blocking(move || {
-                                let Some(s) = app.try_state::<AppState>() else {
-                                    return;
-                                };
-                                // A start kills the running daemon first, under DAEMON_OPS.
-                                if let Err(e) = start_daemon(&app, &s) {
-                                    push_log(&s.daemon, format!("Restart failed: {e}"));
-                                }
-                                let _ = app.emit("daemon-changed", ());
-                            });
-                        }
-                        // "status" is disabled and cannot be clicked.
-                        _ => {}
-                    })
-                    .build(app)?;
-
-                // The window emits `daemon-changed` too, so the tray tracks state regardless of
-                // which one started or stopped the daemon.
-                let tray_handle = handle.clone();
-                handle.listen("daemon-changed", move |_| {
-                    refresh_tray_menu(&tray_handle);
-                });
+                install_tray(&handle).map_err(|e| anyhow::anyhow!(e))?;
             }
 
             // Default: main window opens normally. Only hide on launch when the user opted in
@@ -2238,9 +2295,10 @@ pub fn run() {
                 return;
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let tray_exists = window.app_handle().tray_by_id(TRAY_ID).is_some();
                 if let Some(state) = window.try_state::<AppState>() {
                     let settings = state.settings.lock();
-                    if settings.tray_enabled && settings.minimize_to_tray_on_close {
+                    if hides_to_tray(&settings, tray_exists) {
                         api.prevent_close();
                         drop(settings);
                         let _ = window.hide();
@@ -2362,6 +2420,32 @@ mod tests {
             running_cart_label(DaemonCart::Ed64Pro, "COM6"),
             "EverDrive-64 PRO (beta) on COM6"
         );
+    }
+
+    /// Turning the tray on while running and closing the window hid it with no icon to bring it
+    /// back, because the icon was only ever created at launch. Close hides only with an icon there.
+    #[test]
+    fn close_hides_to_tray_only_when_the_icon_exists() {
+        let on = Settings::default();
+        assert!(on.tray_enabled && on.minimize_to_tray_on_close);
+        assert!(hides_to_tray(&on, true));
+        assert!(
+            !hides_to_tray(&on, false),
+            "no icon to come back from, so close must exit"
+        );
+        let off = Settings {
+            tray_enabled: false,
+            ..Settings::default()
+        };
+        assert!(
+            !hides_to_tray(&off, true),
+            "a stale icon is no reason to hide"
+        );
+        let exits = Settings {
+            minimize_to_tray_on_close: false,
+            ..Settings::default()
+        };
+        assert!(!hides_to_tray(&exits, true));
     }
 
     /// start_minimized is meaningless without a tray to restore from.
