@@ -20,7 +20,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::m64p;
-use crate::transport::Multi64Transport;
+use crate::transport::{self, Multi64Transport};
 use crate::watch::{Watch, WatchStats};
 use crate::Log;
 
@@ -251,8 +251,9 @@ fn soft_retries_for(budget: Duration) -> u32 {
 
 /// Cached ROM is kept in pages of this size, fetched several to a request.
 const ROM_PAGE: u32 = 1024;
-/// Tries at a `PEEKROM` the cart answered `E_BUSY` (the game held the PI bus).
-const ROM_BUSY_TRIES: u32 = 5;
+/// How long to give a game holding the PI bus before asking again, when the agent answered
+/// `E_BUSY`: a frame or so.
+const BUSY_WAIT: Duration = Duration::from_millis(20);
 
 /// After a stall is logged, how long later ones are counted instead of logged one by one.
 ///
@@ -385,6 +386,8 @@ pub struct Multi64 {
     soft_retries: u32,
     /// Whether the last request had to be retried, so recovery is reported once.
     ailing: bool,
+    /// Idle probes ([`Multi64::alive`]) missed in a row since the cart last answered.
+    quiet_probes: u32,
     /// Stalls being counted rather than logged ([`STALL_RUN`]).
     stall_log: StallLog,
     /// The link generation the watch was last set up for, so a cart that restarted is
@@ -412,6 +415,7 @@ impl Multi64 {
             reconnect_deadline: RECONNECT_DEADLINE,
             soft_retries: SOFT_RETRIES,
             ailing: false,
+            quiet_probes: 0,
             stall_log: StallLog::default(),
         })
     }
@@ -480,7 +484,12 @@ impl Multi64 {
         }
     }
 
-    /// Run `op`, riding out a silent agent, then rebuilding the transport with backoff.
+    /// Run `op`, riding out a silent or busy agent, then rebuilding the transport with backoff.
+    ///
+    /// An agent that answers `ERR` is neither: it is there, and has said no. That goes straight
+    /// back to the caller, from the same transport, since a copy on any link gets the same
+    /// answer. `E_BUSY` is asked again on the same transport after a frame or so, for as long as
+    /// the soft retries would wait out a silence.
     ///
     /// `op` is called again after each timeout, and with [`Retry::Resend`] once more on every
     /// rebuilt transport, which suits a request that may safely be served twice: `PEEKV`,
@@ -493,50 +502,49 @@ impl Multi64 {
         retry: Retry,
         mut op: impl FnMut(&mut Multi64Transport) -> io::Result<T>,
     ) -> io::Result<T> {
-        let health = self.health.clone();
         self.flush_stalls(false);
         let started = Instant::now();
-        let mut last = match op(&mut self.t) {
-            Ok(v) => {
-                if self.ailing {
-                    self.ailing = false;
-                    if let Some(h) = &health {
-                        h(true);
-                    }
-                }
-                return Ok(v);
-            }
-            Err(e) => e,
-        };
+        // A busy agent is asked again for as long as a silent one would be waited out.
+        let busy_until = started + transport::REPLY_TIMEOUT * (self.soft_retries + 1);
+        let mut timeouts = 0;
 
-        // Silence first, on the same transport. A late reply to a read we gave up on is
-        // discarded by rid, so asking again is safe; a write goes again under its own rid to an
-        // agent that recognizes the copy, and otherwise waits again for its own reply.
-        for attempt in 1..=self.soft_retries {
-            if last.kind() != io::ErrorKind::TimedOut {
-                break;
+        // On the same transport first. A late reply to a read we gave up on is discarded by rid,
+        // so asking again is safe; a write goes again under its own rid to an agent that
+        // recognizes the copy, and otherwise waits again for its own reply.
+        let mut last = loop {
+            let e = match op(&mut self.t) {
+                Ok(v) => {
+                    if timeouts > 0 {
+                        self.note_stall(what, started.elapsed(), timeouts + 1);
+                    }
+                    self.answering();
+                    return Ok(v);
+                }
+                Err(e) => e,
+            };
+            if transport::refused(&e).is_some() {
+                // The agent is there and has said no. A copy, here or on a new link, gets the
+                // same answer, and a reconnect would cost everything one costs for nothing.
+                self.answering();
+                return Err(e);
             }
-            // Each of these costs a whole reply timeout, and they run before the reconnect
+            match e.kind() {
+                // The game held the PI bus past the agent's bound (`E_BUSY`): it is streaming
+                // from ROM. Give it a frame or two.
+                io::ErrorKind::WouldBlock if Instant::now() < busy_until => {
+                    wait_unless(BUSY_WAIT, &|| self.give_up());
+                }
+                io::ErrorKind::TimedOut if timeouts < self.soft_retries => timeouts += 1,
+                _ => break e,
+            }
+            // Each retry can cost a whole reply timeout, and they run before the reconnect
             // loop below is ever reached -- so without this, a stop asked for while the
             // cart was silent could not be felt for several seconds, which is precisely
             // when someone is most likely to ask for one.
             if self.give_up() {
                 return Err(cancelled_err(what, &self.url));
             }
-            match op(&mut self.t) {
-                Ok(v) => {
-                    self.note_stall(what, started.elapsed(), attempt + 1);
-                    if self.ailing {
-                        self.ailing = false;
-                        if let Some(h) = &health {
-                            h(true);
-                        }
-                    }
-                    return Ok(v);
-                }
-                Err(e) => last = e,
-            }
-        }
+        };
 
         self.flush_stalls(true);
         (self.log)(format!(
@@ -547,12 +555,7 @@ impl Multi64 {
         let down = Instant::now();
         // Past the soft retries: whatever the caller asked for, the cart is not answering, and
         // from here this call may not return for minutes.
-        if !self.ailing {
-            self.ailing = true;
-            if let Some(h) = &health {
-                h(false);
-            }
-        }
+        self.not_answering();
         let deadline = Instant::now() + self.reconnect_deadline;
         let mut wait = Duration::from_millis(250);
         loop {
@@ -594,10 +597,7 @@ impl Multi64 {
                     if retry == Retry::Once {
                         // The cart is back, but what was asked of it was decided against the
                         // console before the restart, which may since have been reset.
-                        self.ailing = false;
-                        if let Some(h) = &health {
-                            h(true);
-                        }
+                        self.answering();
                         return Err(link_restarted_error(format!(
                             "cart {what}: the link to the cart restarted before it was \
                              acknowledged, so it was not sent again (it may or may not have \
@@ -606,16 +606,38 @@ impl Multi64 {
                     }
                     match op(&mut self.t) {
                         Ok(v) => {
-                            self.ailing = false;
-                            if let Some(h) = &health {
-                                h(true);
-                            }
+                            self.answering();
                             return Ok(v);
+                        }
+                        Err(e) if transport::refused(&e).is_some() => {
+                            self.answering();
+                            return Err(e);
                         }
                         Err(e) => last = e,
                     }
                 }
                 Err(e) => last = e,
+            }
+        }
+    }
+
+    /// The cart answered: say so if it was last said not to be.
+    fn answering(&mut self) {
+        self.quiet_probes = 0;
+        if self.ailing {
+            self.ailing = false;
+            if let Some(h) = &self.health {
+                h(true);
+            }
+        }
+    }
+
+    /// The cart has stopped answering: say so if it was last said to be.
+    fn not_answering(&mut self) {
+        if !self.ailing {
+            self.ailing = true;
+            if let Some(h) = &self.health {
+                h(false);
             }
         }
     }
@@ -628,11 +650,23 @@ impl Multi64 {
     /// caller asking "is the ROM still there" wants an answer in one round trip, and the retry
     /// machinery exists for requests that must not be lost -- this one may be lost freely, and
     /// asked again in a moment.
+    ///
+    /// Reported through the [`Health`] callback, as a request is: a session with nothing to ask
+    /// sends only these, and would otherwise go on reporting whatever was true when its last
+    /// request was answered. One miss is a scene load as often as anything, so the console is
+    /// said to have stopped answering only after as many misses in a row as a request spends
+    /// reply timeouts before it reconnects (its first try and its retries).
     pub fn alive(&mut self) -> bool {
         let probe = [m64p::Region { addr: 0, len: 4 }];
         let ok = self.t.peek(&probe).is_ok();
         if ok {
             self.collect_events();
+            self.answering();
+        } else {
+            self.quiet_probes += 1;
+            if self.quiet_probes > self.soft_retries {
+                self.not_answering();
+            }
         }
         ok
     }
@@ -662,9 +696,19 @@ impl Multi64 {
             at,
             values,
         };
-        let watching = self.with_retry("watch", Retry::Resend, |t| {
+        let watching = match self.with_retry("watch", Retry::Resend, |t| {
             t.watch(std::slice::from_ref(&slot))
-        })?;
+        }) {
+            Ok(n) => n,
+            Err(e) => {
+                if transport::refused(&e).is_some() {
+                    // It will say the same next time: sampled from here on this link, rather
+                    // than asked again on every read.
+                    self.watch_armed_at = Some(self.generation);
+                }
+                return Err(e);
+            }
+        };
         self.watch_on_cart = watching > 0;
         self.watch_armed_at = Some(self.generation);
         if self.watch_on_cart {
@@ -694,11 +738,11 @@ impl Multi64 {
     /// One `POKEV`, applied at most once ([`Retry::Once`]).
     ///
     /// A timeout is retried on the same link under the same rid. An agent that recognizes a
-    /// repeated write (`HELLO_ACK` bit 3, spec 4.4), over a SummerCart64, is sent the write again: if the first copy
-    /// never reached it, this one is applied, and if it did, this one is acknowledged and
-    /// nothing is written twice. Any other agent is only waited on again for the first copy's
-    /// reply, since a copy would be a second write. Either way the write never reaches a
-    /// rebuilt link.
+    /// repeated write (`HELLO_ACK` bit 3, spec 4.4), over a SummerCart64, is sent the write
+    /// again: if the first copy never reached it, this one is applied, and if it did, this one is
+    /// acknowledged and nothing is written twice. Any other agent is only waited on again for the
+    /// first copy's reply, since a copy would be a second write. Either way the write never
+    /// reaches a rebuilt link.
     fn poke_once(&mut self, batch: &[(u32, &[u8])]) -> io::Result<()> {
         if batch.is_empty() {
             return Ok(());
@@ -732,20 +776,8 @@ impl Multi64 {
             .collect();
         for batch in batches(&missing) {
             self.stats.regions += batch.len() as u64;
-            let mut tries = 0;
-            let got = loop {
-                match self.with_retry("ROM read", Retry::Resend, |t| t.peek_rom(&batch)) {
-                    Err(e)
-                        if e.kind() == io::ErrorKind::WouldBlock && tries + 1 < ROM_BUSY_TRIES =>
-                    {
-                        // The game held the PI bus past the agent's bound: it is streaming
-                        // from ROM. Give it a frame or two.
-                        tries += 1;
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    other => break other?,
-                }
-            };
+            // A bus the game holds (`E_BUSY`) is waited out in with_retry, on the same link.
+            let got = self.with_retry("ROM read", Retry::Resend, |t| t.peek_rom(&batch))?;
             for (region, bytes) in batch.iter().zip(got) {
                 self.rom_pages.insert(region.addr / ROM_PAGE, bytes);
             }
@@ -1009,9 +1041,9 @@ enum Retry {
     /// So on the same link, a write that times out is sent again only to an agent that
     /// acknowledges the copy without applying it (`HELLO_ACK` bit 3, spec 4.4), under the same
     /// rid, and only over a link that brings each request whole (a SummerCart64's: over an
-    /// EverDrive a copy could complete a request a lost piece cut short); every other agent, which is every ROM patched before agents could, is only waited on
-    /// again for its own reply, which is what a late agent sends, and a write it never received
-    /// fails. Once the link has been rebuilt the write is not sent at all, whatever the agent:
+    /// EverDrive a copy could complete a request a lost piece cut short); every other agent,
+    /// which is every ROM patched before agents could, is only waited on again for its own reply,
+    /// which is what a late agent sends, and a write it never received fails. Once the link has been rebuilt the write is not sent at all, whatever the agent:
     /// the console may have been reset in between, and the write was decided against the one
     /// before. The caller is told with [`link_restarted`].
     Once,

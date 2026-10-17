@@ -85,11 +85,8 @@ pub fn apworld_version(apworld: &[u8]) -> Option<String> {
     json.get("world_version")?.as_str().map(str::to_string)
 }
 
-/// Archipelago's own version, from the `manifest.json` its installer writes (`[0, 6, 7]`).
-pub fn archipelago_version() -> Option<String> {
-    archipelago_version_in(&roots())
-}
-
+/// Archipelago's own version, from the `manifest.json` its installer writes (`[0, 6, 7]`), in the
+/// first of `roots` that has one.
 fn archipelago_version_in(roots: &[PathBuf]) -> Option<String> {
     roots.iter().find_map(|r| {
         let text = std::fs::read_to_string(r.join("manifest.json")).ok()?;

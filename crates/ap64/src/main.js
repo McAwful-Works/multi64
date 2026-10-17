@@ -19,7 +19,8 @@ function show(el, on) {
 /*
  * Dialogs.
  *
- * Only one is ever open, so there is no stacking to reason about: the page tracks which, keeps
+ * Only one is ever open (opening one closes any other), so there is no stacking to reason
+ * about: the page tracks which, keeps
  * Tab inside it, closes it on Esc, and gives focus back to whatever opened it. `dialog-open` on
  * html and body is what stops the page behind from scrolling (styles.css).
  */
@@ -90,6 +91,10 @@ const focusableIn = (root) =>
   );
 
 function openDialog(name) {
+  // Something can ask for a dialog while another is up (a seed dropped over the first-run
+  // window), and one dialog on top of another left the one below with nothing to close it.
+  // The new one takes its place, as closing the old one first would.
+  if (openDialogName && openDialogName !== name) closeDialog();
   const d = DIALOGS[name];
   // Measured after it is on screen, below.
   dialogReturnFocus = document.activeElement;
@@ -730,7 +735,7 @@ function renderPlay() {
   $("play-connector").textContent = game ? game.connector : "—";
   // A pending client hint is dropped by choosing another game, which changes what they say.
   renderLinks(lastStatus);
-  $("btn-play-start").disabled = playRunning || !game;
+  $("btn-play-start").disabled = playRunning || playStarting || !game;
   $("btn-play-stop").disabled = !playRunning;
   $("play-game-select").disabled = playRunning;
   $("play-url").disabled = playRunning;
@@ -802,13 +807,30 @@ const sentence = (text) => (text && !/[.!?]$/.test(text) ? `${text}.` : text || 
  */
 let clientHint = "";
 
+/**
+ * True from a press of Start until it has been answered. Start is otherwise enabled only by a
+ * status saying no session runs, and none says so until the backend has started one, so a second
+ * press in between asked for a second session and was told one was already running.
+ */
+let playStarting = false;
+
+function setStarting(on) {
+  playStarting = on;
+  renderPlay();
+}
+
 async function beginSession() {
   const url = $("play-url").value.trim();
   saveUrl(url);
+  setStarting(true);
   try {
+    // The backend says a session is running before it answers this, so Start stays held
+    // until the status that says so.
     await invoke("play_start", { game: $("play-game-select").value, url });
   } catch (e) {
     setError($("play-error"), String(e));
+  } finally {
+    setStarting(false);
   }
 }
 
@@ -818,14 +840,20 @@ async function beginSession() {
  * that is not installed stops here and says so. Every other game answers null and just starts.
  */
 async function startPlay() {
+  if (playStarting) return;
   setError($("play-error"), "");
   const game = selectedGame();
   if (!game) return;
   let setup = null;
+  setStarting(true);
   try {
     setup = await invoke("play_client_setup", { game: game.id });
   } catch {
     setup = null;
+  } finally {
+    // Nothing awaits between here and beginSession taking the flag again, so no press lands in
+    // between; a dialog opened instead holds the page itself.
+    setStarting(false);
   }
   if (setup?.state === "missing") {
     setError($("play-error"), sentence(setup.message));

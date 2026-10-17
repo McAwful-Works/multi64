@@ -308,17 +308,12 @@ pub fn parse(app: &[u8]) -> Result<Response, Error> {
             };
             // Appended fields come in bit order, each present only if its bit is set, so
             // watch_slots sits after rom_bytes when there is one and after flags when not.
-            let mut off = if rom_bytes.is_some() { 12 } else { 8 };
+            let off = if rom_bytes.is_some() { 12 } else { 8 };
             let watch_slots = if flags & FLAG_WATCH != 0 {
-                if b.len() < off + 1 {
-                    return Err(Error::Truncated);
-                }
-                off += 1;
-                Some(b[off - 1])
+                Some(*b.get(off).ok_or(Error::Truncated)?)
             } else {
                 None
             };
-            let _ = off;
             Ok(Response::HelloAck {
                 proto: b[0],
                 agent_ver: be16(1),

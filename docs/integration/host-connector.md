@@ -86,6 +86,14 @@ M64P makes each request atomic against the running game
 ([spec §4.1](../spec/memory-l3-application-v0.md#41-consistency)); the stand-in has to make each
 *batch* one request.
 
+The reads and the writes are still two requests, though, and the agent serves one a frame, so at
+least a frame passes between the guard's snapshot and its write (seconds, if the write has to wait
+out a stall). A guard on something only the client fills and only the game empties, such as a
+mailbox or a received-count, still holds across that gap: the game can only move it the way the
+guard already allows for. A guard on other game state, such as the scene or a mode flag, can pass
+on the snapshot and be false by the time the write lands. M64P has no conditional write, so such a
+guard narrows the window rather than closing it.
+
 Clients also write a structure field by field: GoldenEye 007's rewrites Bond's whole inventory as
 five 4-byte regions a slot, far past one request's 32 regions. Sent as several requests, those
 writes land over several frames, and the game runs on a half-written structure; with a big enough
@@ -138,6 +146,10 @@ console resets, and the game stops calling the agent during loads. Each needed i
 |---|---|
 | Transport drops (daemon restart, setting change, USB hiccup) | Rebuild the transport and retry reads, which are safe to repeat. Do not resend a `POKEV` on the new transport, even to an agent that recognizes a copy: its `HELLO` ends what the agent remembers, and the console may have been reset in between, so the write was decided against the one before. Fail it and let the caller read again. Give up only after minutes, loudly |
 | Game stops calling the agent for longer than the reply timeout (loads) | Retry on the **same** transport before declaring it dead, and discard a late reply by its `rid`. Count these separately as stalls; reconnecting here also knocked the client off. A `POKEV` the host gave up on is still served when the game reaches its hook, and a copy lands on the frame after. Writing the same bytes twice is not harmless, since a mailbox the game emptied between the two is filled again. So send a `POKEV` again only to an agent whose `HELLO_ACK` sets `flags` bit `3`, over a link that brings each request whole (a SummerCart64's; over an EverDrive a copy can be joined to a request a lost piece cut short, [cart-agent.md §2.2](cart-agent.md#22-a-write-sent-again)), under the same `rid` and before any other request; that agent acknowledges a copy of the write it served last without applying it ([spec §4.4](../spec/memory-l3-application-v0.md#44-repeated-writes-flags-bit-3)), so a write it never received lands and one it did is not repeated. Any other agent, including every one built before bit `3` existed, is waited on again for the first copy's reply and never sent the write twice, so a write it never received fails |
+| Agent answers `ERR` | It is there and serving, so this is not a dead link. `E_BUSY` from `PEEKROM` means the game held the PI bus: wait a frame and ask again on the same transport, for as long as a silence would be waited out. Any other code is the answer to that request, and a copy, here or on a new transport, gets the same one: fail the request. Reconnecting for either costs a `HELLO`, and the client with it, and changes nothing |
+| A reply arrives too late for its request | Discard it by its `rid`, but keep its watch trailer first ([spec §4.3](../spec/memory-l3-application-v0.md#43-watched-slots-watch)): the agent hands each event out once, on whichever response goes next, and one thrown away with its response is lost. The same goes for a response rejected for holding the wrong regions |
+| Late replies reach a transport just rebuilt | multi64d gives every WebSocket client the whole stream from the cart, so the new transport hears the old one's late replies before its own `HELLO_ACK`. Wait for the `HELLO_ACK` itself |
+| The reply timeout | Make it a deadline on the whole wait, each socket read waiting only for what is left of it. A read given the whole timeout each time can come back a moment early (Windows rounds socket timeouts to its timer tick), find the deadline not quite passed, and wait the whole timeout again, so one attempt took twice as long and the retries outlasted the client's own deadline |
 | Console reset | The agent is back as soon as the game reaches its hook; the stand-in only has to keep retrying and resync its stream decoder |
 | Client abandons its socket without draining it | Put a deadline on every send. An unbounded write once blocked the only thread; the client still reported "connected", because the kernel completes a handshake nobody accepts |
 | Connector exits after one missed `accept()` | Supervise it and restart it, but only on a clean return — a raised error must still propagate |

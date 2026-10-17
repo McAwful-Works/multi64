@@ -406,15 +406,6 @@ body {
    Play card.
    --------------------------------------------------------------------------- */
 
-.row.nowrap {
-  flex-wrap: nowrap;
-}
-
-.row.nowrap .input {
-  flex: 1;
-  min-width: 0;
-}
-
 #play-status[data-state="playing"] {
   color: var(--success-text);
 }

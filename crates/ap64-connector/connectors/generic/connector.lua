@@ -55,7 +55,10 @@ What changed, and why:
   cart merges them into contiguous runs, so a batch that fits one request (32
   regions, 7,936 bytes) lands within one game frame, as it would under BizHawk:
   GoldenEye's client rewrites Bond's whole inventory pool field by field, and
-  applied over several frames the game ran with half of it written.
+  applied over several frames the game ran with half of it written. The snapshot
+  and the writes are still two requests, a frame or more apart: a GUARD on a
+  mailbox or a count holds across that, one on other game state may not
+  (docs/integration/host-connector.md section 4).
 
 * LOCK. A console cannot be paused. LOCK and UNLOCK are acknowledged; each batch
   still sees its own snapshot.

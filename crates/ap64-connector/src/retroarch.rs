@@ -121,8 +121,10 @@ enum Note {
     /// one and was answered this fast. It opens a new socket each time it reconnects, so this
     /// says whether the request it gave up on ever reached AP64, and how its answer went.
     Reopened(Duration, Option<(String, Duration)>),
-    /// The link to the cart restarted, and this many queued writes were dropped with the
-    /// windows they were made against.
+    /// The link to the cart restarted, and this many writes made against the old link were
+    /// dropped with the windows they were made against: those still queued, and those already
+    /// taken from the queue to be put on the cart (of a batch too big for one request, some may
+    /// have landed before the restart).
     Restarted(usize),
 }
 
@@ -289,7 +291,8 @@ impl Snapshot {
                     gap.as_secs_f32()
                 )),
                 Note::Restarted(dropped) => Event::Note(format!(
-                    "the cart link restarted, so the console may have been reset: reading every                      window the client uses again{}",
+                    "the cart link restarted, so the console may have been reset: reading every \
+                     window the client uses again{}",
                     match dropped {
                         0 => String::new(),
                         1 => ", and dropping 1 write it made before".into(),
@@ -345,13 +348,25 @@ impl Snapshot {
             let writes: Vec<Write> = s.writes.drain(..).collect();
             (writes, s.generation.unwrap_or_default())
         };
-        match apply(cart, &writes, bitwise, read_on) {
-            Ok(()) => {}
-            // The cart is back, on a new link: what that means for the snapshot is below.
-            Err(e) if link_restarted(&e) => {}
+        // Writes that had left the queue when the link restarted under them, for the log: the
+        // queue alone said none were dropped.
+        let unsent = match apply(cart, &writes, bitwise, read_on) {
+            // Back on the link they were made against only if nothing was dropped: a restart
+            // under apply's own read leaves them all unwritten.
+            Ok(()) if cart.generation() == read_on => 0,
+            Ok(()) => writes.len(),
+            // The cart is back, on a new link: what that means for the snapshot is below. Some
+            // of a batch too big for one request may have landed before it.
+            Err(e) if link_restarted(&e) => writes.len(),
             Err(e) => return Err(e),
+        };
+        {
+            let mut s = lock.lock().unwrap();
+            follow(&mut s, cart.generation());
+            if let Some(Note::Restarted(dropped)) = s.notes.last_mut() {
+                *dropped += unsent;
+            }
         }
-        follow(&mut lock.lock().unwrap(), cart.generation());
         let rest: Vec<u32> = {
             let s = lock.lock().unwrap();
             s.windows
@@ -896,6 +911,33 @@ mod tests {
         assert_eq!(
             snap.handle("READ_CORE_MEMORY A0002000 4", None),
             "READ_CORE_MEMORY A0002000 09 09 09 09"
+        );
+    }
+
+    /// The link restarts under the read of the live bytes a bitwise write is merged into. The
+    /// write is not put on the new boot, and the log counts it among the writes dropped: it had
+    /// already left the queue, so counting the queue said none were.
+    #[test]
+    fn a_write_dropped_under_its_own_read_is_counted() {
+        let mut cart = Restarting {
+            ram: ram(),
+            generation: 0,
+            under_read: None,
+        };
+        let snap = primed(&mut cart, &[0x1000]);
+        snap.take_notes();
+        snap.handle("WRITE_CORE_MEMORY A0001000 00 00 00 03", None); // bit 1 on byte 0x1000
+        cart.under_read = Some(vec![9, 9, 9, 9]);
+        snap.refresh(&mut cart, &[FLAGS]).unwrap();
+        assert_eq!(
+            cart.ram.ram[0x1000], 0b0000_0001,
+            "the write reached the new boot"
+        );
+        let notes = snap.take_notes();
+        assert!(
+            notes.iter().any(|n| matches!(n, Event::Note(l)
+                if l.contains("link restarted") && l.contains("dropping 1 write"))),
+            "{notes:?}"
         );
     }
 
