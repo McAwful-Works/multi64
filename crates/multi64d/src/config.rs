@@ -1,7 +1,8 @@
 //! Optional **TOML** config file and merge with **CLI** / **environment** variables.
 //!
 //! Precedence: explicit `--config` / `MULTI64D_CONFIG`, then `./multi64d.toml`, then OS config dir
-//! (`multi64d/config.toml`). CLI flags and env vars override file values; see [`merge`] and **`docs/spec/daemon-api-v1.md`** §5.
+//! (`multi64d/config.toml`); `--no-config-file` loads none of them. CLI flags and env vars override
+//! file values; see [`merge`] and **`docs/spec/daemon-api-v1.md`** §5.
 
 use crate::CartKind;
 use anyhow::Context;

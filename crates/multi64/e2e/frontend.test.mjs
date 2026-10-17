@@ -58,6 +58,7 @@ async function serveFrontend() {
  * - `cartLinked: false`: it answers without holding the cart's serial port; `message` is the Note
  * - `starting`: the backend reports a start under way (from the tray, or auto-start)
  * - `holdStart`: `daemon_start` answers only when `window.__FINISH_START__()` is called
+ * - `restartError`: `set_settings` saves, then reports that restarting the bridge failed with it
  */
 function installTauriStub(scenario = {}) {
   const sc = scenario || {};
@@ -84,7 +85,13 @@ function installTauriStub(scenario = {}) {
 
   const handlers = {
     get_settings: () => ({ ...settings }),
-    set_settings: (a) => { settings = { ...a.settings }; return null; },
+    // `SaveOutcome`: the settings are saved; `restartError` says the bridge then failed to restart.
+    // A failed restart leaves the bridge stopped: the old daemon is stopped before the new one starts.
+    set_settings: (a) => {
+      settings = { ...a.settings };
+      if (sc.restartError) sc.running = false;
+      return { restartError: sc.restartError ?? null };
+    },
     get_serial_port_options: () => portOptions(),
     get_daemon_status: (a) => ({
       running: sc.running === true,
@@ -300,6 +307,70 @@ async function openSettings(p) {
     return !document.getElementById("discard-panel").hidden;
   });
   check("#168: none of that counts as an unsaved edit", !edits);
+  await p.close();
+}
+
+// --- Settings: a Listen address other PCs can reach ----------------------------
+{
+  // The bridge has no password, and a request without an Origin header is always let in, so an
+  // address on the network gives anyone there the cart. Warned about, not refused.
+  const p = await openScenario({ settings: { listen: "0.0.0.0:38765" } });
+  await openSettings(p);
+  const hint = () => p.evaluate(() => {
+    const h = document.getElementById("listen-hint");
+    return h ? { hidden: h.hidden, warning: h.classList.contains("hint-warning"), text: h.textContent } : null;
+  });
+  const saved = await hint();
+  check("a saved Listen address other PCs can reach is warned about when Settings opens",
+    saved && !saved.hidden && saved.warning && saved.text.includes("network"), JSON.stringify(saved));
+  const typed = async (value) => {
+    await p.fill("#listen", value);
+    return hint();
+  };
+  const results = {};
+  for (const v of ["127.0.0.1:38765", "localhost:38765", "[::1]:38765", "http://127.0.0.2:9000/", "", "not an address"]) {
+    results[v] = await typed(v);
+  }
+  check("and no warning for loopback, or for text Save would refuse anyway",
+    Object.values(results).every((h) => h && h.hidden), JSON.stringify(results));
+  const lan = {};
+  for (const v of ["192.168.1.20:38765", "[::]:38765", "my-pc:38765", "http://10.0.0.5:38765"]) {
+    lan[v] = await typed(v);
+  }
+  check("and a warning as soon as such an address is typed",
+    Object.values(lan).every((h) => h && !h.hidden && h.warning), JSON.stringify(lan));
+  await p.click("#btn-save");
+  const closed = await until(p, () => document.getElementById("settings-panel").hidden);
+  const sent = (await callsOf(p, "set_settings")).at(-1)?.args.settings.listen;
+  check("and Save still saves it", closed && sent === "http://10.0.0.5:38765", JSON.stringify({ closed, sent }));
+  await p.close();
+}
+
+// --- Save: a restart that fails ------------------------------------------------
+{
+  // The settings are saved and the dialog closes, but the restart's failure used to be only in the
+  // log, which is hidden unless Developer mode is on.
+  const why = "Something is already listening on 127.0.0.1:38765.";
+  const p = await openScenario({ running: true, runningCart: "SummerCart64 on COM3", settings: { cart: "sc64" }, restartError: why });
+  await openSettings(p);
+  await p.click("#btn-save");
+  const closed = await until(p, () => document.getElementById("settings-panel").hidden);
+  const shown = await until(p, ([w]) => {
+    const el = document.getElementById("status-error");
+    return !el.hidden && el.textContent.includes(w);
+  }, [why]);
+  const text = await p.evaluate(() => document.getElementById("status-error").textContent);
+  check("a Save whose restart fails closes Settings and says so in the window, not only the log",
+    closed && shown && text.startsWith("Settings were saved"), JSON.stringify({ closed, shown, text }));
+  await p.close();
+}
+{
+  const p = await openScenario({ settings: { cart: "sc64" } });
+  await openSettings(p);
+  await p.click("#btn-save");
+  await until(p, () => document.getElementById("settings-panel").hidden);
+  const hidden = await p.evaluate(() => document.getElementById("status-error").hidden);
+  check("and a Save that needed no restart, or whose restart worked, shows nothing", hidden);
   await p.close();
 }
 

@@ -16,4 +16,4 @@ Every route is therefore gated on the `Origin` header:
 - **An `Origin`** — allowed only if that exact origin is configured via `--allow-origin` / `MULTI64D_ALLOW_ORIGIN` / `allow_origin`. Otherwise `403 Forbidden` before routing, `/ws` included.
 - The allow-list is **empty by default**.
 
-**This is not authentication.** Any native process on the host can still reach the daemon, exactly as it could open the COM port directly. The guard addresses drive-by access from a browser, nothing more. Full detail: [`daemon-api-v1.md` §1.4](docs/spec/daemon-api-v1.md).
+**This is not authentication.** Any native process on the host can still reach the daemon, exactly as it could open the COM port directly. The guard addresses drive-by access from a browser, nothing more. Bound to anything but loopback (`0.0.0.0` included), the daemon is open in the same way to every machine that can reach it; it logs a warning at startup, and Multi64's Settings warn under **Listen**. Full detail: [`daemon-api-v1.md` §1.4](docs/spec/daemon-api-v1.md).

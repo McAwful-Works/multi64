@@ -299,7 +299,7 @@ impl Sc64SdSession {
                         Some(entry.size),
                     )
                 } else {
-                    read_file_fat_streaming(disk, &entry.path, out, &mut progress, Some(entry.size))
+                    read_file_fat_streaming(disk, &entry.path, out, &mut progress, entry.size)
                 }
             })
         }
@@ -697,7 +697,7 @@ impl Ed64SdSession {
                         Some(entry.size),
                     )
                 } else {
-                    read_file_fat_streaming(disk, &entry.path, out, &mut progress, Some(entry.size))
+                    read_file_fat_streaming(disk, &entry.path, out, &mut progress, entry.size)
                 }
             })
         }
@@ -824,7 +824,7 @@ fn copy_cart_dir_to_host_with_progress_ed64(
                         Some(e.size),
                     )
                 } else {
-                    read_file_fat_streaming(disk, &e.path, out, progress, Some(e.size))
+                    read_file_fat_streaming(disk, &e.path, out, progress, e.size)
                 }
             })?;
         }
@@ -909,8 +909,12 @@ fn write_file_fat_streaming_impl<D: Read + Write + Seek>(
 /// The temporary name a FAT32 replacement of `name` is written under before it is renamed into
 /// place: a prefix no ordinary file carries, and short enough for a 255-unit long file name.
 fn fat_replace_temp_name(name: &str) -> String {
-    const PREFIX: &str = "~multi64-replace-";
-    let room = 255 - PREFIX.len();
+    fat_temp_name("~multi64-replace-", name)
+}
+
+/// `prefix` and as much of `name` as fits a 255-unit long file name with it.
+fn fat_temp_name(prefix: &str, name: &str) -> String {
+    let room = 255 - prefix.encode_utf16().count();
     let mut units = 0;
     let kept: String = name
         .chars()
@@ -919,7 +923,7 @@ fn fat_replace_temp_name(name: &str) -> String {
             units <= room
         })
         .collect();
-    format!("{PREFIX}{kept}")
+    format!("{prefix}{kept}")
 }
 
 /// Write `len` bytes of `data` to `rel_path`, creating any missing parent directories.
@@ -1026,6 +1030,12 @@ pub(crate) fn fat_names_equal(a: &str, b: &str) -> bool {
             .eq(b.encode_utf16().map(fat_upcase_unit))
 }
 
+/// `name` folded as [`fat_names_equal`] folds it: two names are equal there exactly when their
+/// keys are equal here. For grouping many names, where comparing every pair would not scale.
+pub fn fat_name_key(name: &str) -> Vec<u16> {
+    name.encode_utf16().map(fat_upcase_unit).collect()
+}
+
 fn fat_upcase_unit(unit: u16) -> u16 {
     // Surrogate halves are not characters, and the up-case table leaves them unchanged.
     let Some(c) = char::from_u32(u32::from(unit)) else {
@@ -1109,7 +1119,7 @@ fn copy_cart_dir_to_host_with_progress(
                         Some(e.size),
                     )
                 } else {
-                    read_file_fat_streaming(disk, &e.path, out, progress, Some(e.size))
+                    read_file_fat_streaming(disk, &e.path, out, progress, e.size)
                 }
             })?;
         }
@@ -1932,10 +1942,49 @@ fn rename_fat_impl<D: Read + Write + Seek>(
         for p in parts {
             dir = dir.open_dir(p)?;
         }
-        dir.rename(name_from, &dir, name_to)?;
+        if name_from != name_to && fat_names_equal(name_from, name_to) {
+            fat_rename_case_only(&dir, name_from, name_to)?;
+        } else {
+            dir.rename(name_from, &dir, name_to)?;
+        }
     }
     // See `mkdir_fat_impl`: an unmount failure must reach the caller (#129).
     fs.unmount()
+}
+
+/// A rename that changes only the case of a name, by way of a temporary name.
+///
+/// fatfs looks the destination up ignoring case, finds the source itself and returns `Ok` having
+/// changed nothing, so `GAME.z64` → `game.z64` reported success and left the old name. Renaming to
+/// a name no ordinary file carries and then to the new one writes the new name. Should the second
+/// step fail, the first is undone; if that fails too, the error names where the entry now is.
+fn fat_rename_case_only<T: fatfs::ReadWriteSeek>(
+    dir: &fatfs::Dir<'_, T>,
+    name_from: &str,
+    name_to: &str,
+) -> io::Result<()> {
+    let temp = fat_rename_temp_name(name_from);
+    // Fails with `AlreadyExists` rather than replace a file that happens to carry the name.
+    dir.rename(name_from, dir, &temp)?;
+    if let Err(e) = dir.rename(&temp, dir, name_to) {
+        return match dir.rename(&temp, dir, name_from) {
+            Ok(()) => Err(e),
+            Err(undo) => Err(io::Error::new(
+                e.kind(),
+                format!(
+                    "\"{name_from}\" could not be renamed to \"{name_to}\" ({e}), and is now \
+                     \"{temp}\" on the card: putting its name back failed too ({undo})"
+                ),
+            )),
+        };
+    }
+    Ok(())
+}
+
+/// The temporary name a case-only FAT rename of `name` passes through: as
+/// [`fat_replace_temp_name`], with a prefix of its own.
+fn fat_rename_temp_name(name: &str) -> String {
+    fat_temp_name("~multi64-rename-", name)
 }
 
 fn rename_cart_exfat(
@@ -3162,8 +3211,13 @@ fn read_file_fat<D: Read + Write + Seek>(disk: D, path: &str) -> io::Result<Vec<
 /// hadris — `exfat::entry` is a private module and `parse_entry_set` is not re-exported. So a file
 /// whose entry set lives in a later root cluster was listed but could not be opened (#190).
 ///
-/// The copy stops at the file's `valid_data_length`, so the slack at the end of its last cluster is
-/// never written out as content, and at `max_bytes` when the caller sets one.
+/// The copy is the file's `data_length` bytes, or `max_bytes` when the caller sets fewer, so the
+/// slack at the end of its last cluster is never written out as content. Bytes past
+/// `valid_data_length` are zero by definition, so they are written as zeros rather than read: a
+/// file another device preallocated comes out at its full size, not cut off where its writes
+/// stopped.
+///
+/// A cluster chain that ends before the file does is an error, not a short copy reported as done.
 fn exfat_read_file_with<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
     read_at: &mut R,
     info: &hadris_fat::exfat::ExFatInfo,
@@ -3180,13 +3234,56 @@ fn exfat_read_file_with<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
         ));
     }
     let limit = match max_bytes {
-        Some(m) => m.min(entry.valid_data_length),
-        None => entry.valid_data_length,
+        Some(m) => m.min(entry.data_length),
+        None => entry.data_length,
     };
-    // An empty file has no first cluster to walk.
-    if limit == 0 || entry.first_cluster < 2 {
-        return Ok(());
+    // Bytes up to here are read from the card; the rest, up to `limit`, are zeros.
+    let stored = limit.min(entry.valid_data_length);
+    let mut buf = vec![0u8; (info.bytes_per_cluster as u64).min(STREAM_CHUNK as u64) as usize];
+    let mut copied = 0u64;
+    if stored > 0 {
+        if entry.first_cluster >= 2 {
+            copied =
+                exfat_copy_clusters(read_at, info, &entry, stored, &mut buf, &mut out, progress)?;
+        }
+        if copied < stored {
+            return Err(file_chain_ends_early(copied, limit));
+        }
     }
+    buf.fill(0);
+    while copied < limit {
+        let n = buf.len().min((limit - copied) as usize);
+        out.write_all(&buf[..n])?;
+        copied += n as u64;
+        if !progress(n as u64) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
+    }
+    Ok(())
+}
+
+/// A file whose clusters end after `copied` of the `len` bytes its directory entry gives it.
+fn file_chain_ends_early(copied: u64, len: u64) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        format!(
+            "the file's clusters on the card end after {copied} of its {len} bytes, so it cannot \
+             be copied whole"
+        ),
+    )
+}
+
+/// Copies up to `limit` bytes of `entry`'s clusters to `out` through `buf`, returning how many
+/// there were: fewer than `limit` when its cluster chain ends first.
+fn exfat_copy_clusters<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
+    read_at: &mut R,
+    info: &hadris_fat::exfat::ExFatInfo,
+    entry: &ExfatDecodedEntry,
+    limit: u64,
+    buf: &mut [u8],
+    out: &mut impl Write,
+    progress: &mut impl FnMut(u64) -> bool,
+) -> io::Result<u64> {
     // A file's allocation is a cluster chain like a directory's, so the same walk maps it to
     // volume byte offsets, contiguous or FAT-chained.
     let chain = ExfatDirSlots::load_with(
@@ -3197,7 +3294,6 @@ fn exfat_read_file_with<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
         entry.data_length.max(entry.valid_data_length),
     )?;
     let cluster_bytes = info.bytes_per_cluster as u64;
-    let mut buf = vec![0u8; cluster_bytes.min(STREAM_CHUNK as u64) as usize];
     let mut copied = 0u64;
     for &base in &chain.cluster_offsets {
         if copied >= limit {
@@ -3218,7 +3314,7 @@ fn exfat_read_file_with<R: FnMut(u64, &mut [u8]) -> io::Result<()>>(
             }
         }
     }
-    Ok(())
+    Ok(copied)
 }
 
 /// Read a whole exFAT file. Tests only: the app streams instead ([`read_file_exfat_streaming`]).
@@ -3231,14 +3327,17 @@ fn read_file_exfat<D: PartitionDisk>(mut disk: D, path: &str) -> io::Result<Vec<
     Ok(v)
 }
 
-/// `max_bytes`: stop after this many bytes (directory entry size). Passing the logical size avoids
-/// reading past EOF when the underlying reader would otherwise return cluster slack (wrong PC file size).
+/// Copies exactly `len` bytes of the file at `path`: its size as its directory entry gives it,
+/// which is what a listing reports. Stopping there keeps cluster slack out of the PC copy.
+///
+/// fatfs ends a read quietly where the file's cluster chain ends, so a chain shorter than the
+/// file used to produce a short copy reported as done. Fewer than `len` bytes is now an error.
 fn read_file_fat_streaming<D: Read + Write + Seek>(
     disk: D,
     path: &str,
     mut out: impl Write,
     progress: &mut impl FnMut(u64) -> bool,
-    max_bytes: Option<u64>,
+    len: u64,
 ) -> io::Result<()> {
     let fs = FileSystem::new(disk, FsOptions::new())?;
     let trimmed = path.trim().replace('\\', "/");
@@ -3255,22 +3354,11 @@ fn read_file_fat_streaming<D: Read + Write + Seek>(
     let mut file = dir.open_file(name)?;
     let mut buf = vec![0u8; STREAM_CHUNK];
     let mut copied = 0u64;
-    loop {
-        if let Some(max) = max_bytes {
-            if copied >= max {
-                break;
-            }
-        }
-        let cap = match max_bytes {
-            None => buf.len(),
-            Some(max) => buf.len().min((max - copied) as usize),
-        };
-        if cap == 0 {
-            break;
-        }
+    while copied < len {
+        let cap = buf.len().min((len - copied) as usize);
         let n = file.read(&mut buf[..cap])?;
         if n == 0 {
-            break;
+            return Err(file_chain_ends_early(copied, len));
         }
         out.write_all(&buf[..n])?;
         copied += n as u64;
@@ -3546,7 +3634,9 @@ fn list_dir_exfat<D: PartitionDisk>(mut disk: D, path: &str) -> io::Result<Vec<S
             path: format!("{path_prefix}{}", e.name),
             name: e.name,
             is_dir,
-            size: if is_dir { 0 } else { e.valid_data_length },
+            // A file's size is its DataLength. ValidDataLength only says how much of it has been
+            // written; the rest reads as zeros.
+            size: if is_dir { 0 } else { e.data_length },
             hidden,
         });
     }
@@ -4129,6 +4219,24 @@ mod tests {
         assert!(!cart_entry_name_matches("straße", "STRASSE"));
     }
 
+    /// `fat_name_key` groups names exactly as `fat_names_equal` compares them.
+    #[test]
+    fn fat_name_keys_agree_with_name_equality() {
+        for (a, b) in [
+            ("ä.sav", "Ä.SAV"),
+            ("Ωμέγα.z64", "ΩΜΈΓΑ.Z64"),
+            ("game.z64", "GAME.Z64"),
+            ("ä.sav", "a.sav"),
+            ("straße", "STRASSE"),
+        ] {
+            assert_eq!(
+                super::fat_name_key(a) == super::fat_name_key(b),
+                super::fat_names_equal(a, b),
+                "{a} / {b}"
+            );
+        }
+    }
+
     #[test]
     fn cart_rel_path_trims_slashes_and_backslashes() {
         assert_eq!(
@@ -4410,6 +4518,33 @@ mod fs_tests {
         let err = rename_fat_impl(flaky_unmount(&arc), "", "b.txt", "c.txt")
             .expect_err("rename must report the unmount");
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
+
+    /// A rename that changes only case renames, for a file and for a folder, keeping the file's
+    /// bytes and leaving no temporary name behind.
+    ///
+    /// Fail-first, demonstrated: with `rename_fat_impl` calling `dir.rename` for every rename, as
+    /// it did, fatfs finds the source when it looks the destination up, returns `Ok`, and the root
+    /// still lists `GAME.Z64`.
+    #[test]
+    fn fat_case_only_rename_changes_the_name() {
+        let arc = fat_image();
+        fat_write(&arc, "GAME.Z64", b"rom bytes", &mut |_| true).unwrap();
+        mkdir_fat_impl(RamPartitionDisk::new_writable(Arc::clone(&arc)), "Saves").unwrap();
+
+        for (from, to) in [("GAME.Z64", "game.z64"), ("Saves", "SAVES")] {
+            rename_fat_impl(
+                RamPartitionDisk::new_writable(Arc::clone(&arc)),
+                "",
+                from,
+                to,
+            )
+            .unwrap();
+        }
+        let mut names = fat_root_names(&arc);
+        names.sort();
+        assert_eq!(names, ["SAVES", "game.z64"]);
+        assert_eq!(fat_read(&arc, "game.z64"), b"rom bytes");
     }
 
     /// Every 32-byte slot of the directory stored in `chain`, read straight from the image.
@@ -6569,7 +6704,7 @@ mod fs_tests {
             "rom.z64",
             &mut sink,
             &mut |_| true,
-            Some(payload.len() as u64),
+            payload.len() as u64,
         )
         .expect("stream");
         assert_eq!(sink.got, payload, "short writes must not lose bytes");
@@ -6584,7 +6719,7 @@ mod fs_tests {
             "rom.z64",
             &mut stubborn,
             &mut |_| true,
-            Some(payload.len() as u64),
+            payload.len() as u64,
         )
         .expect_err("a sink that refuses more bytes must fail the stream");
         assert!(matches!(
@@ -6602,12 +6737,18 @@ mod fs_tests {
             "rom.z64",
             &mut cancelled,
             &mut |_| false,
-            Some(payload.len() as u64),
+            payload.len() as u64,
         )
         .expect_err("cancelling must not report success");
         assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
     }
 
+    /// A file hadris wrote lists and reads as its entry set describes it. hadris records the
+    /// file's whole allocation, one cluster here, as its DataLength, and only the bytes written
+    /// as its ValidDataLength — so, as on Windows, the file is a cluster long and zero after the
+    /// bytes written. Xfer64's exFAT imports went through hadris until #190's last change, but
+    /// each one then rewrote DataLength to ValidDataLength at once, as this crate's own writer
+    /// records them, so no import that reported success left a file like this one.
     #[test]
     fn ram_disk_exfat_list_read_after_hadris_write() {
         let arc = Arc::new(std::sync::Mutex::new(vec![0u8; EXFAT_IMAGE_BYTES]));
@@ -6625,15 +6766,24 @@ mod fs_tests {
 
         let entries =
             list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/").expect("list");
-        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert!(names.contains(&"hello.txt"));
+        let hello = entries
+            .iter()
+            .find(|e| e.name == "hello.txt")
+            .expect("listed");
+        let cluster = ExFatFs::open(RamPartitionDisk::new_readonly(Arc::clone(&arc)))
+            .expect("open")
+            .info()
+            .bytes_per_cluster;
+        assert_eq!(hello.size, cluster as u64);
 
         let bytes = read_file_exfat(
             RamPartitionDisk::new_readonly(Arc::clone(&arc)),
             "hello.txt",
         )
         .expect("read");
-        assert_eq!(bytes, b"exfat hello");
+        assert_eq!(bytes.len(), cluster);
+        assert_eq!(&bytes[..11], b"exfat hello");
+        assert!(bytes[11..].iter().all(|&b| b == 0));
     }
 
     #[test]
@@ -6666,6 +6816,143 @@ mod fs_tests {
         )
         .expect("read");
         assert_eq!(bytes, b"streaming roundtrip");
+    }
+
+    /// The image offset of the one file's Stream Extension in a freshly formatted exFAT root.
+    fn exfat_only_stream_extension(arc: &Image) -> (ExFatInfo, usize) {
+        let info = ExFatFs::open(RamPartitionDisk::new_readonly(Arc::clone(arc)))
+            .expect("open")
+            .info()
+            .clone();
+        let root = info.cluster_to_offset(info.root_cluster) as usize;
+        let g = arc.lock().unwrap();
+        let found: Vec<usize> = (0..info.bytes_per_cluster / 32)
+            .map(|i| root + i * 32)
+            .filter(|&at| g[at] == 0xC0)
+            .collect();
+        assert_eq!(found.len(), 1, "fixture: one file in the root");
+        (info, found[0])
+    }
+
+    /// An exFAT file is DataLength bytes long, and the part past ValidDataLength reads as zeros:
+    /// the listing reports DataLength, and an export produces that many bytes with the tail
+    /// zero-filled rather than read from the card.
+    ///
+    /// Fail-first, demonstrated: with the listing and the copy both stopping at ValidDataLength, as
+    /// they did, the listing reported 4000 for a 10000-byte file and the export was 4000 bytes.
+    #[test]
+    fn exfat_export_is_data_length_long_and_zero_past_valid_data_length() {
+        let (arc, vol, part_bytes) = exfat_image(&ExFatFormatOptions::new());
+        let body = vec![0xABu8; 10_000];
+        exfat_write(
+            &vol,
+            part_bytes,
+            "pre.bin",
+            body.len() as u64,
+            &body,
+            &mut |_| true,
+        )
+        .unwrap();
+        let (_, stream) = exfat_only_stream_extension(&arc);
+        // As a device that preallocated the file and wrote only its first 4000 bytes leaves it.
+        arc.lock().unwrap()[stream + 8..stream + 16].copy_from_slice(&4000u64.to_le_bytes());
+
+        let listed = list_dir_exfat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/").unwrap();
+        assert_eq!(listed[0].size, 10_000);
+        let mut out = Vec::new();
+        super::read_file_exfat_streaming(
+            RamPartitionDisk::new_readonly(Arc::clone(&arc)),
+            "pre.bin",
+            &mut out,
+            &mut |_| true,
+            Some(listed[0].size),
+        )
+        .unwrap();
+        assert_eq!(out.len(), 10_000);
+        assert!(out[..4000].iter().all(|&b| b == 0xAB));
+        assert!(
+            out[4000..].iter().all(|&b| b == 0),
+            "the tail must be zeros"
+        );
+    }
+
+    /// An exFAT file whose cluster chain ends before its DataLength fails to export, rather than
+    /// handing back the clusters there are as the whole file.
+    ///
+    /// Fail-first, demonstrated: with the copy ending quietly at the end of the chain, as it did,
+    /// the export returned `Ok` with one cluster of a 10000-byte file.
+    #[test]
+    fn exfat_export_whose_chain_ends_early_fails() {
+        let (arc, vol, part_bytes) = exfat_image(&ExFatFormatOptions::new());
+        let body = vec![0x5Au8; 10_000];
+        exfat_write(
+            &vol,
+            part_bytes,
+            "cut.bin",
+            body.len() as u64,
+            &body,
+            &mut |_| true,
+        )
+        .unwrap();
+        let (info, stream) = exfat_only_stream_extension(&arc);
+        assert!(
+            (info.bytes_per_cluster as u64) < 10_000,
+            "fixture: the file must span more than one cluster"
+        );
+        {
+            let mut g = arc.lock().unwrap();
+            let first = u32::from_le_bytes(g[stream + 20..stream + 24].try_into().unwrap());
+            // Follow the FAT, whose chain for this file ends at its first cluster.
+            g[stream + 1] &= !0x02;
+            let fat = info.fat_offset as usize + first as usize * 4;
+            g[fat..fat + 4].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        }
+        let mut out = Vec::new();
+        let err = super::read_file_exfat_streaming(
+            RamPartitionDisk::new_readonly(Arc::clone(&arc)),
+            "cut.bin",
+            &mut out,
+            &mut |_| true,
+            Some(10_000),
+        )
+        .expect_err("a chain shorter than the file must not export as the whole file");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    /// A FAT file whose cluster chain is shorter than the size in its directory entry fails to
+    /// export, rather than handing back the clusters there are as the whole file.
+    ///
+    /// Fail-first, demonstrated: with the copy ending where fatfs's read returned 0, as it did, the
+    /// export returned `Ok` with one cluster of a file listed at 100000 bytes.
+    #[test]
+    fn fat_export_whose_chain_ends_early_fails() {
+        let arc = fat_image();
+        fat_write(&arc, "rom.z64", &[0x33u8; 1000], &mut |_| true).unwrap();
+        {
+            let mut g = arc.lock().unwrap();
+            let short_name = b"ROM     Z64";
+            let at: Vec<usize> = g
+                .windows(short_name.len())
+                .enumerate()
+                .filter(|(_, w)| w == short_name)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(at.len(), 1, "fixture: one directory entry for rom.z64");
+            // Its one cluster now has to hold far more than a cluster's worth.
+            g[at[0] + 28..at[0] + 32].copy_from_slice(&100_000u32.to_le_bytes());
+        }
+        let listed = list_dir_fat(RamPartitionDisk::new_readonly(Arc::clone(&arc)), "/").unwrap();
+        assert_eq!(listed[0].size, 100_000);
+        let mut out = Vec::new();
+        let err = super::read_file_fat_streaming(
+            RamPartitionDisk::new_readonly(Arc::clone(&arc)),
+            "rom.z64",
+            &mut out,
+            &mut |_| true,
+            listed[0].size,
+        )
+        .expect_err("a chain shorter than the file must not export as the whole file");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
 
     #[test]

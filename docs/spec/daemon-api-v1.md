@@ -41,7 +41,7 @@ A tool that needs to know which cart is attached MAY take `serial` and `cart` fr
 | `POST /v1/serial/release` | `{"released":true}` |
 | `POST /v1/serial/resume` | `{"resumed":true}` |
 
-`POST /v1/serial/release` waits at most **2 seconds** for the serial link. The daemon holds the link for each cart read (at most 50 ms), for the whole of each WebSocket message it writes to the cart, and while it reopens a faulted link, so a large message or a slow reopen can outlast that. With `--cart ed64pro` a write is paced at about 34 ms per 1024 bytes ([`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md) §5), so any message over roughly 60 KiB outlasts it. The daemon then answers `503 Service Unavailable` with a plain-text body and **does not release**: the link stays as it was, and that request never takes effect later. Releases waiting for the link are served in the order they arrived; a release that answered `503` is no longer waiting. After a `503` a client MUST NOT open the port; it MAY retry the release. The bound is well below the 5-second timeout Xfer64 puts on this request, so Xfer64 hears the refusal before it gives up. A client whose own request timed out cannot tell whether the release was applied, and SHOULD call resume anyway, which is harmless on an active link (below).
+`POST /v1/serial/release` waits at most **2 seconds** for the serial link. The daemon holds the link for each cart read (at most 50 ms), for the whole of each WebSocket message it writes to the cart, and while it reopens a faulted link, so a large message or a slow reopen can outlast that. With `--cart ed64pro` a write is paced at about 34 ms per 1024 bytes ([`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md) §5), so any message over roughly 60 KiB outlasts it, and the largest message the daemon accepts (§4) holds the link for about 35 seconds. The daemon then answers `503 Service Unavailable` with a plain-text body and **does not release**: the link stays as it was, and that request never takes effect later. Releases waiting for the link are served in the order they arrived; a release that answered `503` is no longer waiting. After a `503` a client MUST NOT open the port; it MAY retry the release. The bound is well below the 5-second timeout Xfer64 puts on this request, so Xfer64 hears the refusal before it gives up. A client whose own request timed out cannot tell whether the release was applied, and SHOULD call resume anyway, which is harmless on an active link (below).
 
 `POST /v1/serial/resume` is **idempotent**: if the link is already active (e.g. nested release/resume from Xfer64), the handler succeeds without opening a second serial handle. This short-circuit applies to a **live** link only — a link that failed on I/O is *faulted*, not active, so resume always reopens it (§1.3).
 
@@ -86,7 +86,7 @@ The daemon writes directly to flash-cart hardware and binds loopback, which puts
 - A request **with** an `Origin` header is allowed only if that exact origin was configured via `--allow-origin` / `MULTI64D_ALLOW_ORIGIN` / `allow_origin` (§5). Otherwise the daemon answers `403 Forbidden` before routing, `/ws` included.
 - The allow-list is **empty by default**, and CORS response headers are emitted for allow-listed origins only.
 
-This is not authentication: any *native* process on the host can still reach the daemon, just as it could open the COM port directly.
+This is not authentication: any *native* process on the host can still reach the daemon, just as it could open the COM port directly. Bound with `--listen` to an address other than loopback, a wildcard such as `0.0.0.0` included, the daemon is reachable from other machines as well, and any of them can write to the cart and release its serial port, since a request without an `Origin` header is let in. The daemon allows this but logs a warning at startup saying so.
 
 ---
 
@@ -95,7 +95,7 @@ This is not authentication: any *native* process on the host can still reach the
 | Direction | Format | Meaning |
 |-----------|--------|--------|
 | Server → Client | **Binary** | Raw **L3 stream octets** from the N64 (order-preserving). **SC64 realization:** concatenation of `PKT` `U` / `MULTI64_L3` payloads per [`l3-over-sc64.md`](./l3-over-sc64.md). Clients run [`multi64-l3`](../../crates/l3) framing / `StreamDecoder` on this byte stream. |
-| Client → Server | **Binary** | Raw **L3 stream octets** to the N64. **SC64 realization:** host sends `USB_WRITE` chunks per [`l3-over-sc64.md`](./l3-over-sc64.md). |
+| Client → Server | **Binary** | Raw **L3 stream octets** to the N64, at most 1,048,592 bytes a message (§4). **SC64 realization:** host sends `USB_WRITE` chunks per [`l3-over-sc64.md`](./l3-over-sc64.md). |
 | Either | **Text (JSON)** | Optional control messages (see §3). |
 
 There is **no** base64 wrapper in v1; use binary frames for throughput.
@@ -134,7 +134,8 @@ Server responds with:
 
 - **Ordering:** Binary chunks from the cart are sent to the client **in order**. Multiple WebSocket clients receive a **broadcast** of the same outbound binary chunks (fan-out).
 - **Inbound:** Any client may send binary data; writes are **serialized** against the single serial link (mutex + blocking I/O).
-- **Backpressure:** Slow WebSocket clients may **lag**; the server uses a bounded broadcast buffer and may **drop** old outbound chunks (`Lagged`); clients should keep up or reconnect.
+- **Message size:** A client MUST NOT send a WebSocket message larger than **1,048,592 bytes**: one L3 frame at the protocol's ceiling, a 16-byte header and a 1 MiB payload ([`l3-bridge-protocol-v1.md`](./l3-bridge-protocol-v1.md) §2, §6). The binary channel carries an octet stream, so a client can split the stream between messages anywhere, and no client needs a larger one. The daemon holds the serial link for the whole of each message it writes to the cart (§1.2), so this also bounds how long one message can hold off release and resume. On a larger message the daemon sends a Close frame with code **1009** (Message Too Big) and a reason giving the limit, closes the socket, and writes **none** of that message to the cart. Text messages are bound by the same limit.
+- **Backpressure:** The daemon keeps a bounded buffer of chunks from the cart for its WebSocket clients. A client that falls so far behind that chunks meant for it are overwritten is **disconnected**: the daemon sends a Close frame with code **1013** (Try Again Later) and a reason saying it fell behind and how many chunks were dropped, then closes the socket. Everything that client received before the Close is complete and in order, and nothing after the gap is sent to it, so no client reads an L3 stream with a hole in it. A client that wants the stream reconnects and resynchronizes on the next frame boundary, as across a fault (§1.3). Other clients are not affected.
 
 ---
 
@@ -145,6 +146,7 @@ Server responds with:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config <path>` | (none) | TOML config file; env: `MULTI64D_CONFIG` |
+| `--no-config-file` | off | Load no config file at all: discovery (§5.2) is skipped, so only the command line, the environment and the defaults apply. Given together with `--config` / `MULTI64D_CONFIG`, it is a startup error. Multi64 starts its daemon this way |
 | `--serial`, `-s` | (required†) | Serial device (e.g. `COM3`, `/dev/ttyACM0`); env: `MULTI64D_SERIAL` |
 | `--baud` | `115200` | Baud (often ignored on USB-CDC cart adapters); env: `MULTI64D_BAUD` |
 | `--cart <sc64\|ed64\|ed64pro>` | `sc64` | Which cart's L2 mapping carries the L3 stream. `ed64` selects the EverDrive-64 X7 `DMA@` mapping; `ed64pro` selects the EverDrive-64 PRO mapping ([`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md)), which runs at the PRO's fixed 921600 baud and ignores `--baud`. Both are **experimental**: the X7 mapping has run on one cart ([`l3-over-everdrive-x7.md`](./l3-over-everdrive-x7.md) §4.5), the PRO mapping on none. The daemon logs a warning when either is chosen. Env: `MULTI64D_CART`; config file: `cart = "ed64"` |
@@ -166,7 +168,7 @@ If `--config` / `MULTI64D_CONFIG` is not set, the daemon loads the first file th
 1. `./multi64d.toml` (current working directory)
 2. OS config directory: `multi64d/config.toml` — e.g. Linux `~/.config/multi64d/config.toml`, Windows `%APPDATA%\multi64d\config.toml`, macOS `~/Library/Application Support/multi64d/config.toml`
 
-A `--config` / `MULTI64D_CONFIG` path that does **not** exist is a startup error: the daemon exits rather than falling back to discovery. Neither discovered location existing is normal, and the defaults in §5.1 apply.
+A `--config` / `MULTI64D_CONFIG` path that does **not** exist is a startup error: the daemon exits rather than falling back to discovery. Neither discovered location existing is normal, and the defaults in §5.1 apply. With `--no-config-file`, neither location is looked at.
 
 ### 5.3 Logging
 

@@ -30,13 +30,43 @@ fn roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Where Archipelago keeps an installed world, by its file name (`dk64.apworld`).
+/// Where Archipelago keeps an installed world, by its file name (`dk64.apworld`): the first
+/// of [`installed_apworlds`].
 pub fn installed_apworld(file: &str) -> Option<PathBuf> {
-    roots()
-        .into_iter()
+    installed_apworlds(file).into_iter().next()
+}
+
+/// Every installed copy of a world, by its file name: in `custom_worlds`, then `lib\worlds`,
+/// of each of the Archipelago folders, in the order [`roots`] gives them.
+///
+/// There can be more than one, and which one runs is not AP64's to know. Each Archipelago
+/// install loads the worlds in its own two folders: `worlds/__init__.py` scans its
+/// `user_path("custom_worlds")` and its own `lib\worlds`, and on Windows `user_path` is the
+/// install's folder. So which copy runs depends on which install's Launcher the player opens,
+/// and within one install, on which copy declares the higher `world_version`, since
+/// `load_apworlds` loads the highest and skips any other for the same game. Anything that
+/// changes a world for the player has to look at every copy.
+pub fn installed_apworlds(file: &str) -> Vec<PathBuf> {
+    apworlds_in(&roots(), file)
+}
+
+fn apworlds_in(roots: &[PathBuf], file: &str) -> Vec<PathBuf> {
+    let mut seen = Vec::new();
+    let mut out = Vec::new();
+    for p in roots
+        .iter()
         .flat_map(|r| [r.join("custom_worlds"), r.join("lib").join("worlds")])
         .map(|d| d.join(file))
-        .find(|p| p.is_file())
+        .filter(|p| p.is_file())
+    {
+        // AP64_ARCHIPELAGO_DIR may name one of the other two.
+        let id = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        if !seen.contains(&id) {
+            seen.push(id);
+            out.push(p);
+        }
+    }
+    out
 }
 
 /// The `world_version` an apworld declares in its `archipelago.json`, if it declares one.
@@ -191,6 +221,39 @@ mod tests {
     #[test]
     fn a_profile_that_records_nothing_has_no_notes() {
         assert!(notes_with(&profile(""), "T", |_| Some("9".into())).is_empty());
+    }
+
+    /// Two installs, one of them with the world in both its folders, and a root named twice:
+    /// every copy, once each, in the order they are looked for.
+    #[test]
+    fn every_installed_copy_of_a_world_is_found_once() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("ap64-installs-{}-{nanos}", std::process::id()));
+        let (a, b, none) = (dir.join("a"), dir.join("b"), dir.join("none"));
+        for d in [
+            a.join("lib").join("worlds"),
+            b.join("custom_worlds"),
+            b.join("lib").join("worlds"),
+            none.join("custom_worlds"),
+        ] {
+            std::fs::create_dir_all(&d).unwrap();
+        }
+        let copies = [
+            a.join("lib").join("worlds").join("w.apworld"),
+            b.join("custom_worlds").join("w.apworld"),
+            b.join("lib").join("worlds").join("w.apworld"),
+        ];
+        for c in &copies {
+            std::fs::write(c, b"world").unwrap();
+        }
+        let roots = [a.clone(), none, b, a.join("..").join("a")];
+        assert_eq!(apworlds_in(&roots, "w.apworld"), copies);
+        assert!(apworlds_in(&roots, "other.apworld").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

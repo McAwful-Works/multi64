@@ -244,8 +244,11 @@ fn rename_refusing_to_replace(from: &Path, to: &Path) -> Result<(), String> {
     fs::rename(from, to).map_err(|e| e.to_string())
 }
 
-/// Whether `a` and `b` name the same file or folder, as `a.z64` and `A.z64` do on Windows.
-fn same_entry(a: &Path, b: &Path) -> bool {
+/// Whether `a` and `b` name the same file or folder, as `a.z64` and `A.z64` do on Windows, or a
+/// path through a `subst` drive, a junction or an 8.3 short name does with the path it stands
+/// for: both are resolved to the file system's own final path and compared. Two hard links to one
+/// file resolve to two paths, and are not caught.
+pub(crate) fn same_entry(a: &Path, b: &Path) -> bool {
     match (fs::canonicalize(a), fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
@@ -266,6 +269,17 @@ fn copy_file_with_progress(
     cancel: &ExplorerCancelState,
     mut on_delta: impl FnMut(u64),
 ) -> Result<(), String> {
+    // The frontend drops a copy into the folder the file is already in, but compares path
+    // strings, so another spelling of that folder got through. The file then came back from a
+    // temporary copy of itself: the same bytes, but a new file in its place, so whatever belonged
+    // to the file rather than its contents, such as alternate data streams or another hard link
+    // to it, did not carry over. Before writes went through a temporary file, it was emptied.
+    if same_entry(src, dst) {
+        return Err(format!(
+            "{} is the file being copied: a file cannot be copied onto itself.",
+            dst.display()
+        ));
+    }
     let mut r = fs::File::open(src).map_err(|e| map_pc_copy_err(e, src))?;
     let mut buf = vec![0u8; 256 * 1024];
     // A read error belongs to `src`; anything else that fails, to `dst`.
@@ -514,5 +528,25 @@ mod tests {
         cancel.reset();
         copy_file_with_progress(&src, &dst, &cancel, |_| {}).unwrap();
         assert_eq!(fs::read(&dst).unwrap(), vec![7u8; 1024 * 1024]);
+    }
+
+    /// A file is not copied onto itself, however the destination is spelled. `sub\..` stands in
+    /// for a `subst` drive, a junction or an 8.3 name: a path string the frontend's comparison
+    /// does not recognize as the file's own.
+    ///
+    /// Fail-first, demonstrated: without the check, the copy returned `Ok`, having replaced the
+    /// file with a temporary copy of itself.
+    #[test]
+    fn a_file_is_not_copied_onto_itself_through_another_path() {
+        let dir = Scratch::new("copy-self");
+        fs::create_dir(dir.0.join("sub")).unwrap();
+        let src = dir.0.join("game.z64");
+        fs::write(&src, b"rom").unwrap();
+        let alias = dir.0.join("sub").join("..").join("game.z64");
+        let cancel = ExplorerCancelState::default();
+        let err = copy_file_with_progress(&src, &alias, &cancel, |_| {}).unwrap_err();
+        assert!(err.contains("cannot be copied onto itself"), "{err}");
+        assert_eq!(fs::read(&src).unwrap(), b"rom");
+        assert_eq!(dir.names(), ["game.z64", "sub"]);
     }
 }

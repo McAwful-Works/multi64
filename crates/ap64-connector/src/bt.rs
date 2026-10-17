@@ -140,9 +140,9 @@ pub fn fix_client(apworld: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Where the installed `banjo_tooie.apworld` is ([`crate::installed_apworld`]).
-pub fn installed_apworld() -> Option<PathBuf> {
-    crate::installed_apworld(APWORLD)
+/// Every installed copy of `banjo_tooie.apworld` ([`crate::installed_apworlds`]).
+pub fn installed_apworlds() -> Vec<PathBuf> {
+    crate::installed_apworlds(APWORLD)
 }
 
 #[cfg(test)]

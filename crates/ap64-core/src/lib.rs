@@ -218,6 +218,23 @@ pub fn default_output(input: &std::path::Path) -> std::path::PathBuf {
     input.with_file_name(format!("{stem}-agent.z64"))
 }
 
+/// Refuses an `output` that is the `seed` file itself, however the path is spelled: another
+/// case, a `..`, a short (8.3) name or a symbolic link all name the same file. Both are resolved
+/// through the file system, so an output that does not exist yet is never the seed.
+pub fn check_output(seed: &std::path::Path, output: &std::path::Path) -> Result<(), String> {
+    let same = match (std::fs::canonicalize(seed), std::fs::canonicalize(output)) {
+        (Ok(a), Ok(b)) => a == b,
+        // A seed that is gone can only be compared by name.
+        (Err(_), _) => seed == output,
+        (Ok(_), Err(_)) => false,
+    };
+    if same {
+        Err("the output would overwrite the seed; choose another name".into())
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,5 +608,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The seed under another spelling is still the seed; a new file or another file is not.
+    #[test]
+    fn an_output_that_is_the_seed_is_refused_however_it_is_spelled() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ap64-output-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let seed = dir.join("seed.z64");
+        std::fs::write(&seed, b"seed").unwrap();
+        std::fs::write(dir.join("other.z64"), b"other").unwrap();
+
+        let refused = |out: std::path::PathBuf| check_output(&seed, &out).is_err();
+        assert!(refused(seed.clone()));
+        assert!(refused(dir.join("sub").join("..").join("seed.z64")));
+        if cfg!(windows) {
+            // The file system Windows uses ignores case, so this is the same file.
+            assert!(refused(dir.join("SEED.Z64")));
+        }
+        assert!(!refused(dir.join("other.z64")));
+        assert!(!refused(dir.join("seed-agent.z64")), "not there yet");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -917,8 +917,17 @@ mod tests {
 
     /// `bundle`, with `extra` appended to the profile text.
     fn bundle_with(stub_len: usize, rom: &[u8], extra: &str) -> Bundle {
+        let blobs = HashMap::from([
+            ("agent.bin".to_string(), vec![0x11; 0x1103]),
+            ("stub.bin".to_string(), vec![0x22; stub_len]),
+        ]);
+        Bundle::new(Profile::parse(&profile_text(rom, extra)).unwrap(), blobs).unwrap()
+    }
+
+    /// The profile text of [`bundle_with`].
+    fn profile_text(rom: &[u8], extra: &str) -> String {
         let sha = crc::hex(&Sha1::digest(&rom[STUB..STUB + 0x100]));
-        let text = format!(
+        format!(
             r#"
 id = "test"
 name = "Test"
@@ -962,12 +971,7 @@ label = "Jal"
 at = {HOOK}
 target = 0x80019C00
 {extra}"#
-        );
-        let blobs = HashMap::from([
-            ("agent.bin".to_string(), vec![0x11; 0x1103]),
-            ("stub.bin".to_string(), vec![0x22; stub_len]),
-        ]);
-        Bundle::new(Profile::parse(&text).unwrap(), blobs).unwrap()
+        )
     }
 
     fn failed(r: &Report) -> Vec<&str> {
@@ -1280,6 +1284,33 @@ sha1 = "{sha}"
         assert!(has_agent(&b, &out) && !has_agent(&b, &rom));
         // A profile whose stub cannot be told still refuses the same seed.
         assert_eq!(refused(&bundle(4, &rom), &rom), ["Room for the agent"]);
+    }
+
+    /// Past agent.rom is AP64's own only while the agent stays there. One that moves goes past a
+    /// seed's data that reaches it, so a write there could land on that data unchecked.
+    #[test]
+    fn a_profile_whose_agent_moves_may_not_write_where_seed_data_may_be() {
+        let rom = seed();
+        let moving = format!(
+            "[[write]]\nkind = \"imm\"\nlabel = \"Where\"\nhi = {STUB}\nlo = {}\nvalue = \"agent_rom\"\n",
+            STUB + 4
+        );
+        let blob = |at: usize| {
+            format!(
+                "[[write]]\nkind = \"blob\"\nlabel = \"Extra\"\nat = {at}\nfile = \"stub.bin\"\nmax_len = 0x10\n"
+            )
+        };
+        let jal = format!(
+            "[[write]]\nkind = \"jal\"\nlabel = \"Extra\"\nat = {}\ntarget = 0x80019C00\n",
+            AGENT + 0x100
+        );
+        // The last one starts before agent.rom and runs into it.
+        for (extra, ours) in [(blob(AGENT), true), (jal, true), (blob(AGENT - 8), false)] {
+            let why = Profile::parse(&profile_text(&rom, &format!("{moving}{extra}"))).unwrap_err();
+            assert!(why.contains("can move"), "{why}");
+            // Where the agent stays put, the same write past agent.rom is on AP64's own bytes.
+            assert_eq!(Profile::parse(&profile_text(&rom, &extra)).is_ok(), ours);
+        }
     }
 
     #[test]

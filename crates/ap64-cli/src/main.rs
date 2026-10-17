@@ -1,7 +1,8 @@
 //! ap64-patch <seed> [-o <out.z64>] [--cart sc64|ed64|ed64pro] [--check] [--withheld]
 //!
 //! Detect the game, verify the seed against its profile, and write the seed with the
-//! agent spliced in (by default beside it, as `<stem>-agent.z64`). `--check` only verifies.
+//! agent spliced in (by default beside it, as `<stem>-agent.z64`; never over the seed itself).
+//! `--check` only verifies.
 //! `--cart` picks the flash cart the agent is built for: `sc64` (the default, and the only one
 //! whose agent has had a game played through it), or the experimental `ed64` (EverDrive-64 X7)
 //! and `ed64pro`. `--withheld` also considers the profiles AP64 keeps but does not offer
@@ -11,7 +12,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use ap64_core::{
-    apply, builds_for, builtin, default_output, detect, needs_adjusting, ApplyError, Cart, Report,
+    apply, builds_for, builtin, check_output, default_output, detect, needs_adjusting, ApplyError,
+    Cart, Report,
 };
 
 fn print_report(r: &Report) {
@@ -57,6 +59,11 @@ fn run() -> Result<(), String> {
     let input = input.ok_or(
         "usage: ap64-patch <seed> [-o <out.z64>] [--cart sc64|ed64|ed64pro] [--check] [--withheld]",
     )?;
+
+    let out = output.unwrap_or_else(|| default_output(&input));
+    if !check_only {
+        check_output(&input, &out)?;
+    }
 
     let mut profiles = builtin()?;
     if with_withheld {
@@ -135,7 +142,6 @@ fn run() -> Result<(), String> {
     for line in &patched.summary {
         println!("  {line}");
     }
-    let out = output.unwrap_or_else(|| default_output(&input));
     std::fs::write(&out, &patched.rom).map_err(|e| format!("{}: {e}", out.display()))?;
     println!(
         "wrote {} ({} bytes)\nsha1 {}",

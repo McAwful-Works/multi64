@@ -234,7 +234,10 @@ size, so nothing after it moves.
   pair, and AP64 keeps `agent.rom` whenever the seed leaves room there; when the seed's data
   reaches it, the agent goes at the first 4 KiB boundary past the data, and the pair says so.
   This works only where the stub copies the agent itself. An agent loaded by the game's own
-  loader, as in Banjo-Tooie and Ocarina of Time, is where that loader puts it.
+  loader, as in Banjo-Tooie and Ocarina of Time, is where that loader puts it. A profile with an
+  `"agent_rom"` write may not write anything else that reaches `agent.rom`: once the agent can
+  move, a seed may have data there, so AP64 refuses the profile rather than write over it
+  unchecked.
 
 ## 5. Build and splice
 

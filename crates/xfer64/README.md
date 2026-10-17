@@ -20,7 +20,7 @@ hands the port back afterward.
 - **EverDrive 64 X-series**: Krikzz `usb64`-style serial (different opcodes than SC64). An experimental SD mode issues `RomRead` at `ed64RomLinearBase + LBA·512` (set under Settings → **EverDrive SD (experimental)**, which is shown only while **Cart** is **EverDrive-64 X7 (beta)**), but `RomRead` reads cart ROM memory rather than the SD card, so it is not expected to list the card and has never done so on hardware. See [`docs/spec/ed64-sd-usb-host.md`](../../docs/spec/ed64-sd-usb-host.md#why-romread-is-not-sd-access).
 - **EverDrive-64 PRO** (experimental): file-level SD access over Krikzz's edlink Gen3 protocol, where the cart itself serves the file system ([`docs/spec/ed64-pro-usb-host.md`](../../docs/spec/ed64-pro-usb-host.md)). Browse, copy both ways, create folders, delete and rename. The PRO's link has no rename command, so a rename copies the item and then deletes the original: it takes as long as copying it off the cart and back, and cannot change only the letter case of a name. It has never been tested on a real cart, so Xfer64 asks before the first write each run, and `xfer64 upload` needs `--experimental-ed64pro-writes`.
 
-**Auto-detect** (the default **Cart**) first asks a running `multi64d`, when **Serial port** is on Auto-detect too: if the daemon answers and its `GET /` names a cart and a port that is still plugged in, Xfer64 uses those and probes nothing. Otherwise it looks at each candidate serial port in two tiers ([`multi64-cart-probe`](../cart-probe/README.md)). First the port's USB descriptors, which recognize a SummerCart64 without writing anything — so it is found even while `multi64d` holds the port. Only if that does not match does it probe on the wire: SC64 `IDENTIFIER_GET`, then the EverDrive-64 PRO handshake, then the X-series EverDrive test (`cmd` + `t`) — except on an FTDI `0403:6001` port (the X7's USB bridge chip), where the X-series test goes first. The first positive cart signature wins; non-cart serial devices are ignored when no signature matches. Override with **SummerCart64**, **EverDrive-64 PRO (beta)** or **EverDrive-64 X7 (beta)** from the **Cart** menu in the app bar, which applies at once, or in Settings → **Cart**, which applies on **Save settings**.
+**Auto-detect** (the default **Cart**) first asks a running `multi64d`, when **Serial port** is on Auto-detect too: if the daemon answers and its `GET /` names a cart and a port that is still plugged in, Xfer64 uses those and probes nothing. Otherwise it looks at each candidate serial port in two tiers ([`multi64-cart-probe`](../cart-probe/README.md)). First the port's USB descriptors, which recognize a SummerCart64 without writing anything — so it is found even while `multi64d` holds the port. Only if that does not match does it probe on the wire: SC64 `IDENTIFIER_GET`, then the EverDrive-64 PRO handshake, then the X-series EverDrive test (`cmd` + `t`) — except on an FTDI `0403:6001` port (the X7's USB bridge chip), where the X-series test goes first. The first positive cart signature wins; non-cart serial devices are ignored when no signature matches. A port found by its signature is remembered, so later operations use it without opening any port to look: Auto looks again once a serial port appears or disappears, the cart or serial port setting changes, or the remembered port fails to open, and in that last case it does so at once and carries on. Override with **SummerCart64**, **EverDrive-64 PRO (beta)** or **EverDrive-64 X7 (beta)** from the **Cart** menu in the app bar, which applies at once, or in Settings → **Cart**, which applies on **Save settings**.
 **Serial port** sits beside Cart in the app bar and in Settings → **Cart**. Its **Auto-detect** is only as good as the cart choice: with Cart on Auto-detect it probes every port as above, but with a cart chosen it does not probe — it takes the port whose USB name matches that cart, or the only USB serial port — so Settings warns under Serial port when that finds none. Serial port applies at once from the app bar, or on **Save settings** from Settings. Both app-bar menus are disabled while a cart operation runs.
 
 Maintainer map: [`docs/spec/xfer64-cart-serial.md`](../../docs/spec/xfer64-cart-serial.md).
@@ -33,7 +33,19 @@ leaves the original as it was; a crash or power loss can leave a `.<name>.<…>.
 it, never a truncated original. A cart import does the same on a SummerCart64. On an EverDrive-64
 PRO the cart's own link truncates the file it replaces when it starts, so an interrupted Replace
 there reports what is left of the original. Renaming on This PC onto a name the folder already
-has is refused; a rename that only changes letter case goes through.
+has is refused; a rename that only changes letter case goes through. On a SummerCart64's card one
+does too, by way of a temporary `~multi64-rename-…` name, put back if the second step fails.
+
+A file is copied off the card at the size its listing shows. On exFAT that is the file's full
+length, so a file another device preallocated comes out whole, with zeros after what was written.
+A file whose clusters end before its size says, as on a damaged card, fails with an error rather
+than arriving short.
+
+Two files of one name from different folders, as a search can turn up, cannot be copied into one
+folder together, since each would land on the other: Xfer64 names both and copies nothing.
+Letter case does not tell names apart, on the card or on Windows. A copy on This PC into the
+folder a file is already in does nothing, and one into a folder's own subfolder is refused, even
+when the destination is reached another way, through a `subst` drive, a junction or a short name.
 
 Closing the window while an operation runs does not cut it off: Xfer64 asks whether to keep
 waiting or to cancel the operation and close once it has stopped. Either way it exits only after

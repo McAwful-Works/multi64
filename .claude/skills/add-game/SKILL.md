@@ -356,7 +356,9 @@ stub space. `every_stub_checks_the_agent_that_ships_with_it` fails if a stub doe
 the sum `build.sh` took. Where the stub copies the agent itself, the profile's `agent_rom`
 write names the `lui`/`addiu` pair that loads `AGENT_ROM`: take its offset from the stub as
 built, with the check in, and `a_moving_agent_rewrites_the_pair_the_stub_loads_it_by` fails
-if it's wrong.
+if it's wrong. A profile with that write may not write anything else that reaches
+`agent.rom`, since a seed may have data there once the agent can move: `Profile::parse`
+refuses it ([placing-the-agent.md §4](../../../docs/integration/placing-the-agent.md#4-choose-a-rom-location-for-the-image)).
 
 Pin generously in `[[require]]`: the hook site word, a sha1 of the space the stub goes in,
 and of every function the stub calls. A pin is what turns "this seed is not the one this

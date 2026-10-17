@@ -14,12 +14,14 @@ Multi64's installer carries only Multi64 and `multi64d`.
 A native L3 client, such as `multi64-test-connector`, can use the same WebSocket AP64 does; the
 daemon it runs is specified in [`daemon-api-v1.md`](../../docs/spec/daemon-api-v1.md). A browser
 page cannot unless its origin is allowed: it sends an `Origin` header, and the daemon answers `403`
-to any origin it was not told to allow ([§1.4](../../docs/spec/daemon-api-v1.md#14-origin-policy)). Multi64 passes the
-serial port, baud, cart and listen address on the command line, but the daemon it starts inherits
-Multi64's environment and looks for a config file as a hand-run one does
-([§5](../../docs/spec/daemon-api-v1.md#5-cli-and-configuration-reference)), so an allowed origin
-can come from `MULTI64D_ALLOW_ORIGIN`, a `MULTI64D_CONFIG` file, a `multi64d.toml` in Multi64's
-working directory, or `%APPDATA%\multi64d\config.toml`.
+to any origin it was not told to allow ([§1.4](../../docs/spec/daemon-api-v1.md#14-origin-policy)). The daemon Multi64
+starts allows none. It runs on what Multi64 passes it: the serial port, baud, cart and listen
+address on the command line, and `--no-config-file`, so it loads neither a `multi64d.toml` nor
+`%APPDATA%\multi64d\config.toml` ([§5](../../docs/spec/daemon-api-v1.md#5-cli-and-configuration-reference)).
+Every `MULTI64D_*` variable is removed from its environment, and it runs in its own directory. A
+config file is for a daemon you run yourself, as in
+[Running `multi64d` as a background service](../../docs/run-as-service.md); stop Multi64's bridge
+first, since both want the cart's serial port and the listen address.
 
 ## Status
 
@@ -42,15 +44,15 @@ start would kill the daemon the first one spawned. **Stop bridge** is offered on
 - **Serial port → Auto-detect** picks only a port whose USB descriptors identify a SummerCart64: FTDI `0403:6014` with an `SC64…` serial number or product string. Nothing is written to a port to find out. Other serial devices are never chosen, and with two carts plugged in neither is: the port stays unset, Settings and the status line say why, and the daemon does not start. Pick a port explicitly to use anything else.
 - **With a fixed EverDrive selected, Serial port → Auto-detect picks nothing.** The X7's FT245R (`0403:6001`) is a stock FTDI part with nothing cart-specific in its descriptors, and a PRO can only be recognized by its edlink handshake, which means writing to each port. A fixed cart never probes, and never hands an EverDrive the SC64's port: choose the EverDrive's serial port, or set **Cart** to **Auto-detect**.
 - **Baud** (default 115200) is passed as `multi64d --baud`. The PRO ignores it.
-- **Listen** (default `127.0.0.1:38765`) is the address `multi64d` serves HTTP and the WebSocket on, as `host:port`. A leading `http://` and a trailing `/` are dropped; Save refuses anything that is not `host:port` with a port from 1 to 65535, such as an address with no port, port 0, `https://` or a path; a host name is not looked up. A wildcard (`0.0.0.0`, `[::]`) is checked on loopback, since Windows will not connect to a wildcard.
-- **Saving restarts a running bridge** when the serial port, baud, cart, Listen or **Bridge logging** changed: they are command-line arguments fixed when `multi64d` starts. A Save made while a start is under way is applied by that start, which starts again with what was saved.
+- **Listen** (default `127.0.0.1:38765`) is the address `multi64d` serves HTTP and the WebSocket on, as `host:port`. A leading `http://` and a trailing `/` are dropped; Save refuses anything that is not `host:port` with a port from 1 to 65535, such as an address with no port, port 0, `https://` or a path; a host name is not looked up. A wildcard (`0.0.0.0`, `[::]`) is checked on loopback, since Windows will not connect to a wildcard. Anything but loopback (`127.x.x.x`, `localhost`, `[::1]`), a wildcard or any other host name included, gets a warning under the field: the bridge has no password and lets in any request without an `Origin` header, so every PC that can reach the address could write to the cart and pause the bridge. It is a warning, not a refusal; `multi64d` logs the same at startup.
+- **Saving restarts a running bridge** when the serial port, baud, cart, Listen or **Bridge logging** changed: they are command-line arguments fixed when `multi64d` starts. A Save made while a start is under way is applied by that start, which starts again with what was saved. When the restart fails, the settings stay saved and Settings closes, and the window says why under the Status card, where a failed **Start bridge** shows; the bridge is stopped by then.
 - **Start the bridge when Multi64 opens** (default on) starts it as **Start bridge** would. When that fails, for instance because the cart is unplugged at sign-in or its USB has not appeared yet, Multi64 keeps looking every 2 seconds until something has started the bridge, Multi64 exits, or the setting is turned off. A look only lists the serial ports, which sends nothing. A failed start is tried again only when something it depended on changed: a SummerCart64 found by its USB IDs, the chosen port appearing, or, for an Auto-detect probe of every port, a new serial port appearing. So the probe's test commands are never repeated on a timer. While the Listen address is taken by something else, or Start cannot work at all (the cases under **Tray** below), auto-start does not try; it logs why once and starts the bridge when that clears. Once anything has started the bridge, auto-start is done, and a bridge you stop stays stopped. With the cart and port already known, the bridge is started at once even if the cart is unplugged, since `multi64d` waits for it ([daemon API §1.3.1](../../docs/spec/daemon-api-v1.md#131-a-missing-cart-at-startup-is-not-fatal)).
 - **Start Multi64 when you sign in to Windows** uses [`auto-launch`](https://crates.io/crates/auto-launch) to write a Run entry named `Multi64`, with the program path in quotes. While it is on, each launch rewrites the entry with the current path, so one from an older build or an install that has moved is corrected. Multi64 still starts `multi64d` as a child when **Start the bridge when Multi64 opens** is on; it is not a Windows Service.
 - **Use notification area (system tray)** (default on) shows the tray icon. Saving creates or removes it. If the icon cannot be created, the settings are still saved and the log says so.
 - **Minimize to tray when closing the window** (default on): closing hides the window to the tray instead of exiting, but only while the tray icon is there to bring it back; without one, closing exits. Exit from the tray with **Exit Multi64**.
 - **Start with the window hidden** (default off) opens Multi64 in the tray only. It needs the tray, and is turned off with it.
 - **A second launch** does not start another Multi64: it shows, unminimizes and focuses the window of the one running.
-- **Developer mode** (default off) adds the Developer card, with the last 400 lines of `multi64d`'s output, and the **Bridge logging** setting: **Default** (info), **Debug** (the cart link crates and `multi64d` at debug), **Serial trace** (`--serial-trace`: every cart read, with its bytes) or **Verbose** (`multi64d` at debug, plus Serial trace). Multi64 removes `RUST_LOG` and `MULTI64D_SERIAL_TRACE` from the daemon's environment, so the preset alone decides.
+- **Developer mode** (default off) adds the Developer card, with the last 400 lines of `multi64d`'s output, and the **Bridge logging** setting: **Default** (info), **Debug** (the cart link crates and `multi64d` at debug), **Serial trace** (`--serial-trace`: every cart read, with its bytes) or **Verbose** (`multi64d` at debug, plus Serial trace). Multi64 removes `RUST_LOG` and every `MULTI64D_*` variable, `MULTI64D_SERIAL_TRACE` among them, from the daemon's environment, so the preset alone decides.
 
 ### Tray
 

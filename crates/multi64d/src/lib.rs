@@ -3,12 +3,13 @@
 //! - **`GET /`** — metadata, including whether the daemon holds the serial link (`serialActive`). Waits at most [`ROOT_LOCK_TIMEOUT`] for the link; one still in use after that is reported as held and busy (`serialBusy`) rather than waited out.
 //! - **`POST /v1/serial/release`** — drop the serial link so another process (e.g. Xfer64) can open the COM port. WebSocket writes are ignored while released. If the link is still in use after [`RELEASE_LOCK_TIMEOUT`] (a long write, a slow reopen), answers **`503`** and does not release, then or later.
 //! - **`POST /v1/serial/resume`** — reopen the same serial device and continue serving. If the link is still in use after [`RESUME_LOCK_TIMEOUT`], answers **`503`** and does not resume, then or later.
+//! - **`GET /ws`** — the L3 stream. A client message over [`MAX_WS_MESSAGE_BYTES`] closes the socket with `1009`; a client that falls behind the cart's chunks is closed with `1013`.
 //!
 //! Full API details: **`docs/spec/daemon-api-v1.md`**.
 
 pub mod config;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
@@ -53,6 +54,13 @@ pub const RESUME_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 /// `docs/spec/daemon-api-v1.md` §1.1). Outlasts a reader iteration (50 ms) and is well under the
 /// 2 s Xfer64 gives this request.
 pub const ROOT_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Largest WebSocket message `/ws` takes from a client: one L3 frame at the protocol's ceiling, a
+/// 16-byte header and a 1 MiB payload (`docs/spec/l3-bridge-protocol-v1.md` §2, §6). The L3 stream
+/// may be split across messages at any octet, so no client needs more, and the daemon holds the
+/// link for the whole of each message it writes to the cart (`docs/spec/daemon-api-v1.md` §4).
+pub const MAX_WS_MESSAGE_BYTES: usize =
+    multi64_l3::HEADER_LEN + multi64_l3::MAX_PAYLOAD_CEILING as usize;
 
 /// How long to wait before retrying `open` after the link faulted (cart unplugged, device reset).
 const REOPEN_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -299,6 +307,14 @@ async fn origin_guard(State(state): State<Arc<AppState>>, req: Request, next: Ne
         .into_response()
 }
 
+/// Whether a daemon bound to `addr` can be reached from other machines: anything but loopback, a
+/// wildcard (`0.0.0.0`, `[::]`) included. [`origin_guard`] lets in every request without an
+/// `Origin` header, so there anyone who reaches the port can write to the cart and release it; the
+/// binary warns at startup (`docs/spec/daemon-api-v1.md` §1.4).
+pub fn reachable_from_other_hosts(addr: std::net::SocketAddr) -> bool {
+    !addr.ip().to_canonical().is_loopback()
+}
+
 /// CORS for the allow-listed origins only. With an empty list no `Access-Control-Allow-Origin`
 /// header is emitted at all, so a browser cannot read any response — matching [`origin_guard`],
 /// which rejects those requests outright.
@@ -426,7 +442,22 @@ async fn post_serial_resume(State(state): State<Arc<AppState>>) -> impl IntoResp
 }
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, state))
+    // Only the message is capped, not the frame (the library's 16 MiB stays): a message is checked
+    // once its frame has been read in full, so the client is not still sending when the Close goes
+    // out, and reads it rather than a reset.
+    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_ws(socket, state))
+}
+
+/// Send a Close with `code` and `reason`; the caller then drops the socket.
+async fn close_with(socket: &mut WebSocket, code: u16, reason: String) {
+    let frame = CloseFrame {
+        code,
+        reason: reason.into(),
+    };
+    if let Err(e) = socket.send(Message::Close(Some(frame))).await {
+        tracing::debug!(error = %e, "websocket close");
+    }
 }
 
 enum ReadChunk {
@@ -696,7 +727,18 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(e)) => {
                         let s = e.to_string();
-                        if s.contains("Connection reset without closing handshake") {
+                        // tungstenite's `CapacityError::MessageTooLong`, which axum passes on only
+                        // as text. It sends no Close of its own, and nothing of the message has
+                        // reached the cart.
+                        if s.contains("Message too long") {
+                            tracing::warn!(error = %e, max = MAX_WS_MESSAGE_BYTES, "websocket message too big; closing the socket");
+                            close_with(
+                                &mut socket,
+                                close_code::SIZE,
+                                format!("message over {MAX_WS_MESSAGE_BYTES} bytes; send the L3 stream in smaller messages"),
+                            )
+                            .await;
+                        } else if s.contains("Connection reset without closing handshake") {
                             tracing::debug!(error = %e, "websocket client disconnected (no close handshake)");
                         } else {
                             tracing::warn!(error = %e, "websocket");
@@ -714,8 +756,18 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
                             break;
                         }
                     }
+                    // The chunks this client missed are gone, so what followed them would read as
+                    // one L3 stream with a hole in it. Close instead, so the gap is visible and
+                    // the client reconnects and resynchronizes (daemon-api-v1.md §4).
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(skipped, "client lagged; dropping old cart data");
+                        tracing::warn!(skipped, "websocket client fell behind the cart stream; closing it");
+                        close_with(
+                            &mut socket,
+                            close_code::AGAIN,
+                            format!("fell behind the cart stream; {skipped} chunks dropped, reconnect"),
+                        )
+                        .await;
+                        break;
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -907,6 +959,28 @@ mod tests {
             sc64.failed(CartKind::Sc64, true, t0);
         }
         assert!(sc64.may_attempt(t0));
+    }
+
+    #[test]
+    fn only_loopback_is_out_of_reach_of_other_hosts() {
+        for loopback in [
+            "127.0.0.1:38765",
+            "127.8.9.10:1",
+            "[::1]:38765",
+            "[::ffff:127.0.0.1]:1",
+        ] {
+            let addr = loopback.parse().unwrap();
+            assert!(!reachable_from_other_hosts(addr), "{loopback}");
+        }
+        for reachable in [
+            "0.0.0.0:38765",
+            "[::]:38765",
+            "192.168.1.20:38765",
+            "[fe80::1]:1",
+        ] {
+            let addr = reachable.parse().unwrap();
+            assert!(reachable_from_other_hosts(addr), "{reachable}");
+        }
     }
 
     #[test]
