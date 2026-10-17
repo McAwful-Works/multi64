@@ -80,13 +80,22 @@ fn bind(ports: &[u16]) -> io::Result<Listeners> {
         .map_err(|e| io::Error::new(e.kind(), format!("every port in {ports:?} is in use: {e}")))
 }
 
-/// The newest pending connection on any listener, if one arrived.
+/// Let go of `stream` with a reset, as every connection here is let go of (see [`Client`]).
+fn reset(stream: TcpStream) {
+    let _ = socket2::SockRef::from(&stream).set_linger(Some(Duration::ZERO));
+}
+
+/// The newest pending connection on any listener, if one arrived. Any others are reset.
 fn accept_newest(l: &Listeners) -> io::Result<Option<(TcpStream, SocketAddr)>> {
-    let mut newest = None;
+    let mut newest: Option<(TcpStream, SocketAddr)> = None;
     for s in &l.sockets {
         loop {
             match s.accept() {
-                Ok(c) => newest = Some(c),
+                Ok(c) => {
+                    if let Some((older, _)) = newest.replace(c) {
+                        reset(older);
+                    }
+                }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e),
             }
@@ -124,13 +133,15 @@ impl Drop for Client {
 
 impl Client {
     fn new(stream: TcpStream) -> io::Result<Self> {
-        stream.set_nonblocking(true)?;
-        stream.set_nodelay(true)?;
-        Ok(Self {
+        // Made a client first, so a connection that fails here is reset like any other.
+        let c = Self {
             stream,
             buf: Vec::new(),
             last_heard: Instant::now(),
-        })
+        };
+        c.stream.set_nonblocking(true)?;
+        c.stream.set_nodelay(true)?;
+        Ok(c)
     }
 
     /// Complete lines received so far; `Err` once the peer has gone.
@@ -382,6 +393,34 @@ mod tests {
         let mut buf = [0u8; 64];
         assert_eq!(
             peer.read(&mut buf).map_err(|e| e.kind()),
+            Err(io::ErrorKind::ConnectionReset),
+        );
+    }
+
+    /// And for a connection never made a client at all: one of several waiting at once, of
+    /// which only the newest is kept.
+    #[test]
+    fn a_connection_passed_over_for_a_newer_one_is_reset() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let l = Listeners {
+            port: addr.port(),
+            sockets: vec![listener],
+        };
+        let mut older = TcpStream::connect(addr).unwrap();
+        let newer = TcpStream::connect(addr).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+
+        let (kept, _) = accept_newest(&l).unwrap().expect("both are waiting");
+        assert_eq!(kept.peer_addr().unwrap(), newer.local_addr().unwrap());
+
+        older
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut buf = [0u8; 64];
+        assert_eq!(
+            older.read(&mut buf).map_err(|e| e.kind()),
             Err(io::ErrorKind::ConnectionReset),
         );
     }

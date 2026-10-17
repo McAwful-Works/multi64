@@ -193,16 +193,6 @@ pub fn detect(bundles: &[Bundle], data: &mut [u8]) -> Result<Detection, LoadErro
     })
 }
 
-/// The build whose agent a patched ROM (big-endian) carries, if any, for whichever cart.
-pub fn patched_with<'a>(bundles: &'a [Bundle], rom: &[u8]) -> Option<&'a Bundle> {
-    let h = rom::header(rom)?;
-    bundles
-        .iter()
-        .filter(|b| b.profile.game_code == h.game_code && b.profile.version == h.version)
-        .flat_map(Bundle::builds)
-        .find(|b| has_agent(b, rom))
-}
-
 /// Every game's build for `cart`, in the same order: what the patcher uses once the player has
 /// said which cart the ROM is for.
 pub fn builds_for(bundles: &[Bundle], cart: Cart) -> Vec<Bundle> {

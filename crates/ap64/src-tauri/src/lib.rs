@@ -121,7 +121,10 @@ fn carts() -> Vec<CartInfo> {
 
 /// The cart Multi64's daemon at `url` was started for, or `None` when it is not running: what
 /// the patch defaults to, so the agent in the ROM talks to the cart Multi64 is set up for.
-#[tauri::command]
+///
+/// Off the main thread: asked at every launch, when Multi64 is as likely as not to be stopped,
+/// and a connect nobody answers takes up to half a second, which froze the window meanwhile.
+#[tauri::command(async)]
 fn multi64_cart(url: String) -> Option<String> {
     ap64_cart::transport::daemon_cart(&url).filter(|c| Cart::parse(c).is_some())
 }
@@ -154,7 +157,10 @@ fn pick_output(suggested: String) -> Option<String> {
 /// ROMs are at most 64 MiB; anything much larger is not one.
 const MAX_ROM: u64 = 80 << 20;
 
-#[tauri::command]
+/// Off the main thread, as `patch_rom` is: it reads up to [`MAX_ROM`] and checks it against
+/// every profile, which for a game whose files are compressed means decompressing them, and the
+/// window froze for the seconds that took.
+#[tauri::command(async)]
 fn load_rom(path: String, cart: String, state: State<'_, AppState>) -> Result<LoadResult, String> {
     let cart = Cart::parse(&cart).ok_or_else(|| format!("unknown cart {cart:?}"))?;
     // Checked as that cart's build: builds differ in size, so a seed can fit one and not
@@ -279,7 +285,10 @@ fn adjust_rom(state: State<'_, AppState>) -> Result<LoadResult, String> {
     }
 }
 
-#[tauri::command]
+/// Off the main thread: see `load_rom`. It holds `loaded` for the whole patch, so a seed loaded
+/// meanwhile takes its place only once this one is written, as it did when both ran in turn on
+/// the main thread.
+#[tauri::command(async)]
 fn patch_rom(output: String, state: State<'_, AppState>) -> Result<PatchResult, String> {
     let guard = state.loaded.lock().unwrap();
     let loaded = guard.as_ref().ok_or("no seed loaded")?;

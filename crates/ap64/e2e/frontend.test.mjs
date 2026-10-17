@@ -55,6 +55,7 @@ async function serveFrontend() {
  * - `clientFix`: what `play_client_fix` resolves to, or `{ error }` to reject
  * - `notes`: a game's notes, per game id; a game not listed has none, as most do
  * - `moreGames`: that many extra games after the two every scenario has, for a long game list
+ * - `startDelay`: milliseconds `play_start` takes to answer, to catch the page while it runs
  * - `firstRun`: open as if for the first time, so the Before you start window shows; every
  *   other scenario has already seen it
  */
@@ -93,7 +94,8 @@ function installTauriStub(scenario) {
       { id: "g2", name: "Game Two: The Subtitle", connector: "Game Two connector", notes: (sc.notes || {}).g2 || [] },
       ...Array.from({ length: sc.moreGames || 0 }, (_, i) => ({ id: `x${i}`, name: `Extra ${i}`, connector: "Generic", notes: [] })),
     ]),
-    play_start: () => answer(sc.start ?? null),
+    play_start: () =>
+      new Promise((resolve) => setTimeout(resolve, sc.startDelay || 0)).then(() => answer(sc.start ?? null)),
     play_client_setup: (a) =>
       answer(((window.__CLIENT_FIXED__ ? sc.clientSetupAfter : sc.clientSetup) || {})[a && a.game] ?? null),
     play_client_fix: () => {
@@ -817,6 +819,42 @@ const setDev = async (p, on) => {
 {
   const p = await openScenario({});
   check("an app that has been opened before goes straight to its cards", !(await visible(p, "welcome-dialog")));
+  await p.close();
+}
+
+// A seed dropped while another dialog is open: Patch takes its place rather than opening over it,
+// so closing Patch leaves nothing on screen that cannot be closed.
+{
+  const p = await openScenario({ firstRun: true, load: loadOk });
+  await until(p, () => !document.getElementById("welcome-dialog").hidden);
+  await drop(p, ["C:\\seeds\\seed.z64"]);
+  await until(p, () => !document.getElementById("patch-dialog").hidden);
+  check("a seed dropped over the first-run window opens Patch in its place", !(await visible(p, "welcome-dialog")));
+  await p.keyboard.press("Escape");
+  const left = await p.evaluate(() =>
+    [...document.querySelectorAll(".dialog-backdrop, [id$='-dialog']")].filter((el) => !el.hidden).map((el) => el.id),
+  );
+  check("and closing Patch leaves no dialog open", left.length === 0, left.join(", "));
+  check(
+    "nor the page held still behind one",
+    !(await p.evaluate(() => document.documentElement.classList.contains("dialog-open"))),
+  );
+  check("the first-run window counts as seen", (await p.evaluate(() => localStorage.getItem("ap64.welcomed"))) === "1");
+  await p.close();
+}
+
+// Start pressed twice before the first press has been answered starts one session, and says
+// nothing about a session already running.
+{
+  const p = await openScenario({ startDelay: 400 });
+  await p.selectOption("#play-game-select", "g1");
+  await p.click("#btn-play-start");
+  const disabled = await p.evaluate(() => document.getElementById("btn-play-start").disabled);
+  await p.click("#btn-play-start", { force: true });
+  await p.waitForTimeout(600);
+  check("Start is held while the first press is answered", disabled);
+  check("and a second press starts nothing more", (await callsOf(p, "play_start")).length === 1);
+  check("nor shows an error", (await text(p, "play-error")) === "", await text(p, "play-error"));
   await p.close();
 }
 

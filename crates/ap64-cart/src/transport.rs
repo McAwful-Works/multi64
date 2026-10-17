@@ -9,7 +9,7 @@
 
 use std::io;
 use std::io::{Read as _, Write as _};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs as _};
 use std::time::{Duration, Instant};
 
 use multi64_l3::{Channel, Frame, FrameFlags, FrameType, StreamDecoder};
@@ -88,6 +88,38 @@ fn other(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
+/// The spec §5 code of an `ERR` the agent answered, when that is what `e` is.
+///
+/// An agent that refuses has answered: it is there and serving, and the same request gets the
+/// same answer however often it is sent or on however many links. `E_BUSY` is not one of these
+/// once [`Multi64Transport::peek_rom`] has turned it into a `WouldBlock`.
+pub fn refused(e: &io::Error) -> Option<u8> {
+    match e.get_ref()?.downcast_ref::<m64p::Error>()? {
+        m64p::Error::Refused { code, .. } => Some(*code),
+        _ => None,
+    }
+}
+
+/// The response [`Multi64Transport::await_response`] waits for.
+#[derive(Debug, Clone, Copy)]
+enum Want {
+    /// `HELLO_ACK`, which carries no rid. Anything else is a late answer to a request sent
+    /// before: multi64d hands every client the whole stream from the cart, so a link rebuilt
+    /// after a stall hears the old link's late replies first.
+    Hello,
+    /// The answer to the request sent as this rid, an `ERR` included.
+    Rid(u16),
+}
+
+impl Want {
+    fn matches(self, resp: &m64p::Response) -> bool {
+        match self {
+            Want::Hello => matches!(resp, m64p::Response::HelloAck { .. }),
+            Want::Rid(rid) => resp.rid() == Some(rid),
+        }
+    }
+}
+
 /// A reply holds a block for every region asked for, each exactly as long as asked.
 ///
 /// The reply carries its own lengths, so a block can parse cleanly and still be short. Every
@@ -114,19 +146,6 @@ fn check_regions(what: &str, asked: &[m64p::Region], got: &[Vec<u8>]) -> io::Res
     Ok(())
 }
 
-/// Ask the daemon whether it is currently holding the cart's serial port.
-///
-/// A raw loopback GET rather than an HTTP client dependency. Worth the few lines:
-/// without it a released or absent link looks exactly like a ROM that is simply not
-/// in MEM_AGENT mode, because both are just a timeout.
-///
-/// `None` means the daemon did not answer at all, which is a different problem from either:
-/// it is the one thing that distinguishes "Multi64 is not running" from "the cart has not
-/// answered yet", and a caller reporting those separately needs it.
-pub fn serial_active(ws_url: &str) -> Option<bool> {
-    daemon_status(ws_url)?.serial_active
-}
-
 /// Which cart the daemon was started for (`sc64`, `ed64` or `ed64pro`: `multi64d --cart`), or
 /// `None` when it does not answer. AP64 defaults its patch to it, so the agent in the ROM talks
 /// to the cart Multi64 is set up for.
@@ -137,13 +156,19 @@ pub fn daemon_cart(ws_url: &str) -> Option<String> {
 /// What one `GET /` of the daemon says, for a caller that wants both answers from one request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonStatus {
-    /// See [`serial_active`]. `None` when the answer does not say.
+    /// Whether the daemon holds the cart's serial port. Without it, a released or absent link
+    /// looks exactly like a ROM with no agent, because both are just a timeout. `None` when the
+    /// answer does not say.
     pub serial_active: Option<bool>,
     /// See [`daemon_cart`]. `None` when the answer does not say.
     pub cart: Option<String>,
 }
 
 /// The daemon's `GET /`, read once, or `None` when it does not answer at all.
+///
+/// A raw GET rather than an HTTP client dependency. `None` is a different problem from either
+/// answer: it is the one thing that tells "Multi64 is not running" from "the cart has not
+/// answered yet", and a caller reporting those separately needs it.
 pub fn daemon_status(ws_url: &str) -> Option<DaemonStatus> {
     Some(parse_status(&daemon_root(ws_url)?))
 }
@@ -173,16 +198,26 @@ fn parse_status(body: &str) -> DaemonStatus {
 /// its driver cannot see leaves the agent filling that request out with whatever arrives next, for
 /// as long as anything keeps arriving within 60 of its ticks (`docs/integration/cart-agent.md`).
 /// A copy of a write sent in that window would be read as the rest of the broken request and
-/// written under its `rid`, with bytes that are not the write's. A cart this does not know counts as
-/// an EverDrive.
+/// written under its `rid`, with bytes that are not the write's. A cart this does not know counts
+/// as an EverDrive.
 fn link_keeps_requests_whole(cart: Option<&str>) -> bool {
     cart == Some("sc64")
 }
 
+/// How long to wait for the daemon to accept a connection.
+///
+/// A plain connect to a loopback port nobody listens on takes about 2 s to be refused on Windows,
+/// and Multi64 not running is the common case this is asked to tell apart: AP64 asks at every
+/// launch. One that is accepted completes in well under a millisecond, and across a LAN in tens.
+const DAEMON_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// The daemon's `GET /`, response and all.
 fn daemon_root(ws_url: &str) -> Option<String> {
     let hostport = ws_url.strip_prefix("ws://")?.split('/').next()?.to_string();
-    let mut s = TcpStream::connect(&hostport).ok()?;
+    let mut s = hostport
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|addr| TcpStream::connect_timeout(&addr, DAEMON_CONNECT_TIMEOUT).ok())?;
     s.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     let req = format!("GET / HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n");
     s.write_all(req.as_bytes()).ok()?;
@@ -234,7 +269,7 @@ impl Multi64Transport {
         };
 
         t.send_app(&m64p::encode_hello())?;
-        match t.await_response(None)? {
+        match t.await_response(Want::Hello)? {
             m64p::Response::HelloAck {
                 proto,
                 rdram_bytes,
@@ -255,7 +290,8 @@ impl Multi64Transport {
                 if t.poke_once && !link_keeps_requests_whole(cart.as_deref()) {
                     t.poke_once = false;
                     (t.log)(format!(
-                        "the agent can take a write sent again, but over {} a copy could be                          joined to a request cut short, so each write is sent once",
+                        "the agent can take a write sent again, but over {} a copy could be \
+                         joined to a request cut short, so each write is sent once",
                         cart.as_deref().unwrap_or("this cart")
                     ));
                 }
@@ -295,24 +331,43 @@ impl Multi64Transport {
             .map_err(|e| other(format!("ws send: {e}")))
     }
 
-    /// Read until an M64P response arrives, optionally requiring a specific `rid`.
+    /// Keep what a `PEEKV_RESP` brought back from the watch, whichever request it answers.
     ///
-    /// Replies for other rids are dropped rather than queued: every caller here is
-    /// synchronous and one-request-at-a-time, so an unmatched rid means a reply to a
-    /// request we already gave up on, and keeping it would only desynchronize us
-    /// further.
-    fn await_response(&mut self, want_rid: Option<u16>) -> io::Result<m64p::Response> {
+    /// The agent hands each event out once, on whichever response goes next, so a response
+    /// thrown away is an event lost: one answering a read given up on, or one whose regions do
+    /// not add up. Taken here, before anything decides whether the response is wanted.
+    fn keep_watch_trailer(&mut self, resp: &mut m64p::Response) {
+        if let m64p::Response::PeekV {
+            events, dropped, ..
+        } = resp
+        {
+            self.events.append(events);
+            if *dropped > self.dropped_seen {
+                self.dropped_new += u32::from(*dropped - self.dropped_seen);
+                self.dropped_seen = *dropped;
+            }
+        }
+    }
+
+    /// Read until the M64P response `want` arrives.
+    ///
+    /// Anything else is dropped rather than queued: every caller here is synchronous and
+    /// one-request-at-a-time, so a response to another rid answers a request we already gave up
+    /// on, and keeping it would only desynchronize us further. What it carried from the watch is
+    /// kept ([`Self::keep_watch_trailer`]).
+    fn await_response(&mut self, want: Want) -> io::Result<m64p::Response> {
         let deadline = Instant::now() + REPLY_TIMEOUT;
 
         loop {
             // Drain anything already decoded before going back to the socket.
             while let Some(app) = self.pending.pop() {
                 match m64p::parse(&app) {
-                    Ok(resp) => {
-                        if want_rid.is_none() || resp.rid().is_none() || resp.rid() == want_rid {
+                    Ok(mut resp) => {
+                        self.keep_watch_trailer(&mut resp);
+                        if want.matches(&resp) {
                             return match resp {
                                 m64p::Response::Err { rid, code } => {
-                                    Err(other(m64p::Error::Refused { rid, code }.to_string()))
+                                    Err(io::Error::other(m64p::Error::Refused { rid, code }))
                                 }
                                 ok => Ok(ok),
                             };
@@ -353,6 +408,16 @@ impl Multi64Transport {
             // The socket carries a read timeout so a silent cart cannot wedge us.
             // That surfaces here as an IO error, which is not a failure -- it just
             // means nothing arrived yet, so let the deadline above decide.
+            //
+            // Each read waits only for what is left of the deadline. With the whole of it, a read
+            // that came back a moment early (Windows rounds socket timeouts to its timer tick)
+            // found the deadline not quite passed and waited the whole of it again, so one
+            // attempt could take twice REPLY_TIMEOUT, and its retries outlast the client.
+            let left = deadline.saturating_duration_since(Instant::now());
+            if let MaybeTlsStream::Plain(s) = self.ws.get_ref() {
+                s.set_read_timeout(Some(left.max(Duration::from_millis(1))))
+                    .map_err(|e| other(format!("set read timeout: {e}")))?;
+            }
             let msg = match self.ws.read() {
                 Ok(m) => m,
                 Err(tungstenite::Error::Io(e))
@@ -394,21 +459,10 @@ impl Multi64Transport {
         let rid = self.rid();
         let app = m64p::encode_peekv(rid, regions).map_err(|e| other(e.to_string()))?;
         self.send_app(&app)?;
-        match self.await_response(Some(rid))? {
-            m64p::Response::PeekV {
-                regions: got,
-                events,
-                dropped,
-                ..
-            } => {
+        match self.await_response(Want::Rid(rid))? {
+            // What it brought back from the watch is already kept: see keep_watch_trailer.
+            m64p::Response::PeekV { regions: got, .. } => {
                 check_regions("", regions, &got)?;
-                // Only ever non-empty once this host has set a watch, and it rides the
-                // response it was already waiting for. See take_events.
-                self.events.extend(events);
-                if dropped > self.dropped_seen {
-                    self.dropped_new += u32::from(dropped - self.dropped_seen);
-                    self.dropped_seen = dropped;
-                }
                 Ok(got)
             }
             other_msg => Err(other(format!("expected PEEKV_RESP, got {other_msg:?}"))),
@@ -418,22 +472,19 @@ impl Multi64Transport {
     /// Ask the cart to watch `slots` from now on, replacing what it watched before.
     ///
     /// An empty list stops it watching. Fails if the agent does not watch slots at all,
-    /// which a caller should check through `watch_slots` first.
+    /// which a caller should check through `watch_slots` first, and with a [`refused`] error
+    /// if the agent will not watch these.
     pub fn watch(&mut self, slots: &[m64p::Slot]) -> io::Result<u8> {
         let rid = self.rid();
         let app = m64p::encode_watch(rid, slots).map_err(|e| other(e.to_string()))?;
         self.send_app(&app)?;
-        match self.await_response(Some(rid))? {
+        match self.await_response(Want::Rid(rid))? {
             m64p::Response::WatchAck { watching, .. } => {
                 // The agent starts a new history on WATCH, counters included.
                 self.events.clear();
                 self.dropped_seen = 0;
                 Ok(watching)
             }
-            m64p::Response::Err { code, .. } => Err(other(format!(
-                "the cart refused to watch {} slot(s): M64P error 0x{code:02X}",
-                slots.len()
-            ))),
             other_msg => Err(other(format!("expected WATCH_ACK, got {other_msg:?}"))),
         }
     }
@@ -463,13 +514,13 @@ impl Multi64Transport {
         let rid = self.rid();
         let app = m64p::encode_peekrom(rid, regions).map_err(|e| other(e.to_string()))?;
         self.send_app(&app)?;
-        match self.await_response(Some(rid)) {
+        match self.await_response(Want::Rid(rid)) {
             Ok(m64p::Response::PeekRom { regions: got, .. }) => {
                 check_regions("ROM ", regions, &got)?;
                 Ok(got)
             }
             Ok(other_msg) => Err(other(format!("expected PEEKROM_RESP, got {other_msg:?}"))),
-            Err(e) if e.to_string().contains(m64p::err_name(m64p::E_BUSY)) => {
+            Err(e) if refused(&e) == Some(m64p::E_BUSY) => {
                 Err(io::Error::new(io::ErrorKind::WouldBlock, e.to_string()))
             }
             Err(e) => Err(e),
@@ -520,7 +571,7 @@ impl Multi64Transport {
 
     /// Wait one [`REPLY_TIMEOUT`] for the `POKE_ACK` to `rid`, a `POKEV` of `count` regions.
     pub fn await_poke(&mut self, rid: u16, count: usize) -> io::Result<()> {
-        match self.await_response(Some(rid))? {
+        match self.await_response(Want::Rid(rid))? {
             m64p::Response::PokeAck { applied, .. } => {
                 if applied as usize != count {
                     return Err(other(format!(

@@ -285,6 +285,49 @@ impl Writes {
     }
 }
 
+/// [`hello_ack`] from an agent that also watches one slot itself (`HELLO_ACK` bit 2).
+pub fn hello_ack_watch() -> Vec<u8> {
+    let mut v = hello_ack();
+    v[5 + 7] |= m64p::FLAG_WATCH;
+    v.push(1); // watch_slots, after rom_bytes
+    v
+}
+
+/// A `WATCH_ACK` saying the agent is watching `watching` slots.
+pub fn watch_ack(rid: u16, watching: u8) -> Vec<u8> {
+    let mut v = head_of(m64p::MSG_WATCH_ACK);
+    v.extend_from_slice(&rid.to_be_bytes());
+    v.push(watching);
+    v
+}
+
+/// An `ERR` answering `rid` with the spec §5 `code`.
+pub fn err(rid: u16, code: u8) -> Vec<u8> {
+    let mut v = head_of(m64p::MSG_ERR);
+    v.extend_from_slice(&rid.to_be_bytes());
+    v.push(code);
+    v
+}
+
+/// A `PEEKV_RESP` carrying `blocks`, then a watch trailer of `events` (all from slot 0) and the
+/// agent's `dropped` count (spec 4.3).
+pub fn peek_resp_with_events(
+    rid: u16,
+    blocks: &[Vec<u8>],
+    events: &[Vec<u8>],
+    dropped: u16,
+) -> Vec<u8> {
+    let mut v = peek_resp(rid, blocks, false);
+    v.push(events.len() as u8);
+    v.extend_from_slice(&dropped.to_be_bytes());
+    for e in events {
+        v.push(0);
+        v.push(e.len() as u8);
+        v.extend_from_slice(e);
+    }
+    v
+}
+
 /// A `PEEKV_RESP` (or with `rom`, a `PEEKROM_RESP`) carrying `blocks` as given.
 pub fn peek_resp(rid: u16, blocks: &[Vec<u8>], rom: bool) -> Vec<u8> {
     let mut v = head_of(if rom {

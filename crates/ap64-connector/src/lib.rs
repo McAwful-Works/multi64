@@ -449,7 +449,8 @@ fn install(
                     // decided to write came from the console before it. Not fatal, since the
                     // cart is back; the next line is loaded and answered afresh.
                     return Err(mlua::Error::RuntimeError(
-                        "the cart link restarted during this request, so its writes were not                          sent: the console may have been reset since it was read"
+                        "the cart link restarted during this request, so its writes were not \
+                         sent: the console may have been reset since it was read"
                             .into(),
                     ));
                 }
