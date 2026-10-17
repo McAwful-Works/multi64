@@ -89,6 +89,15 @@ L2 SHOULD surface to the daemon:
 
 - **Open failures** (device not found, permission denied).
 - **I/O errors** (USB stall, disconnect mid-frame).
+- **A message lost on a link that still works**, after every L3 octet received before it: an L2
+  message that failed its own framing check, or a cart-side report that a host write was dropped.
+  A read surfaces this as `io::ErrorKind::InvalidData` or `io::ErrorKind::ConnectionReset`, and
+  only this; an I/O error that means the device is gone MUST NOT use either kind. `multi64d` logs
+  these and keeps the link, and treats every other read error as a fault
+  ([daemon API §1.3](./daemon-api-v1.md#13-link-faults-and-recovery)). Each cart's mapping says
+  which it uses: the X7's bad trailer is `InvalidData` ([X7 §4.4](./l3-over-everdrive-x7.md)), the
+  SummerCart64's `PKT G` is `ConnectionReset` ([`l3-over-sc64.md`](./l3-over-sc64.md)); the PRO's
+  pipe uses neither.
 
 The daemon MAY translate irrecoverable L2 errors into L3 `ERROR` / `SESSION_RESET` toward clients, or close the session. Exact policy is implementation-defined but SHOULD be documented.
 

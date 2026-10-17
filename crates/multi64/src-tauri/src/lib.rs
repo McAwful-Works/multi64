@@ -1,6 +1,6 @@
 //! Multi64 — manages `multi64d`, tray, settings (Windows-first).
 
-use auto_launch::{AutoLaunch, AutoLaunchBuilder};
+use auto_launch::{AutoLaunch, AutoLaunchBuilder, WindowsEnableMode};
 use multi64_cart_probe::{usb_is_sc64, DetectedCart};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -337,12 +337,22 @@ fn load_settings() -> Settings {
 /// `fs::write` truncates before writing, so a crash mid-write leaves a file `load_settings`
 /// cannot parse -- and that path silently falls back to defaults, losing the serial port,
 /// listen address and `autostart_app` (which reads as Windows no longer launching the app).
-/// Write beside the target and rename over it; rename replaces the destination on Windows.
+/// Write beside the target and rename over it; rename replaces the destination on Windows. The
+/// temporary file is synced before the rename: otherwise a power loss can keep the rename and not
+/// the bytes, leaving the same unparseable file this exists to prevent.
 fn save_settings(settings: &Settings) -> Result<(), String> {
+    use std::io::Write as _;
     let path = settings_path()?;
     let s = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, s).map_err(|e| e.to_string())?;
+    let written = std::fs::File::create(&tmp).and_then(|mut f| {
+        f.write_all(s.as_bytes())?;
+        f.sync_all()
+    });
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
     match std::fs::rename(&tmp, &path) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -1593,10 +1603,28 @@ async fn get_serial_port_options() -> Result<SerialPortOptions, String> {
         .map_err(|e| format!("serial port enumeration task: {e}"))
 }
 
-/// Stays sync: reads one in-memory mutex, so the hop would cost more than the work.
+/// Stays sync: reads one in-memory mutex and one registry value, so the hop would cost more than
+/// the work.
 #[tauri::command]
 fn get_settings(state: tauri::State<'_, AppState>) -> Settings {
-    state.settings.lock().clone()
+    let file = state.settings.lock().clone();
+    settings_for_form(
+        file,
+        multi64_auto_launch().ok().and_then(|a| a.is_enabled().ok()),
+    )
+}
+
+/// `file` as the Settings form shows it: with `autostart_app` as Windows has it (`windows`, from
+/// the sign-in entry and Task Manager's switch for it), when that can be read.
+///
+/// The file only records what Multi64 last wrote. Someone who turns the entry off in Task Manager
+/// changes Windows and not the file, and a form showing the file put it back on at the next Save
+/// (`commit_settings` writes the entry when the form differs from Windows).
+fn settings_for_form(file: Settings, windows: Option<bool>) -> Settings {
+    Settings {
+        autostart_app: windows.unwrap_or(file.autostart_app),
+        ..file
+    }
 }
 
 /// Bounds on [`fit_window_height`], in logical pixels: a page that measured nothing, or a runaway
@@ -1742,11 +1770,17 @@ fn multi64_auto_launch() -> Result<AutoLaunch, String> {
 /// [`multi64_auto_launch`] for the app at `exe`, so what reaches the registry is testable without
 /// writing it. Enabling, disabling and the enabled check all find the entry by its name, `Multi64`,
 /// so the path's spelling cannot make them disagree.
+///
+/// The entry is the signed-in user's (HKCU), whatever rights Multi64 runs with. auto-launch's
+/// default tries the machine's key first, so one run as administrator started Multi64 at every
+/// user's sign-in, and an uninstall, which removes the user's entry, left that one behind.
+/// Turning it off still clears both, where Windows allows.
 fn multi64_auto_launch_for(exe: &str) -> Result<AutoLaunch, String> {
     AutoLaunchBuilder::new()
         .set_app_name("Multi64")
         .set_app_path(&run_entry_path(exe))
         .set_args(&[] as &[&str])
+        .set_windows_enable_mode(WindowsEnableMode::CurrentUser)
         .build()
         .map_err(|e| e.to_string())
 }
@@ -1893,9 +1927,10 @@ fn get_daemon_logs(state: tauri::State<'_, AppState>) -> Vec<String> {
 }
 
 #[tauri::command]
-fn clear_daemon_logs(app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+/// Not announced as `daemon-changed`: nothing about the bridge changed, and that event costs every
+/// window a status check and the tray a rebuild. The window that cleared it reads the log again.
+fn clear_daemon_logs(state: tauri::State<'_, AppState>) {
     state.daemon.lock().logs.clear();
-    let _ = app.emit("daemon-changed", ());
 }
 
 /// Blocking: spawns `multi64d`. Does nothing while the bridge runs or another start is running:
@@ -2280,7 +2315,6 @@ pub fn run() {
     let settings_for_setup = settings.clone();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         // A second launch raises this window, unminimizing it too, as the tray's Show window does.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_main_window(app);
@@ -2660,6 +2694,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(writes, [true]);
+    }
+
+    /// The form shows what Windows will do at sign-in, not what the file last said. Turned off in
+    /// Task Manager, the box used to stay ticked, and the next Save, of anything, saw a change
+    /// from Windows' off to the form's on and turned it back on over the user's choice.
+    #[test]
+    fn the_form_shows_the_sign_in_setting_windows_has() {
+        assert!(!settings_for_form(with_autostart(true), Some(false)).autostart_app);
+        assert!(settings_for_form(with_autostart(false), Some(true)).autostart_app);
+        // Unreadable: what the file says, as `commit_settings` assumes.
+        assert!(settings_for_form(with_autostart(true), None).autostart_app);
+        // And a Save of what the form showed then leaves the sign-in entry alone.
+        let shown = settings_for_form(with_autostart(true), Some(false));
+        let mut writes = Vec::new();
+        commit_settings(
+            &with_autostart(true),
+            &shown,
+            || Some(false),
+            |on| {
+                writes.push(on);
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(writes, Vec::<bool>::new());
     }
 
     #[test]

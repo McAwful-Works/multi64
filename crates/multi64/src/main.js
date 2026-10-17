@@ -6,11 +6,21 @@ function setText(id, text) {
   if (el.textContent !== text) el.textContent = text;
 }
 
+/**
+ * Status checks started, so one that answers after a later one began is not shown. A Save that
+ * restarts the bridge starts several at once (its own, a `daemon-changed` for each step, the
+ * poll), and one asked while the new bridge was not listening yet could answer last and show "Not
+ * responding yet" over "OK" until the next poll.
+ */
+let statusSeq = 0;
+
 async function refreshStatus() {
+  const seq = ++statusSeq;
   try {
     // While Settings is open and loaded, the same poll (and enumeration) refreshes its port hints.
     const generation = settingsGeneration;
     const s = await invoke("get_daemon_status", { withPorts: settingsSnapshot !== null });
+    if (seq !== statusSeq) return;
     if (s.portOptions && generation === settingsGeneration && settingsSnapshot !== null) {
       applyPolledPortOptions(s.portOptions);
     }
@@ -31,6 +41,7 @@ async function refreshStatus() {
     document.getElementById("btn-start").disabled = s.running || starting;
     document.getElementById("btn-stop").disabled = !s.running;
   } catch (e) {
+    if (seq !== statusSeq) return;
     setText("status-msg", String(e));
     // Status is unknown, so neither action can be ruled out; leave both usable, short of a Start
     // this window is still waiting on.
@@ -253,13 +264,28 @@ function applySettingsToForm(s) {
   }
 }
 
+/**
+ * The Baud field as a number, or null when it is not one Save can take: a whole number from 9600
+ * up (the field's own minimum). Empty means the default. `parseInt` used to save "0" as 115200
+ * without a word and "1e6" as 1, and pass "-5" on for the backend to refuse in its own terms.
+ */
+function parseBaud(text) {
+  const t = String(text).trim();
+  if (t === "") return 115200;
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return n >= 9600 && n <= 0xffffffff ? n : null;
+}
+
+const BAUD_REFUSED = "Baud must be a whole number from 9600 up.";
+
 function readSettingsFromForm() {
   const serialSel = document.getElementById("serial-port");
   const raw = serialSel.value;
   return {
     serialPort: raw === "" ? null : raw,
     cart: knownCart(document.getElementById("cart").value),
-    baud: parseInt(document.getElementById("baud").value, 10) || 115200,
+    baud: parseBaud(document.getElementById("baud").value) ?? 115200,
     listen: document.getElementById("listen").value.trim() || "127.0.0.1:38765",
     autoStartDaemon: document.getElementById("auto-start-daemon").checked,
     autostartApp: document.getElementById("autostart-app").checked,
@@ -543,17 +569,30 @@ function stripAnsi(s) {
   return String(s).replace(/\u001b\[[\d;]*[A-Za-z]/g, "");
 }
 
+/**
+ * Show the bridge's log. Written only when it changed: the poll reads it every 1.5 s, and
+ * replacing the text each time cleared any selection, so a line could not be copied while the
+ * bridge ran. A reader at the bottom stays there as lines arrive; one scrolled up stays put.
+ */
 async function refreshLog() {
   const el = document.getElementById("daemon-log");
+  let text;
   try {
     const lines = await invoke("get_daemon_logs");
     const arr = Array.isArray(lines) ? lines : [];
-    el.textContent = arr.length
-      ? arr.map((line) => stripAnsi(line)).join("\n")
-      : EMPTY_LOG_HINT;
+    text = arr.length ? arr.map((line) => stripAnsi(line)).join("\n") : EMPTY_LOG_HINT;
   } catch (e) {
-    el.textContent = `Failed to load log: ${e}`;
+    text = `Failed to load log: ${e}`;
   }
+  if (el.textContent === text) return;
+  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+  el.textContent = text;
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+/** Read the log only while the Developer card shows it. */
+function refreshLogIfShown() {
+  if (!document.getElementById("dev-panel").hidden) void refreshLog();
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
@@ -621,10 +660,10 @@ window.addEventListener("DOMContentLoaded", async () => {
       startClicked = false;
       const msg = String(e);
       console.error("daemon_start:", e);
+      // What the status says now, not "Stopped": the tray or auto-start may have started the
+      // bridge since this Start failed.
       await refreshStatus();
       await refreshLog();
-      document.getElementById("status-running").textContent = "Stopped";
-      document.getElementById("status-healthy").textContent = "—";
       // Its own line: Note is rewritten by the next status poll, which would erase the error.
       showInlineError("status-error", msg);
     }
@@ -644,6 +683,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btn-save").addEventListener("click", async () => {
     if (settingsSaving) return;
     showInlineError("settings-error", "");
+    if (parseBaud(document.getElementById("baud").value) === null) {
+      showInlineError("settings-error", BAUD_REFUSED);
+      return;
+    }
     setSettingsSaving(true);
     try {
       const settings = readSettingsFromForm();
@@ -694,9 +737,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   }, 2000);
   setInterval(() => {
     if (document.visibilityState !== "visible") return;
-    if (!document.getElementById("dev-panel").hidden) {
-      refreshLog();
-    }
+    refreshLogIfShown();
   }, 1500);
   // Refresh on the way back so a hidden window is never showing stale status when it reappears.
   document.addEventListener("visibilitychange", () => {
@@ -706,7 +747,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   if (window.__TAURI__?.event?.listen) {
     await window.__TAURI__.event.listen("daemon-changed", () => {
       refreshStatus();
-      refreshLog();
+      refreshLogIfShown();
     });
   }
 });

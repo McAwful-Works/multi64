@@ -235,7 +235,7 @@ mod tests {
     }
 
     /// #136: L3 bytes queued by the same serial read as a later `PKT G` are handed out before the
-    /// error, so a caller that drops the pipe on error (multi64d) does not lose them.
+    /// error, so a caller that drops the pipe on error does not lose them.
     #[test]
     fn queued_l3_bytes_are_returned_before_data_flushed_error() {
         let mut chunk = encode_fake_pkt_u(b"M64B-queued");

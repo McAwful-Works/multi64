@@ -284,7 +284,7 @@ async fn root_reports_a_busy_link_instead_of_waiting_for_it() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn root_waits_out_a_short_lock_hold() {
-    // A reader iteration holds the lock for at most 50 ms; `GET /` still reports the real state.
+    // A reader iteration holds the lock for at most 10 ms; `GET /` still reports the real state.
     let state = faulted_state();
     let holder = hold_link_lock(&state, Duration::from_millis(100));
     let v = get_root(&state).await;

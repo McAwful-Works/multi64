@@ -59,6 +59,8 @@ async function serveFrontend() {
  * - `starting`: the backend reports a start under way (from the tray, or auto-start)
  * - `holdStart`: `daemon_start` answers only when `window.__FINISH_START__()` is called
  * - `restartError`: `set_settings` saves, then reports that restarting the bridge failed with it
+ * - `startError`: `daemon_start` fails with it, while the bridge starts anyway (from the tray)
+ * - `logs`: the lines `get_daemon_logs` returns
  */
 function installTauriStub(scenario = {}) {
   const sc = scenario || {};
@@ -103,10 +105,17 @@ function installTauriStub(scenario = {}) {
       cart: sc.running ? sc.runningCart : cartLabels[settings.cart],
       ...(a.withPorts ? { portOptions: portOptions() } : {}),
     }),
-    get_daemon_logs: () => [],
-    daemon_start: () => sc.holdStart
-      ? new Promise((resolve) => { window.__FINISH_START__ = () => resolve(null); })
-      : null,
+    get_daemon_logs: () => [...(sc.logs || [])],
+    daemon_start: () => {
+      if (sc.startError) {
+        // Something else started the bridge meanwhile, so it is running all the same.
+        sc.running = true;
+        return Promise.reject(sc.startError);
+      }
+      return sc.holdStart
+        ? new Promise((resolve) => { window.__FINISH_START__ = () => resolve(null); })
+        : null;
+    },
   };
 
   window.__TAURI__ = {
@@ -372,6 +381,67 @@ async function openSettings(p) {
   const hidden = await p.evaluate(() => document.getElementById("status-error").hidden);
   check("and a Save that needed no restart, or whose restart worked, shows nothing", hidden);
   await p.close();
+}
+
+// --- Save: a baud that is not one ------------------------------------------------
+{
+  // "0" used to be saved as 115200 without a word, and "1e6" as 1.
+  const p = await openScenario({});
+  await openSettings(p);
+  const before = (await callsOf(p, "set_settings")).length;
+  const refused = {};
+  for (const v of ["0", "1e6", "-5", "9600.5"]) {
+    // A Save that went through closed the dialog.
+    if (await p.evaluate(() => document.getElementById("settings-panel").hidden)) await openSettings(p);
+    await p.fill("#baud", v);
+    await p.click("#btn-save");
+    const el = await p.evaluate(() => {
+      const e = document.getElementById("settings-error");
+      return { hidden: e.hidden, text: e.textContent };
+    });
+    refused[v] = !el.hidden && el.text.includes("Baud");
+  }
+  check("a baud that is not a whole number from 9600 up is refused, and says so",
+    Object.values(refused).every(Boolean) && (await callsOf(p, "set_settings")).length === before, JSON.stringify(refused));
+  if (await p.evaluate(() => document.getElementById("settings-panel").hidden)) await openSettings(p);
+  await p.fill("#baud", "57600");
+  await p.click("#btn-save");
+  await until(p, () => document.getElementById("settings-panel").hidden);
+  check("and one that is saves", (await callsOf(p, "set_settings")).at(-1)?.args.settings.baud === 57600);
+  await p.close();
+}
+
+// --- The log: read without disturbing the reader ---------------------------------
+{
+  // The poll rewrote the log every 1.5 s, which cleared any selection, so no line could be copied.
+  const p = await openScenario({ running: true, runningCart: "SummerCart64 on COM3", settings: { developerMode: true }, logs: ["first line", "second line"] });
+  await until(p, () => document.getElementById("daemon-log").textContent.includes("second line"));
+  await p.evaluate(() => {
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById("daemon-log"));
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  });
+  const reads = (await callsOf(p, "get_daemon_logs")).length;
+  await until(p, ([n]) => window.__TAURI_CALLS__.filter((c) => c.cmd === "get_daemon_logs").length > n + 1, [reads]);
+  check("the log is not rewritten when nothing was added, so a selection in it stays",
+    (await p.evaluate(() => getSelection().toString())).includes("first line"));
+  await p.close();
+}
+
+// --- Start: one that fails while the bridge starts anyway ----------------------------
+{
+  // The tray (or auto-start) started the bridge while this window's Start failed: the card used to
+  // say Stopped, over the status it had just read.
+  const p = await openScenario({ startError: "Something is already listening on 127.0.0.1:38765.", runningCart: "SummerCart64 on COM3" });
+  await p.click("#btn-start");
+  await until(p, () => !document.getElementById("status-error").hidden);
+  const card = await statusCard(p);
+  check("a Start that failed shows the status as it is", card.bridge === "Running" && card.health === "OK", JSON.stringify(card));
+  await p.close();
+  // The failed Start's own report, which this scenario exists to cause.
+  const expected = consoleErrors.findIndex((m) => m.startsWith("daemon_start:"));
+  if (expected >= 0) consoleErrors.splice(expected, 1);
 }
 
 // --- The window fits the page ------------------------------------------------
