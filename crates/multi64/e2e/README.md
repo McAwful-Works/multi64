@@ -24,6 +24,8 @@ What they check:
 - **The window fits the page:** the height the page asks for (`fit_window_height`) is the page's own,
   grows by the Developer card in Developer mode, is at least 640 px while a dialog is open and
   shrinks back when it closes, and a long log scrolls inside its box rather than growing it.
+- **A Save whose restart fails:** Settings closes, and the reason `set_settings` gave shows under the
+  Status card rather than only in the log; a Save with nothing to report shows nothing there.
 - **No console errors** from any of the pages above.
 
 ```sh

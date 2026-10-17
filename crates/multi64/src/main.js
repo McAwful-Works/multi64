@@ -615,12 +615,17 @@ window.addEventListener("DOMContentLoaded", async () => {
     setSettingsSaving(true);
     try {
       const settings = readSettingsFromForm();
-      await invoke("set_settings", { settings });
+      const outcome = await invoke("set_settings", { settings });
       await refreshStatus();
       if (settings.developerMode) {
         await refreshLog();
       }
       setSettingsOpen(false);
+      // Saved, so the dialog closes, but a restart that failed must not be left to the log, which is
+      // hidden outside Developer mode. Where a failed Start shows; the bridge is stopped by then.
+      if (outcome?.restartError) {
+        showInlineError("status-error", `Settings were saved, but the bridge did not restart: ${outcome.restartError}`);
+      }
     } catch (e) {
       console.error("set_settings:", e);
       showInlineError("settings-error", `Settings were not saved: ${e}`);

@@ -58,6 +58,7 @@ async function serveFrontend() {
  * - `cartLinked: false`: it answers without holding the cart's serial port; `message` is the Note
  * - `starting`: the backend reports a start under way (from the tray, or auto-start)
  * - `holdStart`: `daemon_start` answers only when `window.__FINISH_START__()` is called
+ * - `restartError`: `set_settings` saves, then reports that restarting the bridge failed with it
  */
 function installTauriStub(scenario = {}) {
   const sc = scenario || {};
@@ -84,7 +85,13 @@ function installTauriStub(scenario = {}) {
 
   const handlers = {
     get_settings: () => ({ ...settings }),
-    set_settings: (a) => { settings = { ...a.settings }; return null; },
+    // `SaveOutcome`: the settings are saved; `restartError` says the bridge then failed to restart.
+    // A failed restart leaves the bridge stopped: the old daemon is stopped before the new one starts.
+    set_settings: (a) => {
+      settings = { ...a.settings };
+      if (sc.restartError) sc.running = false;
+      return { restartError: sc.restartError ?? null };
+    },
     get_serial_port_options: () => portOptions(),
     get_daemon_status: (a) => ({
       running: sc.running === true,
@@ -300,6 +307,34 @@ async function openSettings(p) {
     return !document.getElementById("discard-panel").hidden;
   });
   check("#168: none of that counts as an unsaved edit", !edits);
+  await p.close();
+}
+
+// --- Save: a restart that fails ------------------------------------------------
+{
+  // The settings are saved and the dialog closes, but the restart's failure used to be only in the
+  // log, which is hidden unless Developer mode is on.
+  const why = "Something is already listening on 127.0.0.1:38765.";
+  const p = await openScenario({ running: true, runningCart: "SummerCart64 on COM3", settings: { cart: "sc64" }, restartError: why });
+  await openSettings(p);
+  await p.click("#btn-save");
+  const closed = await until(p, () => document.getElementById("settings-panel").hidden);
+  const shown = await until(p, ([w]) => {
+    const el = document.getElementById("status-error");
+    return !el.hidden && el.textContent.includes(w);
+  }, [why]);
+  const text = await p.evaluate(() => document.getElementById("status-error").textContent);
+  check("a Save whose restart fails closes Settings and says so in the window, not only the log",
+    closed && shown && text.startsWith("Settings were saved"), JSON.stringify({ closed, shown, text }));
+  await p.close();
+}
+{
+  const p = await openScenario({ settings: { cart: "sc64" } });
+  await openSettings(p);
+  await p.click("#btn-save");
+  await until(p, () => document.getElementById("settings-panel").hidden);
+  const hidden = await p.evaluate(() => document.getElementById("status-error").hidden);
+  check("and a Save that needed no restart, or whose restart worked, shows nothing", hidden);
   await p.close();
 }
 

@@ -1624,16 +1624,30 @@ fn fit_window_height(window: tauri::WebviewWindow, height: f64) -> Result<(), St
         .map_err(|e| e.to_string())
 }
 
+/// What a Save that wrote the settings has to tell the window.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveOutcome {
+    /// The settings were saved, but restarting the bridge on them failed, and why. The window
+    /// shows it: in the log alone it was hidden unless Developer mode was on.
+    pub restart_error: Option<String>,
+}
+
 /// Writes the settings file, may touch the autostart registry entry, and may restart the daemon.
+/// `Err` only when the settings were not saved.
 #[tauri::command]
-async fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), String> {
+async fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<SaveOutcome, String> {
     on_blocking_pool(&app, "set_settings", move |app, state| {
         apply_settings(app, state, settings)
     })
     .await?
 }
 
-fn apply_settings(app: &AppHandle, state: &AppState, settings: Settings) -> Result<(), String> {
+fn apply_settings(
+    app: &AppHandle,
+    state: &AppState,
+    settings: Settings,
+) -> Result<SaveOutcome, String> {
     // Before anything is written: the daemon cannot bind an address `normalize_listen` refuses.
     let listen = normalize_listen(&settings.listen)?;
     let settings = normalize_settings(Settings { listen, ..settings });
@@ -1666,6 +1680,7 @@ fn apply_settings(app: &AppHandle, state: &AppState, settings: Settings) -> Resu
     }
     // A running daemon keeps the spawn arguments it was started with. Saving used to appear to
     // apply them while the bridge quietly stayed on the previous port.
+    let mut outcome = SaveOutcome::default();
     if spawn_args_differ(&settings, &prev) && !start_running && daemon_is_running(&state.daemon) {
         push_log(
             &state.daemon,
@@ -1673,10 +1688,11 @@ fn apply_settings(app: &AppHandle, state: &AppState, settings: Settings) -> Resu
         );
         if let Err(e) = start_daemon(app, state) {
             push_log(&state.daemon, format!("Restart failed: {e}"));
+            outcome.restart_error = Some(e);
         }
         let _ = app.emit("daemon-changed", ());
     }
-    Ok(())
+    Ok(outcome)
 }
 
 /// Write the sign-in entry and the settings file so that they cannot disagree (#148).
@@ -2422,6 +2438,22 @@ mod tests {
         assert_eq!(flag(&ed64, "--baud"), "57600");
         let pro = daemon_args("COM8", DaemonCart::Ed64Pro, &Settings::default());
         assert_eq!(flag(&pro, "--cart"), "ed64pro");
+    }
+
+    /// `main.js` reads `restartError` from what Save answers, and the e2e stub answers the same.
+    #[test]
+    fn a_save_outcome_reaches_the_window_as_restart_error() {
+        let failed = SaveOutcome {
+            restart_error: Some("no port".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&failed).unwrap(),
+            serde_json::json!({ "restartError": "no port" })
+        );
+        assert_eq!(
+            serde_json::to_value(SaveOutcome::default()).unwrap(),
+            serde_json::json!({ "restartError": null })
+        );
     }
 
     /// The daemon Multi64 starts runs on what Multi64 passes it and nothing else: a developer's
