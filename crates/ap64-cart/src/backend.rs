@@ -485,7 +485,8 @@ impl Multi64 {
     /// `op` is called again after each timeout, and with [`Retry::Resend`] once more on every
     /// rebuilt transport, which suits a request that may safely be served twice: `PEEKV`,
     /// `PEEKROM` and `WATCH` change nothing a second copy could change again. A `POKEV` is not
-    /// one of those, whatever its bytes (see [`Retry::Once`]).
+    /// one of those, whatever its bytes (see [`Retry::Once`]); its `op` decides for itself what a
+    /// retry on the same transport sends.
     fn with_retry<T>(
         &mut self,
         what: &str,
@@ -509,7 +510,8 @@ impl Multi64 {
         };
 
         // Silence first, on the same transport. A late reply to a read we gave up on is
-        // discarded by rid, so asking again is safe; a write waits again for its own.
+        // discarded by rid, so asking again is safe; a write goes again under its own rid to an
+        // agent that recognizes the copy, and otherwise waits again for its own reply.
         for attempt in 1..=self.soft_retries {
             if last.kind() != io::ErrorKind::TimedOut {
                 break;
@@ -689,7 +691,14 @@ impl Multi64 {
         }
     }
 
-    /// One `POKEV`, sent once ([`Retry::Once`]): a timeout waits again for its own reply.
+    /// One `POKEV`, applied at most once ([`Retry::Once`]).
+    ///
+    /// A timeout is retried on the same link under the same rid. An agent that recognizes a
+    /// repeated write (`HELLO_ACK` bit 3, spec 4.4) is sent the write again: if the first copy
+    /// never reached it, this one is applied, and if it did, this one is acknowledged and
+    /// nothing is written twice. Any other agent is only waited on again for the first copy's
+    /// reply, since a copy would be a second write. Either way the write never reaches a
+    /// rebuilt link.
     fn poke_once(&mut self, batch: &[(u32, &[u8])]) -> io::Result<()> {
         if batch.is_empty() {
             return Ok(());
@@ -697,6 +706,12 @@ impl Multi64 {
         let mut sent: Option<u16> = None;
         self.with_retry("write", Retry::Once, |t| {
             let rid = match sent {
+                // Nothing else goes out between the copies, which is what the agent needs: it
+                // holds only the request it served last.
+                Some(rid) if t.poke_once => {
+                    t.resend_poke(rid, batch)?;
+                    rid
+                }
                 Some(rid) => rid,
                 None => *sent.insert(t.send_poke(batch)?),
             };
@@ -984,16 +999,20 @@ fn split(regions: &[(u32, usize)], size: u32) -> io::Result<(Vec<m64p::Region>, 
 enum Retry {
     /// Send it again, on this link or a rebuilt one: a read, a ROM read, a watch.
     Resend,
-    /// Never send it twice, which is every write.
+    /// Never apply it twice, which is every write.
     ///
-    /// The agent serves requests in order, one per game frame, and keeps no record of rids.
-    /// A request the host gave up on is therefore still served if it reached the cart, and a
-    /// copy sent after it lands on the next frame. Writing the same bytes twice is not
-    /// harmless: a game that takes an item from a mailbox between the two frames finds it
-    /// filled again, and delivers the item twice. So a write that times out waits again for
-    /// its own reply, which is what a late agent sends, and once the link has been rebuilt it
-    /// is not sent at all: the console may have been reset in between, and the write was
-    /// decided against the one before. The caller is told with [`link_restarted`].
+    /// The agent serves requests in order, one per game frame. A request the host gave up on is
+    /// therefore still served if it reached the cart, and a copy sent after it lands on the next
+    /// frame. Writing the same bytes twice is not harmless: a game that takes an item from a
+    /// mailbox between the two frames finds it filled again, and delivers the item twice.
+    ///
+    /// So on the same link, a write that times out is sent again only to an agent that
+    /// acknowledges the copy without applying it (`HELLO_ACK` bit 3, spec 4.4), under the same
+    /// rid; every other agent, which is every ROM patched before agents could, is only waited on
+    /// again for its own reply, which is what a late agent sends, and a write it never received
+    /// fails. Once the link has been rebuilt the write is not sent at all, whatever the agent:
+    /// the console may have been reset in between, and the write was decided against the one
+    /// before. The caller is told with [`link_restarted`].
     Once,
 }
 

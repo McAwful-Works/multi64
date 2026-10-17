@@ -230,6 +230,54 @@ pub fn hello_ack() -> Vec<u8> {
     v
 }
 
+/// [`hello_ack`] from an agent that also recognizes a write sent again (`HELLO_ACK` bit 3).
+pub fn hello_ack_poke_once() -> Vec<u8> {
+    let mut v = hello_ack();
+    v[5 + 7] |= m64p::FLAG_POKE_ONCE;
+    v
+}
+
+/// The writes an agent with `HELLO_ACK` bit 3 holds and applies (spec 4.4), for a scripted agent
+/// to serve requests through.
+///
+/// It holds the request it served last if that was a write it applied, and answers a copy of
+/// that write without applying it. A request the script drops instead of serving never reaches
+/// this, as a frame the agent never received never reaches its handler.
+#[derive(Default)]
+pub struct Writes {
+    held: Mutex<Option<(u16, u8)>>,
+    applied: Mutex<Vec<Request>>,
+}
+
+impl Writes {
+    /// Every write that landed, in order.
+    pub fn applied(&self) -> Vec<Request> {
+        self.applied.lock().unwrap().clone()
+    }
+
+    /// What such an agent answers to `req`: [`answer`]'s replies, with HELLO saying bit 3, and a
+    /// copy of the write served last acknowledged again rather than applied.
+    pub fn serve(&self, req: &Request, fill: u8) -> Vec<Step> {
+        let mut held = self.held.lock().unwrap();
+        let last = held.take();
+        match req.msg {
+            m64p::MSG_HELLO => vec![Step::Send(hello_ack_poke_once())],
+            m64p::MSG_POKEV => {
+                let applied = match last {
+                    Some((rid, applied)) if rid == req.rid => applied,
+                    _ => {
+                        self.applied.lock().unwrap().push(req.clone());
+                        req.writes.len() as u8
+                    }
+                };
+                *held = Some((req.rid, applied));
+                vec![Step::Send(poke_ack(req.rid, applied))]
+            }
+            _ => answer(req, fill),
+        }
+    }
+}
+
 /// A `PEEKV_RESP` (or with `rom`, a `PEEKROM_RESP`) carrying `blocks` as given.
 pub fn peek_resp(rid: u16, blocks: &[Vec<u8>], rom: bool) -> Vec<u8> {
     let mut v = head_of(if rom {

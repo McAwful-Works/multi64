@@ -65,6 +65,9 @@ pub struct Multi64Transport {
     log: Log,
     pub rdram_bytes: u32,
     pub writable: bool,
+    /// Whether the agent acknowledges a `POKEV` sent again without applying it twice
+    /// (`HELLO_ACK` bit 3, spec 4.4). Only then may a write be sent more than once.
+    pub poke_once: bool,
     /// The cart ROM window, when the agent answers `PEEKROM`.
     pub rom_bytes: Option<u32>,
     /// Slots the agent will watch at once, when it watches at all (spec 4.3).
@@ -208,6 +211,7 @@ impl Multi64Transport {
             log,
             rdram_bytes: 0,
             writable: false,
+            poke_once: false,
             rom_bytes: None,
             watch_slots: None,
             events: Vec::new(),
@@ -232,6 +236,7 @@ impl Multi64Transport {
                 }
                 t.rdram_bytes = rdram_bytes;
                 t.writable = flags & m64p::FLAG_WRITABLE != 0;
+                t.poke_once = flags & m64p::FLAG_POKE_ONCE != 0;
                 t.rom_bytes = rom_bytes;
                 t.watch_slots = watch_slots;
                 Ok(t)
@@ -460,10 +465,11 @@ impl Multi64Transport {
 
     /// Send a `POKEV` without waiting for it, and return its rid for [`Self::await_poke`].
     ///
-    /// Apart from [`Self::poke`] because a write must not be sent twice. The agent keeps no
-    /// record of rids, so a request the host gave up on may still be served, and a second copy
-    /// would land on the frame after it: a mailbox the game emptied in between would be filled
-    /// again. Waiting longer for the first copy's reply is the only retry that cannot do that.
+    /// Apart from [`Self::poke`] because a write may not simply be sent again. A request the host
+    /// gave up on may still be served, and a second copy lands on the frame after it: a mailbox
+    /// the game emptied in between would be filled again. Only an agent with
+    /// [`Self::poke_once`] recognizes the copy ([`Self::resend_poke`]); for any other, waiting
+    /// longer for the first copy's reply is the only retry that cannot do that.
     pub fn send_poke(&mut self, writes: &[(u32, &[u8])]) -> io::Result<u16> {
         if !self.writable {
             return Err(other("cart reports a read-only agent"));
@@ -472,6 +478,22 @@ impl Multi64Transport {
         let app = m64p::encode_pokev(rid, writes).map_err(|e| other(e.to_string()))?;
         self.send_app(&app)?;
         Ok(rid)
+    }
+
+    /// Send the `POKEV` [`Self::send_poke`] sent as `rid` again, byte for byte, to an agent that
+    /// acknowledges a copy without applying it twice ([`Self::poke_once`], spec 4.4).
+    ///
+    /// The agent holds only the request it served last, so the copy must go before anything
+    /// else does: the caller sends nothing on this transport between the two.
+    pub fn resend_poke(&mut self, rid: u16, writes: &[(u32, &[u8])]) -> io::Result<()> {
+        if !self.poke_once {
+            return Err(other(
+                "this cart agent cannot tell a write sent again from a new one, so it is not \
+                 sent again",
+            ));
+        }
+        let app = m64p::encode_pokev(rid, writes).map_err(|e| other(e.to_string()))?;
+        self.send_app(&app)
     }
 
     /// Wait one [`REPLY_TIMEOUT`] for the `POKE_ACK` to `rid`, a `POKEV` of `count` regions.

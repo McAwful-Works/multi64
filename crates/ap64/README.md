@@ -295,6 +295,18 @@ Before anything else, Start checks that the ROM on the cart is one this version 
 A new version can change the agent or the stub that loads it, so a ROM patched by another
 version is refused, with a note to add the agent to the seed again.
 
+One such change: the agent now recognizes a write AP64 sends it again
+([spec §4.4](../../docs/spec/memory-l3-application-v0.md#44-repeated-writes-flags-bit-3)). When
+the console goes quiet with a write outstanding, during a load say, AP64 sends that write again
+under the same request id, and the agent applies it only if the first copy never arrived, so an
+item is neither lost nor given twice. That is shown by tests against a scripted agent, not yet on
+a console. A write is never sent again once the link to the cart has
+restarted. A seed patched before this carries an agent that cannot tell a copy from a new write;
+Start refuses it like any other version's, and patching the seed again with this version gets
+the newer agent. ([`ap64-cart`](../ap64-cart) still serves such an agent, and never sends it a
+write twice: a write it never received fails instead, once the wait for it has run out and the
+link has been rebuilt.)
+
 When the stub stands the agent down because its code in RAM changed (see
 [Patching a seed](#patching-a-seed)), it stays down until the console is powered off. A reset
 is not enough where the agent lives in the Expansion Pak, because that RAM survives a reset and

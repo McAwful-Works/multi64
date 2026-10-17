@@ -34,6 +34,9 @@ pub const FLAG_WRITABLE: u8 = 0x01;
 pub const FLAG_CART_ROM: u8 = 0x02;
 /// `HELLO_ACK` flags bit 2: the agent watches slots, and `watch_slots` follows `rom_bytes`.
 pub const FLAG_WATCH: u8 = 0x04;
+/// `HELLO_ACK` flags bit 3: a `POKEV` sent again under the rid of the request just before it is
+/// acknowledged, not applied again (spec 4.4). Appends no field.
+pub const FLAG_POKE_ONCE: u8 = 0x08;
 
 /// `ERR` code for a `PEEKROM` that could not get the PI bus: nothing was read, retry.
 pub const E_BUSY: u8 = 0x07;
@@ -433,6 +436,27 @@ mod tests {
                 agent_ver: 0x0100,
                 rdram_bytes: 0x800000,
                 flags: 7,
+                rom_bytes: Some(0x0400_0000),
+                watch_slots: Some(4),
+            }
+        );
+    }
+
+    /// Bit 3 appends nothing, so an agent that recognizes a repeated write is read exactly as
+    /// one that does not, flags aside.
+    #[test]
+    fn hello_ack_from_an_agent_that_recognizes_a_repeated_write() {
+        let mut app = b"M64P\x81".to_vec();
+        app.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 0x80, 0x00, 0x00, 0x0F]);
+        app.extend_from_slice(&[0x04, 0x00, 0x00, 0x00]);
+        app.push(4);
+        assert_eq!(
+            parse(&app).unwrap(),
+            Response::HelloAck {
+                proto: 0,
+                agent_ver: 0x0100,
+                rdram_bytes: 0x800000,
+                flags: 0x0F,
                 rom_bytes: Some(0x0400_0000),
                 watch_slots: Some(4),
             }
