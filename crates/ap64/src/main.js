@@ -824,10 +824,9 @@ async function beginSession() {
   saveUrl(url);
   setStarting(true);
   try {
+    // The backend says a session is running before it answers this, so Start stays held
+    // until the status that says so.
     await invoke("play_start", { game: $("play-game-select").value, url });
-    // Read now rather than waiting for the next status event, so Start is not enabled again
-    // in between.
-    renderStatus((await invoke("play_status")) || lastStatus);
   } catch (e) {
     setError($("play-error"), String(e));
   } finally {
