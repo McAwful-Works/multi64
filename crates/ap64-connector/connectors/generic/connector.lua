@@ -51,7 +51,11 @@ What changed, and why:
   request runs, so a GUARD and the READs beside it see one snapshot -- the
   property whose absence let a count and a mailbox be read at different moments
   and an item be delivered twice. Writes are overlaid on the snapshot, so a later
-  READ in the batch sees them, and sent together before the reply goes out.
+  READ in the batch sees them, and sent together before the reply goes out. The
+  cart merges them into contiguous runs, so a batch that fits one request (32
+  regions, 7,936 bytes) lands within one game frame, as it would under BizHawk:
+  GoldenEye's client rewrites Bond's whole inventory pool field by field, and
+  applied over several frames the game ran with half of it written.
 
 * LOCK. A console cannot be paused. LOCK and UNLOCK are acknowledged; each batch
   still sees its own snapshot.
