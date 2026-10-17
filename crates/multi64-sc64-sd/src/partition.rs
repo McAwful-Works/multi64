@@ -6746,8 +6746,9 @@ mod fs_tests {
     /// A file hadris wrote lists and reads as its entry set describes it. hadris records the
     /// file's whole allocation, one cluster here, as its DataLength, and only the bytes written
     /// as its ValidDataLength — so, as on Windows, the file is a cluster long and zero after the
-    /// bytes written. Xfer64 wrote exFAT imports through hadris until #190's last change replaced
-    /// it with this crate's own writer, which records the two as equal.
+    /// bytes written. Xfer64's exFAT imports went through hadris until #190's last change, but
+    /// each one then rewrote DataLength to ValidDataLength at once, as this crate's own writer
+    /// records them, so no import that reported success left a file like this one.
     #[test]
     fn ram_disk_exfat_list_read_after_hadris_write() {
         let arc = Arc::new(std::sync::Mutex::new(vec![0u8; EXFAT_IMAGE_BYTES]));
