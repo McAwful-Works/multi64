@@ -109,7 +109,9 @@ pub struct Agent {
     /// there; a seed whose data reaches it gets the agent past its data instead.
     pub rom: u32,
     /// Start of the ROM this profile appends (default `rom`). Nothing of the seed may lie at
-    /// or past it, and writes there need no check: the bytes are all ours.
+    /// or past it, and writes there need no check: the bytes are all ours. Not for an agent
+    /// that moves: it has no region, and a seed may have data past `rom`, so a profile like
+    /// that may not write there at all.
     #[serde(default)]
     pub region: Option<u32>,
     /// Zero bytes after the image, for an agent loaded by a loader that does not clear BSS.
@@ -417,9 +419,18 @@ impl Profile {
         if profile.agent.rom < region {
             return Err("agent.rom lies before agent.region".into());
         }
+        let moves = profile.agent_rom_imm().is_some();
         let pinned = |at: &Addr, len: u32| -> Result<bool, String> {
             let (base, at) = profile.place(at)?;
             let len = i64::from(len);
+            // An agent that moves goes past a seed's data that reaches agent.rom, so from
+            // there on the bytes may be the seed's, not ours, and nothing checks them.
+            if moves && base.is_none() && at + len > i64::from(region) {
+                return Err(format!(
+                    "a write at 0x{at:X} reaches agent.rom 0x{region:X}, where a seed may have \
+                     data, since this profile's agent can move"
+                ));
+            }
             if base.is_none() && at >= i64::from(region) {
                 return Ok(true);
             }
