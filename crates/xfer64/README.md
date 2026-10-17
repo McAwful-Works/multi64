@@ -38,7 +38,8 @@ has is refused; a rename that only changes letter case goes through.
 Closing the window while an operation runs does not cut it off: Xfer64 asks whether to keep
 waiting or to cancel the operation and close once it has stopped. Either way it exits only after
 the cart's SD card has been handed back and the Multi64 bridge resumed. A close during a quick cart
-read simply waits for it to finish.
+read simply waits for it to finish. If an operation will not stop, closing the window twice more
+quits Xfer64 at once, without that cleanup, so the window can always be closed.
 
 ## Drag and drop
 

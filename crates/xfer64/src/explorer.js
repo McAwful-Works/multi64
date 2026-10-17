@@ -627,7 +627,7 @@ async function onCloseRequestedWhileBusy(payload) {
   closePromptOpen = true;
   try {
     const stop = await showExplorerConfirm(
-      "An operation is still running. Closing Xfer64 now would cut it off part-way, leaving the cart's SD card held by this PC and the Multi64 bridge paused.\n\nCancel the operation, and close Xfer64 once it has stopped?",
+      "An operation is still running. Closing Xfer64 now would cut it off part-way, leaving the cart's SD card held by this PC and the Multi64 bridge paused.\n\nCancel the operation, and close Xfer64 once it has stopped?\n\nIf it will not stop, close the window twice more to quit at once, without that cleanup.",
       { title: "Close Xfer64?", okLabel: "Cancel and close", cancelLabel: "Keep waiting" }
     );
     if (!stop) return;

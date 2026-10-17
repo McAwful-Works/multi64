@@ -10,6 +10,12 @@
 //! the main window asks whether to cancel, Quick upload cancels as its own Close button does —
 //! and calls [`explorer_close_when_idle`]. Xfer64 then exits when the last window reports idle,
 //! which the windows do only after the operation has ended and the bridge has been resumed.
+//!
+//! Holding a close must never make Xfer64 impossible to close. An operation that does not honor
+//! its cancel, a window that never reports idle, or a window that cannot answer at all would
+//! otherwise leave Task Manager as the only way out, which is the abrupt exit this module exists to
+//! avoid. So a close asked for [`FORCE_AFTER`] times while work is under way exits anyway: the user
+//! has insisted, and the windows say so.
 
 use crate::drag_out::DragStagingState;
 use serde::Serialize;
@@ -19,6 +25,9 @@ use tauri::{AppHandle, Emitter, Manager, State, Window};
 
 /// Sent to a window whose close was held because work is under way.
 pub const CLOSE_REQUESTED_EVENT: &str = "xfer64-close-requested";
+
+/// The close request, counted while work is under way, that exits regardless.
+pub const FORCE_AFTER: u32 = 3;
 
 #[derive(Clone, Serialize)]
 pub struct CloseRequestedPayload {
@@ -37,6 +46,8 @@ struct Inner {
     /// Per window label: the sequence number of its latest report, and whether it is busy.
     windows: HashMap<String, (u64, bool)>,
     close_when_idle: bool,
+    /// Close requests held since nothing was last busy.
+    held: u32,
 }
 
 impl Inner {
@@ -63,7 +74,20 @@ impl CloseGuardState {
             return false;
         }
         *entry = (seq, busy);
+        if !g.busy() {
+            g.held = 0;
+        }
         g.close_when_idle && !g.busy()
+    }
+
+    /// Count a close request that arrived while work is under way. Returns `true` when it is the
+    /// [`FORCE_AFTER`]th since nothing was last busy, and Xfer64 should exit regardless.
+    pub fn hold_close(&self) -> bool {
+        let Ok(mut g) = self.inner.lock() else {
+            return true;
+        };
+        g.held += 1;
+        g.held >= FORCE_AFTER
     }
 
     /// Exit once nothing is busy. Returns `true` when that is already the case.
@@ -92,6 +116,15 @@ pub fn on_close_requested(window: &Window, api: &tauri::CloseRequestApi) {
         .try_state::<CloseGuardState>()
         .is_some_and(|g| g.is_busy());
     if !busy {
+        exit_app(app);
+        return;
+    }
+    if app
+        .try_state::<CloseGuardState>()
+        .is_some_and(|g| g.hold_close())
+    {
+        // Asked for again and again while the operation went on: the user would rather lose its
+        // cleanup than keep a window that will not close.
         exit_app(app);
         return;
     }
@@ -170,6 +203,31 @@ mod tests {
         assert!(!g.is_busy());
         g.set_busy("main", 3, true);
         assert!(g.is_busy());
+    }
+
+    /// An operation that never stops must not leave Xfer64 impossible to close.
+    #[test]
+    fn closing_again_and_again_while_busy_exits_anyway() {
+        let g = CloseGuardState::default();
+        g.set_busy("main", 1, true);
+        for n in 1..FORCE_AFTER {
+            assert!(!g.hold_close(), "close request {n} is held");
+        }
+        assert!(g.hold_close(), "close request {FORCE_AFTER} exits");
+    }
+
+    /// The count starts over once the work has ended, so an insistent close during one operation
+    /// does not carry into the next.
+    #[test]
+    fn held_closes_are_forgotten_once_nothing_is_busy() {
+        let g = CloseGuardState::default();
+        g.set_busy("main", 1, true);
+        for _ in 1..FORCE_AFTER {
+            assert!(!g.hold_close());
+        }
+        g.set_busy("main", 2, false);
+        g.set_busy("main", 3, true);
+        assert!(!g.hold_close(), "a new operation starts the count over");
     }
 
     #[test]
