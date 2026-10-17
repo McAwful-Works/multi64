@@ -28,6 +28,8 @@ Each step's overwrite prompt is decided against the destination as it was before
 
 An export writes each file through [`write_host_file`](../../crates/multi64-sc64-sd/src/host_file.rs): into a temporary file beside the destination, renamed over it only once flushed and synced, so a cancelled or failed **Replace** keeps the PC's original. Imports to an SC64 keep the cart's original the same way (#200); an EverDrive-64 PRO's link truncates the destination when it opens it, so there an interrupted Replace does lose the original.
 
+An export from an SC64 or X-series card writes exactly the size the listing reports: an exFAT file's DataLength, with the bytes past its ValidDataLength written as zeros, not read. A FAT or exFAT cluster chain that ends before that size fails the export with `UnexpectedEof` rather than completing it short.
+
 ### multi64d coordination
 
 Only one process can hold the cart serial device. `multi64d` exposes `POST /v1/serial/release` and `POST /v1/serial/resume` ([daemon API §1](daemon-api-v1.md)). Every cart read and write from a window goes through `withBridgePaused` ([`saved-cart-path.js`](../../crates/xfer64/src/saved-cart-path.js); the main window's `withCartDaemonYield` wraps it): when `multi64d` answers, **release** its COM, run the SD work, then **resume**. Only a copy (including a drag-out's staging), new folder or rename asks the user first (`withCartDaemonYield(fn, { confirm: true })`); listings, Properties, delete (which has its own confirmation) and the EverDrive SD base scan do not. Quick upload never asks: its listings go through `withBridgePaused` without a prompt, and its upload, like the headless `xfer64 upload`, pauses and resumes the bridge in the backend. No extra release inside each `with_session`.

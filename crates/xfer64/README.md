@@ -33,7 +33,13 @@ leaves the original as it was; a crash or power loss can leave a `.<name>.<…>.
 it, never a truncated original. A cart import does the same on a SummerCart64. On an EverDrive-64
 PRO the cart's own link truncates the file it replaces when it starts, so an interrupted Replace
 there reports what is left of the original. Renaming on This PC onto a name the folder already
-has is refused; a rename that only changes letter case goes through.
+has is refused; a rename that only changes letter case goes through. On a SummerCart64's card one
+does too, by way of a temporary `~multi64-rename-…` name, put back if the second step fails.
+
+A file is copied off the card at the size its listing shows. On exFAT that is the file's full
+length, so a file another device preallocated comes out whole, with zeros after what was written.
+A file whose clusters end before its size says, as on a damaged card, fails with an error rather
+than arriving short.
 
 Two files of one name from different folders, as a search can turn up, cannot be copied into one
 folder together, since each would land on the other: Xfer64 names both and copies nothing.

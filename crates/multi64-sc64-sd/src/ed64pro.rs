@@ -82,7 +82,9 @@ impl<T: Transport> Ed64ProSdSession<T> {
             .collect())
     }
 
-    /// `Some(true)` for a directory, `Some(false)` for a file, `None` if absent.
+    /// `Some(true)` for a directory, `Some(false)` for a file, `None` if absent. An error when the
+    /// cart will not list a folder that the folder above shows, since absence cannot then be told
+    /// from a failed listing.
     pub fn cart_path_entry_kind(&self, path: &str) -> io::Result<Option<bool>> {
         Ok(self.find_entry(path)?.map(|e| e.is_dir))
     }
