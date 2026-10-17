@@ -1319,12 +1319,51 @@ fn commit_settings(
 /// keeps one signature across platforms.
 fn multi64_auto_launch() -> Result<AutoLaunch, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    multi64_auto_launch_for(&exe.to_string_lossy())
+}
+
+/// [`multi64_auto_launch`] for the app at `exe`, so what reaches the registry is testable without
+/// writing it. Enabling, disabling and the enabled check all find the entry by its name, `Multi64`,
+/// so the path's spelling cannot make them disagree.
+fn multi64_auto_launch_for(exe: &str) -> Result<AutoLaunch, String> {
     AutoLaunchBuilder::new()
         .set_app_name("Multi64")
-        .set_app_path(&exe.to_string_lossy())
+        .set_app_path(&run_entry_path(exe))
         .set_args(&[] as &[&str])
         .build()
         .map_err(|e| e.to_string())
+}
+
+/// The program part of the sign-in entry. auto-launch writes `"{path} {args}"` to the Run key as
+/// given, and Windows splits an unquoted value at its first space, so a path with spaces in it
+/// (`C:\Program Files\...`) was the unquoted-path pattern: Windows tries `C:\Program.exe` first.
+/// Quoted on Windows only; elsewhere the path is not parsed that way.
+fn run_entry_path(exe: &str) -> String {
+    if cfg!(windows) {
+        quote_path(exe)
+    } else {
+        exe.to_string()
+    }
+}
+
+/// `path` in double quotes, once.
+fn quote_path(path: &str) -> String {
+    format!("\"{}\"", path.trim_matches('"'))
+}
+
+/// Rewrite an existing sign-in entry so it carries the current path in its current form. An entry
+/// written before the path was quoted stays unquoted until autostart is turned off and on, and one
+/// written by an install that has since moved names a program that is no longer there. Only an
+/// entry Windows would run is touched: one turned off in Task Manager reads as not enabled.
+fn refresh_autostart_entry() {
+    let Ok(auto) = multi64_auto_launch() else {
+        return;
+    };
+    if auto.is_enabled().unwrap_or(false) {
+        if let Err(e) = auto.enable() {
+            tracing_warn(&format!("could not rewrite the sign-in entry: {e}"));
+        }
+    }
 }
 
 fn set_autostart_windows_impl(enabled: bool) -> Result<(), String> {
@@ -1774,6 +1813,11 @@ pub fn run() {
                 }
             }
 
+            if settings_for_setup.autostart_app {
+                // Off the main thread: it reads and may write the registry.
+                std::thread::spawn(refresh_autostart_entry);
+            }
+
             if settings_for_setup.auto_start_daemon {
                 match start_plan(&settings_for_setup) {
                     // Skipping the auto-start used to leave no trace; the log now says why.
@@ -2099,6 +2143,35 @@ mod tests {
         assert!(checks.recent(A, t0, |_| true));
         assert!(!checks.fresh(A, t0, |_| false));
         assert!(!checks.recent(A, t0, never));
+    }
+
+    #[test]
+    fn a_path_is_quoted_once() {
+        assert_eq!(
+            quote_path(r"C:\Program Files\Multi64\Multi64.exe"),
+            r#""C:\Program Files\Multi64\Multi64.exe""#
+        );
+        assert_eq!(
+            quote_path(r#""C:\Program Files\Multi64\Multi64.exe""#),
+            r#""C:\Program Files\Multi64\Multi64.exe""#
+        );
+    }
+
+    /// The sign-in entry was written unquoted, so an install path with a space in it was read by
+    /// Windows as `C:\Program.exe` with arguments. Builds the entry without touching the registry.
+    #[cfg(windows)]
+    #[test]
+    fn the_sign_in_entry_quotes_the_program_path() {
+        let exe = r"C:\Program Files\Multi64\Multi64.exe";
+        let auto = multi64_auto_launch_for(exe).unwrap();
+        // What auto-launch 0.6 writes to the Run key: `format!("{} {}", app_path, args.join(" "))`.
+        let value = format!("{} {}", auto.get_app_path(), auto.get_args().join(" "));
+        assert_eq!(
+            value.trim_end(),
+            r#""C:\Program Files\Multi64\Multi64.exe""#
+        );
+        // Found again by name, which is what `is_enabled` and `disable` look up.
+        assert_eq!(auto.get_app_name(), "Multi64");
     }
 
     /// A wildcard Listen address is where the daemon binds, not an address to connect to: Windows
