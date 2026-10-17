@@ -9,6 +9,7 @@ The reference daemon binds to `127.0.0.1:38765` by default (see [`spec/daemon-ap
 - **Working-directory config:** `multi64d.toml` next to where you start the process.
 - **Per-user config:** `multi64d/config.toml` under the OS config directory (Linux `~/.config`, Windows `%APPDATA%`, macOS `~/Library/Application Support`).
 - **Explicit path:** `--config` or `MULTI64D_CONFIG`.
+- **None:** `--no-config-file` looks at neither file, so only the command line and environment apply. The daemon Multi64 starts runs this way, so a config file written for a service does not change it.
 
 Copy [`crates/multi64d/multi64d.toml.example`](../crates/multi64d/multi64d.toml.example) and set `serial` to your cart’s COM or `/dev/tty*` device.
 

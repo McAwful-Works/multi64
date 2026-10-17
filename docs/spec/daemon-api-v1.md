@@ -145,6 +145,7 @@ Server responds with:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config <path>` | (none) | TOML config file; env: `MULTI64D_CONFIG` |
+| `--no-config-file` | off | Load no config file at all: discovery (§5.2) is skipped, so only the command line, the environment and the defaults apply. Given together with `--config` / `MULTI64D_CONFIG`, it is a startup error. Multi64 starts its daemon this way |
 | `--serial`, `-s` | (required†) | Serial device (e.g. `COM3`, `/dev/ttyACM0`); env: `MULTI64D_SERIAL` |
 | `--baud` | `115200` | Baud (often ignored on USB-CDC cart adapters); env: `MULTI64D_BAUD` |
 | `--cart <sc64\|ed64\|ed64pro>` | `sc64` | Which cart's L2 mapping carries the L3 stream. `ed64` selects the EverDrive-64 X7 `DMA@` mapping; `ed64pro` selects the EverDrive-64 PRO mapping ([`l3-over-everdrive-pro.md`](./l3-over-everdrive-pro.md)), which runs at the PRO's fixed 921600 baud and ignores `--baud`. Both are **experimental**: the X7 mapping has run on one cart ([`l3-over-everdrive-x7.md`](./l3-over-everdrive-x7.md) §4.5), the PRO mapping on none. The daemon logs a warning when either is chosen. Env: `MULTI64D_CART`; config file: `cart = "ed64"` |
@@ -166,7 +167,7 @@ If `--config` / `MULTI64D_CONFIG` is not set, the daemon loads the first file th
 1. `./multi64d.toml` (current working directory)
 2. OS config directory: `multi64d/config.toml` — e.g. Linux `~/.config/multi64d/config.toml`, Windows `%APPDATA%\multi64d\config.toml`, macOS `~/Library/Application Support/multi64d/config.toml`
 
-A `--config` / `MULTI64D_CONFIG` path that does **not** exist is a startup error: the daemon exits rather than falling back to discovery. Neither discovered location existing is normal, and the defaults in §5.1 apply.
+A `--config` / `MULTI64D_CONFIG` path that does **not** exist is a startup error: the daemon exits rather than falling back to discovery. Neither discovered location existing is normal, and the defaults in §5.1 apply. With `--no-config-file`, neither location is looked at.
 
 ### 5.3 Logging
 
