@@ -82,7 +82,9 @@ impl<T: Transport> Ed64ProSdSession<T> {
             .collect())
     }
 
-    /// `Some(true)` for a directory, `Some(false)` for a file, `None` if absent.
+    /// `Some(true)` for a directory, `Some(false)` for a file, `None` if absent. An error when the
+    /// cart will not list a folder that the folder above shows, since absence cannot then be told
+    /// from a failed listing.
     pub fn cart_path_entry_kind(&self, path: &str) -> io::Result<Option<bool>> {
         Ok(self.find_entry(path)?.map(|e| e.is_dir))
     }
@@ -278,10 +280,21 @@ impl<T: Transport> Ed64ProSdSession<T> {
         }
         let list = match self.list_dir(&parent) {
             Ok(l) => l,
-            // The link cannot tell "no such folder" from other refusals, so a non-root parent the
-            // cart will not list is treated as absent — the trade-off `Sc64SdSession` makes too.
+            // The link cannot tell "no such folder" from other refusals: no source documents the
+            // firmware's status codes. So a non-root parent the cart will not list is absent only
+            // when the folder above it, listed, does not show it as a folder. Taking every refusal
+            // as absence let a listing that failed for any other reason hide an existing file,
+            // which an import then emptied with `CREATE_ALWAYS` without asking to replace it.
             // Transport failures (timeouts, a dropped port) keep their own kinds and propagate.
-            Err(e) if !parent.is_empty() && e.kind() == io::ErrorKind::Other => return Ok(None),
+            Err(e) if !parent.is_empty() && e.kind() == io::ErrorKind::Other => {
+                return match self.find_entry(&parent)? {
+                    Some(p) if p.is_dir => Err(io::Error::new(
+                        e.kind(),
+                        format!("the cart could not list {parent}: {e}"),
+                    )),
+                    _ => Ok(None),
+                };
+            }
             Err(e) => return Err(e),
         };
         Ok(list.into_iter().find(|e| fat_names_equal(&e.name, &name)))
@@ -723,6 +736,35 @@ mod tests {
         assert_eq!(s.cart_path_entry_kind("roms/nope.z64").unwrap(), None);
         assert_eq!(s.cart_path_entry_kind("missing/child").unwrap(), None);
         assert_eq!(s.cart_path_entry_kind("").unwrap(), None);
+    }
+
+    /// A folder the cart fails to list, though the listing above it shows it, does not make the
+    /// file in it absent: the error comes back, and an import that would have emptied the file
+    /// with `CREATE_ALWAYS`, with no Replace prompt, does not run.
+    ///
+    /// Fail-first, demonstrated: with every refused non-root listing taken as absence, as it was,
+    /// `cart_path_entry_kind` returned `Ok(None)`, and the import ran and returned `Ok` although
+    /// `skip_existing` was set.
+    #[test]
+    fn a_folder_the_cart_fails_to_list_does_not_hide_its_files() {
+        let s = session(
+            FakeEd64Pro::new()
+                .with_file("roms/Game.z64", b"the cart's copy")
+                .failing_dir_load(1),
+        );
+        let err = s.cart_path_entry_kind("roms/Game.z64").unwrap_err();
+        assert!(err.to_string().contains("could not list roms"), "{err}");
+
+        let src = Scratch::new("import-refused-listing");
+        let file = src.0.join("Game.z64");
+        std::fs::write(&file, b"the PC's copy").unwrap();
+        let s = session(fake_of(s).failing_dir_load(1));
+        s.import_from_pc_with_progress(&file, "roms", "Game.z64", true, |_| true)
+            .expect_err("an import that cannot tell whether the file is there must not run");
+        assert_eq!(
+            fake_of(s).file("roms/Game.z64").unwrap(),
+            b"the cart's copy"
+        );
     }
 
     #[test]

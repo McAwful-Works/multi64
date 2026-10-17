@@ -56,4 +56,4 @@ pub use host_file::write_host_file;
 pub use link::{Sc64Link, SdCardTransport, SD_CARD_BUFFER_ADDR, SD_CARD_BUFFER_MAX_BYTES};
 #[cfg(feature = "ed64")]
 pub use partition::Ed64SdSession;
-pub use partition::{cart_path_parts, Sc64SdSession, SessionEntry};
+pub use partition::{cart_path_parts, fat_name_key, Sc64SdSession, SessionEntry};
