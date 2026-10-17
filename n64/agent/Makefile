@@ -122,8 +122,9 @@ symbols: $(BUILD)/m64p_agent.o
 	@$(NM) -u $<
 
 # The EverDrive builds' L3 reassembly, compiled for the PC and run under ASan and UBSan, once per
-# cart, with tests/reassembly_test.c standing in for the driver. Needs a host gcc or clang, not
-# the N64 toolchain. CI runs it; it says nothing about any driver on a cart.
+# cart, with tests/reassembly_test.c standing in for the driver, and with M64P_POKE_ONCE as every
+# agent build has it. Needs a host gcc or clang, not the N64 toolchain. CI runs it; it says nothing
+# about any driver on a cart.
 HOSTCC ?= cc
 HOST_CFLAGS ?= -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -Wall -Wextra
 HOST_TEST_SOURCES = tests/reassembly_test.c agent.c $(PROTO)/mem_proto.c
@@ -156,9 +157,9 @@ HOST_TEST_SOURCES = tests/reassembly_test.c agent.c $(PROTO)/mem_proto.c
 # run it since.
 host-test:
 	mkdir -p build/host
-	$(HOSTCC) $(HOST_CFLAGS) -DAGENT_CART_ED64 -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64
+	$(HOSTCC) $(HOST_CFLAGS) $(POKE_ONCE) -DAGENT_CART_ED64 -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64
 	build/host/reassembly-ed64
-	$(HOSTCC) $(HOST_CFLAGS) -DAGENT_CART_ED64PRO -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64pro
+	$(HOSTCC) $(HOST_CFLAGS) $(POKE_ONCE) -DAGENT_CART_ED64PRO -I. -I$(PROTO) $(HOST_TEST_SOURCES) -o build/host/reassembly-ed64pro
 	build/host/reassembly-ed64pro
 	$(HOSTCC) $(HOST_CFLAGS) -DSC64_HOST_TEST -I. -I$(PROTO) tests/sc64_test.c sc64.c -o build/host/sc64
 	build/host/sc64

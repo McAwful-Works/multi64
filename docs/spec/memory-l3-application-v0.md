@@ -203,6 +203,14 @@ A host relying on bit `3` must:
 Bit `3` assumes one host on the link, as `HELLO`'s reset of watched slots already does: a
 request from another host between a write and its copy ends the hold.
 
+The `rid` rule above binds **every** host talking to an agent that sets bit `3`, whether or not it
+sends copies: a new `POKEV` under the held `rid` is taken for a copy, acknowledged, and not
+applied. A host that has had no reply on the link since it connected cannot know which request
+the agent served last: another host's, or its own from an earlier connection, may have been a
+`POKEV` under the `rid` it is about to use. Before its first `POKEV` it **must** send another M64P
+request, which ends any hold. `HELLO` is the natural one, and a host checking the capability
+sends it anyway.
+
 A host whose agent leaves bit `3` clear must never send a `POKEV` twice. After a timeout it can
 only wait for the reply to the `rid` it sent; a write the agent never received then fails
 rather than being sent again.

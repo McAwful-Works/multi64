@@ -38,7 +38,7 @@ Rust CLI: `multi64_test.z64` ([`n64/test-rom`](../../n64/README.md)) ↔ `multi6
 | `diag` | `REQ_DIAG` (0x10) | `DIAG` (0x90); `--expect-clean` fails when a stream-health counter is non-zero |
 | `mem-hello` | M64P `HELLO` (0x01) | `HELLO_ACK` (0x81) — protocol version, RDRAM size, writable flag |
 | `mem-peek` | M64P `PEEKV` (0x02) + `--addr` / `--len` | `PEEKV_RESP` (0x82), or a named `ERR` |
-| `mem-poke` | M64P `POKEV` (0x03) + `--addr` / `--hex` | `POKE_ACK` (0x83), or a named `ERR` |
+| `mem-poke` | M64P `HELLO` (0x01), then `POKEV` (0x03) + `--addr` / `--hex` | `POKE_ACK` (0x83), or a named `ERR` |
 | `mem-round-trip` | `REQ_DIAG`, then M64P `PEEKV`/`POKEV` | writes a pattern into the ROM's scratch region, reads it back and restores the original |
 | `listen` | nothing | prints inbound L3 **APPLICATION** / **M64T** (**B** → **STRESS_LARGE**, **BENCH_TICK** in BENCH mode, **CONTROLLER** in reply to `req-controller`) |
 
