@@ -407,8 +407,8 @@ Only then the cart. The console must be powered off for PC-side SD writes.
 
 ## 8. When the randomizer releases again
 
-A profile is a measurement of one release. AP64 says when the installed world is a
-different one: a `[warn]` line from `--check`, a note in the Patch dialog, and a line in the
+A profile is a measurement of one release. AP64 says when the installed world, or any
+installed copy of it, is a different one: a `[warn]` line from `--check`, a note in the Patch dialog, and a line in the
 session log. It notes, never refuses, because most releases change nothing AP64 depends on.
 The pins refuse what they can see, and the stub stands the agent down if its RAM is
 overwritten. That leaves anything else to find, which is this routine:

@@ -392,7 +392,10 @@ different one, AP64 says so. That goes in the Patch dialog, as a `[warn]` line f
 `ap64-patch`, and in the session log at Start. It is a note, not a refusal: most releases
 change nothing AP64 depends on. It just means the seed is one AP64 has not been tested with.
 The world's version is its `world_version`, or Archipelago's own for a world that ships
-with it. Paper Mario's world declares no version, so it gets no note.
+with it. Paper Mario's world declares no version, so it gets no note. Where the world is
+installed in more than one place (the folders Start looks in, above), every copy is compared,
+since AP64 cannot tell which one the AP client will run: the note appears when any copy is a
+different release, and names each copy that is, by where it is.
 
 Those checks are all of the ROM, but the agent runs from RAM, and a randomizer release that
 starts using more RAM can overwrite it with every check above still passing. So on the
