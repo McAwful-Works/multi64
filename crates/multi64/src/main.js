@@ -14,24 +14,33 @@ async function refreshStatus() {
     if (s.portOptions && generation === settingsGeneration && settingsSnapshot !== null) {
       applyPolledPortOptions(s.portOptions);
     }
-    setText("status-running", s.running ? "Running" : "Stopped");
-    setText("status-healthy", s.healthy ? "OK" : s.running ? "Not responding yet" : "—");
+    const starting = !s.running && (s.starting === true || startClicked);
+    setText("status-running", s.running ? "Running" : starting ? "Starting…" : "Stopped");
+    // Answering is not reaching the cart: a bridge whose link is faulted or released to another
+    // program answers too, and Note says which it could be.
+    const health = s.healthy ? (s.cartLinked === false ? "No cart link" : "OK") : "Not responding yet";
+    setText("status-healthy", s.running ? health : "—");
     setText("status-cart", s.cart || "—");
     setText("status-listen", s.listen || "—");
     setText("status-msg", s.message || "—");
     // A bridge that is running now (e.g. started from the tray) makes an earlier start error stale.
     if (s.running) showInlineError("status-error", "");
     // Match the tray, which offers only the action that applies. Leaving both live means
-    // "Start bridge" on a running bridge, which reports a failure for a no-op.
-    document.getElementById("btn-start").disabled = s.running;
+    // "Start bridge" on a running bridge, which reports a failure for a no-op. While a start runs
+    // there is nothing to click: a second Start would kill the daemon the first one spawns.
+    document.getElementById("btn-start").disabled = s.running || starting;
     document.getElementById("btn-stop").disabled = !s.running;
   } catch (e) {
     setText("status-msg", String(e));
-    // Status is unknown, so neither action can be ruled out; leave both usable.
-    document.getElementById("btn-start").disabled = false;
+    // Status is unknown, so neither action can be ruled out; leave both usable, short of a Start
+    // this window is still waiting on.
+    document.getElementById("btn-start").disabled = startClicked;
     document.getElementById("btn-stop").disabled = false;
   }
 }
+
+/** True from a Start click until its `daemon_start` answers, before any poll has seen the start. */
+let startClicked = false;
 
 /**
  * The last port enumeration's auto pick, kept so a cart change can re-render without re-enumerating.
@@ -566,12 +575,18 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("cart").addEventListener("change", renderCartAndAuto);
   document.getElementById("serial-port").addEventListener("change", renderCartAndAuto);
   document.getElementById("btn-start").addEventListener("click", async () => {
+    if (startClicked) return;
     showInlineError("status-error", "");
+    startClicked = true;
+    document.getElementById("btn-start").disabled = true;
+    setText("status-running", "Starting…");
     try {
       await invoke("daemon_start");
+      startClicked = false;
       await refreshStatus();
       await refreshLog();
     } catch (e) {
+      startClicked = false;
       const msg = String(e);
       console.error("daemon_start:", e);
       await refreshStatus();

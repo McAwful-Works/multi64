@@ -170,7 +170,71 @@ fn normalize_settings(mut s: Settings) -> Settings {
     if !s.tray_enabled {
         s.start_minimized = false;
     }
+    // Lenient: a file written before Save checked the address keeps what it said, and Save then
+    // reports it (see `apply_settings`).
+    if let Ok(listen) = normalize_listen(&s.listen) {
+        s.listen = listen;
+    }
     s
+}
+
+/// Settings → Listen as multi64d's `--listen` takes it: `host:port`.
+///
+/// The health check used to accept `http://host:port` while the same text went to `--listen`
+/// unchanged, where the daemon could not bind it. A `http://` prefix and a trailing `/` are
+/// dropped; anything the daemon could not bind is refused. Empty means the default.
+fn normalize_listen(listen: &str) -> Result<String, String> {
+    let typed = listen.trim();
+    if typed.starts_with("https://") {
+        return Err(format!(
+            "Listen: the bridge serves plain HTTP on this PC, so give host:port, such as {DEFAULT_LISTEN} (got \"{typed}\")."
+        ));
+    }
+    let addr = typed
+        .strip_prefix("http://")
+        .unwrap_or(typed)
+        .trim_end_matches('/');
+    if addr.is_empty() {
+        return Ok(DEFAULT_LISTEN.to_string());
+    }
+    let valid = match addr.parse::<std::net::SocketAddr>() {
+        Ok(sock) => sock.port() != 0,
+        // A host name, such as `localhost:38765`. A bare IPv6 address needs brackets.
+        Err(_) => addr.rsplit_once(':').is_some_and(|(host, port)| {
+            !host.is_empty()
+                && !host.contains([':', '/', '[', ']'])
+                && !host.chars().any(char::is_whitespace)
+                && port.parse::<u16>().is_ok_and(|p| p != 0)
+        }),
+    };
+    if valid {
+        Ok(addr.to_string())
+    } else {
+        Err(format!(
+            "Listen must be host:port, such as {DEFAULT_LISTEN} (got \"{typed}\")."
+        ))
+    }
+}
+
+/// `listen` as an address to connect to: `host:port`, with a wildcard (`0.0.0.0`, `[::]`), which
+/// the daemon binds to but Windows will not connect to, replaced by loopback.
+fn connect_addr(listen: &str) -> String {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    let addr = listen
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+    match addr.parse::<SocketAddr>() {
+        Ok(mut sock) if sock.ip().is_unspecified() => {
+            sock.set_ip(match sock.ip() {
+                IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+                IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+            });
+            sock.to_string()
+        }
+        _ => addr.to_string(),
+    }
 }
 
 impl Default for Settings {
@@ -195,7 +259,13 @@ impl Default for Settings {
 #[serde(rename_all = "camelCase")]
 pub struct DaemonStatus {
     pub running: bool,
+    /// Not running yet, but a start is under way ([`STARTING`]): the window offers no Start.
+    pub starting: bool,
+    /// The daemon answered `GET /`: it is up, whether or not it holds the cart's port.
     pub healthy: bool,
+    /// It answered and holds the cart's serial port (`serialActive`). False while the link is
+    /// faulted or released to another program, which `GET /` does not tell apart.
+    pub cart_linked: bool,
     pub listen: String,
     pub message: String,
     /// While running, the cart the live process was started for and the port it holds; while
@@ -219,6 +289,9 @@ struct DaemonInner {
     /// The cart `child` was spawned for. Only meaningful while `serial` is set, for the same
     /// reason: a cart changed in Settings is what the next start uses, not what is running.
     cart: DaemonCart,
+    /// What `child` last said about the cart's port, from [`watch_link`]; `Unknown` when it is
+    /// spawned. Read by the tray, which cannot ask itself.
+    link: BridgeLink,
     logs: Vec<String>,
 }
 
@@ -683,18 +756,163 @@ fn stopped_message(plan: &StartPlan) -> String {
     }
 }
 
-fn daemon_health_url(listen: &str) -> String {
-    let base = listen.trim();
-    if base.starts_with("http://") || base.starts_with("https://") {
-        format!("{base}/health")
-    } else {
-        format!("http://{base}/health")
+/// How often auto-start looks again while it waits. A look enumerates ports, which sends nothing;
+/// only a change in what is plugged in leads to a start, so a probe never repeats on a timer.
+const AUTO_START_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Set while auto-start is waiting to start the bridge; the stopped Note says what for.
+static AUTO_START_WAITING: AtomicBool = AtomicBool::new(false);
+
+/// Set once any start has spawned the daemon. Auto-start's job is then done: a bridge the user
+/// stops afterwards stays stopped.
+static SPAWNED_ONCE: AtomicBool = AtomicBool::new(false);
+
+fn auto_start_waiting() -> bool {
+    AUTO_START_WAITING.load(Ordering::SeqCst)
+}
+
+/// A start auto-start made and that failed: what the plan was and which ports were plugged in.
+#[derive(Debug, Clone)]
+struct AutoStartAttempt {
+    plan: StartPlan,
+    ports: Vec<String>,
+}
+
+/// Whether auto-start should try a start now, given its last failed one (`None` before the first).
+///
+/// Auto-start used to try once and, on Auto-detect with no cart found, give up for good, so a cart
+/// that was unplugged at sign-in, or whose USB had not enumerated yet, was never picked up. Trying
+/// again on a timer would send the probe's test commands to every serial port every few seconds,
+/// so a failed start is tried again only when something it depended on has changed:
+///
+/// - **Ready** (the cart and port are known, and multi64d waits for a missing cart by itself):
+///   when the plan differs, such as a SummerCart64 just found by its USB IDs.
+/// - **Probe on one port**: when that port appears.
+/// - **Probe on every port**: when a port appears that was not there before.
+/// - **Blocked**, or the listen address taken: never, since Start would fail at once. Auto-start
+///   goes on looking, so it starts once the reason has gone.
+fn auto_start_should_try(
+    last: Option<&AutoStartAttempt>,
+    plan: &StartPlan,
+    ports: &[String],
+    listen_in_use: bool,
+) -> bool {
+    if listen_in_use || matches!(plan, StartPlan::Blocked(_)) {
+        return false;
     }
+    let Some(last) = last else {
+        return true;
+    };
+    let new_port = |p: &String| !last.ports.contains(p);
+    match plan {
+        StartPlan::Ready { .. } => *plan != last.plan,
+        StartPlan::Probe(Some(port)) => {
+            *plan != last.plan || ports.iter().any(|p| p == port && new_port(p))
+        }
+        StartPlan::Probe(None) => *plan != last.plan || ports.iter().any(new_port),
+        StartPlan::Blocked(_) => false,
+    }
+}
+
+/// What the stopped Note adds while auto-start waits on `plan`, or nothing when Start would just
+/// work and auto-start is about to try it.
+fn auto_start_note(plan: &StartPlan) -> Option<&'static str> {
+    match plan {
+        StartPlan::Ready { .. } => None,
+        StartPlan::Probe(_) => Some("Auto-start tries again when a serial port is plugged in."),
+        StartPlan::Blocked(_) => Some("Auto-start starts the bridge once that is resolved."),
+    }
+}
+
+/// Clears [`AUTO_START_WAITING`] however [`auto_start`] ends.
+struct AutoStartWaiting;
+
+impl Drop for AutoStartWaiting {
+    fn drop(&mut self) {
+        AUTO_START_WAITING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// "Start the bridge when Multi64 opens": start it, and keep looking until something has started
+/// it, Multi64 exits, or the setting is turned off. See [`auto_start_should_try`] for when a failed
+/// start is tried again.
+fn auto_start(app: AppHandle) {
+    AUTO_START_WAITING.store(true, Ordering::SeqCst);
+    let _waiting = AutoStartWaiting;
+    // Let the window come up first.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let mut last: Option<AutoStartAttempt> = None;
+    // The reason last logged for not trying, so the log gets each one once, not every look.
+    let mut said: Option<String> = None;
+    loop {
+        if shutting_down() || SPAWNED_ONCE.load(Ordering::SeqCst) {
+            return;
+        }
+        let Some(state) = app.try_state::<AppState>() else {
+            return;
+        };
+        let settings = state.settings.lock().clone();
+        if !settings.auto_start_daemon {
+            return;
+        }
+        if !start_in_progress() && !daemon_is_running(&state.daemon) {
+            let found = serialport::available_ports().unwrap_or_default();
+            let ports: Vec<String> = found.iter().map(|p| p.port_name.clone()).collect();
+            let plan = plan_start(settings.serial_port.as_deref(), settings.cart, || found);
+            let listen_in_use = listen_in_use_recently(&settings.listen);
+            if auto_start_should_try(last.as_ref(), &plan, &ports, listen_in_use) {
+                said = None;
+                match start_daemon(&app, &state) {
+                    Ok(Started::Spawned) => return,
+                    // Another start is running; look again once it is over.
+                    Ok(Started::AlreadyStarting) => {}
+                    Err(e) => {
+                        push_log(&state.daemon, format!("Start failed: {e}"));
+                        if let Some(note) = auto_start_note(&plan) {
+                            push_log(&state.daemon, note.to_string());
+                        }
+                        last = Some(AutoStartAttempt { plan, ports });
+                        let _ = app.emit("daemon-changed", ());
+                    }
+                }
+            } else {
+                let why = if listen_in_use {
+                    Some(listen_in_use_message(&settings.listen))
+                } else if let StartPlan::Blocked(why) = &plan {
+                    Some(why.clone())
+                } else {
+                    None
+                };
+                if why.is_some() && why != said {
+                    // Skipping the auto-start used to leave no trace; the log now says why.
+                    push_log(
+                        &state.daemon,
+                        format!(
+                            "multi64d not started: {}",
+                            why.as_deref().unwrap_or_default()
+                        ),
+                    );
+                    said = why;
+                    let _ = app.emit("daemon-changed", ());
+                }
+            }
+        }
+        // In short steps, so Exit is not kept waiting for a whole recheck.
+        let until = std::time::Instant::now() + AUTO_START_RECHECK;
+        while std::time::Instant::now() < until && !shutting_down() {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+}
+
+/// The daemon's `GET /` (daemon API §1.1), which says whether it holds the cart's serial port.
+fn daemon_root_url(listen: &str) -> String {
+    format!("http://{}/", connect_addr(listen))
 }
 
 /// One agent for the process, not one per call.
 ///
-/// `check_health` runs on a 2s poll, and an `Agent` owns a connection pool whose whole purpose
+/// [`bridge_link`] runs on a 2s poll, and an `Agent` owns a connection pool whose whole purpose
 /// is reuse; rebuilding it each time threw that away and forced a fresh TCP connection every
 /// check. The timeout is identical on every call, so there is nothing per-call to vary.
 fn health_agent() -> &'static ureq::Agent {
@@ -707,13 +925,94 @@ fn health_agent() -> &'static ureq::Agent {
     })
 }
 
-fn check_health(listen: &str) -> bool {
-    let url = daemon_health_url(listen);
-    health_agent()
-        .get(&url)
-        .call()
-        .map(|r| r.status().as_u16() == 200)
-        .unwrap_or(false)
+/// What a running daemon says about the cart's serial port.
+///
+/// Health used to be `GET /health` answering, which only shows the process serves HTTP. A daemon
+/// whose link is faulted (cart unplugged, wrong port) or released (Xfer64 is using the cart) answers
+/// it just the same, so the window said OK while nothing reached the cart. `GET /` reports
+/// `serialActive`, which is false in both cases; it does not say which, so neither does this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum BridgeLink {
+    /// Not checked since the daemon was spawned.
+    #[default]
+    Unknown,
+    /// It answered and holds the port (`serialActive`), or was too busy using it to say
+    /// (`serialBusy`, which the daemon reports as held).
+    Holding,
+    /// It answered without the port: faulted, or released to another program.
+    NotHolding,
+    /// It did not answer.
+    NotResponding,
+}
+
+impl BridgeLink {
+    fn answered(self) -> bool {
+        matches!(self, BridgeLink::Holding | BridgeLink::NotHolding)
+    }
+}
+
+/// [`BridgeLink`] for a `GET /` body that answered `200`. A body without `serialActive` is taken
+/// at its word that the bridge is up, as a `/health` answer used to be.
+fn link_from_root(body: &str) -> BridgeLink {
+    let active = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|root| root.get("serialActive")?.as_bool());
+    match active {
+        Some(false) => BridgeLink::NotHolding,
+        Some(true) | None => BridgeLink::Holding,
+    }
+}
+
+/// Ask the daemon at `listen`. Blocks for up to a second.
+fn bridge_link(listen: &str) -> BridgeLink {
+    match health_agent().get(&daemon_root_url(listen)).call() {
+        Ok(mut r) if r.status().as_u16() == 200 => {
+            link_from_root(&r.body_mut().read_to_string().unwrap_or_default())
+        }
+        _ => BridgeLink::NotResponding,
+    }
+}
+
+/// Status → Note for a bridge that answers without the cart's port.
+const NO_CART_LINK: &str = "The bridge is running but does not hold the cart's serial port. \
+     Either the cart is not connected on that port, and the bridge keeps trying to open it, or \
+     another program such as Xfer64 has paused the bridge to use the cart, and resumes it when done.";
+
+/// How often a running daemon's link is checked for the tray, which cannot check it itself: its
+/// menu is rebuilt on events, and a check blocks.
+const LINK_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Record what `pid`'s daemon said about its link. False, changing nothing, when that daemon is no
+/// longer the one running or it said the same as last time.
+fn record_link(daemon: &Mutex<DaemonInner>, pid: u32, link: BridgeLink) -> bool {
+    let mut inner = daemon.lock();
+    if inner.child.as_ref().map(Child::id) != Some(pid) || inner.link == link {
+        return false;
+    }
+    inner.link = link;
+    true
+}
+
+/// Check the link of the daemon just spawned as `pid` every [`LINK_RECHECK`] for as long as it is
+/// the one running, and tell the tray and the window when the answer changes.
+fn watch_link(app: AppHandle, daemon: Arc<Mutex<DaemonInner>>, pid: u32, listen: String) {
+    thread::spawn(move || {
+        // Soon after spawn first, so a bridge that came up without its cart shows that quickly.
+        let mut wait = std::time::Duration::from_secs(1);
+        loop {
+            let until = std::time::Instant::now() + wait;
+            while std::time::Instant::now() < until && !shutting_down() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if shutting_down() || daemon.lock().child.as_ref().map(Child::id) != Some(pid) {
+                return;
+            }
+            if record_link(&daemon, pid, bridge_link(&listen)) {
+                let _ = app.emit("daemon-changed", ());
+            }
+            wait = LINK_RECHECK;
+        }
+    });
 }
 
 /// Whether the daemon is still running, clearing the handle if it has exited on its own.
@@ -730,6 +1029,7 @@ fn daemon_is_running(daemon: &Arc<Mutex<DaemonInner>>) -> bool {
         Ok(Some(status)) => {
             inner.child = None;
             inner.serial = None;
+            inner.link = BridgeLink::Unknown;
             // push_log would re-lock this same non-reentrant mutex, so append inline.
             if inner.logs.len() >= MAX_LOG_LINES {
                 let drain = inner.logs.len() - MAX_LOG_LINES + 1;
@@ -754,6 +1054,48 @@ fn daemon_is_running(daemon: &Arc<Mutex<DaemonInner>>) -> bool {
 /// retaken across the spawn.
 static DAEMON_OPS: Mutex<()> = Mutex::new(());
 
+/// Set for the whole of a start, from before it waits for [`DAEMON_OPS`] until it has spawned the
+/// daemon or failed. While it is set the window and the tray say the bridge is starting and offer
+/// no Start, and another start is refused ([`Started::AlreadyStarting`]).
+///
+/// A start can probe ports for seconds with no child yet, so `daemon_is_running` alone could not
+/// tell it from a stopped bridge: a second Start click queued on `DAEMON_OPS`, then killed the
+/// daemon the first had just spawned and probed every port again, and a Save in that window did
+/// not restart anything, so the bridge came up on the settings from before the Save.
+static STARTING: AtomicBool = AtomicBool::new(false);
+
+fn start_in_progress() -> bool {
+    STARTING.load(Ordering::SeqCst)
+}
+
+/// Clears [`STARTING`] when dropped, so a start that panics does not leave it set.
+struct StartingGuard;
+
+impl Drop for StartingGuard {
+    fn drop(&mut self) {
+        STARTING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Mark a start as running, or `None` when one already is.
+fn begin_start() -> Option<StartingGuard> {
+    STARTING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| StartingGuard)
+}
+
+/// What a call to [`start_daemon`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Started {
+    /// It spawned `multi64d`.
+    Spawned,
+    /// Another start was already running, and this one did nothing. That start reads the settings
+    /// once it holds `DAEMON_OPS` and starts again if a Save replaces them meanwhile, so nothing
+    /// asked of this one is lost.
+    AlreadyStarting,
+}
+
 /// Set once Multi64 starts exiting. A start in progress checks it before spawning, and Auto-detect
 /// checks it between ports and at every read while probing one, so Exit waits a fraction of a
 /// second rather than for the rest of the probes (#147).
@@ -774,24 +1116,13 @@ fn begin_shutdown() {
 /// A connect rather than a trial bind, which could briefly take the address from a daemon being
 /// started. The timeout is short because a refused loopback connect takes about 2 s on Windows,
 /// while one that is accepted completes in well under a millisecond. An address given as a
-/// wildcard is tried on loopback.
+/// wildcard is tried on loopback ([`connect_addr`]), as the health check is.
 fn listen_address_in_use(listen: &str) -> bool {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
-    let host = listen
-        .trim()
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .trim_end_matches('/');
-    let Ok(addrs) = host.to_socket_addrs() else {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let Ok(addrs) = connect_addr(listen).to_socket_addrs() else {
         return false;
     };
-    addrs.into_iter().any(|mut addr| {
-        if addr.ip().is_unspecified() {
-            addr.set_ip(match addr.ip() {
-                IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
-                IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
-            });
-        }
+    addrs.into_iter().any(|addr| {
         TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(150)).is_ok()
     })
 }
@@ -990,6 +1321,7 @@ fn kill_daemon(daemon: &Arc<Mutex<DaemonInner>>) {
 fn kill_daemon_locked(daemon: &Arc<Mutex<DaemonInner>>) {
     let mut inner = daemon.lock();
     inner.serial = None;
+    inner.link = BridgeLink::Unknown;
     if let Some(mut c) = inner.child.take() {
         let _ = c.kill();
         let _ = c.wait();
@@ -1015,23 +1347,76 @@ fn daemon_args(serial: &str, cart: DaemonCart, settings: &Settings) -> Vec<Strin
     ]
 }
 
-fn start_daemon(
-    app: &tauri::AppHandle,
-    daemon: &Arc<Mutex<DaemonInner>>,
-    settings: &Settings,
-) -> Result<(), String> {
+/// Whether `a` and `b` start `multi64d` differently. Serial port, baud, cart, listen address and
+/// log preset are command-line arguments fixed at spawn, so a running daemon keeps the old ones
+/// until it is restarted.
+fn spawn_args_differ(a: &Settings, b: &Settings) -> bool {
+    a.serial_port != b.serial_port
+        || a.baud != b.baud
+        || a.cart != b.cart
+        || a.listen != b.listen
+        || a.multi64d_log_preset != b.multi64d_log_preset
+}
+
+/// Start (or restart) `multi64d` with the saved settings, unless a start is already running.
+///
+/// The settings are read once this holds `DAEMON_OPS`, not by the caller, and
+/// [`start_until_settled`] starts again if a Save replaced them while it ran.
+fn start_daemon(app: &tauri::AppHandle, state: &AppState) -> Result<Started, String> {
+    let Some(starting) = begin_start() else {
+        return Ok(Started::AlreadyStarting);
+    };
+    // Emitted outside DAEMON_OPS (#221), like the one below: the window and tray show Starting.
+    let _ = app.emit("daemon-changed", ());
     let started = {
         let _ops = DAEMON_OPS.lock();
-        start_daemon_locked(app, daemon, settings)
+        start_until_settled(
+            &state.settings,
+            |settings| start_daemon_locked(app, &state.daemon, settings),
+            || STARTING.store(false, Ordering::SeqCst),
+            |line| push_log(&state.daemon, line),
+        )
     };
+    drop(starting);
     // Only once DAEMON_OPS is released (#221). A Rust listener runs on the emitting thread, and the
     // tray's listener rebuilds the menu through the main thread and waits for it; the main thread,
     // running Exit, may itself be waiting in `kill_daemon` for DAEMON_OPS. Emitting under the lock
-    // could leave each waiting on the other, and Multi64 hung on exit.
-    if started.is_ok() {
-        let _ = app.emit("daemon-changed", ());
+    // could leave each waiting on the other, and Multi64 hung on exit. Emitted on failure too, now
+    // that the start itself shows: otherwise the window would stay on Starting.
+    let _ = app.emit("daemon-changed", ());
+    started.map(|()| Started::Spawned)
+}
+
+/// Run `start` with the current settings, and again for as long as a Save has replaced the
+/// settings it used with ones that start the daemon differently ([`spawn_args_differ`]).
+///
+/// `settled` runs once, with the settings lock held, when a start's settings are still the saved
+/// ones; [`start_daemon`] clears [`STARTING`] there. A Save takes the same lock to write the
+/// settings and read `STARTING` ([`apply_settings`]), so it either lands first and is seen here, or
+/// lands after and finds no start running, and then restarts a running bridge itself. Either way
+/// the bridge ends up on what was saved.
+fn start_until_settled(
+    settings: &Mutex<Settings>,
+    mut start: impl FnMut(&Settings) -> Result<(), String>,
+    settled: impl FnOnce(),
+    mut log: impl FnMut(String),
+) -> Result<(), String> {
+    let mut settled = Some(settled);
+    loop {
+        let used = settings.lock().clone();
+        let result = start(&used);
+        let saved = settings.lock();
+        if shutting_down() || !spawn_args_differ(&saved, &used) {
+            if let Some(settled) = settled.take() {
+                settled();
+            }
+            return result;
+        }
+        drop(saved);
+        log(
+            "Settings were saved while the bridge was starting; starting it again with them".into(),
+        );
     }
-    started
 }
 
 /// [`start_daemon`] for a caller holding [`DAEMON_OPS`]. Emits nothing: see there.
@@ -1120,10 +1505,22 @@ fn start_daemon_locked(
     spawn_log_reader(Arc::clone(&d), stdout, "");
     spawn_log_reader(d, stderr, "[stderr] ");
 
-    let mut inner = daemon.lock();
-    inner.child = Some(child);
-    inner.serial = Some(serial);
-    inner.cart = cart;
+    let pid = child.id();
+    {
+        let mut inner = daemon.lock();
+        inner.child = Some(child);
+        inner.serial = Some(serial);
+        inner.cart = cart;
+        inner.link = BridgeLink::Unknown;
+    }
+    // Auto-start is done once anything has started the bridge, whoever stops it later.
+    SPAWNED_ONCE.store(true, Ordering::SeqCst);
+    watch_link(
+        app.clone(),
+        Arc::clone(daemon),
+        pid,
+        settings.listen.clone(),
+    );
     Ok(())
 }
 
@@ -1197,7 +1594,9 @@ async fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), S
 }
 
 fn apply_settings(app: &AppHandle, state: &AppState, settings: Settings) -> Result<(), String> {
-    let settings = normalize_settings(settings);
+    // Before anything is written: the daemon cannot bind an address `normalize_listen` refuses.
+    let listen = normalize_listen(&settings.listen)?;
+    let settings = normalize_settings(Settings { listen, ..settings });
     let prev = { state.settings.lock().clone() };
     commit_settings(
         &prev,
@@ -1206,21 +1605,33 @@ fn apply_settings(app: &AppHandle, state: &AppState, settings: Settings) -> Resu
         set_autostart_windows_impl,
         save_settings,
     )?;
-    *state.settings.lock() = settings.clone();
-    // Serial port, baud, cart, listen address and log preset are command-line arguments fixed at
-    // spawn, so a running daemon keeps using the old ones. Saving used to appear to apply them
-    // while the bridge quietly stayed on the previous port.
-    let spawn_args_changed = settings.serial_port != prev.serial_port
-        || settings.baud != prev.baud
-        || settings.cart != prev.cart
-        || settings.listen != prev.listen
-        || settings.multi64d_log_preset != prev.multi64d_log_preset;
-    if spawn_args_changed && daemon_is_running(&state.daemon) {
+    // Written and `STARTING` read under one lock: see `start_until_settled`. A start running now
+    // picks these settings up itself, so it is not restarted from here.
+    let start_running = {
+        let mut saved = state.settings.lock();
+        *saved = settings.clone();
+        start_in_progress()
+    };
+    // The icon follows the setting now rather than at the next launch. The settings are saved
+    // whatever happens here, so a failure is logged rather than reported as a failed Save; without
+    // an icon, closing the window exits rather than hiding it (`hides_to_tray`).
+    if settings.tray_enabled != app.tray_by_id(TRAY_ID).is_some() {
+        if let Err(e) = apply_tray_setting(app, settings.tray_enabled) {
+            tracing_warn(&format!("could not create the tray icon: {e}"));
+            push_log(
+                &state.daemon,
+                format!("Could not create the tray icon: {e}"),
+            );
+        }
+    }
+    // A running daemon keeps the spawn arguments it was started with. Saving used to appear to
+    // apply them while the bridge quietly stayed on the previous port.
+    if spawn_args_differ(&settings, &prev) && !start_running && daemon_is_running(&state.daemon) {
         push_log(
             &state.daemon,
             "Settings changed — restarting multi64d to apply them".to_string(),
         );
-        if let Err(e) = start_daemon(app, &state.daemon, &settings) {
+        if let Err(e) = start_daemon(app, state) {
             push_log(&state.daemon, format!("Restart failed: {e}"));
         }
         let _ = app.emit("daemon-changed", ());
@@ -1269,12 +1680,51 @@ fn commit_settings(
 /// keeps one signature across platforms.
 fn multi64_auto_launch() -> Result<AutoLaunch, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    multi64_auto_launch_for(&exe.to_string_lossy())
+}
+
+/// [`multi64_auto_launch`] for the app at `exe`, so what reaches the registry is testable without
+/// writing it. Enabling, disabling and the enabled check all find the entry by its name, `Multi64`,
+/// so the path's spelling cannot make them disagree.
+fn multi64_auto_launch_for(exe: &str) -> Result<AutoLaunch, String> {
     AutoLaunchBuilder::new()
         .set_app_name("Multi64")
-        .set_app_path(&exe.to_string_lossy())
+        .set_app_path(&run_entry_path(exe))
         .set_args(&[] as &[&str])
         .build()
         .map_err(|e| e.to_string())
+}
+
+/// The program part of the sign-in entry. auto-launch writes `"{path} {args}"` to the Run key as
+/// given, and Windows splits an unquoted value at its first space, so a path with spaces in it
+/// (`C:\Program Files\...`) was the unquoted-path pattern: Windows tries `C:\Program.exe` first.
+/// Quoted on Windows only; elsewhere the path is not parsed that way.
+fn run_entry_path(exe: &str) -> String {
+    if cfg!(windows) {
+        quote_path(exe)
+    } else {
+        exe.to_string()
+    }
+}
+
+/// `path` in double quotes, once.
+fn quote_path(path: &str) -> String {
+    format!("\"{}\"", path.trim_matches('"'))
+}
+
+/// Rewrite an existing sign-in entry so it carries the current path in its current form. An entry
+/// written before the path was quoted stays unquoted until autostart is turned off and on, and one
+/// written by an install that has since moved names a program that is no longer there. Only an
+/// entry Windows would run is touched: one turned off in Task Manager reads as not enabled.
+fn refresh_autostart_entry() {
+    let Ok(auto) = multi64_auto_launch() else {
+        return;
+    };
+    if auto.is_enabled().unwrap_or(false) {
+        if let Err(e) = auto.enable() {
+            tracing_warn(&format!("could not rewrite the sign-in entry: {e}"));
+        }
+    }
 }
 
 fn set_autostart_windows_impl(enabled: bool) -> Result<(), String> {
@@ -1287,7 +1737,7 @@ fn set_autostart_windows_impl(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Blocking: `check_health` issues an HTTP request with a 1 s timeout, and the window polls
+/// Blocking: [`bridge_link`] issues an HTTP request with a 1 s timeout, and the window polls
 /// this every 2 s. `with_ports` adds [`DaemonStatus::port_options`], for the Settings hints.
 #[tauri::command]
 async fn get_daemon_status(
@@ -1302,10 +1752,12 @@ async fn get_daemon_status(
 
 /// The stopped Note and, when `with_ports`, the port options, from at most one call to
 /// `enumerate` however many of them need the ports.
+/// `auto_start_waiting` adds what auto-start is waiting for ([`auto_start_note`]) to a stopped Note.
 fn note_and_port_options(
     running: bool,
     settings: &Settings,
     with_ports: bool,
+    auto_start_waiting: bool,
     enumerate: impl FnOnce() -> Vec<serialport::SerialPortInfo>,
 ) -> (String, Option<SerialPortOptions>) {
     let mut enumerate = Some(enumerate);
@@ -1318,11 +1770,14 @@ fn note_and_port_options(
     let message = if !running {
         // Name what Start would do, or why it cannot. Without a saved port this enumerates,
         // which only happens while stopped; it never probes a port.
-        stopped_message(&plan_start(
-            settings.serial_port.as_deref(),
-            settings.cart,
-            &mut ports,
-        ))
+        let plan = plan_start(settings.serial_port.as_deref(), settings.cart, &mut ports);
+        let message = stopped_message(&plan);
+        match auto_start_note(&plan).filter(|_| auto_start_waiting) {
+            Some(note) if message.is_empty() => note.to_string(),
+            Some(note) if message.ends_with('.') => format!("{message} {note}"),
+            Some(note) => format!("{message}. {note}"),
+            None => message,
+        }
     } else {
         // The Bridge and Health rows already say running and whether it responds.
         String::new()
@@ -1345,17 +1800,30 @@ fn daemon_status(state: &AppState, with_ports: bool) -> DaemonStatus {
     } else {
         settings.cart.label().to_string()
     };
-    let healthy = running && check_health(&listen);
-    let (mut message, port_options) = note_and_port_options(running, &settings, with_ports, || {
-        serialport::available_ports().unwrap_or_default()
-    });
+    // Fresh rather than what `watch_link` last recorded, so Refresh status means it. Not recorded
+    // either: the watcher compares with its own last answer to know when to update the tray.
+    let link = if running {
+        bridge_link(&listen)
+    } else {
+        BridgeLink::Unknown
+    };
+    let waiting = auto_start_waiting();
+    let (mut message, port_options) =
+        note_and_port_options(running, &settings, with_ports, waiting, || {
+            serialport::available_ports().unwrap_or_default()
+        });
     // A failed auto-start is otherwise only in the log, behind Developer mode (#146).
     if !running && listen_in_use_recently(&listen) {
         message = listen_in_use_message(&listen);
     }
+    if link == BridgeLink::NotHolding {
+        message = NO_CART_LINK.to_string();
+    }
     DaemonStatus {
         running,
-        healthy,
+        starting: !running && start_in_progress(),
+        healthy: link.answered(),
+        cart_linked: link == BridgeLink::Holding,
         listen,
         message,
         cart,
@@ -1374,13 +1842,16 @@ fn clear_daemon_logs(app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
     let _ = app.emit("daemon-changed", ());
 }
 
-/// Blocking: spawns `multi64d`, after killing any previous child and waiting for it to exit.
+/// Blocking: spawns `multi64d`. Does nothing while the bridge runs or another start is running:
+/// Start means start, and restarting is what the tray's Restart and a Save do.
 #[tauri::command]
 async fn daemon_start(app: tauri::AppHandle) -> Result<(), String> {
     on_blocking_pool(&app, "daemon_start", |app, state| {
-        let settings = state.settings.lock().clone();
-        match start_daemon(app, &state.daemon, &settings) {
-            Ok(()) => Ok(()),
+        if daemon_is_running(&state.daemon) {
+            return Ok(());
+        }
+        match start_daemon(app, state) {
+            Ok(_) => Ok(()),
             Err(e) => {
                 push_log(&state.daemon, format!("Start failed: {e}"));
                 let _ = app.emit("daemon-changed", ());
@@ -1440,22 +1911,51 @@ fn tray_cart_note(
 /// `can_start` is whether Start can work at all: Auto-detect can start with no port known yet.
 /// `listen_in_use` is whether something else already listens on `listen` while stopped, so Start
 /// would fail with [`listen_in_use_message`].
-fn tray_labels(
+#[derive(Debug, Clone, Copy)]
+struct TrayState<'a> {
+    /// The daemon process is alive.
     running: bool,
-    serial: Option<&str>,
+    /// A start is running ([`STARTING`]) and has not spawned the daemon yet.
+    starting: bool,
+    /// See [`tray_serial`].
+    serial: Option<&'a str>,
     can_start: bool,
-    cart_note: Option<&str>,
-    listen: &str,
+    /// See [`tray_cart_note`].
+    cart_note: Option<&'a str>,
+    listen: &'a str,
     listen_in_use: bool,
-) -> TrayLabels {
+    /// What the running daemon last said about the cart's port ([`watch_link`]).
+    link: BridgeLink,
+}
+
+fn tray_labels(t: TrayState<'_>) -> TrayLabels {
+    let TrayState {
+        running,
+        starting,
+        serial,
+        can_start,
+        cart_note,
+        listen,
+        listen_in_use,
+        link,
+    } = t;
     let cart_note = cart_note.map(|c| format!(" · {c}")).unwrap_or_default();
     let status = if running {
-        match serial {
+        let running = match serial {
             Some(port) => format!("Bridge: running on {port}"),
             // No configured or auto-detected port, but a live process: report where it
             // listens rather than claiming a port we cannot name.
             None => format!("Bridge: running ({listen})"),
+        };
+        // Running is not reaching the cart: the link is faulted, or released to another program.
+        if link == BridgeLink::NotHolding {
+            format!("{running}, no cart link")
+        } else {
+            running
         }
+    } else if starting {
+        // Start is grayed out below: a second one would kill what this one spawns.
+        "Bridge: starting…".to_string()
     } else if listen_in_use {
         // Labeled, not grayed, as the window's Start button is: the menu is rebuilt only when the
         // bridge changes, so a grayed Start would stay grayed after the other process has gone.
@@ -1474,8 +1974,9 @@ fn tray_labels(
         } else {
             "Start bridge"
         },
-        // Stopping always works; starting needs a port or a probe, and fails otherwise.
-        toggle_enabled: running || can_start,
+        // Stopping always works; starting needs a port or a probe, and fails otherwise, and is
+        // already happening while a start runs.
+        toggle_enabled: running || (can_start && !starting),
         // Restarting a stopped daemon is just Start, which is the item above.
         restart_enabled: running,
     }
@@ -1505,20 +2006,21 @@ fn tray_serial(
 /// in exactly one place, so there is no way for a later edit to update the text of an item and
 /// forget its enabled state.
 ///
-/// Deliberately does **not** call `check_health`: that issues a blocking HTTP request, and this
-/// runs on every `daemon-changed` event. "Running" here means the child process is alive; the
-/// window shows the finer-grained health. While stopped it does check the listen address, through
+/// Deliberately does **not** call [`bridge_link`]: that issues a blocking HTTP request, and this
+/// runs on every `daemon-changed` event. "Running" here means the child process is alive, and
+/// whether it holds the cart is what [`watch_link`] last recorded, which emits `daemon-changed`
+/// when that changes; the window asks afresh. While stopped it does check the listen address, through
 /// [`listen_in_use_recently`]: under a millisecond while the address is taken, and usually a reused
 /// answer while it is free.
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let (running, listen, serial, can_start, cart_note) = match app.try_state::<AppState>() {
+    let (running, listen, serial, can_start, cart_note, link) = match app.try_state::<AppState>() {
         Some(state) => {
             let settings = state.settings.lock().clone();
             // `daemon_is_running` takes the daemon lock itself, so read the port after it returns.
             let running = daemon_is_running(&state.daemon);
-            let (spawned, spawned_cart) = {
+            let (spawned, spawned_cart, link) = {
                 let inner = state.daemon.lock();
-                (inner.serial.clone(), inner.cart)
+                (inner.serial.clone(), inner.cart, inner.link)
             };
             // A stopped daemon is described by what Start would do, which never probes a port.
             let plan = (!running).then(|| start_plan(&settings));
@@ -1529,22 +2031,32 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 tray_serial(running, spawned, || plan.as_ref().and_then(StartPlan::port)),
                 can_start,
                 tray_cart_note(running, spawned_cart, settings.cart),
+                link,
             )
         }
-        None => (false, DEFAULT_LISTEN.to_string(), None, false, None),
+        None => (
+            false,
+            DEFAULT_LISTEN.to_string(),
+            None,
+            false,
+            None,
+            BridgeLink::Unknown,
+        ),
     };
     // Without app state there are no settings, so nothing to check.
     let listen_in_use =
         !running && app.try_state::<AppState>().is_some() && listen_in_use_recently(&listen);
 
-    let labels = tray_labels(
+    let labels = tray_labels(TrayState {
         running,
-        serial.as_deref(),
+        starting: !running && start_in_progress(),
+        serial: serial.as_deref(),
         can_start,
         cart_note,
-        &listen,
+        listen: &listen,
         listen_in_use,
-    );
+        link,
+    });
     // Disabled: a status line, not an action.
     let status = MenuItem::with_id(app, "status", &labels.status, false, None::<&str>)?;
     let toggle = MenuItem::with_id(
@@ -1573,9 +2085,119 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )
 }
 
+/// The notification-area icon's id. There is only ever this one.
+const TRAY_ID: &str = "tray";
+
+/// Whether closing the window hides it rather than exiting. Only with an icon there to bring it
+/// back: the setting is read live, and the icon used to be created at launch only, so turning
+/// the tray on and saving, then closing, hid the window with no icon and no way to reach it.
+fn hides_to_tray(settings: &Settings, tray_exists: bool) -> bool {
+    tray_exists && settings.tray_enabled && settings.minimize_to_tray_on_close
+}
+
+/// Create the notification-area icon if there is none. Callable from any thread: Tauri builds it
+/// on the main thread and waits.
+fn install_tray(app: &AppHandle) -> Result<(), String> {
+    if app.tray_by_id(TRAY_ID).is_some() {
+        return Ok(());
+    }
+    let menu = build_tray_menu(app).map_err(|e| format!("tray menu: {e}"))?;
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or("missing default window icon")?;
+    TrayIconBuilder::with_id(TRAY_ID)
+        .icon(icon)
+        .menu(&menu)
+        // Right-click opens the menu; left-click is left free so double-click can raise the
+        // window. With the menu on left-click the first click of a double-click pops the menu,
+        // which makes the gesture unusable.
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        // Menu clicks reach `handle_tray_menu_event`, registered once in `run`.
+        .build(app)
+        .map(drop)
+        .map_err(|e| format!("tray icon: {e}"))
+}
+
+/// Remove the notification-area icon, if there is one. The icon goes when its last handle is
+/// dropped, which has to happen on the main thread, where it was made.
+fn remove_tray(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || drop(handle.remove_tray_by_id(TRAY_ID)));
+}
+
+/// Make the icon match Settings → "Use notification area" after a Save.
+fn apply_tray_setting(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled {
+        install_tray(app)
+    } else {
+        remove_tray(app);
+        Ok(())
+    }
+}
+
+/// A click on one of the tray menu's items.
+fn handle_tray_menu_event(app: &AppHandle, id: &str) {
+    match id {
+        // Off the event loop (#147): `kill_daemon` waits on DAEMON_OPS, which a start holds for
+        // its whole Auto-detect probe. The flag makes that start stop probing at its next read,
+        // without spawning.
+        "quit" => {
+            begin_shutdown();
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Some(s) = app.try_state::<AppState>() {
+                    kill_daemon(&s.daemon);
+                }
+                app.exit(0);
+            });
+        }
+        "show" => show_main_window(app),
+        // Off the event loop: starting can probe serial ports for seconds.
+        "toggle" => {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let Some(s) = app.try_state::<AppState>() else {
+                    return;
+                };
+                if daemon_is_running(&s.daemon) {
+                    kill_daemon(&s.daemon);
+                } else if let Err(e) = start_daemon(&app, &s) {
+                    push_log(&s.daemon, format!("Start failed: {e}"));
+                }
+                let _ = app.emit("daemon-changed", ());
+            });
+        }
+        "restart" => {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let Some(s) = app.try_state::<AppState>() else {
+                    return;
+                };
+                // A start kills the running daemon first, under DAEMON_OPS.
+                if let Err(e) = start_daemon(&app, &s) {
+                    push_log(&s.daemon, format!("Restart failed: {e}"));
+                }
+                let _ = app.emit("daemon-changed", ());
+            });
+        }
+        // "status" is disabled and cannot be clicked.
+        _ => {}
+    }
+}
+
 /// Rebuild the tray menu so its labels match current state. No-op when the tray is disabled.
 fn refresh_tray_menu(app: &AppHandle) {
-    let Some(tray) = app.tray_by_id("tray") else {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
     match build_tray_menu(app) {
@@ -1603,11 +2225,9 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // A second launch raises this window, unminimizing it too, as the tray's Show window does.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
+            show_main_window(app);
         }))
         .manage(state)
         .invoke_handler(tauri::generate_handler![
@@ -1624,7 +2244,17 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             let st: tauri::State<'_, AppState> = app.state();
-            let daemon_for_setup = Arc::clone(&st.daemon);
+
+            // Once for the app's life, not per icon: a handler given to `TrayIconBuilder` is added
+            // to the app-wide list and stays there when the icon is removed, so an icon created
+            // again by Save would have run every tray command twice.
+            app.on_menu_event(|app, event| handle_tray_menu_event(app, event.id.as_ref()));
+            // The window emits `daemon-changed` too, so the tray tracks state regardless of
+            // which one started or stopped the daemon. A no-op while there is no icon.
+            let tray_handle = handle.clone();
+            handle.listen("daemon-changed", move |_| {
+                refresh_tray_menu(&tray_handle);
+            });
 
             // Read the flag into a local and drop the guard before the block: `build_tray_menu`
             // locks `settings` itself, and `parking_lot::Mutex` is not reentrant. Rust drops an
@@ -1632,85 +2262,7 @@ pub fn run() {
             // today -- but changing this to `if let`/`match` later would deadlock at startup.
             let tray_enabled = { st.settings.lock().tray_enabled };
             if tray_enabled {
-                let menu = build_tray_menu(&handle)?;
-                let icon = app
-                    .default_window_icon()
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("missing default window icon"))?;
-                let _tray = TrayIconBuilder::with_id("tray")
-                    .icon(icon)
-                    .menu(&menu)
-                    // Right-click opens the menu; left-click is left free so double-click can
-                    // raise the window. With the menu on left-click the first click of a
-                    // double-click pops the menu, which makes the gesture unusable.
-                    .show_menu_on_left_click(false)
-                    .on_tray_icon_event(|tray, event| {
-                        if let TrayIconEvent::DoubleClick {
-                            button: MouseButton::Left,
-                            ..
-                        } = event
-                        {
-                            show_main_window(tray.app_handle());
-                        }
-                    })
-                    .on_menu_event(move |app, event| match event.id.as_ref() {
-                        // Off the event loop (#147): `kill_daemon` waits on DAEMON_OPS, which a
-                        // start holds for its whole Auto-detect probe. The flag makes that start
-                        // stop probing at its next read, without spawning.
-                        "quit" => {
-                            begin_shutdown();
-                            let app = app.clone();
-                            tauri::async_runtime::spawn_blocking(move || {
-                                if let Some(s) = app.try_state::<AppState>() {
-                                    kill_daemon(&s.daemon);
-                                }
-                                app.exit(0);
-                            });
-                        }
-                        "show" => show_main_window(app),
-                        // Off the event loop: starting can probe serial ports for seconds.
-                        "toggle" => {
-                            let app = app.clone();
-                            tauri::async_runtime::spawn_blocking(move || {
-                                let Some(s) = app.try_state::<AppState>() else {
-                                    return;
-                                };
-                                if daemon_is_running(&s.daemon) {
-                                    kill_daemon(&s.daemon);
-                                } else {
-                                    let settings = s.settings.lock().clone();
-                                    if let Err(e) = start_daemon(&app, &s.daemon, &settings) {
-                                        push_log(&s.daemon, format!("Start failed: {e}"));
-                                    }
-                                }
-                                let _ = app.emit("daemon-changed", ());
-                            });
-                        }
-                        "restart" => {
-                            let app = app.clone();
-                            tauri::async_runtime::spawn_blocking(move || {
-                                let Some(s) = app.try_state::<AppState>() else {
-                                    return;
-                                };
-                                kill_daemon(&s.daemon);
-                                let settings = s.settings.lock().clone();
-                                if let Err(e) = start_daemon(&app, &s.daemon, &settings) {
-                                    push_log(&s.daemon, format!("Restart failed: {e}"));
-                                }
-                                let _ = app.emit("daemon-changed", ());
-                            });
-                        }
-                        // "status" is disabled and cannot be clicked.
-                        _ => {}
-                    })
-                    .build(app)?;
-
-                // The window emits `daemon-changed` too, so the tray tracks state regardless of
-                // which one started or stopped the daemon.
-                let tray_handle = handle.clone();
-                handle.listen("daemon-changed", move |_| {
-                    refresh_tray_menu(&tray_handle);
-                });
+                install_tray(&handle).map_err(|e| anyhow::anyhow!(e))?;
             }
 
             // Default: main window opens normally. Only hide on launch when the user opted in
@@ -1724,26 +2276,16 @@ pub fn run() {
                 }
             }
 
+            if settings_for_setup.autostart_app {
+                // Off the main thread: it reads and may write the registry.
+                std::thread::spawn(refresh_autostart_entry);
+            }
+
             if settings_for_setup.auto_start_daemon {
-                match start_plan(&settings_for_setup) {
-                    // Skipping the auto-start used to leave no trace; the log now says why.
-                    StartPlan::Blocked(why) => {
-                        push_log(&daemon_for_setup, format!("multi64d not started: {why}"))
-                    }
-                    // A thread of its own: Auto-detect may probe ports for seconds.
-                    _ => {
-                        let h = handle.clone();
-                        let d = Arc::clone(&daemon_for_setup);
-                        let s = settings_for_setup.clone();
-                        std::thread::spawn(move || {
-                            std::thread::sleep(std::time::Duration::from_millis(400));
-                            if let Err(e) = start_daemon(&h, &d, &s) {
-                                push_log(&d, format!("Start failed: {e}"));
-                            }
-                            let _ = h.emit("daemon-changed", ());
-                        });
-                    }
-                }
+                // A thread of its own: Auto-detect may probe ports for seconds, and auto-start
+                // keeps looking until a cart turns up.
+                let h = handle.clone();
+                std::thread::spawn(move || auto_start(h));
             }
 
             Ok(())
@@ -1753,9 +2295,10 @@ pub fn run() {
                 return;
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let tray_exists = window.app_handle().tray_by_id(TRAY_ID).is_some();
                 if let Some(state) = window.try_state::<AppState>() {
                     let settings = state.settings.lock();
-                    if settings.tray_enabled && settings.minimize_to_tray_on_close {
+                    if hides_to_tray(&settings, tray_exists) {
                         api.prevent_close();
                         drop(settings);
                         let _ = window.hide();
@@ -1877,6 +2420,32 @@ mod tests {
             running_cart_label(DaemonCart::Ed64Pro, "COM6"),
             "EverDrive-64 PRO (beta) on COM6"
         );
+    }
+
+    /// Turning the tray on while running and closing the window hid it with no icon to bring it
+    /// back, because the icon was only ever created at launch. Close hides only with an icon there.
+    #[test]
+    fn close_hides_to_tray_only_when_the_icon_exists() {
+        let on = Settings::default();
+        assert!(on.tray_enabled && on.minimize_to_tray_on_close);
+        assert!(hides_to_tray(&on, true));
+        assert!(
+            !hides_to_tray(&on, false),
+            "no icon to come back from, so close must exit"
+        );
+        let off = Settings {
+            tray_enabled: false,
+            ..Settings::default()
+        };
+        assert!(
+            !hides_to_tray(&off, true),
+            "a stale icon is no reason to hide"
+        );
+        let exits = Settings {
+            minimize_to_tray_on_close: false,
+            ..Settings::default()
+        };
+        assert!(!hides_to_tray(&exits, true));
     }
 
     /// start_minimized is meaningless without a tray to restore from.
@@ -2049,6 +2618,317 @@ mod tests {
         assert!(checks.recent(A, t0, |_| true));
         assert!(!checks.fresh(A, t0, |_| false));
         assert!(!checks.recent(A, t0, never));
+    }
+
+    fn listening_on(listen: &str) -> Settings {
+        Settings {
+            listen: listen.to_string(),
+            ..Settings::default()
+        }
+    }
+
+    /// A Save while a start was probing did not restart anything, because no daemon was running
+    /// yet, and the start went on to spawn with the settings it had copied before the Save. The
+    /// start now starts again with what was saved.
+    #[test]
+    fn a_save_during_a_start_ends_with_the_bridge_on_the_saved_settings() {
+        let settings = Mutex::new(listening_on(DEFAULT_LISTEN));
+        let mut used = Vec::new();
+        let mut settled = 0;
+        let result = start_until_settled(
+            &settings,
+            |s| {
+                used.push(s.listen.clone());
+                if used.len() == 1 {
+                    // The Save lands while this start is probing.
+                    *settings.lock() = listening_on("127.0.0.1:40000");
+                }
+                Ok(())
+            },
+            || settled += 1,
+            |_| {},
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(used, [DEFAULT_LISTEN, "127.0.0.1:40000"]);
+        assert_eq!(settled, 1);
+    }
+
+    /// The same for a start that fails on the old settings: the saved ones get their own try, and
+    /// its outcome is what is reported.
+    #[test]
+    fn a_start_that_fails_before_a_save_is_tried_again_with_it() {
+        let settings = Mutex::new(Settings::default());
+        let mut calls = 0;
+        let result = start_until_settled(
+            &settings,
+            |s| {
+                calls += 1;
+                if calls == 1 {
+                    *settings.lock() = Settings {
+                        serial_port: Some("COM9".into()),
+                        ..Settings::default()
+                    };
+                    return Err("no cart answered".into());
+                }
+                assert_eq!(s.serial_port.as_deref(), Some("COM9"));
+                Ok(())
+            },
+            || {},
+            |_| {},
+        );
+        assert_eq!((calls, result), (2, Ok(())));
+    }
+
+    /// A Save that changes nothing the daemon is started with does not start it again.
+    #[test]
+    fn a_save_of_other_settings_during_a_start_is_left_alone() {
+        let settings = Mutex::new(Settings::default());
+        let mut calls = 0;
+        start_until_settled(
+            &settings,
+            |_| {
+                calls += 1;
+                settings.lock().developer_mode = true;
+                settings.lock().minimize_to_tray_on_close = false;
+                Ok(())
+            },
+            || {},
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+    }
+
+    /// A second start while one runs is refused rather than queued. The flag is process-wide, so
+    /// this is the only test that sets it.
+    #[test]
+    fn a_second_start_while_one_runs_is_refused() {
+        let first = begin_start().expect("no start is running");
+        assert!(start_in_progress());
+        assert!(begin_start().is_none(), "a second start must not queue");
+        drop(first);
+        assert!(!start_in_progress());
+        assert!(begin_start().is_some());
+        assert!(!start_in_progress(), "the guard was dropped at once");
+    }
+
+    #[test]
+    fn a_path_is_quoted_once() {
+        assert_eq!(
+            quote_path(r"C:\Program Files\Multi64\Multi64.exe"),
+            r#""C:\Program Files\Multi64\Multi64.exe""#
+        );
+        assert_eq!(
+            quote_path(r#""C:\Program Files\Multi64\Multi64.exe""#),
+            r#""C:\Program Files\Multi64\Multi64.exe""#
+        );
+    }
+
+    /// The sign-in entry was written unquoted, so an install path with a space in it was read by
+    /// Windows as `C:\Program.exe` with arguments. Builds the entry without touching the registry.
+    #[cfg(windows)]
+    #[test]
+    fn the_sign_in_entry_quotes_the_program_path() {
+        let exe = r"C:\Program Files\Multi64\Multi64.exe";
+        let auto = multi64_auto_launch_for(exe).unwrap();
+        // What auto-launch 0.6 writes to the Run key: `format!("{} {}", app_path, args.join(" "))`.
+        let value = format!("{} {}", auto.get_app_path(), auto.get_args().join(" "));
+        assert_eq!(
+            value.trim_end(),
+            r#""C:\Program Files\Multi64\Multi64.exe""#
+        );
+        // Found again by name, which is what `is_enabled` and `disable` look up.
+        assert_eq!(auto.get_app_name(), "Multi64");
+    }
+
+    /// A wildcard Listen address is where the daemon binds, not an address to connect to: Windows
+    /// refuses a connect to 0.0.0.0, so the bridge never showed as healthy.
+    #[test]
+    fn a_wildcard_listen_address_is_checked_on_loopback() {
+        assert_eq!(daemon_root_url("0.0.0.0:38765"), "http://127.0.0.1:38765/");
+        assert_eq!(daemon_root_url("[::]:38765"), "http://[::1]:38765/");
+        assert_eq!(
+            daemon_root_url("127.0.0.1:38765"),
+            "http://127.0.0.1:38765/"
+        );
+        assert_eq!(
+            daemon_root_url("localhost:38765"),
+            "http://localhost:38765/"
+        );
+    }
+
+    /// A stand-in multi64d on an ephemeral loopback port that answers `/health` with ok and `GET /`
+    /// with `root`, for `requests` requests. Returns its address.
+    fn fake_daemon(root: &'static str, requests: usize) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        thread::spawn(move || {
+            for stream in listener.incoming().take(requests) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let body = if request.starts_with("GET /health ") {
+                    r#"{"status":"ok"}"#
+                } else {
+                    root
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        addr
+    }
+
+    /// A daemon whose link is faulted (cart unplugged, wrong port) or released to Xfer64 still
+    /// answers `/health`, so the window said OK while nothing reached the cart.
+    #[test]
+    fn a_bridge_without_the_cart_is_not_reported_as_holding_it() {
+        let faulted = fake_daemon(
+            r#"{"service":"multi64d","serial":"COM4","serialActive":false,"serialBusy":false,"cart":"sc64"}"#,
+            1,
+        );
+        let link = bridge_link(&faulted);
+        assert_eq!(link, BridgeLink::NotHolding);
+        assert!(
+            link.answered(),
+            "it is up, which is not the same as not responding"
+        );
+
+        let holding = fake_daemon(
+            r#"{"service":"multi64d","serial":"COM4","serialActive":true,"serialBusy":false,"cart":"sc64"}"#,
+            1,
+        );
+        assert_eq!(bridge_link(&holding), BridgeLink::Holding);
+    }
+
+    #[test]
+    fn the_link_is_read_from_serial_active() {
+        assert_eq!(
+            link_from_root(r#"{"serialActive":false}"#),
+            BridgeLink::NotHolding
+        );
+        assert_eq!(
+            link_from_root(r#"{"serialActive":true}"#),
+            BridgeLink::Holding
+        );
+        // Busy is reported as held (daemon API §1.1).
+        assert_eq!(
+            link_from_root(r#"{"serialActive":true,"serialBusy":true}"#),
+            BridgeLink::Holding
+        );
+        // A daemon that does not say is taken at its word that it is up.
+        assert_eq!(
+            link_from_root(r#"{"service":"multi64d"}"#),
+            BridgeLink::Holding
+        );
+        assert_eq!(link_from_root("not json"), BridgeLink::Holding);
+    }
+
+    /// Nothing listening is not responding, not "no cart".
+    #[test]
+    fn a_bridge_that_does_not_answer_is_not_responding() {
+        use socket2::{Domain, Protocol, Socket, Type};
+        // A port held without listening, so nothing else can answer on it either.
+        let held = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        held.bind(
+            &"127.0.0.1:0"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+                .into(),
+        )
+        .unwrap();
+        let addr = held.local_addr().unwrap().as_socket().unwrap().to_string();
+        let link = bridge_link(&addr);
+        assert_eq!(link, BridgeLink::NotResponding);
+        assert!(!link.answered());
+    }
+
+    /// The watcher records an answer only for the daemon it was started for, and reports only a
+    /// change, which is when the tray is rebuilt.
+    #[test]
+    fn a_link_answer_is_recorded_once_and_only_for_its_own_daemon() {
+        let daemon = Mutex::new(DaemonInner::default());
+        assert!(
+            !record_link(&daemon, 42, BridgeLink::NotHolding),
+            "no daemon is running"
+        );
+        let child = Command::new(if cfg!(windows) { "cmd" } else { "sh" })
+            .args(if cfg!(windows) {
+                ["/C", "exit"]
+            } else {
+                ["-c", "exit"]
+            })
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        daemon.lock().child = Some(child);
+        assert!(!record_link(&daemon, pid + 1, BridgeLink::NotHolding));
+        assert!(record_link(&daemon, pid, BridgeLink::NotHolding));
+        assert!(
+            !record_link(&daemon, pid, BridgeLink::NotHolding),
+            "unchanged"
+        );
+        assert!(record_link(&daemon, pid, BridgeLink::Holding));
+        assert_eq!(daemon.lock().link, BridgeLink::Holding);
+        let _ = daemon.lock().child.take().unwrap().wait();
+    }
+
+    /// The health check accepted `http://host:port`, but the same text reached `--listen`, where
+    /// multi64d cannot bind it.
+    #[test]
+    fn listen_reaches_the_daemon_as_host_and_port() {
+        for typed in [
+            "http://127.0.0.1:38765",
+            "http://127.0.0.1:38765/",
+            " 127.0.0.1:38765 ",
+        ] {
+            let s = normalize_settings(Settings {
+                listen: typed.to_string(),
+                ..Settings::default()
+            });
+            let args = daemon_args("COM4", DaemonCart::Sc64, &s);
+            let at = args.iter().position(|a| a == "--listen").unwrap();
+            assert_eq!(args[at + 1], "127.0.0.1:38765", "{typed:?}");
+        }
+    }
+
+    /// Save refuses a Listen address multi64d could not bind, rather than starting a bridge that
+    /// exits at once.
+    #[test]
+    fn save_refuses_a_listen_address_the_daemon_cannot_bind() {
+        for good in [
+            "127.0.0.1:38765",
+            "0.0.0.0:38765",
+            "[::1]:38765",
+            "localhost:9000",
+        ] {
+            assert_eq!(normalize_listen(good).as_deref(), Ok(good), "{good}");
+        }
+        assert_eq!(
+            normalize_listen("http://127.0.0.1:38765/").as_deref(),
+            Ok("127.0.0.1:38765")
+        );
+        assert_eq!(normalize_listen("").as_deref(), Ok(DEFAULT_LISTEN));
+        for bad in [
+            "https://127.0.0.1:38765",
+            "127.0.0.1",
+            "127.0.0.1:0",
+            "127.0.0.1:99999",
+            ":38765",
+            "::1:38765",
+            "127.0.0.1:38765/ws",
+            "host name:38765",
+        ] {
+            assert!(normalize_listen(bad).is_err(), "{bad}");
+        }
     }
 
     /// The baud the user picks must reach multi64d; it was collected and never passed.
@@ -2418,10 +3298,11 @@ mod port_selection_tests {
         for (running, saved, cart, with_ports, want) in cases {
             let calls = std::cell::Cell::new(0);
             let settings = settings_for(saved, cart);
-            let (message, options) = note_and_port_options(running, &settings, with_ports, || {
-                calls.set(calls.get() + 1);
-                vec![ch340("COM5"), sc64_windows("COM4")]
-            });
+            let (message, options) =
+                note_and_port_options(running, &settings, with_ports, false, || {
+                    calls.set(calls.get() + 1);
+                    vec![ch340("COM5"), sc64_windows("COM4")]
+                });
             let case = (running, saved, cart, with_ports);
             assert_eq!(calls.get(), want, "{case:?}");
             assert_eq!(options.is_some(), with_ports, "{case:?}");
@@ -2439,10 +3320,139 @@ mod port_selection_tests {
     fn a_status_poll_note_and_options_agree() {
         let settings = settings_for(None, CartSetting::Sc64);
         let (message, options) =
-            note_and_port_options(false, &settings, true, || vec![ch340("COM5")]);
+            note_and_port_options(false, &settings, true, false, || vec![ch340("COM5")]);
         let options = options.unwrap();
         assert_eq!(Some(message), options.auto_warning);
         assert_eq!(options.ports, ["COM5"]);
+    }
+
+    fn names(ports: &[&str]) -> Vec<String> {
+        ports.iter().map(|p| p.to_string()).collect()
+    }
+
+    fn failed(plan: StartPlan, ports: &[&str]) -> AutoStartAttempt {
+        AutoStartAttempt {
+            plan,
+            ports: names(ports),
+        }
+    }
+
+    /// The first look tries whatever can start, and nothing that cannot.
+    #[test]
+    fn auto_start_tries_at_once_unless_start_cannot_work() {
+        let ports = names(&["COM3"]);
+        assert!(auto_start_should_try(
+            None,
+            &ready(DaemonCart::Sc64, "COM4", true),
+            &ports,
+            false
+        ));
+        assert!(auto_start_should_try(
+            None,
+            &StartPlan::Probe(None),
+            &ports,
+            false
+        ));
+        assert!(!auto_start_should_try(
+            None,
+            &StartPlan::Blocked("two carts".into()),
+            &ports,
+            false
+        ));
+        assert!(
+            !auto_start_should_try(None, &StartPlan::Probe(None), &ports, true),
+            "Start fails at once while the listen address is taken"
+        );
+    }
+
+    /// Sign-in with the cart unplugged: auto-start probed, found nothing and gave up for good, so
+    /// plugging the cart in later did nothing. It tries again once something is plugged in.
+    #[test]
+    fn auto_start_tries_again_when_a_cart_turns_up() {
+        let last = failed(StartPlan::Probe(None), &["COM1"]);
+        // A SummerCart64 plugged in is found by its USB IDs, with nothing sent.
+        assert!(auto_start_should_try(
+            Some(&last),
+            &ready(DaemonCart::Sc64, "COM4", true),
+            &names(&["COM1", "COM4"]),
+            false
+        ));
+        // Any other new port is probed.
+        assert!(auto_start_should_try(
+            Some(&last),
+            &StartPlan::Probe(None),
+            &names(&["COM1", "COM6"]),
+            false
+        ));
+        // The saved port, once it appears.
+        let last = failed(StartPlan::Probe(Some("COM6".into())), &["COM1"]);
+        assert!(auto_start_should_try(
+            Some(&last),
+            &StartPlan::Probe(Some("COM6".into())),
+            &names(&["COM1", "COM6"]),
+            false
+        ));
+    }
+
+    /// Without a change, a probe is never sent again: the ports it wrote to would get the cart test
+    /// commands every few seconds for as long as Multi64 waits.
+    #[test]
+    fn auto_start_does_not_probe_again_while_nothing_changes() {
+        let last = failed(StartPlan::Probe(None), &["COM1", "COM3"]);
+        for now in [&["COM1", "COM3"][..], &["COM1"], &["COM3", "COM1"]] {
+            assert!(
+                !auto_start_should_try(Some(&last), &StartPlan::Probe(None), &names(now), false),
+                "{now:?}"
+            );
+        }
+        // A port that is not the saved one does not matter to a probe of the saved one.
+        let last = failed(StartPlan::Probe(Some("COM6".into())), &["COM1"]);
+        assert!(!auto_start_should_try(
+            Some(&last),
+            &StartPlan::Probe(Some("COM6".into())),
+            &names(&["COM1", "COM7"]),
+            false
+        ));
+        // A start that failed with everything known (multi64d missing, say) fails the same way again.
+        let plan = ready(DaemonCart::Sc64, "COM4", false);
+        let last = failed(plan.clone(), &["COM4"]);
+        assert!(!auto_start_should_try(
+            Some(&last),
+            &plan,
+            &names(&["COM4", "COM5"]),
+            false
+        ));
+        assert!(auto_start_should_try(
+            Some(&last),
+            &ready(DaemonCart::Sc64, "COM5", false),
+            &names(&["COM4", "COM5"]),
+            false
+        ));
+    }
+
+    /// While auto-start waits, the stopped Note says what for.
+    #[test]
+    fn a_waiting_auto_start_is_named_in_the_note() {
+        let settings = settings_for(None, CartSetting::Auto);
+        let (waiting, _) =
+            note_and_port_options(false, &settings, false, true, || vec![ch340("COM5")]);
+        assert_eq!(
+            waiting,
+            "No SummerCart64 on USB; Start bridge will look for a cart on each serial port. \
+             Auto-start tries again when a serial port is plugged in."
+        );
+        let (idle, _) =
+            note_and_port_options(false, &settings, false, false, || vec![ch340("COM5")]);
+        assert_eq!(
+            idle,
+            "No SummerCart64 on USB; Start bridge will look for a cart on each serial port"
+        );
+        let blocked = settings_for(None, CartSetting::Sc64);
+        let (note, _) = note_and_port_options(false, &blocked, false, true, || vec![ch340("COM5")]);
+        assert!(
+            note.ends_with("automatically. Auto-start starts the bridge once that is resolved."),
+            "{note}"
+        );
     }
 
     /// No cart and two carts both leave `auto` empty with a warning; only two carts is ambiguous,
@@ -2471,9 +3481,83 @@ mod tray_tests {
 
     const LISTEN: &str = "127.0.0.1:38765";
 
+    /// [`tray_labels`] with no start running.
+    fn labels(
+        running: bool,
+        serial: Option<&str>,
+        can_start: bool,
+        cart_note: Option<&str>,
+        listen: &str,
+        listen_in_use: bool,
+    ) -> TrayLabels {
+        tray_labels(TrayState {
+            running,
+            starting: false,
+            serial,
+            can_start,
+            cart_note,
+            listen,
+            listen_in_use,
+            link: BridgeLink::Unknown,
+        })
+    }
+
+    /// A running bridge that does not hold the cart showed in the tray exactly like one that does.
+    #[test]
+    fn a_running_bridge_without_the_cart_says_so() {
+        let tray = |link| {
+            tray_labels(TrayState {
+                running: true,
+                starting: false,
+                serial: Some("COM4"),
+                can_start: true,
+                cart_note: Some("EverDrive-64 X7 (beta)"),
+                listen: LISTEN,
+                listen_in_use: false,
+                link,
+            })
+        };
+        assert_eq!(
+            tray(BridgeLink::NotHolding).status,
+            "Bridge: running on COM4, no cart link · EverDrive-64 X7 (beta)"
+        );
+        for link in [
+            BridgeLink::Holding,
+            BridgeLink::Unknown,
+            BridgeLink::NotResponding,
+        ] {
+            assert_eq!(
+                tray(link).status,
+                "Bridge: running on COM4 · EverDrive-64 X7 (beta)",
+                "{link:?}"
+            );
+        }
+        assert_eq!(tray(BridgeLink::NotHolding).toggle, "Stop bridge");
+    }
+
+    /// A Start clicked while one was probing queued behind it, then killed the daemon it spawned
+    /// and probed every port again. While a start runs the tray says so and offers no Start.
+    #[test]
+    fn a_start_in_progress_offers_no_second_start() {
+        let l = tray_labels(TrayState {
+            running: false,
+            starting: true,
+            serial: None,
+            can_start: true,
+            cart_note: Some("Auto-detect"),
+            listen: LISTEN,
+            listen_in_use: false,
+            link: BridgeLink::Unknown,
+        });
+        assert_eq!(l.status, "Bridge: starting… · Auto-detect");
+        assert_eq!(l.toggle, "Start bridge");
+        assert!(!l.toggle_enabled);
+        assert!(!l.restart_enabled);
+    }
+
     #[test]
     fn status_names_the_port_when_running() {
-        let l = tray_labels(true, Some("COM4"), true, None, LISTEN, false);
+        let l = labels(true, Some("COM4"), true, None, LISTEN, false);
         assert_eq!(l.status, "Bridge: running on COM4");
         assert_eq!(l.toggle, "Stop bridge");
     }
@@ -2482,7 +3566,7 @@ mod tray_tests {
     fn status_falls_back_to_listen_when_the_port_is_unknown() {
         // A live daemon with no configured or auto-detected port: name where it listens rather
         // than a port we cannot identify.
-        let l = tray_labels(true, None, true, None, LISTEN, false);
+        let l = labels(true, None, true, None, LISTEN, false);
         assert_eq!(l.status, "Bridge: running (127.0.0.1:38765)");
     }
 
@@ -2510,7 +3594,7 @@ mod tray_tests {
             tray_cart_note(false, DaemonCart::Ed64, CartSetting::Sc64),
             None
         );
-        let l = tray_labels(
+        let l = labels(
             true,
             Some("COM6"),
             true,
@@ -2519,7 +3603,7 @@ mod tray_tests {
             false,
         );
         assert_eq!(l.status, "Bridge: running on COM6 · EverDrive-64 X7 (beta)");
-        let l = tray_labels(
+        let l = labels(
             false,
             None,
             false,
@@ -2535,7 +3619,7 @@ mod tray_tests {
 
     #[test]
     fn stopped_shows_start_and_disables_restart() {
-        let l = tray_labels(false, Some("COM4"), true, None, LISTEN, false);
+        let l = labels(false, Some("COM4"), true, None, LISTEN, false);
         assert_eq!(l.status, "Bridge: stopped");
         assert_eq!(l.toggle, "Start bridge");
         assert!(l.toggle_enabled, "a port is configured, so Start is usable");
@@ -2548,7 +3632,7 @@ mod tray_tests {
     #[test]
     fn start_is_disabled_when_it_cannot_work() {
         // `start_daemon` fails without a port or a probe, so the item must not invite the click.
-        let l = tray_labels(false, None, false, None, LISTEN, false);
+        let l = labels(false, None, false, None, LISTEN, false);
         assert!(!l.toggle_enabled);
         // ...and the status line says why it is grayed out.
         assert_eq!(l.status, "Bridge: stopped (no serial port)");
@@ -2558,7 +3642,7 @@ mod tray_tests {
     /// failed. It stays enabled, as the window's does, and the status line says why it would fail.
     #[test]
     fn a_taken_listen_address_is_named_while_stopped() {
-        let l = tray_labels(false, Some("COM4"), true, None, LISTEN, true);
+        let l = labels(false, Some("COM4"), true, None, LISTEN, true);
         assert_eq!(l.status, "Bridge: stopped (listen address in use)");
         assert_eq!(l.toggle, "Start bridge");
         assert!(
@@ -2566,20 +3650,20 @@ mod tray_tests {
             "the menu may be stale by the time it is clicked"
         );
         // It is what Start reports first, so it wins over a missing port.
-        let l = tray_labels(false, None, false, Some("Auto-detect"), LISTEN, true);
+        let l = labels(false, None, false, Some("Auto-detect"), LISTEN, true);
         assert_eq!(
             l.status,
             "Bridge: stopped (listen address in use) · Auto-detect"
         );
         // A running bridge holds the address itself.
-        let l = tray_labels(true, Some("COM4"), true, None, LISTEN, true);
+        let l = labels(true, Some("COM4"), true, None, LISTEN, true);
         assert_eq!(l.status, "Bridge: running on COM4");
     }
 
     /// Auto-detect with no SC64 on USB has no port yet, but Start will probe for one.
     #[test]
     fn auto_detect_can_start_before_a_port_is_known() {
-        let l = tray_labels(false, None, true, Some("Auto-detect"), LISTEN, false);
+        let l = labels(false, None, true, Some("Auto-detect"), LISTEN, false);
         assert!(l.toggle_enabled);
         assert_eq!(l.status, "Bridge: stopped · Auto-detect");
     }
@@ -2587,7 +3671,7 @@ mod tray_tests {
     #[test]
     fn stop_stays_enabled_even_without_a_port() {
         // The port can disappear while the daemon runs; stopping it must still be possible.
-        let l = tray_labels(true, None, false, None, LISTEN, false);
+        let l = labels(true, None, false, None, LISTEN, false);
         assert_eq!(l.toggle, "Stop bridge");
         assert!(l.toggle_enabled);
         assert!(l.restart_enabled);
@@ -2601,7 +3685,7 @@ mod tray_tests {
             panic!("a running daemon must not re-resolve its port")
         });
         assert_eq!(serial.as_deref(), Some("COM4"));
-        let l = tray_labels(true, serial.as_deref(), true, None, LISTEN, false);
+        let l = labels(true, serial.as_deref(), true, None, LISTEN, false);
         assert_eq!(l.status, "Bridge: running on COM4");
     }
 
@@ -2618,7 +3702,7 @@ mod tray_tests {
     #[test]
     fn running_without_a_recorded_port_falls_back_to_listen() {
         let serial = tray_serial(true, None, || Some("COM4".into()));
-        let l = tray_labels(true, serial.as_deref(), true, None, LISTEN, false);
+        let l = labels(true, serial.as_deref(), true, None, LISTEN, false);
         assert_eq!(l.status, "Bridge: running (127.0.0.1:38765)");
     }
 }

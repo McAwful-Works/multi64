@@ -1,7 +1,7 @@
 # Frontend appearance: themes, tokens and preferences
 
-How Multi64 and Xfer64 style themselves, and the constraints that are easy to break. User-facing
-behavior is in each app's README; this is the maintainer view.
+How Multi64, Xfer64, Multi64 Test and AP64 style themselves, and the constraints that are easy to
+break. User-facing behavior is in each app's README; this is the maintainer view.
 
 ---
 
@@ -119,5 +119,5 @@ Three rules keep it that way:
 
 - **No `font-size` or `border-radius` literal in an app sheet.** Use a token. Sizes relative to the parent (`em`) are fine.
 - **No component-level focus styles.** The global ring is the only one. Where `overflow` would clip it, adjust `outline-offset` and nothing else.
-- **A shared component changes in `styles.css`, in both copies.** Never override it in one app's sheet to make that app look different.
+- **A shared component changes in `styles.css`, in all four copies.** Never override it in one app's sheet to make that app look different.
 

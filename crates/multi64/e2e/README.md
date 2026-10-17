@@ -10,13 +10,21 @@ that records every `invoke` and answers from a small table. No bridge, no serial
 What they check:
 
 - **The Status card:** a running bridge shows its cart and serial port (`SummerCart64 on COM3`), and
-  only the action that applies (Start or Stop) is enabled.
+  only the action that applies (Start or Stop) is enabled. Health reads **OK** while the bridge holds
+  the cart and **No cart link** when it answers without it, with the backend's reason in Note.
+- **A start in progress:** after a Start click, and whenever the backend reports a start under way,
+  the card reads **Starting…** and offers no Start, through a status poll too, so a second click
+  never reaches `daemon_start`; Start comes back once the start has answered.
 - **Settings → Cart:** the four options, the saved cart selected on open, and the experimental warning
   under a chosen EverDrive.
 - **Settings → Serial port:** Auto-detect first, then the ports the backend listed.
 - **An unplugged saved port (#168):** it stays listed as `COMx (not connected)` and stays selected
   through opening Settings, the status poll's port refresh, Save (which writes it back rather than
   Auto-detect), opening Settings again, and Refresh ports.
+- **The window fits the page:** the height the page asks for (`fit_window_height`) is the page's own,
+  grows by the Developer card in Developer mode, is at least 640 px while a dialog is open and
+  shrinks back when it closes, and a long log scrolls inside its box rather than growing it.
+- **No console errors** from any of the pages above.
 
 ```sh
 npm ci

@@ -51,6 +51,8 @@ A resume that gets the link but fails to **open** the port — no cart there, or
 
 While released, WebSocket binary writes to the cart are ignored; clients should tolerate brief disconnect-like behavior until resume.
 
+The released state belongs to the daemon process and does not pass to another one. A daemon started while a tool holds the port, as when Multi64 restarts the bridge during Xfer64's work, cannot open it, so it starts faulted (§1.3.1) and retries about once per second. It can therefore take the port in any gap where the tool closes it before its resume. Xfer64 opens and closes the port for each cart command, and one operation can run several inside a single release, so a later command in it then fails to open the port. The tool's resume that follows is harmless: on an active link it succeeds at once. Nothing in this API lets a new daemon learn of a release made to an earlier one.
+
 ### 1.3 Link faults and recovery
 
 The link is **faulted** whenever the daemon wants the port but does not hold it. Three things put it there: a serial read failing with a real I/O error — the cart unplugged, the USB-CDC device reset — a **write to the cart that fails or times out** (§1.3.2), and a **failed open at startup** (§1.3.1). Faulted is distinct from released:
