@@ -141,9 +141,9 @@ pub fn parse_upload_args() -> Result<UploadCliArgs, String> {
                  \n\
                  Upload files from this PC to the N64 flash cart's SD card over USB serial.\n\
                  \n\
-                 --com COM        Serial port (default: settings file, or MULTI64_XFER64_COM, or auto)\n\
+                 --com COM        Serial port (headless only; default: MULTI64_XFER64_COM, then the settings file, then auto)\n\
                  --to PATH        Cart folder relative to the cart root (headless only; default: Quick upload folder or root)\n\
-                 --overwrite, -y  Replace existing files on the cart\n\
+                 --overwrite, -y  Replace existing files on the cart (headless only)\n\
                  --notify           When headless: show a message when finished\n\
                  --picker           Choose destination folder in a small window (Send to / shell)\n\
                  --experimental-ed64pro-writes  Allow writing to an EverDrive-64 PRO (experimental; never tested on a cart)\n"
@@ -177,6 +177,14 @@ pub fn parse_upload_args() -> Result<UploadCliArgs, String> {
     })
 }
 
+/// The serial port an upload pins, if any: `--com`, then `MULTI64_XFER64_COM`, then the settings
+/// file's port. `None` leaves it to auto-detect. A blank value counts as unset; a blank variable
+/// used to hide the settings file's port.
+fn upload_com(cli: Option<&str>, env: Option<&str>, settings: Option<&str>) -> Option<String> {
+    let set = |v: Option<&str>| v.map(str::trim).filter(|v| !v.is_empty()).map(String::from);
+    set(cli).or_else(|| set(env)).or_else(|| set(settings))
+}
+
 /// Headless import used by CLI and by the upload-picker window.
 /// When `app` is set, emits [`crate::progress::EXPLORER_PROGRESS_EVENT`] (bytes done / total) like the main explorer.
 ///
@@ -205,15 +213,12 @@ pub fn run_headless_import_upload(
     let settings = ExplorerSettingsState::load();
     let snap = settings.snapshot();
     let st = ExplorerCartSerialState::new();
-    if let Some(ref c) = com_override {
-        *st.preferred_com.lock().map_err(|e| e.to_string())? = Some(c.trim().to_string());
-    } else if let Ok(c) = std::env::var("MULTI64_XFER64_COM") {
-        let t = c.trim();
-        if !t.is_empty() {
-            *st.preferred_com.lock().map_err(|e| e.to_string())? = Some(t.to_string());
-        }
-    } else if let Some(ref c) = snap.preferred_com {
-        *st.preferred_com.lock().map_err(|e| e.to_string())? = Some(c.clone());
+    if let Some(c) = upload_com(
+        com_override.as_deref(),
+        std::env::var("MULTI64_XFER64_COM").ok().as_deref(),
+        snap.preferred_com.as_deref(),
+    ) {
+        *st.preferred_com.lock().map_err(|e| e.to_string())? = Some(c);
     }
 
     let cart_parent = cart_parent.trim().replace('\\', "/");
@@ -442,6 +447,25 @@ mod tests {
             skipped,
             resume_warning: None,
         })
+    }
+
+    /// `--com`, then the variable, then the settings file; a blank one is passed over.
+    #[test]
+    fn the_upload_port_is_the_first_one_given() {
+        assert_eq!(
+            upload_com(Some("COM3"), Some("COM4"), Some("COM5")).as_deref(),
+            Some("COM3")
+        );
+        assert_eq!(
+            upload_com(None, Some(" COM4 "), Some("COM5")).as_deref(),
+            Some("COM4")
+        );
+        assert_eq!(
+            upload_com(None, Some(""), Some("COM5")).as_deref(),
+            Some("COM5"),
+            "a blank MULTI64_XFER64_COM must not hide the settings file's port"
+        );
+        assert_eq!(upload_com(None, None, Some("  ")), None);
     }
 
     /// A failed resume after Quick upload must reach the user as its own warning, not as a progress

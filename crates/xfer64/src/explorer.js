@@ -1,5 +1,6 @@
 import { cancelMessageFor, countNoun, userFacingErrorMessage } from "./user-error.js";
 import {
+  beginWindowActivity,
   bridgeListenUrl,
   normalizeUsbPath,
   probeSavedCartFolderReachable,
@@ -568,11 +569,13 @@ function endPaneLoading(pane) {
  * shortcuts and the pane's buttons refuse while `isPaneBusy(pane)`. The overlay itself is drawn
  * only if the operation is still running after `PANE_BUSY_SHOW_DELAY_MS`, so a quick one shows
  * nothing. Overlapping operations are counted; calling the returned `end()` again does nothing.
+ * Closing the window while any runs asks first (`onCloseRequestedWhileBusy`).
  * @param {"cart" | "pc"} pane
  * @param {string} [text] caption shown on the overlay
  * @returns {() => void}
  */
 function beginBusy(pane, text = "Working…") {
+  const endActivity = beginWindowActivity(invoke);
   const busy = paneBusy[pane];
   busy.depth++;
   busy.text = text;
@@ -600,7 +603,39 @@ function beginBusy(pane, text = "Working…") {
     }
     syncPaneShade(pane);
     updateExplorerControls();
+    endActivity();
   };
+}
+
+/** True while the "Close Xfer64?" question is up, so a second close does not ask twice. */
+let closePromptOpen = false;
+
+/**
+ * The window was closed while work was under way, and the backend held the close
+ * (`close_guard.rs`): exiting now would cut the work off before the cart's SD session is released
+ * and the bridge resumed. With an operation running, ask whether to cancel it; either way Xfer64
+ * then closes only once everything has stopped. A plain cart read needs no question: it is quick,
+ * so the window closes as soon as it is done.
+ * @param {{ window?: string }} [payload]
+ */
+async function onCloseRequestedWhileBusy(payload) {
+  if (payload?.window !== "main" || closePromptOpen) return;
+  if (!isPaneBusy("cart") && !isPaneBusy("pc")) {
+    await invoke("explorer_close_when_idle").catch(() => {});
+    return;
+  }
+  closePromptOpen = true;
+  try {
+    const stop = await showExplorerConfirm(
+      "An operation is still running. Closing Xfer64 now would cut it off part-way, leaving the cart's SD card held by this PC and the Multi64 bridge paused.\n\nCancel the operation, and close Xfer64 once it has stopped?\n\nIf it will not stop, close the window twice more to quit at once, without that cleanup.",
+      { title: "Close Xfer64?", okLabel: "Cancel and close", cancelLabel: "Keep waiting" }
+    );
+    if (!stop) return;
+    requestProgressCancel();
+    await invoke("explorer_close_when_idle").catch(() => {});
+  } finally {
+    closePromptOpen = false;
+  }
 }
 
 /** Hide the copy/delete progress strip without a completion toast (e.g. empty copy plan). */
@@ -1192,6 +1227,7 @@ function hideNameTooltip() {
 
 const MODAL_TITLE_DEFAULT = "Xfer64";
 const MODAL_OK_LABEL_DEFAULT = "OK";
+const MODAL_CANCEL_LABEL_DEFAULT = "Cancel";
 
 const FOCUSABLE_SELECTOR =
   'a[href], button, input:not([type="hidden"]), select, textarea, summary, [tabindex]';
@@ -1590,7 +1626,11 @@ async function openExplorerPropertiesForPane(pane) {
   showExplorerPropertiesModal(pane);
   try {
     if (pane === "cart") {
-      const info = await invoke("cart_serial_path_info", { path: normalizeUsbPath(path) });
+      // A cart read like any other: the bridge pauses around it.
+      let info;
+      await withCartDaemonYield(async () => {
+        info = await invoke("cart_serial_path_info", { path: normalizeUsbPath(path) });
+      });
       fillExplorerPropertiesDl(dl, info, pane);
     } else {
       const info = await invoke("fs_path_info", { path });
@@ -1659,7 +1699,10 @@ async function openExplorerPropertiesForCurrentFolder(pane) {
           pane,
         );
       } else {
-        const info = await invoke("cart_serial_path_info", { path });
+        let info;
+        await withCartDaemonYield(async () => {
+          info = await invoke("cart_serial_path_info", { path });
+        });
         fillExplorerPropertiesDl(dl, info, pane);
       }
     } else {
@@ -1821,12 +1864,19 @@ function showExplorerAlert(message, opts = {}) {
 
 /**
  * @param {string} message
- * @param {{ title?: string, okLabel?: string }} [opts]
- *   `title` defaults to "Xfer64" and `okLabel` to "OK". Destructive confirms should pass both: a
- *   title that says what the dialog is about, and a button that names the action ("Delete").
+ * @param {{ title?: string, okLabel?: string, cancelLabel?: string }} [opts]
+ *   `title` defaults to "Xfer64", `okLabel` to "OK" and `cancelLabel` to "Cancel". Destructive
+ *   confirms should pass the first two: a title that says what the dialog is about, and a button
+ *   that names the action ("Delete").
  */
 function showExplorerConfirm(message, opts = {}) {
-  return showExplorerModal({ type: "confirm", message, title: opts.title, okLabel: opts.okLabel });
+  return showExplorerModal({
+    type: "confirm",
+    message,
+    title: opts.title,
+    okLabel: opts.okLabel,
+    cancelLabel: opts.cancelLabel,
+  });
 }
 
 /** Start of the backend's refusal to write to an EverDrive-64 PRO before consent (`ED64PRO_WRITE_CONSENT_MARKER`). */
@@ -1837,11 +1887,16 @@ const ED64PRO_WRITE_WARNING =
 
 /**
  * Invoke a command that writes to the cart. An EverDrive-64 PRO refuses until the user accepts, once per
- * app run, that writing to it is experimental: this asks, records the answer, and retries.
+ * app run, that writing to it is experimental: this asks, records the answer, and retries. The copy
+ * batch comes through here in both directions; anything but an export first drops the staged
+ * drag-out copy (`invalidateStagedCartDrag`).
  * @param {string} cmd
  * @param {Record<string, unknown>} args
  */
 async function invokeCartWrite(cmd, args) {
+  // A staged drag-out copy may be of what this changes; the cart lists no modified times to tell.
+  // An export (the batch runs through here for both directions) only reads the cart.
+  if (cmd !== "cart_serial_export_copy_batch") invalidateStagedCartDrag();
   try {
     return await invoke(cmd, args);
   } catch (e) {
@@ -2087,8 +2142,9 @@ async function runInteractiveCopyPlan(plan, mode, action = copyActionLabel(mode)
 }
 
 /**
- * @param {{ type: 'alert'|'confirm'|'prompt', message: string, title?: string, okLabel?: string, defaultValue?: string, placeholder?: string, selectFilenameStem?: boolean, disableOkIfEmpty?: boolean }} cfg
- *   `title` defaults to "Xfer64" and `okLabel` to "OK"; both are reset on every open.
+ * @param {{ type: 'alert'|'confirm'|'prompt', message: string, title?: string, okLabel?: string, cancelLabel?: string, defaultValue?: string, placeholder?: string, selectFilenameStem?: boolean, disableOkIfEmpty?: boolean }} cfg
+ *   `title` defaults to "Xfer64", `okLabel` to "OK" and `cancelLabel` to "Cancel"; all three are
+ *   reset on every open.
  *   Alert, confirm and prompt share one dialog root: one asked for while another is open waits
  *   until that one is answered, then opens and resolves on its own.
  */
@@ -2121,6 +2177,9 @@ function openExplorerModal(cfg) {
     const okLabel = cfg.okLabel || MODAL_OK_LABEL_DEFAULT;
     btnOk.textContent = okLabel;
     btnOk.title = `${okLabel} (Enter)`;
+    const cancelLabel = cfg.cancelLabel || MODAL_CANCEL_LABEL_DEFAULT;
+    btnCancel.textContent = cancelLabel;
+    btnCancel.title = `${cancelLabel} (Esc)`;
 
     const isPrompt = cfg.type === "prompt";
     const isAlert = cfg.type === "alert";
@@ -2301,6 +2360,7 @@ function isCartSdBaseScanProgressBarActive() {
  * `forceRefresh` — bypass Rust cart list cache on the first page (e.g. F5).
  */
 async function loadCartPane(opts = {}) {
+  if (opts.forceRefresh === true) invalidateStagedCartDrag();
   beginPaneLoading("cart", "Reading cart…");
   updateExplorerControls();
   try {
@@ -2698,8 +2758,10 @@ function dropTargetAt(clientX, clientY) {
   if (!wrap) return null;
   const pane = wrap.dataset.dropPane;
   if (pane !== "cart" && pane !== "pc") return null;
-  // A pane with an operation running takes no drops.
-  if (isPaneBusy(pane)) return null;
+  // Every drop is a transfer, so it is refused while either pane has an operation running, as
+  // Export and Import are (`actionBlockedReason`): an Explorer drop on the idle pane would otherwise
+  // start a second operation beside the first.
+  if (isPaneBusy("cart") || isPaneBusy("pc")) return null;
   const dirRow = el.closest("tbody tr[data-is-dir='1']");
   return { pane, wrap, dirRow: dirRow || null, destPath: dirRow?.dataset?.path || null };
 }
@@ -3529,8 +3591,9 @@ function endOsDrag() {
 }
 
 /**
- * Cart paths for a staging batch, tagged with size and modified time so a file that changed on
- * the cart is exported again rather than dragged out stale.
+ * Cart paths for a staging batch, tagged with size and modified time. The cart lists no modified
+ * times, and a file rewritten at the same size keeps its size, so this alone cannot tell that a
+ * staged copy is stale: `invalidateStagedCartDrag` drops it whenever the cart may have changed.
  * @param {string[]} paths
  */
 function cartStagingKeyFor(paths) {
@@ -3557,6 +3620,18 @@ async function discardStagingDir(dir) {
   } catch {
     // Temp files: a failed cleanup is pruned on a later run, and is not worth a dialog.
   }
+}
+
+/**
+ * Stop reusing the staged cart copy, because the cart may have changed since it was exported: a
+ * write to the cart from this window (import, delete, rename, new folder), or a refresh of the
+ * cart pane (F5, Refresh, or a serial port coming or going), which is how a change made elsewhere —
+ * by the console, or another Xfer64 — gets picked up. The next drag-out exports again.
+ */
+function invalidateStagedCartDrag() {
+  const dir = cartDragStaged?.dir;
+  cartDragStaged = null;
+  if (dir) void discardStagingDir(dir);
 }
 
 /** Forget staged cart copies: after a port or cart change they may be from a different card. */
@@ -4444,9 +4519,12 @@ async function runEd64LinearBaseScan() {
   let scanCancelled = false;
   try {
     let r;
-    await runWithProgress("cart", ED64_SD_BASE_SCAN_STATUS_MSG, async () => {
-      r = await invoke("cart_serial_probe_ed64_linear_base");
-    });
+    // The scan reads the cart, so the bridge pauses around it like any other cart read.
+    await runWithProgress("cart", ED64_SD_BASE_SCAN_STATUS_MSG, () =>
+      withCartDaemonYield(async () => {
+        r = await invoke("cart_serial_probe_ed64_linear_base");
+      })
+    );
     const candidates = r.candidates || [];
     const checked = r.basesChecked ?? 0;
     if (candidates.length === 0) {
@@ -5118,6 +5196,8 @@ function setupExplorerSettings() {
 }
 
 async function init() {
+  // First, so a close during the boot's own cart read is already handled.
+  void window.__TAURI__?.event?.listen?.("xfer64-close-requested", (e) => void onCloseRequestedWhileBusy(e?.payload));
   const dirs = await invoke("fs_user_dirs");
   const defPc = dirs.documents || dirs.home || "";
   const savedPc = localStorage.getItem(LS_PC) || defPc;

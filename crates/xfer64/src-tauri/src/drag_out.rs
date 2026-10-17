@@ -8,8 +8,8 @@
 //! drag-out takes two gestures: the first stages, the second drags.
 //!
 //! Everything staged is a copy. The whole session directory goes when the app exits; one left
-//! behind by a crash is pruned on a later start, once it is older than [`STALE_STAGING_MAX_AGE`]
-//! and no running Xfer64 holds its [`LIVE_MARKER_NAME`].
+//! behind by a crash is pruned when a later run first stages a drag-out, once it is older than
+//! [`STALE_STAGING_MAX_AGE`] and no running Xfer64 holds its [`LIVE_MARKER_NAME`].
 //! The Windows pane needs none of this — those paths are already real.
 
 use std::fs::File;

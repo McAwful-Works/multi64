@@ -14,6 +14,7 @@
 
 #[cfg(feature = "ed64")]
 use crate::ed64_linear::Ed64RomLinear;
+use crate::host_file::write_host_file;
 use crate::link::{Sc64Link, SdCardTransport, SD_CARD_BUFFER_MAX_BYTES};
 use crate::mem_disk::{PartitionDisk, RamPartitionDisk};
 use fatfs::{FileAttributes as FatFileAttributes, FileSystem, FsOptions};
@@ -25,7 +26,6 @@ use hadris_fat::exfat::{
 use std::io;
 use std::io::prelude::*;
 use std::io::BufReader;
-use std::io::BufWriter;
 use std::io::SeekFrom;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -237,9 +237,12 @@ impl Sc64SdSession {
         }
     }
 
-    /// Same as [`Self::copy_cart_entry_to_host`], reporting **bytes copied** (delta) to `progress`.
-    /// When `skip_existing` is true, existing files at `dest` are left unchanged.
+    /// Copy a cart file or folder tree to `dest` on the PC, reporting **bytes copied** (delta) to
+    /// `progress`. When `skip_existing` is true, existing files at `dest` are left unchanged.
     /// Return `false` from `progress` to abort (yields [`io::ErrorKind::Interrupted`]).
+    ///
+    /// Each file is written through [`write_host_file`], so a file already at its destination is
+    /// replaced only once the copy of it is complete: a cancel or failure keeps the original.
     pub fn copy_cart_entry_to_host_with_progress<F>(
         &self,
         cart_path: &str,
@@ -279,42 +282,31 @@ impl Sc64SdSession {
             if let Some(p) = dest.parent() {
                 std::fs::create_dir_all(p)?;
             }
-            let f = std::fs::File::create(dest)?;
-            let mut out = BufWriter::with_capacity(STREAM_CHUNK * 2, f);
             let disk = Sc64PartitionDisk::new(
                 self.link.clone(),
                 self.partition_start_sector,
                 self.partition_bytes,
             );
-            let read_result = if self.exfat {
-                read_file_exfat_streaming(
-                    PartitionDiskUnion::Sc64(disk),
-                    &entry.path,
-                    &mut out,
-                    &mut progress,
-                    Some(entry.size),
-                )
-            } else {
-                read_file_fat_streaming(
-                    disk,
-                    &entry.path,
-                    &mut out,
-                    &mut progress,
-                    Some(entry.size),
-                )
-            };
-            drop(out);
-            if let Err(e) = read_result {
-                if e.kind() == io::ErrorKind::Interrupted {
-                    let _ = std::fs::remove_file(dest);
+            // Into a temporary file that replaces `dest` only once complete: a cancelled or
+            // failed Replace keeps the original.
+            write_host_file(dest, |out| {
+                if self.exfat {
+                    read_file_exfat_streaming(
+                        PartitionDiskUnion::Sc64(disk),
+                        &entry.path,
+                        out,
+                        &mut progress,
+                        Some(entry.size),
+                    )
+                } else {
+                    read_file_fat_streaming(disk, &entry.path, out, &mut progress, Some(entry.size))
                 }
-                return Err(e);
-            }
-            Ok(())
+            })
         }
     }
 
-    /// Same as [`Self::import_from_pc`], reporting **bytes written** (delta) to `progress`.
+    /// Copy a PC file or folder tree to `cart_parent/dest_name` on the cart, reporting **bytes
+    /// written** (delta) to `progress`.
     /// When `skip_existing` is true, existing **files** on the cart at the destination path are not overwritten.
     /// Return `false` from `progress` to abort (yields [`io::ErrorKind::Interrupted`]).
     pub fn import_from_pc_with_progress<F>(
@@ -690,38 +682,24 @@ impl Ed64SdSession {
             if let Some(p) = dest.parent() {
                 std::fs::create_dir_all(p)?;
             }
-            let f = std::fs::File::create(dest)?;
-            let mut out = BufWriter::with_capacity(STREAM_CHUNK * 2, f);
             let disk = SectorPartitionDisk::new(
                 self.link.clone(),
                 self.partition_start_sector,
                 self.partition_bytes,
             );
-            let read_result = if self.exfat {
-                read_file_exfat_streaming(
-                    PartitionDiskUnion::Ed64(disk),
-                    &entry.path,
-                    &mut out,
-                    &mut progress,
-                    Some(entry.size),
-                )
-            } else {
-                read_file_fat_streaming(
-                    disk,
-                    &entry.path,
-                    &mut out,
-                    &mut progress,
-                    Some(entry.size),
-                )
-            };
-            drop(out);
-            if let Err(e) = read_result {
-                if e.kind() == io::ErrorKind::Interrupted {
-                    let _ = std::fs::remove_file(dest);
+            write_host_file(dest, |out| {
+                if self.exfat {
+                    read_file_exfat_streaming(
+                        PartitionDiskUnion::Ed64(disk),
+                        &entry.path,
+                        out,
+                        &mut progress,
+                        Some(entry.size),
+                    )
+                } else {
+                    read_file_fat_streaming(disk, &entry.path, out, &mut progress, Some(entry.size))
                 }
-                return Err(e);
-            }
-            Ok(())
+            })
         }
     }
 
@@ -831,31 +809,24 @@ fn copy_cart_dir_to_host_with_progress_ed64(
             if skip_existing && sub.exists() {
                 continue;
             }
-            let f = std::fs::File::create(&sub)?;
-            let mut out = BufWriter::with_capacity(STREAM_CHUNK * 2, f);
             let disk = SectorPartitionDisk::new(
                 session.link.clone(),
                 session.partition_start_sector,
                 session.partition_bytes,
             );
-            let read_result = if session.exfat {
-                read_file_exfat_streaming(
-                    PartitionDiskUnion::Ed64(disk),
-                    &e.path,
-                    &mut out,
-                    progress,
-                    Some(e.size),
-                )
-            } else {
-                read_file_fat_streaming(disk, &e.path, &mut out, progress, Some(e.size))
-            };
-            drop(out);
-            if let Err(err) = read_result {
-                if err.kind() == io::ErrorKind::Interrupted {
-                    let _ = std::fs::remove_file(&sub);
+            write_host_file(&sub, |out| {
+                if session.exfat {
+                    read_file_exfat_streaming(
+                        PartitionDiskUnion::Ed64(disk),
+                        &e.path,
+                        out,
+                        progress,
+                        Some(e.size),
+                    )
+                } else {
+                    read_file_fat_streaming(disk, &e.path, out, progress, Some(e.size))
                 }
-                return Err(err);
-            }
+            })?;
         }
     }
     Ok(())
@@ -1123,31 +1094,24 @@ fn copy_cart_dir_to_host_with_progress(
             if skip_existing && sub.exists() {
                 continue;
             }
-            let f = std::fs::File::create(&sub)?;
-            let mut out = BufWriter::with_capacity(STREAM_CHUNK * 2, f);
             let disk = Sc64PartitionDisk::new(
                 session.link.clone(),
                 session.partition_start_sector,
                 session.partition_bytes,
             );
-            let read_result = if session.exfat {
-                read_file_exfat_streaming(
-                    PartitionDiskUnion::Sc64(disk),
-                    &e.path,
-                    &mut out,
-                    progress,
-                    Some(e.size),
-                )
-            } else {
-                read_file_fat_streaming(disk, &e.path, &mut out, progress, Some(e.size))
-            };
-            drop(out);
-            if let Err(err) = read_result {
-                if err.kind() == io::ErrorKind::Interrupted {
-                    let _ = std::fs::remove_file(&sub);
+            write_host_file(&sub, |out| {
+                if session.exfat {
+                    read_file_exfat_streaming(
+                        PartitionDiskUnion::Sc64(disk),
+                        &e.path,
+                        out,
+                        progress,
+                        Some(e.size),
+                    )
+                } else {
+                    read_file_fat_streaming(disk, &e.path, out, progress, Some(e.size))
                 }
-                return Err(err);
-            }
+            })?;
         }
     }
     Ok(())

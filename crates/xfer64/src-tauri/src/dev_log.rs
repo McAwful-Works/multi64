@@ -1,6 +1,8 @@
 //! Persistent settings + ring-buffer log for developer visibility (cart serial / SD sessions).
 //!
-//! Settings are stored under the OS config dir as `multi64/xfer64-settings.json` (legacy: `cart-explorer-settings.json`).
+//! Settings are stored under the OS config dir as `multi64/xfer64-settings.json`. A file that does
+//! not parse is renamed `xfer64-settings.json.corrupt`. With no usable settings file, a legacy
+//! `cart-explorer-settings.json` is copied into place if there is one, else defaults are used.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -15,7 +17,17 @@ fn default_cart_device() -> String {
     "auto".to_string()
 }
 
-/// `auto` — probe serial (SC64 identify, then EverDrive `usb64` test). `sc64` — SummerCart64. `ed64_beta` — EverDrive; [`ed64_rom_linear_base`] required for the experimental `RomRead` SD path, which reads cart ROM memory rather than the SD card.
+/// `cartDevice`:
+/// - `auto` — with Serial port on Auto too, the cart and port a running `multi64d` reports; else
+///   an SC64 by its USB descriptors; else the wire probes (SC64 `IDENTIFIER_GET`, the EverDrive-64
+///   PRO handshake, the X-series `usb64` test — that one first on an FTDI `0403:6001` port). See
+///   `cart_probe.rs`.
+/// - `sc64` — SummerCart64.
+/// - `ed64_beta` — EverDrive-64 X-series; [`ed64_rom_linear_base`] required for the experimental
+///   `RomRead` SD path, which reads cart ROM memory rather than the SD card.
+/// - `ed64_pro` — EverDrive-64 PRO (experimental file-level access).
+///
+/// Field names are camelCase in the file (`preferredCom`, `quickUploadCartPath`, …).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplorerSettingsSnapshot {

@@ -126,6 +126,7 @@ function installTauriStub(scenario = {}) {
       return listing(cartEntries);
     },
     fs_list_dir_page: () => listing(window.__TAURI_LONG_PC__ ? longPcEntries : pcEntries),
+    cart_serial_path_info: (a) => ({ name: String(a.path).split("/").pop(), path: a.path, isDir: false, size: 8388608, hidden: false }),
     // The EverDrive SD base scan, finding nothing: it ends in an alert.
     cart_serial_probe_ed64_linear_base: () => ({ candidates: [], basesChecked: 12 }),
     xfer64_app_version: () => "0.0.0-test",
@@ -382,6 +383,36 @@ await page.waitForTimeout(500);
     starts.length === 1 && starts[0].args.item?.[0] === "C:\\Temp\\xfer64-drag\\42-1\\d0\\sm64.z64",
     JSON.stringify(starts.map((s) => s.args?.item)));
   check("and does not export again", !(await cmds()).includes("drag_staging_begin"), (await cmds()).join(","));
+}
+
+// The cart lists no modified times, so the staged copy cannot be checked against the cart: anything
+// that may have changed the cart drops it, and the next drag-out exports again.
+await reset();
+// The stub's plugin never reports the drag above ending; a drop back on our own window ends it.
+await osDrag("tauri://drag-drop", { at: await center("#tbody-pc"), paths: [] });
+await osDrag("tauri://drag-drop", { at: await center("#tbody-cart"), paths: ["C:\\dl\\oot.z64"] });
+await page.waitForTimeout(500);
+{
+  const imported = (await cmds()).includes("cart_serial_import_copy_batch");
+  await reset();
+  await drag(CART_FILE, await center(CART_FILE), { x: -40, y: 300 }, { upOutside: true });
+  await page.waitForTimeout(600);
+  const seen = await cmds();
+  check("after an import to the cart, a cart drag-out exports again instead of dragging the staged copy",
+    imported && seen.includes("drag_staging_begin") && !seen.includes("plugin:drag|start_drag"),
+    JSON.stringify({ imported, seen }));
+}
+
+await reset();
+await page.click('[data-action="refresh"][data-pane="cart"]');
+await page.waitForTimeout(500);
+await reset();
+await drag(CART_FILE, await center(CART_FILE), { x: -40, y: 300 }, { upOutside: true });
+await page.waitForTimeout(600);
+{
+  const seen = await cmds();
+  check("and so does refreshing the cart pane, which is how a change made elsewhere is picked up",
+    seen.includes("drag_staging_begin") && !seen.includes("plugin:drag|start_drag"), seen.join(","));
 }
 
 // --- the ghost, and abandoning a drag ------------------------------------
@@ -1125,6 +1156,190 @@ const clearedSavedFolder = (calls) =>
   const order = { main: probedFirst(mainCalls), picker: probedFirst(calls) };
   check("each window probes multi64d at its own address before resolving the cart's port",
     order.main.ok && order.picker.ok, JSON.stringify(order));
+}
+
+{
+  // Properties and the EverDrive SD base scan read the cart, so they pause the bridge like any other read.
+  const p = await openScenario("index.html", { daemonUp: true });
+  await p.waitForSelector(CART_FILE, { timeout: 15000 });
+  await p.waitForTimeout(400);
+  await p.evaluate(() => { window.__TAURI_CALLS__.length = 0; });
+  await p.click(CART_FILE);
+  await p.keyboard.press("ContextMenu");
+  await p.waitForSelector("#explorer-context-menu:not([hidden])");
+  await p.keyboard.press("End");
+  await p.keyboard.press("Enter");
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "cart_serial_path_info"));
+  await p.waitForTimeout(300);
+  const props = await callsIn(p);
+  check("Properties of a cart item reads it with the bridge paused",
+    whilePaused(props, props.findIndex((c) => c.cmd === "cart_serial_path_info")), callLog(props));
+  await p.keyboard.press("Escape");
+
+  await p.evaluate(() => { window.__TAURI_CALLS__.length = 0; });
+  await p.click("#btn-open-settings");
+  await p.waitForSelector("#explorer-settings-panel:not([hidden])");
+  await p.selectOption("#explorer-cart-device", "ed64_beta");
+  await p.waitForSelector("#explorer-ed64-advanced-section:not([hidden])");
+  await p.click("#btn-ed64-probe-linear-base");
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "cart_serial_probe_ed64_linear_base"));
+  await p.waitForTimeout(300);
+  const scan = await callsIn(p);
+  check("the EverDrive SD base scan runs with the bridge paused",
+    whilePaused(scan, scan.findIndex((c) => c.cmd === "cart_serial_probe_ed64_linear_base")), callLog(scan));
+  await p.close();
+}
+
+/** An OS file drop, as `osDrag` fires one, on a page of its own. */
+const osDropIn = async (p, selector, paths) => {
+  const box = await p.locator(selector).boundingBox();
+  const at = { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
+  await p.evaluate(({ at, paths }) => {
+    const s = window.devicePixelRatio || 1;
+    window.__TAURI_LISTENERS__["tauri://drag-drop"]({ payload: { position: { x: at.x * s, y: at.y * s }, paths } });
+  }, { at, paths });
+};
+
+/** Start New folder on This PC, with `fs_mkdir` held for `ms` so the operation can be watched. */
+const startSlowMkdir = async (p, ms) => {
+  await p.evaluate((d) => { window.__TAURI_DELAYS__ = { fs_mkdir: d }; }, ms);
+  await p.click(PC_FILE);
+  await p.keyboard.press("Escape");
+  await p.keyboard.press("Control+Shift+N");
+  await p.waitForSelector("#explorer-modal-input:not([hidden])");
+  await p.keyboard.press("Enter");
+  return until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "fs_mkdir"));
+};
+
+{
+  // An Explorer drop is a transfer, so it waits for an operation on either pane, like Import does.
+  const p = await openScenario("index.html", {});
+  await p.waitForSelector(PC_FILE, { timeout: 15000 });
+  await p.waitForTimeout(400);
+  const running = await startSlowMkdir(p, 1500);
+  await p.evaluate(() => { window.__TAURI_CALLS__.length = 0; });
+  await osDropIn(p, "#tbody-cart", ["C:\\dl\\oot.z64"]);
+  await p.waitForTimeout(400);
+  const during = (await callsIn(p)).map((c) => c.cmd);
+  await until(p, () => window.__TAURI_DONE__.includes("fs_mkdir"), 5000);
+  await p.waitForTimeout(300);
+  await p.evaluate(() => { window.__TAURI_CALLS__.length = 0; window.__TAURI_DELAYS__ = {}; });
+  await osDropIn(p, "#tbody-cart", ["C:\\dl\\oot.z64"]);
+  await p.waitForTimeout(400);
+  const after = (await callsIn(p)).map((c) => c.cmd);
+  check("an Explorer drop on the cart pane is refused while This PC has an operation running, and taken after",
+    running && !during.includes("build_cart_import_plan") && after.includes("build_cart_import_plan"),
+    JSON.stringify({ during, after }));
+  await p.close();
+}
+
+// --- closing while work is under way -------------------------------------
+/** The close `close_guard.rs` holds while work is under way, for window `win`; false if nothing listens. */
+const fireHeldClose = (p, win) => p.evaluate((w) => {
+  const cb = window.__TAURI_LISTENERS__["xfer64-close-requested"];
+  if (typeof cb !== "function") return false;
+  cb({ payload: { window: w } });
+  return true;
+}, win);
+const busyReports = (calls) => calls.filter((c) => c.cmd === "explorer_set_busy").map((c) => c.args);
+
+{
+  const p = await openScenario("index.html", {});
+  await p.waitForSelector(PC_FILE, { timeout: 15000 });
+  await p.waitForTimeout(400);
+  const modal = () => p.evaluate(() => ({
+    open: !document.getElementById("explorer-modal-root").hidden,
+    title: document.getElementById("explorer-modal-title").textContent,
+    ok: document.getElementById("explorer-modal-ok").textContent,
+    cancel: document.getElementById("explorer-modal-cancel").textContent,
+  }));
+  const seen = async () => (await callsIn(p)).map((c) => c.cmd);
+
+  // No operation: only a cart read can have held the close, and it is quick.
+  await p.evaluate(() => { window.__TAURI_CALLS__.length = 0; });
+  const heard = await fireHeldClose(p, "main");
+  await p.waitForTimeout(200);
+  const idle = { heard, modal: (await modal()).open, seen: await seen() };
+  check("a close held with no operation running closes as soon as the work is done, without asking",
+    heard && !idle.modal && idle.seen.includes("explorer_close_when_idle"), JSON.stringify(idle));
+
+  await p.evaluate(() => { window.__TAURI_CALLS__.length = 0; });
+  const running = await startSlowMkdir(p, 4000);
+  await fireHeldClose(p, "upload-picker");
+  await p.waitForTimeout(150);
+  const other = { modal: (await modal()).open, seen: await seen() };
+  check("a close held for another window is left to that window",
+    running && !other.modal && !other.seen.includes("explorer_close_when_idle"), JSON.stringify(other));
+
+  await fireHeldClose(p, "main");
+  const asked = await until(p, () => !document.getElementById("explorer-modal-root").hidden &&
+    document.getElementById("explorer-modal-title").textContent === "Close Xfer64?");
+  const dialog = await modal();
+  check("a close held during an operation asks whether to cancel it",
+    asked && dialog.ok === "Cancel and close" && dialog.cancel === "Keep waiting", JSON.stringify(dialog));
+  // Every click below waits on a dialog that the checks above say is there; skip it when it isn't,
+  // so a failure reports instead of timing out.
+  if (asked) await p.click("#explorer-modal-cancel");
+  await p.waitForTimeout(150);
+  const waited = await seen();
+  check("Keep waiting cancels nothing and closes nothing",
+    asked && !waited.includes("explorer_cancel_operation") && !waited.includes("explorer_close_when_idle"), waited.join(","));
+
+  await fireHeldClose(p, "main");
+  const askedAgain = await until(p, () => !document.getElementById("explorer-modal-root").hidden);
+  if (askedAgain) await p.click("#explorer-modal-ok");
+  await p.waitForTimeout(150);
+  const stopped = await seen();
+  const cancelAt = stopped.indexOf("explorer_cancel_operation");
+  check("Cancel and close cancels the operation, then asks to close once everything has stopped",
+    cancelAt >= 0 && stopped.indexOf("explorer_close_when_idle", cancelAt) > cancelAt, stopped.join(","));
+
+  await until(p, () => window.__TAURI_DONE__.includes("fs_mkdir"), 8000);
+  await p.waitForTimeout(200);
+  const reports = busyReports(await callsIn(p));
+  check("the window reports itself busy while an operation runs, and idle once it has ended",
+    reports.length >= 2 && reports[0].busy === true && reports.at(-1).busy === false &&
+      reports.every((r, i) => i === 0 || r.seq > reports[i - 1].seq),
+    JSON.stringify(reports));
+
+  await p.evaluate(() => { window.__TAURI_DELAYS__ = {}; });
+  await p.click(PC_FILE);
+  await p.click("#btn-delete-pc");
+  await until(p, () => !document.getElementById("explorer-modal-root").hidden);
+  const later = await modal();
+  check("and the next dialog has its own Cancel button back", later.open && later.cancel === "Cancel", JSON.stringify(later));
+  await p.close();
+}
+
+{
+  const p = await openScenario("upload-picker.html", {
+    pickerPaths: ["C:\\dl\\game.z64"],
+    settings: { quickUploadCartPath: "roms" },
+  });
+  const ready = await until(p, () => document.getElementById("upload-picker-btn-upload")?.disabled === false);
+  await p.evaluate(() => { window.__TAURI_CALLS__.length = 0; window.__FINISH_UPLOAD__ = null; });
+  await p.click("#upload-picker-btn-upload");
+  const started = await until(p, () => Boolean(window.__FINISH_UPLOAD__));
+  const heard = await fireHeldClose(p, "upload-picker");
+  await p.waitForTimeout(150);
+  const during = {
+    seen: (await callsIn(p)).map((c) => c.cmd),
+    text: await p.evaluate(() => document.getElementById("upload-picker-status-text").textContent),
+  };
+  check("closing Quick upload mid-upload cancels it, as its Close button does, and closes once it has stopped",
+    ready && started && heard && during.seen.includes("explorer_cancel_operation") &&
+      during.seen.includes("explorer_close_when_idle") && during.text === "Cancelling…",
+    JSON.stringify(during));
+  await p.evaluate(() => window.__FINISH_UPLOAD__.reject("Cancelled"));
+  await until(p, () => !document.body.classList.contains("upload-picker-uploading"));
+  await p.waitForTimeout(100);
+  const calls = await callsIn(p);
+  const runAt = calls.findIndex((c) => c.cmd === "upload_picker_run");
+  const busyAt = calls.findIndex((c) => c.cmd === "explorer_set_busy" && c.args.busy === true);
+  const reports = busyReports(calls);
+  check("Quick upload reports itself busy before the upload starts, and idle once it has ended",
+    busyAt >= 0 && busyAt < runAt && reports.at(-1)?.busy === false, JSON.stringify(reports));
+  await p.close();
 }
 
 // --- the operation strip's text ------------------------------------------

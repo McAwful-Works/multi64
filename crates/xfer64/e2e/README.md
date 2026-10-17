@@ -17,6 +17,13 @@ without one, the show-hidden toggle reports `aria-pressed`, and an operation blo
 but draws its busy overlay only after 300 ms. The stub's `window.__TAURI_DELAYS__` slows a named
 command down so that last one can be watched.
 
+Around the drags, it checks that an Explorer drop is refused while either pane has an operation
+running, and that the staged copy is not reused once the cart may have changed (an import, or a
+refresh of the Cart pane). Around closing: each window reports to the backend while it is busy, a
+close the backend held mid-operation makes the main window ask whether to cancel it and Quick
+upload cancel its upload, and either then asks the backend to close once everything has stopped.
+Properties and the EverDrive SD base scan are checked to read the cart with the bridge paused.
+
 And the keyboard: each dialog opens on the control it should, Tab and Shift+Tab wrap inside the
 topmost one, Escape closes only that one and focus returns to what opened it (or into the dialog
 underneath), Shift+F10 and the ContextMenu key open the context menu, arrow keys, Home and End move

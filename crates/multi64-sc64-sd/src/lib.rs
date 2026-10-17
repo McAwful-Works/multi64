@@ -20,7 +20,11 @@
 //!
 //! # Unified API
 //!
-//! [`CartSession`] dispatches to [`Sc64SdSession`] or [`Ed64SdSession`] so UIs and tools can share one code path.
+//! [`CartSession`] dispatches to [`Sc64SdSession`], `Ed64SdSession` (with **`ed64`**) or
+//! `Ed64ProSdSession` (with **`ed64pro`**) so UIs and tools can share one code path.
+//!
+//! Every file an export writes on the PC goes through [`write_host_file`]: a temporary file that
+//! replaces the destination only once complete, so a cancelled or failed Replace keeps the original.
 //!
 //! This crate does **not** use USB mass storage / a Windows drive letter.
 //!
@@ -35,6 +39,7 @@
 mod cart_session;
 #[cfg(feature = "ed64")]
 mod ed64_linear;
+mod host_file;
 mod link;
 mod mem_disk;
 mod partition;
@@ -47,6 +52,7 @@ mod ed64pro;
 pub use ed64_linear::Ed64RomLinear;
 #[cfg(feature = "ed64pro")]
 pub use ed64pro::Ed64ProSdSession;
+pub use host_file::write_host_file;
 pub use link::{Sc64Link, SdCardTransport, SD_CARD_BUFFER_ADDR, SD_CARD_BUFFER_MAX_BYTES};
 #[cfg(feature = "ed64")]
 pub use partition::Ed64SdSession;

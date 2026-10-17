@@ -1,6 +1,7 @@
 /**
- * Shared by the main explorer and Quick upload: SD path normalization, “saved folder” probing, and
- * pausing the Multi64 bridge around cart access.
+ * Shared by the main explorer and Quick upload: SD path normalization, “saved folder” probing,
+ * pausing the Multi64 bridge around cart access, and telling the backend when work is under way so
+ * that closing Xfer64 waits for it.
  * Matches persisted `quick_upload_cart_path` in settings.
  */
 
@@ -33,6 +34,44 @@ export function bridgeListenUrl() {
   }
 }
 
+/** This window's work under way (`beginWindowActivity`), and its reports to the backend so far. */
+let windowActivityDepth = 0;
+let windowActivitySeq = 0;
+
+/**
+ * Mark work as under way in this window until the returned function is called, so that closing
+ * Xfer64 waits for it (`close_guard.rs`): exiting mid-operation would skip the cart's SD release and
+ * the bridge resume. Overlapping calls are counted; the backend hears only "busy" on the first and
+ * "idle" when the last ends, each with a rising sequence number since reports can arrive out of
+ * order. Calling the returned function again does nothing.
+ * @param {function(string, object=): Promise<unknown>} invoke
+ * @returns {() => void}
+ */
+export function beginWindowActivity(invoke) {
+  windowActivityDepth++;
+  if (windowActivityDepth === 1) reportWindowBusy(invoke, true);
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    windowActivityDepth = Math.max(0, windowActivityDepth - 1);
+    if (windowActivityDepth === 0) reportWindowBusy(invoke, false);
+  };
+}
+
+/**
+ * @param {function(string, object=): Promise<unknown>} invoke
+ * @param {boolean} busy
+ */
+function reportWindowBusy(invoke, busy) {
+  windowActivitySeq++;
+  try {
+    void Promise.resolve(invoke("explorer_set_busy", { seq: windowActivitySeq, busy })).catch(() => {});
+  } catch {
+    /* no backend: nothing to tell */
+  }
+}
+
 /**
  * Run `fn` with the Multi64 bridge paused when multi64d is running, then resume it: multi64d holds
  * the cart's serial port while the bridge runs, so any cart access has to go through here.
@@ -58,6 +97,17 @@ export function bridgeListenUrl() {
  * @returns {Promise<T | undefined>}
  */
 export async function withBridgePaused(invoke, listen, fn, opts = {}) {
+  // From the probe to the resume: a close in between must wait, or the resume never happens.
+  const endActivity = beginWindowActivity(invoke);
+  try {
+    return await withBridgePausedInner(invoke, listen, fn, opts);
+  } finally {
+    endActivity();
+  }
+}
+
+/** {@link withBridgePaused}, without the activity report around it. */
+async function withBridgePausedInner(invoke, listen, fn, opts) {
   let up = false;
   try {
     up = (await invoke("explorer_daemon_probe", { listen }))?.up === true;

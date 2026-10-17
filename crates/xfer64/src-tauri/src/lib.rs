@@ -7,6 +7,7 @@ mod cancel;
 mod cart_probe;
 mod cart_serial_sd;
 mod cli_upload;
+mod close_guard;
 mod copy_plan;
 mod daemon;
 mod dev_log;
@@ -28,6 +29,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_drag::init())
         .manage(cancel::ExplorerCancelState::default())
+        .manage(close_guard::CloseGuardState::default())
         .manage(drag_out::DragStagingState::new())
         .manage(explorer::ExplorerPathCache::default())
         .manage(cart_serial_sd::ExplorerCartSerialState::new())
@@ -72,23 +74,20 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let label = window.label();
                 if label == "main" || label == "upload-picker" {
-                    // Staged drag-out copies are this run's alone; take them with us.
-                    if let Some(staging) = window
-                        .app_handle()
-                        .try_state::<drag_out::DragStagingState>()
-                    {
-                        staging.clear();
-                    }
-                    window.app_handle().exit(0);
+                    // Exits at once when nothing is running; otherwise holds the close until the
+                    // operation has ended and the bridge is resumed.
+                    close_guard::on_close_requested(window, api);
                 }
             }
         })
         .invoke_handler(tauri::generate_handler![
             cancel::explorer_cancel_operation,
             cancel::explorer_reset_cancel,
+            close_guard::explorer_set_busy,
+            close_guard::explorer_close_when_idle,
             daemon::explorer_daemon_probe,
             daemon::explorer_daemon_release,
             daemon::explorer_daemon_resume,
