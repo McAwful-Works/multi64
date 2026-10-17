@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -803,6 +803,39 @@ const NATIVE_SILENCE: Duration = Duration::from_secs(10);
 /// Between the session log's summary lines.
 const SUMMARY_EVERY: Duration = Duration::from_secs(300);
 
+/// Run `session`, and then end it: log that it stopped and mark the status stopped, which is
+/// what hands Start back. Returns the final status, to be sent to the page.
+///
+/// The end runs whatever the session did, panicking included. A panic on the session thread
+/// used to skip it, and the page went on showing a running session with Start disabled until
+/// AP64 was restarted. Neither lock can be left unusable either: a panic while one was held
+/// poisons it, and `Play::status` takes it on every call from the page.
+fn run_to_end(status: &Mutex<Status>, log: &Log, session: impl FnOnce()) -> Status {
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(session)) {
+        let why = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "no message".into());
+        log(format!(
+            "the session failed inside AP64 ({why}); press Start to try again"
+        ));
+    }
+    log("stopped".into());
+    let mut s = status.lock().unwrap_or_else(PoisonError::into_inner);
+    s.running = false;
+    s.state = "stopped".into();
+    s.detail = String::new();
+    s.detail_dev = String::new();
+    s.bridge = IDLE.into();
+    s.console = IDLE.into();
+    s.client = IDLE.into();
+    let end = s.clone();
+    drop(s);
+    status.clear_poison();
+    end
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     app: AppHandle,
@@ -828,13 +861,13 @@ fn run(
             // Written as it happens, so a crash or a closed window loses nothing. A write that
             // fails stops the file there; the window keeps the whole log regardless.
             {
-                let mut f = file.lock().unwrap();
+                let mut f = file.lock().unwrap_or_else(PoisonError::into_inner);
                 if f.as_mut().is_some_and(|f| writeln!(f, "{line}").is_err()) {
                     *f = None;
                 }
             }
             {
-                let mut kept = kept_log.lock().unwrap();
+                let mut kept = kept_log.lock().unwrap_or_else(PoisonError::into_inner);
                 if kept.len() == LOG_LINES {
                     kept.pop_front();
                 }
@@ -844,6 +877,24 @@ fn run(
             let _ = app.emit("play://log", line);
         })
     };
+    let end = run_to_end(&status, &log, || {
+        session(&app, game, kind, &url, &stop, &status, &log, file_path)
+    });
+    let _ = app.emit("play://status", end);
+}
+
+/// A session, from waiting for the cart to Stop. [`run_to_end`] ends it.
+#[allow(clippy::too_many_arguments)]
+fn session(
+    app: &AppHandle,
+    game: Bundle,
+    kind: Kind,
+    url: &str,
+    stop: &Arc<AtomicBool>,
+    status: &Arc<Mutex<Status>>,
+    log: &Log,
+    file_path: Result<PathBuf, String>,
+) {
     let set = |f: &dyn Fn(&mut Status)| {
         let mut s = status.lock().unwrap();
         f(&mut s);
@@ -1325,22 +1376,60 @@ fn run(
             }
         }
     }
-
-    log("stopped".into());
-    set(&|s| {
-        s.running = false;
-        s.state = "stopped".into();
-        s.detail = String::new();
-        s.detail_dev = String::new();
-        s.bridge = IDLE.into();
-        s.console = IDLE.into();
-        s.client = IDLE.into();
-    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session that panics still ends: the status says stopped, so the page hands Start
+    /// back, and the log says what happened. It used to leave Start disabled until restart.
+    #[test]
+    fn a_session_that_panics_still_hands_start_back() {
+        let status = Mutex::new(Status {
+            running: true,
+            state: "playing".into(),
+            console: OK.into(),
+            ..Status::default()
+        });
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let log: Log = {
+            let lines = lines.clone();
+            Arc::new(move |l| lines.lock().unwrap().push(l))
+        };
+        let end = run_to_end(&status, &log, || {
+            // A poisoned status lock as well, the worst a panic can leave behind.
+            let _held = status.lock().unwrap();
+            let short: &[u8] = &[1, 2];
+            let _ = u32::from_be_bytes(short[..4].try_into().unwrap());
+        });
+        assert!(!end.running && end.state == "stopped", "{end:?}");
+        let now = status.lock().expect("the status lock is usable again");
+        assert!(!now.running && now.console == IDLE);
+        let lines = lines.lock().unwrap();
+        assert!(
+            lines[0].contains("the session failed inside AP64"),
+            "{lines:?}"
+        );
+        assert_eq!(lines.last().unwrap(), "stopped");
+    }
+
+    /// A session that ends normally ends the same way, with nothing said about a failure.
+    #[test]
+    fn a_session_that_returns_is_stopped_quietly() {
+        let status = Mutex::new(Status {
+            running: true,
+            ..Status::default()
+        });
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let log: Log = {
+            let lines = lines.clone();
+            Arc::new(move |l| lines.lock().unwrap().push(l))
+        };
+        let end = run_to_end(&status, &log, || {});
+        assert!(!end.running);
+        assert_eq!(*lines.lock().unwrap(), vec!["stopped".to_string()]);
+    }
 
     /// A profile whose connector names nothing is silently left off the Play card, so every
     /// built-in game is checked for one, and a script and a native connector never share an id.
