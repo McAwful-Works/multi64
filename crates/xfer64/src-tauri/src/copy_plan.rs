@@ -2,6 +2,7 @@
 //!
 //! Cart walks use [`CartSession`](multi64_sc64_sd::CartSession) so the same logic applies to SC64 and EverDrive sessions.
 
+use crate::explorer::same_entry;
 use multi64_sc64_sd::{cart_path_parts, fat_name_key, CartSession, SessionEntry};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -193,6 +194,15 @@ fn fs_dir_step(dest: &Path) -> InteractiveCopyStep {
     }
 }
 
+/// Whether `path` is `folder` or inside it, however either is spelled: both are resolved to the
+/// file system's own final path first.
+fn is_inside(path: &Path, folder: &Path) -> bool {
+    match (fs::canonicalize(path), fs::canonicalize(folder)) {
+        (Ok(p), Ok(f)) => p.starts_with(f),
+        _ => false,
+    }
+}
+
 /// PC → PC folder: one step per file (folders expanded depth-first).
 pub fn build_fs_copy_plan(
     src_paths: &[PathBuf],
@@ -212,6 +222,15 @@ pub fn build_fs_copy_plan(
             .and_then(|s| s.to_str())
             .ok_or_else(|| "Invalid source path.".to_string())?;
         let target = dest_dir.join(name);
+        // Dropped into the folder it is already in, under another spelling of that folder (a
+        // `subst` drive, a junction, an 8.3 name) that the frontend's string comparison missed:
+        // nothing to do, as for the same spelling.
+        if same_entry(src, &target) {
+            continue;
+        }
+        if meta.is_dir() && is_inside(dest_dir, src) {
+            return Err("A folder cannot be copied into itself.".into());
+        }
         if meta.is_file() {
             if target.exists() && target.is_dir() {
                 return Err("Cannot copy file over an existing folder.".into());
@@ -678,6 +697,33 @@ mod tests {
         fs::write(b.join("saves").join("ONE.eep"), b"1 again").unwrap();
         build_fs_copy_plan(&[a.join("saves"), b.join("saves")], &dst)
             .expect_err("a file inside both folders collides");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// A drop into the folder an item is already in is nothing to do, and a folder dropped into
+    /// its own subfolder is refused, however the destination is spelled. `x\..` stands in for a
+    /// `subst` drive, a junction or an 8.3 name, which the frontend's string comparison misses.
+    ///
+    /// Fail-first, demonstrated: without these checks, the first plan held a step copying
+    /// `game.z64` onto itself.
+    #[test]
+    fn fs_plan_sees_through_other_spellings_of_the_source_folder() {
+        let tmp = std::env::temp_dir().join(format!("xfer64_plan_alias_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let src = tmp.join("src");
+        fs::create_dir_all(src.join("inner")).unwrap();
+        fs::create_dir_all(tmp.join("x")).unwrap();
+        fs::write(src.join("game.z64"), b"rom").unwrap();
+        let src_again = tmp.join("x").join("..").join("src");
+
+        let plan = build_fs_copy_plan(&[src.join("game.z64")], &src_again).unwrap();
+        assert!(plan.is_empty(), "{plan:?}");
+        let plan =
+            build_fs_copy_plan(std::slice::from_ref(&src), &tmp.join("x").join("..")).unwrap();
+        assert!(plan.is_empty(), "{plan:?}");
+        let err =
+            build_fs_copy_plan(std::slice::from_ref(&src), &src_again.join("inner")).unwrap_err();
+        assert!(err.contains("into itself"), "{err}");
         let _ = fs::remove_dir_all(&tmp);
     }
 
