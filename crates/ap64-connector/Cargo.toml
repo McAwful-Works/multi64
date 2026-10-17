@@ -18,4 +18,4 @@ socket2 = "0.6"
 sha1 = "0.11"
 # Reads and rewrites an installed apworld to apply a client fix (src/dk64.rs, src/bt.rs).
 # Deflate only, in pure Rust.
-zip = { version = "~8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "~9.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }

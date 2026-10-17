@@ -98,10 +98,10 @@ fn vendored(apworld: &[u8]) -> io::Result<Vec<(String, Vec<u8>, String)>> {
     let mut out = Vec::new();
     for i in 0..outer.len() {
         let mut f = outer.by_index(i).map_err(bad)?;
-        if !is_vendor_zip(f.name()) {
+        let name = f.name().map_err(bad)?.into_owned();
+        if !is_vendor_zip(&name) {
             continue;
         }
-        let name = f.name().to_string();
         let mut bytes = Vec::new();
         f.read_to_end(&mut bytes)?;
         if let Some(text) = module_in(&bytes)? {
@@ -142,7 +142,7 @@ fn fix_vendored(zip_bytes: &[u8], text: &str) -> io::Result<Vec<u8>> {
     let mut dst = ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..src.len() {
         let f = src.by_index_raw(i).map_err(bad)?;
-        let name = f.name().to_string();
+        let name = f.name().map_err(bad)?.into_owned();
         // Compiled before the change; left in place, Python could keep running the old code.
         if name.starts_with("emu_loader/__pycache__/retroarch_udp.") && name.ends_with(".pyc") {
             continue;
@@ -182,7 +182,8 @@ pub fn fix_client(apworld: &[u8]) -> Result<Vec<u8>, String> {
     let mut dst = ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..src.len() {
         let f = src.by_index_raw(i).map_err(|e| e.to_string())?;
-        match fixes.iter().find(|(n, _)| n == f.name()) {
+        let entry = f.name().map_err(|e| e.to_string())?.into_owned();
+        match fixes.iter().find(|(n, _)| *n == entry) {
             Some((name, bytes)) => {
                 drop(f);
                 // A zip of already-compressed entries: storing it costs little.
