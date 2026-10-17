@@ -53,9 +53,10 @@ Files cross between Windows and Xfer64 by dragging, in both directions.
 | Cart pane → Explorer | Stages first, then drags — see below. |
 
 A drop lands in the folder row under the pointer; with no row there, it lands in the pane's
-current folder. Dragging out starts when the pointer leaves the Xfer64 window, so a target window
-that sits *on top of* Xfer64 cannot be dropped on — drag to a part of it that is outside the
-Xfer64 window, or use **Export to This PC**.
+current folder. A drop is ignored while either pane has an operation running, as Import and
+Export are; wait for it to finish, then drop again. Dragging out starts when the pointer leaves
+the Xfer64 window, so a target window that sits *on top of* Xfer64 cannot be dropped on — drag to
+a part of it that is outside the Xfer64 window, or use **Export to This PC**.
 
 ### Dragging cart files out takes two gestures
 

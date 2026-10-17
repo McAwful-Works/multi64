@@ -3,8 +3,8 @@
 //! Every export (cart → PC) writes through [`write_host_file`]: the bytes go to a temporary file
 //! beside the destination, which replaces the destination only once it is complete and on disk.
 //! Until then the destination is untouched, so a cancelled or failed **Replace** leaves the
-//! original as it was, and a new file leaves nothing. The cart side does the same for imports
-//! (#200).
+//! original as it was, and a new file leaves nothing. An SC64 import does the same on the cart
+//! (#200); an EverDrive-64 PRO cannot, since its link truncates the destination when it opens it.
 
 use std::fs::OpenOptions;
 use std::io::{self, BufWriter, Write};
