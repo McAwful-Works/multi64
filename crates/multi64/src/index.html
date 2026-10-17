@@ -154,8 +154,10 @@
             </label>
             <label class="field">
               <span>Listen (HTTP + WebSocket)</span>
-              <input type="text" id="listen" value="127.0.0.1:38765" spellcheck="false" />
+              <input type="text" id="listen" value="127.0.0.1:38765" spellcheck="false" aria-describedby="listen-hint" />
             </label>
+            <!-- Filled by renderListenHint in main.js. -->
+            <p class="hint hint-warning" id="listen-hint" hidden></p>
           </section>
 
           <section class="dialog-section">

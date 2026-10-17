@@ -32,6 +32,12 @@ struct Args {
     #[arg(long, env = "MULTI64D_CONFIG")]
     config: Option<PathBuf>,
 
+    /// Load no config file: neither `./multi64d.toml` nor the OS config dir is looked at, so only
+    /// the command line and environment apply. Refused together with `--config` /
+    /// `MULTI64D_CONFIG`. Multi64 starts its daemon this way.
+    #[arg(long, default_value_t = false)]
+    no_config_file: bool,
+
     /// USB serial device (e.g. COM3, /dev/ttyACM0). Env: `MULTI64D_SERIAL`.
     #[arg(short, long, env = "MULTI64D_SERIAL")]
     serial: Option<String>,
@@ -241,11 +247,28 @@ async fn main() -> anyhow::Result<()> {
         cart = %resolved.cart,
         "multi64d started (cart reader runs always; WebSocket clients receive broadcast from cart)"
     );
+    // Allowed, since a LAN setup may want it, but never silently.
+    let bound = listener.local_addr()?;
+    if multi64d::reachable_from_other_hosts(bound) {
+        tracing::warn!(
+            listen = %bound,
+            "listening where other machines can reach it: a request without an Origin header is not authenticated, so anyone who reaches this address can write to the cart and release its serial port (docs/spec/daemon-api-v1.md 1.4)"
+        );
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }
 
 fn load_merged_file_config(args: &Args) -> anyhow::Result<(FileConfig, Option<PathBuf>)> {
+    if args.no_config_file {
+        if let Some(ref p) = args.config {
+            anyhow::bail!(
+                "--no-config-file cannot be combined with --config / MULTI64D_CONFIG ({})",
+                p.display()
+            );
+        }
+        return Ok((FileConfig::default(), None));
+    }
     if let Some(ref p) = args.config {
         if !p.exists() {
             anyhow::bail!("config file not found: {}", p.display());

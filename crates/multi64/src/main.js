@@ -202,11 +202,42 @@ function renderCartAndAuto() {
   hint.classList.toggle("hint-warning", portWarn);
 }
 
+/**
+ * Whether Settings → Listen names an address other PCs could reach: anything but loopback
+ * (`127.x.x.x`, `localhost`, `[::1]`), including a wildcard (`0.0.0.0`, `[::]`) and any other host
+ * name, which is not looked up. Text that is not `host:port` reads as false; Save refuses it anyway.
+ * @param {string} text
+ */
+function listenReachesNetwork(text) {
+  const addr = text.trim().replace(/^http:\/\//, "").replace(/\/+$/, "");
+  if (!addr) return false; // the default, 127.0.0.1:38765
+  const m = /^\[([^\]]+)\]:(\d+)$/.exec(addr) || /^([^:\s/[\]]+):(\d+)$/.exec(addr);
+  if (!m) return false;
+  const host = m[1].toLowerCase();
+  const loopback = host === "localhost" || host === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+  return !loopback;
+}
+
+/**
+ * Under Listen: a warning, not a refusal, when other PCs could reach the bridge. It has no password,
+ * and a request without an `Origin` header is let in (daemon API §1.4), so anyone on the network
+ * could write to the cart and pause the bridge.
+ */
+function renderListenHint() {
+  const reaches = listenReachesNetwork(document.getElementById("listen").value);
+  const hint = document.getElementById("listen-hint");
+  hint.textContent = reaches
+    ? "Other PCs on your network can reach the bridge at this address. It has no password, so any of them could write to the cart and pause the bridge. Use 127.0.0.1 unless you need that."
+    : "";
+  hint.hidden = !reaches;
+}
+
 function applySettingsToForm(s) {
   // Anything unrecognized reads as the proven default rather than leaving the select blank.
   document.getElementById("cart").value = knownCart(s.cart);
   document.getElementById("baud").value = String(s.baud ?? 115200);
   document.getElementById("listen").value = s.listen || "127.0.0.1:38765";
+  renderListenHint();
   document.getElementById("auto-start-daemon").checked = s.autoStartDaemon !== false;
   document.getElementById("autostart-app").checked = !!s.autostartApp;
   document.getElementById("tray-enabled").checked = s.trayEnabled !== false;
@@ -574,6 +605,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   document.getElementById("cart").addEventListener("change", renderCartAndAuto);
   document.getElementById("serial-port").addEventListener("change", renderCartAndAuto);
+  document.getElementById("listen").addEventListener("input", renderListenHint);
   document.getElementById("btn-start").addEventListener("click", async () => {
     if (startClicked) return;
     showInlineError("status-error", "");
@@ -615,12 +647,17 @@ window.addEventListener("DOMContentLoaded", async () => {
     setSettingsSaving(true);
     try {
       const settings = readSettingsFromForm();
-      await invoke("set_settings", { settings });
+      const outcome = await invoke("set_settings", { settings });
       await refreshStatus();
       if (settings.developerMode) {
         await refreshLog();
       }
       setSettingsOpen(false);
+      // Saved, so the dialog closes, but a restart that failed must not be left to the log, which is
+      // hidden outside Developer mode. Where a failed Start shows; the bridge is stopped by then.
+      if (outcome?.restartError) {
+        showInlineError("status-error", `Settings were saved, but the bridge did not restart: ${outcome.restartError}`);
+      }
     } catch (e) {
       console.error("set_settings:", e);
       showInlineError("settings-error", `Settings were not saved: ${e}`);
