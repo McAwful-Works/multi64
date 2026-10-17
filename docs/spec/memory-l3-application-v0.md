@@ -203,6 +203,13 @@ A host relying on bit `3` must:
 Bit `3` assumes one host on the link, as `HELLO`'s reset of watched slots already does: a
 request from another host between a write and its copy ends the hold.
 
+*Informative.* Bit `3` keeps the agent from applying a copy twice; it does not protect a copy from
+the link. An L2 mapping that brings a request to the agent in pieces can join a copy to the remains
+of a request a lost piece cut short, and the agent then answers that request, under its `rid`,
+with bytes from the copy ([`cart-agent.md` §6](../integration/cart-agent.md#6-everdrive-builds-experimental);
+[`l3-over-everdrive-x7.md`](./l3-over-everdrive-x7.md) §4.5 on messages cut short). AP64
+therefore sends copies only over a SummerCart64, whose mapping delivers each request whole.
+
 The `rid` rule above binds **every** host talking to an agent that sets bit `3`, whether or not it
 sends copies: a new `POKEV` under the held `rid` is taken for a copy, acknowledged, and not
 applied. A host that has had no reply on the link since it connected cannot know which request

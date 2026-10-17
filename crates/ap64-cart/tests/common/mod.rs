@@ -59,8 +59,14 @@ impl Fake {
     }
 }
 
-/// Start a fake daemon whose agent is `agent`. It runs until the test process ends.
+/// Start a fake daemon whose agent is `agent`, for a SummerCart64. It runs until the test process
+/// ends.
 pub fn start(agent: Agent) -> Fake {
+    start_with_cart(agent, "sc64")
+}
+
+/// [`start`], for the cart `cart` (`multi64d --cart`, as its `GET /` reports it).
+pub fn start_with_cart(agent: Agent, cart: &'static str) -> Fake {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("ws://{}/ws", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -71,7 +77,7 @@ pub fn start(agent: Agent) -> Fake {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 let (agent, seen, conns) = (agent.clone(), seen.clone(), conns.clone());
-                std::thread::spawn(move || serve(stream, agent, seen, conns));
+                std::thread::spawn(move || serve(stream, agent, seen, conns, cart));
             }
         });
     }
@@ -97,6 +103,7 @@ fn serve(
     agent: Agent,
     seen: Arc<Mutex<Vec<Request>>>,
     conns: Arc<Mutex<usize>>,
+    cart: &str,
 ) {
     if !head(&stream)
         .to_ascii_lowercase()
@@ -105,7 +112,7 @@ fn serve(
         // The daemon's status page, which the transport asks before connecting.
         let mut req = [0u8; 4096];
         let _ = stream.read(&mut req);
-        let body = r#"{"service":"multi64d","serialActive":true,"cart":"sc64"}"#;
+        let body = format!(r#"{{"service":"multi64d","serialActive":true,"cart":"{cart}"}}"#);
         let _ = write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\

@@ -71,6 +71,13 @@ nothing. Any other request ends that. `HELLO_ACK` sets `flags` bit `3` to say so
 ([spec §4.4](../spec/memory-l3-application-v0.md#44-repeated-writes-flags-bit-3)). It costs four
 bytes of RAM.
 
+Bit `3` keeps the agent from applying a copy twice; it does not keep the link from mangling one.
+Over an EverDrive a request arrives in pieces, and a piece lost in a way the driver cannot see
+leaves the agent filling that request out with whatever comes next (§6): a copy sent then would be
+read as the rest of the broken request and answered under its `rid`, with the wrong bytes. A host
+sends copies only over a link that brings each request whole, which AP64 takes to mean a
+SummerCart64.
+
 It is in `mem_proto.c` behind a build switch, `M64P_POKE_ONCE`, which every agent build in this
 repo defines (§4); the test ROM and [`n64/bringup`](../../n64/bringup/README.md)'s ROM build the
 same file without it and leave bit `3` clear. An agent built before the switch existed leaves it

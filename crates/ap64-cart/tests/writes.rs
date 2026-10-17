@@ -115,6 +115,35 @@ fn a_write_the_agent_never_received_is_sent_again_and_lands() {
     assert_eq!(writes.applied().len(), 2);
 }
 
+/// Over an EverDrive, a write is sent once even to an agent that takes copies: its link brings a
+/// request in pieces, and a copy could be read as the rest of one cut short and written with the
+/// wrong bytes. So a write the agent never received fails, as it does without bit 3.
+#[test]
+fn over_an_everdrive_a_write_is_sent_once_even_to_an_agent_that_takes_copies() {
+    for cart in ["ed64", "ed64pro"] {
+        let writes = Arc::new(Writes::default());
+        let lost = Arc::new(AtomicBool::new(true));
+        let fake = {
+            let writes = writes.clone();
+            common::start_with_cart(
+                Arc::new(move |req| match req.msg {
+                    m64p::MSG_POKEV if lost.swap(false, Ordering::SeqCst) => Vec::new(),
+                    _ => writes.serve(req, 0),
+                }),
+                cart,
+            )
+        };
+        let mut cart_link = Multi64::connect(&fake.url, ap64_cart::quiet()).unwrap();
+        assert!(cart_link.write_many(&[(0x100, &[0x42])]).is_err(), "{cart}");
+        assert_eq!(
+            fake.seen_of(m64p::MSG_POKEV).len(),
+            1,
+            "{cart}: never sent again"
+        );
+        assert!(writes.applied().is_empty(), "{cart}");
+    }
+}
+
 /// The write did land, but its reply came after the host stopped waiting, as at a scene load.
 /// The copy sent meanwhile is acknowledged by the agent and applied by nobody.
 #[test]

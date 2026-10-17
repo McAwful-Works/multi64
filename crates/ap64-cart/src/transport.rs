@@ -166,6 +166,19 @@ fn parse_status(body: &str) -> DaemonStatus {
     }
 }
 
+/// Whether the cart link brings each request to the agent whole, so that a write sent again
+/// (`HELLO_ACK` bit 3, spec 4.4) can only ever arrive as itself.
+///
+/// The SummerCart64's does. An EverDrive's delivers a request in pieces, and a piece lost in a way
+/// its driver cannot see leaves the agent filling that request out with whatever arrives next, for
+/// as long as anything keeps arriving within 60 of its ticks (`docs/integration/cart-agent.md`).
+/// A copy of a write sent in that window would be read as the rest of the broken request and
+/// written under its `rid`, with bytes that are not the write's. A cart this does not know counts as
+/// an EverDrive.
+fn link_keeps_requests_whole(cart: Option<&str>) -> bool {
+    cart == Some("sc64")
+}
+
 /// The daemon's `GET /`, response and all.
 fn daemon_root(ws_url: &str) -> Option<String> {
     let hostport = ws_url.strip_prefix("ws://")?.split('/').next()?.to_string();
@@ -184,7 +197,8 @@ impl Multi64Transport {
     /// A successful connect proves only that the daemon is up; the `HELLO_ACK` is
     /// what proves a cart is present and running an agent.
     pub fn connect(url: &str, log: Log) -> io::Result<Self> {
-        if serial_active(url) == Some(false) {
+        let status = daemon_status(url);
+        if status.as_ref().and_then(|s| s.serial_active) == Some(false) {
             return Err(other(format!(
                 "{url}: daemon is up but holds no serial link (serialActive=false). \
                  Connect the cart, or POST /v1/serial/resume if the port was released."
@@ -236,7 +250,15 @@ impl Multi64Transport {
                 }
                 t.rdram_bytes = rdram_bytes;
                 t.writable = flags & m64p::FLAG_WRITABLE != 0;
+                let cart = status.and_then(|s| s.cart);
                 t.poke_once = flags & m64p::FLAG_POKE_ONCE != 0;
+                if t.poke_once && !link_keeps_requests_whole(cart.as_deref()) {
+                    t.poke_once = false;
+                    (t.log)(format!(
+                        "the agent can take a write sent again, but over {} a copy could be                          joined to a request cut short, so each write is sent once",
+                        cart.as_deref().unwrap_or("this cart")
+                    ));
+                }
                 t.rom_bytes = rom_bytes;
                 t.watch_slots = watch_slots;
                 Ok(t)

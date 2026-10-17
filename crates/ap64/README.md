@@ -308,7 +308,9 @@ One such change: the agent now recognizes a write AP64 sends it again
 ([spec §4.4](../../docs/spec/memory-l3-application-v0.md#44-repeated-writes-flags-bit-3)). When
 the console goes quiet with a write outstanding, during a load say, AP64 sends that write again
 under the same request id, and the agent applies it only if the first copy never arrived, so an
-item is neither lost nor given twice. That is shown by tests against a scripted agent, not yet on
+item is neither lost nor given twice. It does that over a SummerCart64 only: an EverDrive's link
+brings a request in pieces, and a copy could be read as the rest of one a lost piece cut short, so
+over an EverDrive each write is sent once, as it is to an older agent. That is shown by tests against a scripted agent, not yet on
 a console. A write is never sent again once the link to the cart has
 restarted. A seed patched before this carries an agent that cannot tell a copy from a new write;
 Start refuses it like any other version's, and patching the seed again with this version gets
