@@ -1,4 +1,4 @@
-n64/agent from 32ed2fc
+n64/agent from 7f48e51
 built by crates/ap64-core/agent/build.sh goldeneye, cart ed64pro (mips64-ultra-elf-gcc (GCC) 15.2.0)
-agent.bin sha1 54de3a8ef6cd1351ed66d349645fe6b04ea5f7c7
-stub.bin  sha1 00ab8d02031640044ee08332bddf767f7551effa
+agent.bin sha1 d8e12e203b6c23c5744c7d1158f6f00d7a15e617
+stub.bin  sha1 24cb5ca9032963209c033e722c9ca8eef22a42a8

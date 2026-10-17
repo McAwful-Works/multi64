@@ -29,11 +29,11 @@ ends, whether IPL3 or the header CRC changed, and which RAM addresses its new co
 
 ## 2. Find RAM for the agent
 
-About 30 KB, never touched by the game or its patch, for as long as the game runs. That is the
+About 31 KB, never touched by the game or its patch, for as long as the game runs. That is the
 plain agent's EverDrive-64 X7 build, the largest of an AP64 game's three agent builds; the
 SummerCart64's is about 26 KB, but one placement has to hold all three. A game that links code
-of its own into the agent needs more: GoldenEye 007's `game.c` makes its builds 36.9 KB for the
-SummerCart64, 41.4 KB for the X7 and 36.5 KB for the PRO (`AGENT_BSS_END` less `AGENT_VRAM`
+of its own into the agent needs more: GoldenEye 007's `game.c` makes its builds 37.3 KB for the
+SummerCart64, 41.8 KB for the X7 and 36.8 KB for the PRO (`AGENT_BSS_END` less `AGENT_VRAM`
 in its `layout.env`).
 
 ### 2.1 Measure during play
