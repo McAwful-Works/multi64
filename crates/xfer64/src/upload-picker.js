@@ -1,5 +1,6 @@
 import { cancelMessageFor, countNoun, userFacingErrorMessage } from "./user-error.js";
 import {
+  beginWindowActivity,
   bridgeListenUrl,
   normalizeUsbPath,
   probeSavedCartFolderReachable,
@@ -570,21 +571,46 @@ document.getElementById("upload-picker-btn-up")?.addEventListener("click", () =>
   void loadFolderList();
 });
 
+/** Cancel the running upload; the window stays up to say how it ended. */
+function cancelRunningUpload() {
+  void invoke("explorer_cancel_operation").catch(() => {});
+  const closeBtn = document.getElementById("upload-picker-btn-close");
+  if (closeBtn) closeBtn.disabled = true;
+  cancelPending = true;
+  setUploadStatus("uploading", "Cancelling…");
+}
+
+/** Set once the window is closing: no automatic upload may start after that. */
+let windowClosing = false;
+
 document.getElementById("upload-picker-btn-close")?.addEventListener("click", () => {
   if (uploadInFlight) {
     // Mid-transfer this button is "Cancel"; closing the window here would leave the upload
     // running with nothing to report to.
-    void invoke("explorer_cancel_operation").catch(() => {});
-    const closeBtn = document.getElementById("upload-picker-btn-close");
-    if (closeBtn) closeBtn.disabled = true;
-    cancelPending = true;
-    setUploadStatus("uploading", "Cancelling…");
+    cancelRunningUpload();
     return;
   }
+  windowClosing = true;
   clearAutoUploadTimer();
   stopSdReconnectPolling();
   void invoke("upload_picker_close");
 });
+
+/**
+ * The window was closed while work was under way, and the backend held the close
+ * (`close_guard.rs`). An upload is cancelled, as the Close button does mid-upload; Xfer64 then
+ * exits once it has stopped and the bridge is resumed. A cart read just finishes first.
+ */
+function onCloseRequestedWhileBusy(payload) {
+  if (payload?.window !== "upload-picker") return;
+  windowClosing = true;
+  clearAutoUploadTimer();
+  stopSdReconnectPolling();
+  if (uploadInFlight && !cancelPending) cancelRunningUpload();
+  void invoke("explorer_close_when_idle").catch(() => {});
+}
+
+void window.__TAURI__?.event?.listen?.("xfer64-close-requested", (e) => onCloseRequestedWhileBusy(e?.payload));
 
 document.getElementById("upload-picker-btn-cancel-auto")?.addEventListener("click", () => {
   cancelAutoUploadBecauseNavigated();
@@ -606,6 +632,9 @@ async function runUpload() {
   const closeBtn = document.getElementById("upload-picker-btn-close");
   const ow = document.getElementById("upload-picker-overwrite")?.checked === true;
   clearAutoUploadTimer();
+  if (windowClosing || uploadInFlight) return;
+  // Until the upload, and the bridge resume inside it, is over, closing the window waits.
+  const endActivity = beginWindowActivity(invoke);
   setError("");
   if (btn) btn.disabled = true;
   // The close button becomes a working Cancel for the duration of the transfer. It stays
@@ -703,6 +732,7 @@ async function runUpload() {
       closeBtn.disabled = false;
     }
     setUploadingUi(false);
+    endActivity();
   }
 }
 

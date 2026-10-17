@@ -1127,6 +1127,125 @@ const clearedSavedFolder = (calls) =>
     order.main.ok && order.picker.ok, JSON.stringify(order));
 }
 
+/** Start New folder on This PC, with `fs_mkdir` held for `ms` so the operation can be watched. */
+const startSlowMkdir = async (p, ms) => {
+  await p.evaluate((d) => { window.__TAURI_DELAYS__ = { fs_mkdir: d }; }, ms);
+  await p.click(PC_FILE);
+  await p.keyboard.press("Escape");
+  await p.keyboard.press("Control+Shift+N");
+  await p.waitForSelector("#explorer-modal-input:not([hidden])");
+  await p.keyboard.press("Enter");
+  return until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "fs_mkdir"));
+};
+
+// --- closing while work is under way -------------------------------------
+/** The close `close_guard.rs` holds while work is under way, for window `win`; false if nothing listens. */
+const fireHeldClose = (p, win) => p.evaluate((w) => {
+  const cb = window.__TAURI_LISTENERS__["xfer64-close-requested"];
+  if (typeof cb !== "function") return false;
+  cb({ payload: { window: w } });
+  return true;
+}, win);
+const busyReports = (calls) => calls.filter((c) => c.cmd === "explorer_set_busy").map((c) => c.args);
+
+{
+  const p = await openScenario("index.html", {});
+  await p.waitForSelector(PC_FILE, { timeout: 15000 });
+  await p.waitForTimeout(400);
+  const modal = () => p.evaluate(() => ({
+    open: !document.getElementById("explorer-modal-root").hidden,
+    title: document.getElementById("explorer-modal-title").textContent,
+    ok: document.getElementById("explorer-modal-ok").textContent,
+    cancel: document.getElementById("explorer-modal-cancel").textContent,
+  }));
+  const seen = async () => (await callsIn(p)).map((c) => c.cmd);
+
+  // No operation: only a cart read can have held the close, and it is quick.
+  await p.evaluate(() => { window.__TAURI_CALLS__.length = 0; });
+  const heard = await fireHeldClose(p, "main");
+  await p.waitForTimeout(200);
+  const idle = { heard, modal: (await modal()).open, seen: await seen() };
+  check("a close held with no operation running closes as soon as the work is done, without asking",
+    heard && !idle.modal && idle.seen.includes("explorer_close_when_idle"), JSON.stringify(idle));
+
+  await p.evaluate(() => { window.__TAURI_CALLS__.length = 0; });
+  const running = await startSlowMkdir(p, 4000);
+  await fireHeldClose(p, "upload-picker");
+  await p.waitForTimeout(150);
+  const other = { modal: (await modal()).open, seen: await seen() };
+  check("a close held for another window is left to that window",
+    running && !other.modal && !other.seen.includes("explorer_close_when_idle"), JSON.stringify(other));
+
+  await fireHeldClose(p, "main");
+  const asked = await until(p, () => !document.getElementById("explorer-modal-root").hidden &&
+    document.getElementById("explorer-modal-title").textContent === "Close Xfer64?");
+  const dialog = await modal();
+  check("a close held during an operation asks whether to cancel it",
+    asked && dialog.ok === "Cancel and close" && dialog.cancel === "Keep waiting", JSON.stringify(dialog));
+  await p.click("#explorer-modal-cancel");
+  await p.waitForTimeout(150);
+  const waited = await seen();
+  check("Keep waiting cancels nothing and closes nothing",
+    !waited.includes("explorer_cancel_operation") && !waited.includes("explorer_close_when_idle"), waited.join(","));
+
+  await fireHeldClose(p, "main");
+  await until(p, () => !document.getElementById("explorer-modal-root").hidden);
+  await p.click("#explorer-modal-ok");
+  await p.waitForTimeout(150);
+  const stopped = await seen();
+  const cancelAt = stopped.indexOf("explorer_cancel_operation");
+  check("Cancel and close cancels the operation, then asks to close once everything has stopped",
+    cancelAt >= 0 && stopped.indexOf("explorer_close_when_idle", cancelAt) > cancelAt, stopped.join(","));
+
+  await until(p, () => window.__TAURI_DONE__.includes("fs_mkdir"), 8000);
+  await p.waitForTimeout(200);
+  const reports = busyReports(await callsIn(p));
+  check("the window reports itself busy while an operation runs, and idle once it has ended",
+    reports.length >= 2 && reports[0].busy === true && reports.at(-1).busy === false &&
+      reports.every((r, i) => i === 0 || r.seq > reports[i - 1].seq),
+    JSON.stringify(reports));
+
+  await p.evaluate(() => { window.__TAURI_DELAYS__ = {}; });
+  await p.click(PC_FILE);
+  await p.click("#btn-delete-pc");
+  await until(p, () => !document.getElementById("explorer-modal-root").hidden);
+  const later = await modal();
+  check("and the next dialog has its own Cancel button back", later.cancel === "Cancel", JSON.stringify(later));
+  await p.click("#explorer-modal-cancel");
+  await p.close();
+}
+
+{
+  const p = await openScenario("upload-picker.html", {
+    pickerPaths: ["C:\\dl\\game.z64"],
+    settings: { quickUploadCartPath: "roms" },
+  });
+  const ready = await until(p, () => document.getElementById("upload-picker-btn-upload")?.disabled === false);
+  await p.evaluate(() => { window.__TAURI_CALLS__.length = 0; window.__FINISH_UPLOAD__ = null; });
+  await p.click("#upload-picker-btn-upload");
+  const started = await until(p, () => Boolean(window.__FINISH_UPLOAD__));
+  const heard = await fireHeldClose(p, "upload-picker");
+  await p.waitForTimeout(150);
+  const during = {
+    seen: (await callsIn(p)).map((c) => c.cmd),
+    text: await p.evaluate(() => document.getElementById("upload-picker-status-text").textContent),
+  };
+  check("closing Quick upload mid-upload cancels it, as its Close button does, and closes once it has stopped",
+    ready && started && heard && during.seen.includes("explorer_cancel_operation") &&
+      during.seen.includes("explorer_close_when_idle") && during.text === "Cancelling…",
+    JSON.stringify(during));
+  await p.evaluate(() => window.__FINISH_UPLOAD__.reject("Cancelled"));
+  await until(p, () => !document.body.classList.contains("upload-picker-uploading"));
+  await p.waitForTimeout(100);
+  const calls = await callsIn(p);
+  const runAt = calls.findIndex((c) => c.cmd === "upload_picker_run");
+  const busyAt = calls.findIndex((c) => c.cmd === "explorer_set_busy" && c.args.busy === true);
+  const reports = busyReports(calls);
+  check("Quick upload reports itself busy before the upload starts, and idle once it has ended",
+    busyAt >= 0 && busyAt < runAt && reports.at(-1)?.busy === false, JSON.stringify(reports));
+  await p.close();
+}
+
 // --- the operation strip's text ------------------------------------------
 // The strip is one truncating line, so a finished operation's full message is only reachable as a
 // tooltip, and only if the strip stays up long enough to hover it (#200's follow-up).

@@ -3,6 +3,7 @@
 use crate::cancel::ExplorerCancelState;
 use crate::cart_serial_sd::ED64PRO_WRITE_CONSENT_MARKER;
 use crate::cli_upload::{run_headless_import_upload, UploadImportSummary};
+use crate::close_guard::{exit_app, CloseGuardState};
 use std::path::PathBuf;
 use tauri::{AppHandle, State};
 
@@ -80,7 +81,11 @@ pub async fn upload_picker_run(
     inner
 }
 
+/// Quick upload's Close button (it is Cancel while an upload runs). A cart read may still be under
+/// way with the bridge paused, so this exits once it is done, like closing the window does.
 #[tauri::command]
-pub fn upload_picker_close(app: AppHandle) {
-    app.exit(0);
+pub fn upload_picker_close(app: AppHandle, guard: State<'_, CloseGuardState>) {
+    if guard.close_when_idle() {
+        exit_app(&app);
+    }
 }

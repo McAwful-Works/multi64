@@ -1,5 +1,6 @@
 import { cancelMessageFor, countNoun, userFacingErrorMessage } from "./user-error.js";
 import {
+  beginWindowActivity,
   bridgeListenUrl,
   normalizeUsbPath,
   probeSavedCartFolderReachable,
@@ -568,11 +569,13 @@ function endPaneLoading(pane) {
  * shortcuts and the pane's buttons refuse while `isPaneBusy(pane)`. The overlay itself is drawn
  * only if the operation is still running after `PANE_BUSY_SHOW_DELAY_MS`, so a quick one shows
  * nothing. Overlapping operations are counted; calling the returned `end()` again does nothing.
+ * Closing the window while any runs asks first (`onCloseRequestedWhileBusy`).
  * @param {"cart" | "pc"} pane
  * @param {string} [text] caption shown on the overlay
  * @returns {() => void}
  */
 function beginBusy(pane, text = "Working…") {
+  const endActivity = beginWindowActivity(invoke);
   const busy = paneBusy[pane];
   busy.depth++;
   busy.text = text;
@@ -600,7 +603,39 @@ function beginBusy(pane, text = "Working…") {
     }
     syncPaneShade(pane);
     updateExplorerControls();
+    endActivity();
   };
+}
+
+/** True while the "Close Xfer64?" question is up, so a second close does not ask twice. */
+let closePromptOpen = false;
+
+/**
+ * The window was closed while work was under way, and the backend held the close
+ * (`close_guard.rs`): exiting now would cut the work off before the cart's SD session is released
+ * and the bridge resumed. With an operation running, ask whether to cancel it; either way Xfer64
+ * then closes only once everything has stopped. A plain cart read needs no question: it is quick,
+ * so the window closes as soon as it is done.
+ * @param {{ window?: string }} [payload]
+ */
+async function onCloseRequestedWhileBusy(payload) {
+  if (payload?.window !== "main" || closePromptOpen) return;
+  if (!isPaneBusy("cart") && !isPaneBusy("pc")) {
+    await invoke("explorer_close_when_idle").catch(() => {});
+    return;
+  }
+  closePromptOpen = true;
+  try {
+    const stop = await showExplorerConfirm(
+      "An operation is still running. Closing Xfer64 now would cut it off part-way, leaving the cart's SD card held by this PC and the Multi64 bridge paused.\n\nCancel the operation, and close Xfer64 once it has stopped?",
+      { title: "Close Xfer64?", okLabel: "Cancel and close", cancelLabel: "Keep waiting" }
+    );
+    if (!stop) return;
+    requestProgressCancel();
+    await invoke("explorer_close_when_idle").catch(() => {});
+  } finally {
+    closePromptOpen = false;
+  }
 }
 
 /** Hide the copy/delete progress strip without a completion toast (e.g. empty copy plan). */
@@ -1192,6 +1227,7 @@ function hideNameTooltip() {
 
 const MODAL_TITLE_DEFAULT = "Xfer64";
 const MODAL_OK_LABEL_DEFAULT = "OK";
+const MODAL_CANCEL_LABEL_DEFAULT = "Cancel";
 
 const FOCUSABLE_SELECTOR =
   'a[href], button, input:not([type="hidden"]), select, textarea, summary, [tabindex]';
@@ -1821,12 +1857,19 @@ function showExplorerAlert(message, opts = {}) {
 
 /**
  * @param {string} message
- * @param {{ title?: string, okLabel?: string }} [opts]
- *   `title` defaults to "Xfer64" and `okLabel` to "OK". Destructive confirms should pass both: a
- *   title that says what the dialog is about, and a button that names the action ("Delete").
+ * @param {{ title?: string, okLabel?: string, cancelLabel?: string }} [opts]
+ *   `title` defaults to "Xfer64", `okLabel` to "OK" and `cancelLabel` to "Cancel". Destructive
+ *   confirms should pass the first two: a title that says what the dialog is about, and a button
+ *   that names the action ("Delete").
  */
 function showExplorerConfirm(message, opts = {}) {
-  return showExplorerModal({ type: "confirm", message, title: opts.title, okLabel: opts.okLabel });
+  return showExplorerModal({
+    type: "confirm",
+    message,
+    title: opts.title,
+    okLabel: opts.okLabel,
+    cancelLabel: opts.cancelLabel,
+  });
 }
 
 /** Start of the backend's refusal to write to an EverDrive-64 PRO before consent (`ED64PRO_WRITE_CONSENT_MARKER`). */
@@ -2087,8 +2130,9 @@ async function runInteractiveCopyPlan(plan, mode, action = copyActionLabel(mode)
 }
 
 /**
- * @param {{ type: 'alert'|'confirm'|'prompt', message: string, title?: string, okLabel?: string, defaultValue?: string, placeholder?: string, selectFilenameStem?: boolean, disableOkIfEmpty?: boolean }} cfg
- *   `title` defaults to "Xfer64" and `okLabel` to "OK"; both are reset on every open.
+ * @param {{ type: 'alert'|'confirm'|'prompt', message: string, title?: string, okLabel?: string, cancelLabel?: string, defaultValue?: string, placeholder?: string, selectFilenameStem?: boolean, disableOkIfEmpty?: boolean }} cfg
+ *   `title` defaults to "Xfer64", `okLabel` to "OK" and `cancelLabel` to "Cancel"; all three are
+ *   reset on every open.
  *   Alert, confirm and prompt share one dialog root: one asked for while another is open waits
  *   until that one is answered, then opens and resolves on its own.
  */
@@ -2121,6 +2165,9 @@ function openExplorerModal(cfg) {
     const okLabel = cfg.okLabel || MODAL_OK_LABEL_DEFAULT;
     btnOk.textContent = okLabel;
     btnOk.title = `${okLabel} (Enter)`;
+    const cancelLabel = cfg.cancelLabel || MODAL_CANCEL_LABEL_DEFAULT;
+    btnCancel.textContent = cancelLabel;
+    btnCancel.title = `${cancelLabel} (Esc)`;
 
     const isPrompt = cfg.type === "prompt";
     const isAlert = cfg.type === "alert";
@@ -5118,6 +5165,8 @@ function setupExplorerSettings() {
 }
 
 async function init() {
+  // First, so a close during the boot's own cart read is already handled.
+  void window.__TAURI__?.event?.listen?.("xfer64-close-requested", (e) => void onCloseRequestedWhileBusy(e?.payload));
   const dirs = await invoke("fs_user_dirs");
   const defPc = dirs.documents || dirs.home || "";
   const savedPc = localStorage.getItem(LS_PC) || defPc;
