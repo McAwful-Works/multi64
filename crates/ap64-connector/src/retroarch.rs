@@ -45,7 +45,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use ap64_cart::backend::Backend;
+use ap64_cart::backend::{link_restarted, Backend};
 
 use crate::server::Event;
 
@@ -103,6 +103,8 @@ struct Shared {
     unfetched: u64,
     /// Lines for the session log, taken by whoever raises events ([`Snapshot::take_notes`]).
     notes: Vec<Note>,
+    /// The cart link generation the windows were read on ([`Backend::generation`]).
+    generation: Option<u32>,
 }
 
 /// Something the UDP side saw that the session log should say.
@@ -119,6 +121,9 @@ enum Note {
     /// one and was answered this fast. It opens a new socket each time it reconnects, so this
     /// says whether the request it gave up on ever reached AP64, and how its answer went.
     Reopened(Duration, Option<(String, Duration)>),
+    /// The link to the cart restarted, and this many queued writes were dropped with the
+    /// windows they were made against.
+    Restarted(usize),
 }
 
 /// What the client is answered from. Cloned freely: every clone is the same snapshot.
@@ -283,6 +288,14 @@ impl Snapshot {
                     "the client asked again after {:.1} s of silence",
                     gap.as_secs_f32()
                 )),
+                Note::Restarted(dropped) => Event::Note(format!(
+                    "the cart link restarted, so the console may have been reset: reading every                      window the client uses again{}",
+                    match dropped {
+                        0 => String::new(),
+                        1 => ", and dropping 1 write it made before".into(),
+                        n => format!(", and dropping {n} writes it made before"),
+                    }
+                )),
                 Note::Reopened(gap, last) => Event::Note(match last {
                     Some((what, took)) => format!(
                         "the client reconnected {} ms after its last request ({what}), which \
@@ -306,10 +319,16 @@ impl Snapshot {
     /// New windows go first because a reply is waiting on each of them, for at most
     /// [`FIRST_FETCH`]. Behind the writes they missed it: a new seed's settings are a burst of
     /// writes, and the first fetch of the window the burst ran into waited out all of them.
+    ///
+    /// Nothing outlives the link it was read on. When the cart link restarts the console may
+    /// have been reset, so the windows are read again before they answer anything, and writes
+    /// still queued are dropped: they were made against memory that may no longer be there, and
+    /// put on the console that booted since they could only do harm.
     pub fn refresh(&self, cart: &mut dyn Backend, bitwise: &[Range<u32>]) -> io::Result<bool> {
         let lock = &self.inner.0;
         let fresh: Vec<u32> = {
             let mut s = lock.lock().unwrap();
+            follow(&mut s, cart.generation());
             if s.last_request.is_none_or(|t| t.elapsed() >= CLIENT_GONE) {
                 // Nothing to keep current, and nothing to serve from once the client is back.
                 s.windows.clear();
@@ -321,8 +340,18 @@ impl Snapshot {
             wanted
         };
         self.fetch(cart, &fresh)?;
-        let writes: Vec<Write> = lock.lock().unwrap().writes.drain(..).collect();
-        apply(cart, &writes, bitwise)?;
+        let (writes, read_on) = {
+            let mut s = lock.lock().unwrap();
+            let writes: Vec<Write> = s.writes.drain(..).collect();
+            (writes, s.generation.unwrap_or_default())
+        };
+        match apply(cart, &writes, bitwise, read_on) {
+            Ok(()) => {}
+            // The cart is back, on a new link: what that means for the snapshot is below.
+            Err(e) if link_restarted(&e) => {}
+            Err(e) => return Err(e),
+        }
+        follow(&mut lock.lock().unwrap(), cart.generation());
         let rest: Vec<u32> = {
             let s = lock.lock().unwrap();
             s.windows
@@ -347,6 +376,9 @@ impl Snapshot {
             .collect();
         let blocks = cart.read_many(&regions)?;
         let mut s = lock.lock().unwrap();
+        // A link that restarted under the read: these blocks are the console as it is now, and
+        // everything read before them is not.
+        follow(&mut s, cart.generation());
         // A write still queued is already in the snapshot, and not on the cart yet: keep it
         // over what came back.
         let queued: Vec<(u32, [u8; 4])> = s.writes.iter().map(|w| (w.phys, w.client)).collect();
@@ -371,7 +403,15 @@ impl Snapshot {
 /// every item count when it connects), and at a round trip each a burst held up the snapshot
 /// for seconds. The writes are merged byte by byte first, later over earlier, so what lands does
 /// not depend on the order the agent applies a request's regions in.
-fn apply(cart: &mut dyn Backend, writes: &[Write], bitwise: &[Range<u32>]) -> io::Result<()> {
+///
+/// `read_on` is the link generation the writes were made against. A link that restarts under
+/// the read of the live bytes leaves them unwritten.
+fn apply(
+    cart: &mut dyn Backend,
+    writes: &[Write],
+    bitwise: &[Range<u32>],
+    read_on: u32,
+) -> io::Result<()> {
     let flag = |a: u32| bitwise.iter().any(|r| r.contains(&a));
     let changed = |w: &Write| {
         (0..4)
@@ -393,6 +433,9 @@ fn apply(cart: &mut dyn Backend, writes: &[Write], bitwise: &[Range<u32>]) -> io
             for (i, &b) in data.iter().take(4).enumerate() {
                 live.insert(p + i as u32, b);
             }
+        }
+        if cart.generation() != read_on {
+            return Ok(());
         }
     }
     let mut out: BTreeMap<u32, u8> = BTreeMap::new();
@@ -423,6 +466,21 @@ fn apply(cart: &mut dyn Backend, writes: &[Write], bitwise: &[Range<u32>]) -> io
     }
     let regions: Vec<(u32, &[u8])> = runs.iter().map(|(a, b)| (*a, b.as_slice())).collect();
     cart.write_many(&regions)
+}
+
+/// Bring `s` up to the cart link `generation`. When the link has restarted since the windows
+/// were read, nothing in them is the console's any more: each is asked for again, as if new,
+/// and the writes made against them are dropped.
+fn follow(s: &mut Shared, generation: u32) {
+    let was = s.generation.replace(generation);
+    if was.is_none_or(|g| g == generation) {
+        return;
+    }
+    let windows = std::mem::take(&mut s.windows);
+    s.wanted.extend(windows.into_keys());
+    let dropped = s.writes.len();
+    s.writes.clear();
+    s.notes.push(Note::Restarted(dropped));
 }
 
 /// The UDP side: answer every datagram from the snapshot until `stop`.
@@ -545,7 +603,7 @@ mod tests {
     }
 
     /// The snapshot filled for `addrs`, as the cart's owner would after the client asked.
-    fn primed(cart: &mut RamImage, addrs: &[u32]) -> Snapshot {
+    fn primed(cart: &mut dyn Backend, addrs: &[u32]) -> Snapshot {
         let snap = Snapshot::new(cart.rdram_size());
         {
             let mut s = snap.inner.0.lock().unwrap();
@@ -740,6 +798,105 @@ mod tests {
         fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
             None
         }
+    }
+
+    /// A cart whose link a test can restart, as `Multi64` does after a reset: the generation
+    /// moves on, and with `under_read` it moves on inside the next read, as a reconnect does.
+    struct Restarting {
+        ram: RamImage,
+        generation: u32,
+        under_read: Option<Vec<u8>>,
+    }
+
+    impl Backend for Restarting {
+        fn rdram_size(&self) -> u32 {
+            self.ram.rdram_size()
+        }
+        fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+            if let Some(boot) = self.under_read.take() {
+                // The console was reset while the request was out: what comes back is the
+                // new boot's.
+                self.ram.ram[0x2000..0x2004].copy_from_slice(&boot);
+                self.generation += 1;
+            }
+            self.ram.read_many(regions)
+        }
+        fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
+            self.ram.write_many(writes)
+        }
+        fn rom_window(&self) -> Option<u32> {
+            None
+        }
+        fn read_rom_many(&mut self, _: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+            unimplemented!()
+        }
+        fn generation(&self) -> u32 {
+            self.generation
+        }
+        fn set_watch(&mut self, _: ap64_cart::watch::Watch) {}
+        fn take_watched(&mut self) -> Option<Vec<u8>> {
+            None
+        }
+        fn sample_watch(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+            None
+        }
+    }
+
+    /// A write the client made before a reset does not reach the console that booted after it,
+    /// and the snapshot is the new boot's, not the old one's.
+    #[test]
+    fn a_restarted_link_drops_the_snapshot_and_the_writes_made_against_it() {
+        let mut cart = Restarting {
+            ram: ram(),
+            generation: 0,
+            under_read: None,
+        };
+        let snap = primed(&mut cart, &[0x2000]);
+        snap.handle("WRITE_CORE_MEMORY A0002000 01 02 03 04", None);
+        // Reset: the link is rebuilt, and the new boot holds something else there.
+        cart.generation = 1;
+        cart.ram.ram[0x2000..0x2004].copy_from_slice(&[9, 9, 9, 9]);
+        snap.refresh(&mut cart, &[FLAGS]).unwrap();
+        assert_eq!(
+            word(&mut cart.ram, 0x2000),
+            [9, 9, 9, 9],
+            "the old boot's write reached the new one"
+        );
+        assert_eq!(
+            snap.handle("READ_CORE_MEMORY A0002000 4", None),
+            "READ_CORE_MEMORY A0002000 09 09 09 09"
+        );
+        let notes = snap.take_notes();
+        assert!(
+            notes.iter().any(|n| matches!(n, Event::Note(l)
+                if l.contains("link restarted") && l.contains("dropping 1 write"))),
+            "{notes:?}"
+        );
+    }
+
+    /// The same when the link restarts under the refresh's own read, before the queued write
+    /// goes out: it is dropped, not put on the boot the read came back from.
+    #[test]
+    fn a_link_restarted_under_a_read_drops_the_writes_queued_behind_it() {
+        let mut cart = Restarting {
+            ram: ram(),
+            generation: 0,
+            under_read: None,
+        };
+        let snap = primed(&mut cart, &[0x2000]);
+        snap.handle("WRITE_CORE_MEMORY A0002000 01 02 03 04", None);
+        snap.inner.0.lock().unwrap().wanted.push(0x5000);
+        cart.under_read = Some(vec![9, 9, 9, 9]);
+        snap.refresh(&mut cart, &[FLAGS]).unwrap();
+        assert_eq!(word(&mut cart.ram, 0x2000), [9, 9, 9, 9]);
+        snap.refresh(&mut cart, &[FLAGS]).unwrap();
+        assert_eq!(
+            snap.handle("READ_CORE_MEMORY A0002000 4", None),
+            "READ_CORE_MEMORY A0002000 09 09 09 09"
+        );
     }
 
     /// A window the client has just asked for is fetched before the writes queued ahead of it,

@@ -596,14 +596,11 @@ impl Multi64 {
                         if let Some(h) = &health {
                             h(true);
                         }
-                        return Err(io::Error::new(
-                            io::ErrorKind::ConnectionReset,
-                            LinkRestarted(format!(
-                                "cart {what}: the link to the cart restarted before it was \
-                                 acknowledged, so it was not sent again (it may or may not \
-                                 have landed before the restart)"
-                            )),
-                        ));
+                        return Err(link_restarted_error(format!(
+                            "cart {what}: the link to the cart restarted before it was \
+                             acknowledged, so it was not sent again (it may or may not have \
+                             landed before the restart)"
+                        )));
                     }
                     match op(&mut self.t) {
                         Ok(v) => {
@@ -1019,6 +1016,12 @@ impl std::error::Error for LinkRestarted {}
 /// as it was, so it should read again rather than write what it had.
 pub fn link_restarted(e: &io::Error) -> bool {
     e.get_ref().is_some_and(|inner| inner.is::<LinkRestarted>())
+}
+
+/// The error [`link_restarted`] recognizes, for any backend that, like [`Multi64`], will not
+/// carry a write across a restarted link.
+pub fn link_restarted_error(msg: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::ConnectionReset, LinkRestarted(msg.into()))
 }
 
 /// What a caller gets when it asked to be stopped rather than waited for.

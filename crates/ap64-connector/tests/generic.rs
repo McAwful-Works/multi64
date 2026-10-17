@@ -358,3 +358,95 @@ fn no_script_drops_a_client_for_being_slow() {
         );
     }
 }
+
+/// A cart whose link restarts under the next read, as `Multi64`'s does when a console is reset
+/// mid-request: the read is answered from the new boot, on a new generation.
+struct RestartsUnderRead {
+    ram: Rc<RefCell<RamImage>>,
+    generation: Rc<std::cell::Cell<u32>>,
+    armed: Rc<std::cell::Cell<bool>>,
+}
+
+impl Backend for RestartsUnderRead {
+    fn rdram_size(&self) -> u32 {
+        self.ram.borrow().rdram_size()
+    }
+    fn read_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        if self.armed.replace(false) {
+            self.generation.set(self.generation.get() + 1);
+        }
+        self.ram.borrow_mut().read_many(r)
+    }
+    fn write_many(&mut self, w: &[(u32, &[u8])]) -> io::Result<()> {
+        self.ram.borrow_mut().write_many(w)
+    }
+    fn rom_window(&self) -> Option<u32> {
+        self.ram.borrow().rom_window()
+    }
+    fn read_rom_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        self.ram.borrow_mut().read_rom_many(r)
+    }
+    fn generation(&self) -> u32 {
+        self.generation.get()
+    }
+    // No watch: live memory, which is what a connector falls back to.
+    fn set_watch(&mut self, _: ap64_cart::watch::Watch) {}
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+    fn sample_watch(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+        None
+    }
+}
+
+/// A GUARD that passed against memory read across a restarted link must not let its WRITE
+/// through: the console may have been reset in between, and the write was decided from the
+/// boot before. The line fails rather than writing, and the next is answered afresh.
+#[test]
+fn a_batch_whose_link_restarted_does_not_write() {
+    let ram = Rc::new(RefCell::new(RamImage::with_rom(
+        vec![0u8; 0x80_0000],
+        rom(),
+    )));
+    let generation = Rc::new(std::cell::Cell::new(0));
+    let armed = Rc::new(std::cell::Cell::new(false));
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let log = {
+        let lines = lines.clone();
+        Arc::new(move |s: String| lines.lock().unwrap().push(s))
+    };
+    let backend = RestartsUnderRead {
+        ram: ram.clone(),
+        generation: generation.clone(),
+        armed: armed.clone(),
+    };
+    let connector = Connector::new(&GENERIC, Box::new(backend), log).unwrap();
+    let batch = r#"[{"type":"GUARD","address":8192,"expected_data":"AAAAAA==","domain":"RDRAM"},{"type":"WRITE","address":8192,"value":"AAUAAA==","domain":"RDRAM"}]"#;
+
+    armed.set(true);
+    assert!(
+        connector.handle(batch).is_err(),
+        "a line whose writes were dropped is not answered as done"
+    );
+    assert_eq!(
+        ram.borrow_mut().read_many(&[(0x2000, 4)]).unwrap()[0],
+        vec![0; 4],
+        "the write reached the console after the link restarted"
+    );
+
+    // The next line is loaded against the link as it is, and writes.
+    let reply = connector.handle(batch).unwrap();
+    assert!(reply.contains("WRITE_RESPONSE"), "{reply}");
+    assert_eq!(
+        ram.borrow_mut().read_many(&[(0x2000, 4)]).unwrap()[0],
+        vec![0, 5, 0, 0]
+    );
+    assert!(lines
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l.contains("loading the generic connector again")));
+}
