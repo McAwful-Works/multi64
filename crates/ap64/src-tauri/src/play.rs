@@ -923,7 +923,7 @@ fn session(
 
     // A session needs Multi64, so start it rather than wait for someone to notice.
     if !multi64_app_running() {
-        start_multi64(&log);
+        start_multi64(log);
     }
 
     // Requests answered across the whole session, not just this link: a console that was
@@ -963,7 +963,7 @@ fn session(
             if stop.load(Ordering::Relaxed) {
                 break 'session;
             }
-            match Multi64::connect(&url, log.clone()) {
+            match Multi64::connect(url, log.clone()) {
                 Ok(c) => break c,
                 Err(e) => {
                     let msg = e.to_string();
@@ -972,7 +972,7 @@ fn session(
                     // of the three being absent looks the same from here. The daemon answers a
                     // plain HTTP GET whether or not a cart is attached, so ask it.
                     // One request serves both this and the cart the hint below needs.
-                    let status = ap64_cart::transport::daemon_status(&url);
+                    let status = ap64_cart::transport::daemon_status(url);
                     let daemon = status.as_ref().and_then(|s| s.serial_active);
                     // Only when the bridge is silent is the app's own state worth the look.
                     let app = daemon.is_none() && multi64_app_running();
@@ -1341,17 +1341,15 @@ fn session(
         };
         let result = match (kind, &connector) {
             (Kind::Script(script), Some(connector)) => {
-                server::serve(connector, script.ports, &stop, &mut on_event)
+                server::serve(connector, script.ports, stop, &mut on_event)
             }
             // The cart stays on this thread, and each call borrows it only for its length, so
             // the handler's own borrows above never overlap one of these.
             (Kind::Native(native), _) => match &native.protocol {
                 Protocol::RetroArch(opts) => {
-                    retroarch::serve(&mut cart.clone(), opts, &stop, &mut on_event)
+                    retroarch::serve(&mut cart.clone(), opts, stop, &mut on_event)
                 }
-                Protocol::Relay(opts) => {
-                    relay::serve(&mut cart.clone(), opts, &stop, &mut on_event)
-                }
+                Protocol::Relay(opts) => relay::serve(&mut cart.clone(), opts, stop, &mut on_event),
             },
             (Kind::Script(_), None) => unreachable!("a script session loads its script first"),
         };
