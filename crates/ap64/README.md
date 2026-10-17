@@ -70,7 +70,8 @@ Bomberman 64: The Second Attack and Star Fox 64 on 2026-09-27, GoldenEye 007 on 
   EmuLoader, and with no emulator running it falls back to RetroArch's Network Commands over
   UDP. AP64 answers those itself, from the cart. As released, that fallback is missing a method
   the client calls on every loop, so pressing Start checks the installed `dk64.apworld` first
-  and, if it needs the fix, asks once in a dialog before making it. The original is kept in
+  (every copy, where more than one Archipelago install has it) and, if it needs the fix, asks
+  once in a dialog before making it. The original is kept in
   AP64's own data folder (`%APPDATA%\dev.multi64.ap64\backups`). It checks again at every Start,
   because the world replaces itself when the randomizer updates. DK64 uses all 8 MB of RAM, so
   the agent lives in 32 KB taken from the top of the game's heap; the heap's low point measured
@@ -271,9 +272,14 @@ Archipelago client needs (Donkey Kong 64 and Banjo-Tooie, above). For those two 
 looks for the installed world (`dk64.apworld`, `banjo_tooie.apworld`) in `custom_worlds` and
 `lib\worlds` under `AP64_ARCHIPELAGO_DIR` if it is set, then `%ProgramData%\Archipelago` and
 `%LOCALAPPDATA%\Archipelago`. If the world is not installed in any of them, Start refuses and
-says to install it. If it is installed but cannot be read, or is not a version AP64 recognizes,
-Start says so (for an unrecognized version, that the AP client may not connect) and starts
-anyway. Then the game's notes: what
+says to install it. It may be installed in more than one: each Archipelago install loads the
+worlds in its own `custom_worlds` and `lib\worlds`, so which copy the AP client runs depends on
+which install's Launcher is opened, and AP64 cannot tell that. So Start checks every copy it
+finds, and the client is ready only when every copy is. If any copy needs the fix, the dialog
+says how many, and the fix is made to each copy that needs it, each original kept; a copy AP64
+does not recognize is left as it is. If none needs it but one cannot be read, or is not a
+version AP64 recognizes, Start says so (for an unrecognized version, that the AP client may not
+connect) and starts anyway. Then the game's notes: what
 to know about its randomizer on a console that AP64 cannot change, such as Bomberman 64's title screen
 freeze. They come from the game's profile (`notes`), show at every Start until **Don't show
 these again for this game** is ticked, and show again if they change.
@@ -310,6 +316,9 @@ cargo run -p ap64-cli -- <seed.z64>            # writes <seed>-agent.z64 beside 
 cargo run -p ap64-cli -- <seed.z64> --check    # verify only
 cargo run -p ap64-cli -- <seed.z64> --cart ed64    # for an EverDrive-64 X7 (experimental)
 ```
+
+`-o <out.z64>` writes somewhere else. Neither the window nor the command line writes over the
+seed itself, whatever case, short name or `..` the output path spells it with.
 
 **The agent is built for one flash cart**, because it drives one: the SummerCart64, the
 EverDrive-64 X7 or the EverDrive-64 PRO. The Patch dialog asks which, as **Flash cart**. It

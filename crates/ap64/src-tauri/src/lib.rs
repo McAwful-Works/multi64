@@ -294,9 +294,7 @@ fn patch_rom(output: String, state: State<'_, AppState>) -> Result<PatchResult, 
         .and_then(|b| b.for_cart(loaded.cart))
         .ok_or("profile missing")?;
     let output = PathBuf::from(output);
-    if output == loaded.path {
-        return Err("the output would overwrite the seed; choose another name".into());
-    }
+    ap64_core::check_output(&loaded.path, &output)?;
     let patched = apply(bundle, &loaded.rom).map_err(|e| e.to_string())?;
     std::fs::write(&output, &patched.rom).map_err(|e| format!("{}: {e}", output.display()))?;
     Ok(PatchResult {
