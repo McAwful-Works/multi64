@@ -1626,7 +1626,11 @@ async function openExplorerPropertiesForPane(pane) {
   showExplorerPropertiesModal(pane);
   try {
     if (pane === "cart") {
-      const info = await invoke("cart_serial_path_info", { path: normalizeUsbPath(path) });
+      // A cart read like any other: the bridge pauses around it.
+      let info;
+      await withCartDaemonYield(async () => {
+        info = await invoke("cart_serial_path_info", { path: normalizeUsbPath(path) });
+      });
       fillExplorerPropertiesDl(dl, info, pane);
     } else {
       const info = await invoke("fs_path_info", { path });
@@ -1695,7 +1699,10 @@ async function openExplorerPropertiesForCurrentFolder(pane) {
           pane,
         );
       } else {
-        const info = await invoke("cart_serial_path_info", { path });
+        let info;
+        await withCartDaemonYield(async () => {
+          info = await invoke("cart_serial_path_info", { path });
+        });
         fillExplorerPropertiesDl(dl, info, pane);
       }
     } else {
@@ -1880,11 +1887,16 @@ const ED64PRO_WRITE_WARNING =
 
 /**
  * Invoke a command that writes to the cart. An EverDrive-64 PRO refuses until the user accepts, once per
- * app run, that writing to it is experimental: this asks, records the answer, and retries.
+ * app run, that writing to it is experimental: this asks, records the answer, and retries. The copy
+ * batch comes through here in both directions; anything but an export first drops the staged
+ * drag-out copy (`invalidateStagedCartDrag`).
  * @param {string} cmd
  * @param {Record<string, unknown>} args
  */
 async function invokeCartWrite(cmd, args) {
+  // A staged drag-out copy may be of what this changes; the cart lists no modified times to tell.
+  // An export (the batch runs through here for both directions) only reads the cart.
+  if (cmd !== "cart_serial_export_copy_batch") invalidateStagedCartDrag();
   try {
     return await invoke(cmd, args);
   } catch (e) {
@@ -2348,6 +2360,7 @@ function isCartSdBaseScanProgressBarActive() {
  * `forceRefresh` — bypass Rust cart list cache on the first page (e.g. F5).
  */
 async function loadCartPane(opts = {}) {
+  if (opts.forceRefresh === true) invalidateStagedCartDrag();
   beginPaneLoading("cart", "Reading cart…");
   updateExplorerControls();
   try {
@@ -2745,8 +2758,10 @@ function dropTargetAt(clientX, clientY) {
   if (!wrap) return null;
   const pane = wrap.dataset.dropPane;
   if (pane !== "cart" && pane !== "pc") return null;
-  // A pane with an operation running takes no drops.
-  if (isPaneBusy(pane)) return null;
+  // Every drop is a transfer, so it is refused while either pane has an operation running, as
+  // Export and Import are (`actionBlockedReason`): an Explorer drop on the idle pane would otherwise
+  // start a second operation beside the first.
+  if (isPaneBusy("cart") || isPaneBusy("pc")) return null;
   const dirRow = el.closest("tbody tr[data-is-dir='1']");
   return { pane, wrap, dirRow: dirRow || null, destPath: dirRow?.dataset?.path || null };
 }
@@ -3576,8 +3591,9 @@ function endOsDrag() {
 }
 
 /**
- * Cart paths for a staging batch, tagged with size and modified time so a file that changed on
- * the cart is exported again rather than dragged out stale.
+ * Cart paths for a staging batch, tagged with size and modified time. The cart lists no modified
+ * times, and a file rewritten at the same size keeps its size, so this alone cannot tell that a
+ * staged copy is stale: `invalidateStagedCartDrag` drops it whenever the cart may have changed.
  * @param {string[]} paths
  */
 function cartStagingKeyFor(paths) {
@@ -3604,6 +3620,18 @@ async function discardStagingDir(dir) {
   } catch {
     // Temp files: a failed cleanup is pruned on a later run, and is not worth a dialog.
   }
+}
+
+/**
+ * Stop reusing the staged cart copy, because the cart may have changed since it was exported: a
+ * write to the cart from this window (import, delete, rename, new folder), or a refresh of the
+ * cart pane (F5, Refresh, or a serial port coming or going), which is how a change made elsewhere —
+ * by the console, or another Xfer64 — gets picked up. The next drag-out exports again.
+ */
+function invalidateStagedCartDrag() {
+  const dir = cartDragStaged?.dir;
+  cartDragStaged = null;
+  if (dir) void discardStagingDir(dir);
 }
 
 /** Forget staged cart copies: after a port or cart change they may be from a different card. */
@@ -4491,9 +4519,12 @@ async function runEd64LinearBaseScan() {
   let scanCancelled = false;
   try {
     let r;
-    await runWithProgress("cart", ED64_SD_BASE_SCAN_STATUS_MSG, async () => {
-      r = await invoke("cart_serial_probe_ed64_linear_base");
-    });
+    // The scan reads the cart, so the bridge pauses around it like any other cart read.
+    await runWithProgress("cart", ED64_SD_BASE_SCAN_STATUS_MSG, () =>
+      withCartDaemonYield(async () => {
+        r = await invoke("cart_serial_probe_ed64_linear_base");
+      })
+    );
     const candidates = r.candidates || [];
     const checked = r.basesChecked ?? 0;
     if (candidates.length === 0) {

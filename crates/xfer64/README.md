@@ -50,9 +50,16 @@ directory (`%TEMP%\xfer64-drag\…`) with the usual progress bar and Cancel; a 6
 serial takes as long as it takes. The pointer is long released by then, so the status line says
 *Ready — drag … out again*, and the second drag goes straight to the shell.
 
-Staged files are copies. They are deleted when Xfer64 exits, one left behind by a crash is pruned
-on a later start, and a selection is re-exported if the file changed on the cart meanwhile —
-or if the serial port or cart type changed, since the staged copies may be from another card.
+Staged files are copies. They are deleted when Xfer64 exits. A staging directory left behind by a
+crash is pruned when a later run first stages a cart drag-out, once it is more than 24 hours old,
+and never while another running Xfer64 still holds it.
+
+The cart lists no modified times, so a staged copy cannot be checked against the card. Instead the
+selection is exported again, rather than the staged copy reused, after anything that may have
+changed the cart: an import, delete, rename or new folder from this window, a refresh of the Cart
+pane (F5 or Refresh, or a serial port appearing or disappearing), or a change of serial port or
+cart type, since the staged copies may then be from another card. A change made elsewhere — by
+the console, or by Quick upload — is noticed only once the Cart pane is refreshed.
 
 The main window sets `dragDropEnabled: true` (`tauri.conf.json`) — that is the only way Tauri
 reports the dropped paths, and WebView2's own HTML5 drop reports none. It also switches HTML5
