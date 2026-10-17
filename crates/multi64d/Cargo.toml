@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "multi64 reference daemon: WebSocket bridge to L3 byte stream (SummerCart64 L2 backend; experimental EverDrive X7)"
+description = "multi64 reference daemon: WebSocket bridge to L3 byte stream (SummerCart64 L2 backend; experimental EverDrive-64 X7 and EverDrive-64 PRO)"
 
 [lib]
 name = "multi64d"

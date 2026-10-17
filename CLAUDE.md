@@ -36,8 +36,10 @@ The Multi64 frontend checks are a job of the same kind:
 cd crates/multi64/e2e && npm ci && npx playwright install --with-deps chromium && npm test
 ```
 
-They drive `crates/multi64/src/index.html` the same way and check the Status card and the Settings
-Cart and Serial port selects, including a saved port that is unplugged. See
+They drive `crates/multi64/src/index.html` the same way and check the Status card, including a
+start in progress and a bridge without the cart, the Settings Cart and Serial port selects,
+including a saved port that is unplugged, that the window fits the page, and that nothing logs a
+console error. See
 [`crates/multi64/e2e/README.md`](crates/multi64/e2e/README.md).
 
 AP64's frontend checks are a third job of the same kind, for its Patch and Play cards:

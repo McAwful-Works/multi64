@@ -21,6 +21,7 @@ Normative wire rules live in `spec/`. Each spec file carries its own **Spec-Revi
 | Cart comparison | [Flash carts (L2)](#flash-carts-l2-backends) below |
 | **Xfer64** (SD / COM, maintainers) | [xfer64-cart-serial.md](spec/xfer64-cart-serial.md) |
 | `multi64d` | [daemon-api-v1.md](spec/daemon-api-v1.md), [run-as-service.md](run-as-service.md) |
+| **Multi64**, the Windows app that runs `multi64d`: Status, Settings and tray | [Multi64 README](../crates/multi64/README.md) |
 | Test ROM + connector | [connectors/test-rom.md](connectors/test-rom.md) |
 | Check the agent's cart drivers on a cart, outside any game | [n64/bringup](../n64/bringup/README.md), [cart-bringup-report-v0.md](spec/cart-bringup-report-v0.md) |
 | Frontend themes / tokens (all four apps) | [frontend-appearance.md](frontend-appearance.md) |
@@ -100,7 +101,7 @@ Guides, not specifications: how to make a game on real hardware readable and wri
 
 ## Connectors (`connectors/`)
 
-Host programs that use `multi64d`’s **WebSocket** for **raw L3**. The cart link is whichever `--cart` `multi64d` was started with (**SC64 L2** by default; the EverDrive [X7](spec/l3-over-everdrive-x7.md) and [PRO](spec/l3-over-everdrive-pro.md) mappings are implemented, but their specs are still draft and neither has been run against a cart).
+Host programs that use `multi64d`’s **WebSocket** for **raw L3**. The cart link is whichever `--cart` `multi64d` was started with (**SC64 L2** by default; the EverDrive [X7](spec/l3-over-everdrive-x7.md) and [PRO](spec/l3-over-everdrive-pro.md) mappings are implemented, but their specs are still draft and neither is validated: the X7's has run on one cart, the PRO's on none).
 
 | Document | Programs |
 |----------|----------|
