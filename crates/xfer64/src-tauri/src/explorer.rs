@@ -3,9 +3,10 @@
 use crate::cancel::ExplorerCancelState;
 use crate::copy_plan::{self, InteractiveCopyStep};
 use crate::progress::{emit_explorer_progress, emit_explorer_progress_full};
+use multi64_sc64_sd::write_host_file;
 use serde::Serialize;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::AppHandle;
@@ -220,10 +221,35 @@ pub fn fs_rename(
     to: String,
     cache: State<'_, ExplorerPathCache>,
 ) -> Result<(), String> {
-    std::fs::rename(PathBuf::from(from.trim()), PathBuf::from(to.trim()))
-        .map_err(|e| e.to_string())?;
+    rename_refusing_to_replace(Path::new(from.trim()), Path::new(to.trim()))?;
     cache.invalidate_pc();
     Ok(())
+}
+
+/// Rename `from` to `to`, refusing when something else already has the name `to`.
+///
+/// `std::fs::rename` replaces an existing file on Windows without a word, so a rename onto a name
+/// already in the folder used to delete that file. A name that differs only in letter case still
+/// renames: Windows matches names case-insensitively, so `to` then "exists" as `from` itself.
+fn rename_refusing_to_replace(from: &Path, to: &Path) -> Result<(), String> {
+    if fs::symlink_metadata(to).is_ok() && !same_entry(from, to) {
+        let name = to
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| to.display().to_string());
+        return Err(format!(
+            "\"{name}\" already exists in this folder. Choose another name."
+        ));
+    }
+    fs::rename(from, to).map_err(|e| e.to_string())
+}
+
+/// Whether `a` and `b` name the same file or folder, as `a.z64` and `A.z64` do on Windows.
+fn same_entry(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 fn map_pc_copy_err(e: io::Error, ctx: &Path) -> String {
@@ -241,23 +267,31 @@ fn copy_file_with_progress(
     mut on_delta: impl FnMut(u64),
 ) -> Result<(), String> {
     let mut r = fs::File::open(src).map_err(|e| map_pc_copy_err(e, src))?;
-    let mut w = fs::File::create(dst).map_err(|e| map_pc_copy_err(e, dst))?;
     let mut buf = vec![0u8; 256 * 1024];
-    loop {
+    // A read error belongs to `src`; anything else that fails, to `dst`.
+    let mut src_err: Option<io::Error> = None;
+    // Into a temporary file that replaces `dst` only once complete, as exports from the cart do:
+    // a cancelled or failed Replace keeps the original.
+    let res = write_host_file(dst, |w| loop {
         if cancel.is_cancelled() {
-            drop(w);
-            let _ = fs::remove_file(dst);
-            return Err("Cancelled".into());
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
         }
-        let n = r.read(&mut buf).map_err(|e| map_pc_copy_err(e, src))?;
-        if n == 0 {
-            break;
-        }
-        w.write_all(&buf[..n])
-            .map_err(|e| map_pc_copy_err(e, dst))?;
+        let n = match r.read(&mut buf) {
+            Ok(0) => return Ok(()),
+            Ok(n) => n,
+            Err(e) => {
+                src_err = Some(e);
+                return Err(io::Error::other("source read failed"));
+            }
+        };
+        w.write_all(&buf[..n])?;
         on_delta(n as u64);
+    });
+    match (res, src_err) {
+        (Ok(()), _) => Ok(()),
+        (Err(_), Some(e)) => Err(map_pc_copy_err(e, src)),
+        (Err(e), None) => Err(map_pc_copy_err(e, dst)),
     }
-    Ok(())
 }
 
 #[tauri::command]
@@ -394,4 +428,91 @@ pub fn fs_user_dirs() -> serde_json::Value {
         "documents": documents,
         "desktop": desktop,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A scratch directory under the system temp dir, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let p = std::env::temp_dir().join(format!(
+                "xfer64-explorer-{tag}-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = fs::remove_dir_all(&p);
+            fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+
+        fn names(&self) -> Vec<String> {
+            let mut v: Vec<String> = fs::read_dir(&self.0)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Renaming onto a name the folder already has used to delete the file that had it.
+    #[test]
+    fn a_rename_onto_an_existing_name_is_refused_and_both_files_survive() {
+        let dir = Scratch::new("rename-onto");
+        let a = dir.0.join("a.z64");
+        let b = dir.0.join("b.z64");
+        fs::write(&a, b"a").unwrap();
+        fs::write(&b, b"b").unwrap();
+        let err = rename_refusing_to_replace(&a, &b).unwrap_err();
+        assert!(err.contains("\"b.z64\" already exists"), "{err}");
+        assert_eq!(fs::read(&a).unwrap(), b"a");
+        assert_eq!(fs::read(&b).unwrap(), b"b");
+    }
+
+    /// Changing only the letter case is still a rename of the same file, on Windows too, where
+    /// the new name already "exists".
+    #[test]
+    fn a_rename_that_changes_only_letter_case_goes_through() {
+        let dir = Scratch::new("rename-case");
+        let a = dir.0.join("game.z64");
+        fs::write(&a, b"rom").unwrap();
+        rename_refusing_to_replace(&a, &dir.0.join("GAME.z64")).unwrap();
+        assert_eq!(dir.names(), ["GAME.z64"]);
+        assert_eq!(fs::read(dir.0.join("GAME.z64")).unwrap(), b"rom");
+
+        rename_refusing_to_replace(&dir.0.join("GAME.z64"), &dir.0.join("new.z64")).unwrap();
+        assert_eq!(dir.names(), ["new.z64"]);
+    }
+
+    /// Choosing Replace and then Cancel used to truncate the existing file and then delete it.
+    #[test]
+    fn a_cancelled_replace_keeps_the_original() {
+        let dir = Scratch::new("copy-cancel");
+        let src = dir.0.join("src.z64");
+        let dst = dir.0.join("dst.z64");
+        // Several read chunks, so the cancel lands part-way.
+        fs::write(&src, vec![7u8; 1024 * 1024]).unwrap();
+        fs::write(&dst, b"the original").unwrap();
+        let cancel = ExplorerCancelState::default();
+        let err = copy_file_with_progress(&src, &dst, &cancel, |_| cancel.request()).unwrap_err();
+        assert_eq!(err, "Cancelled");
+        assert_eq!(fs::read(&dst).unwrap(), b"the original");
+        assert_eq!(dir.names(), ["dst.z64", "src.z64"], "no temporary file");
+
+        cancel.reset();
+        copy_file_with_progress(&src, &dst, &cancel, |_| {}).unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), vec![7u8; 1024 * 1024]);
+    }
 }
