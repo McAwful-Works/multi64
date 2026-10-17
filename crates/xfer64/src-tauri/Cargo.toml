@@ -28,3 +28,6 @@ multi64-cart-probe = { path = "../../cart-probe" }
 serialport = "4"
 ureq = { version = "3", default-features = false }
 tauri-plugin-drag = "2.1.1"
+# File identity (volume serial + file index on Windows, device + inode elsewhere), so a copy onto a
+# hard link to its own source is caught. Already in the tree through `walkdir`.
+same-file = "1"

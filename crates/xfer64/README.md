@@ -43,6 +43,11 @@ than arriving short.
 
 Two files of one name from different folders, as a search can turn up, cannot be copied into one
 folder together, since each would land on the other: Xfer64 names both and copies nothing.
+
+A file is never copied onto itself on This PC. Dropping it into the folder it is already in, by any
+spelling of that folder's path, copies nothing, and so does dropping it into a folder where a hard
+link to it already has its name; any other copy whose destination is the file itself, or a hard
+link to it, is refused.
 Letter case does not tell names apart, on the card or on Windows. A copy on This PC into the
 folder a file is already in does nothing, and one into a folder's own subfolder is refused, even
 when the destination is reached another way, through a `subst` drive, a junction or a short name.

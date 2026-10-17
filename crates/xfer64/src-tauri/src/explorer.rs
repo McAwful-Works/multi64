@@ -247,12 +247,21 @@ fn rename_refusing_to_replace(from: &Path, to: &Path) -> Result<(), String> {
 /// Whether `a` and `b` name the same file or folder, as `a.z64` and `A.z64` do on Windows, or a
 /// path through a `subst` drive, a junction or an 8.3 short name does with the path it stands
 /// for: both are resolved to the file system's own final path and compared. Two hard links to one
-/// file resolve to two paths, and are not caught.
+/// file resolve to two paths, and are two entries here, as a rename needs: renaming one onto the
+/// other would remove a link. Whether two paths reach one file is [`same_file`].
 pub(crate) fn same_entry(a: &Path, b: &Path) -> bool {
     match (fs::canonicalize(a), fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
+}
+
+/// Whether `a` and `b` reach one file or folder, by the file system's own identity for it: the
+/// volume serial number and file index on Windows, the device and inode elsewhere. That catches
+/// every path [`same_entry`] does, and two hard links to one file as well, which resolve to two
+/// paths. False when either cannot be opened, as when `b` does not exist yet.
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+    same_file::is_same_file(a, b).unwrap_or(false)
 }
 
 fn map_pc_copy_err(e: io::Error, ctx: &Path) -> String {
@@ -270,11 +279,12 @@ fn copy_file_with_progress(
     mut on_delta: impl FnMut(u64),
 ) -> Result<(), String> {
     // The frontend drops a copy into the folder the file is already in, but compares path
-    // strings, so another spelling of that folder got through. The file then came back from a
-    // temporary copy of itself: the same bytes, but a new file in its place, so whatever belonged
-    // to the file rather than its contents, such as alternate data streams or another hard link
-    // to it, did not carry over. Before writes went through a temporary file, it was emptied.
-    if same_entry(src, dst) {
+    // strings, so another spelling of that folder got through, as did a hard link to the file,
+    // which no spelling of its path matches. The file then came back from a temporary copy of
+    // itself: the same bytes, but a new file in its place, so whatever belonged to the file
+    // rather than its contents, such as alternate data streams or its other hard links, did not
+    // carry over. Before writes went through a temporary file, it was emptied.
+    if same_file(src, dst) {
         return Err(format!(
             "{} is the file being copied: a file cannot be copied onto itself.",
             dst.display()
@@ -548,5 +558,43 @@ mod tests {
         assert!(err.contains("cannot be copied onto itself"), "{err}");
         assert_eq!(fs::read(&src).unwrap(), b"rom");
         assert_eq!(dir.names(), ["game.z64", "sub"]);
+    }
+
+    /// Nor onto a hard link to it: another path to the same file rather than another spelling of
+    /// the same path, so it canonicalizes to a path of its own.
+    ///
+    /// Fail-first, demonstrated: with the canonical-path check alone, the copy returned `Ok`, and
+    /// the two names were two files afterward.
+    #[test]
+    fn a_file_is_not_copied_onto_its_own_hard_link() {
+        let dir = Scratch::new("copy-hard-link");
+        let src = dir.0.join("game.z64");
+        let link = dir.0.join("link.z64");
+        fs::write(&src, b"rom").unwrap();
+        fs::hard_link(&src, &link).unwrap();
+        let cancel = ExplorerCancelState::default();
+        let err = copy_file_with_progress(&src, &link, &cancel, |_| {}).unwrap_err();
+        assert!(err.contains("cannot be copied onto itself"), "{err}");
+        assert_eq!(dir.names(), ["game.z64", "link.z64"], "no temporary file");
+        // Still one file: a write through one name shows through the other.
+        fs::write(&src, b"patched").unwrap();
+        assert_eq!(fs::read(&link).unwrap(), b"patched");
+    }
+
+    /// A rename onto a hard link to the file is still a rename onto a name the folder has, and
+    /// would remove that link: refused, as for any other file. The rename's check compares paths,
+    /// not file identity, for this.
+    ///
+    /// Fail-first, demonstrated: with the rename checking [`same_file`] instead, it returned `Ok`.
+    #[test]
+    fn a_rename_onto_a_hard_link_to_the_file_is_refused() {
+        let dir = Scratch::new("rename-hard-link");
+        let a = dir.0.join("a.z64");
+        let b = dir.0.join("b.z64");
+        fs::write(&a, b"rom").unwrap();
+        fs::hard_link(&a, &b).unwrap();
+        let err = rename_refusing_to_replace(&a, &b).unwrap_err();
+        assert!(err.contains("\"b.z64\" already exists"), "{err}");
+        assert_eq!(dir.names(), ["a.z64", "b.z64"]);
     }
 }

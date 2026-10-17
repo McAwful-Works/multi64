@@ -6497,6 +6497,7 @@ dependencies = [
  "multi64-ed64pro-link",
  "multi64-sc64-sd",
  "rfd",
+ "same-file",
  "serde",
  "serde_json",
  "serialport",
