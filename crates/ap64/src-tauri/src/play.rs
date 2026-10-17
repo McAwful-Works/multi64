@@ -214,7 +214,8 @@ pub struct ClientSetup {
     /// `ready`, `needed`, `missing` (the client is not installed) or `unknown`.
     pub state: String,
     pub message: String,
-    /// The file the fix changes, when it was found.
+    /// The installed copies the state is about, separated by `; `: for `needed`, each copy the
+    /// fix changes.
     pub path: String,
     /// Why, for Developer details.
     pub technical: String,
@@ -229,16 +230,43 @@ fn client_fix(bundles: &[Bundle], game_id: &str) -> Option<ap64_connector::Clien
 }
 
 pub fn client_setup(bundles: &[Bundle], game_id: &str) -> Option<ClientSetup> {
-    use ap64_connector::ClientState;
     let fix = client_fix(bundles, game_id)?;
+    Some(setup_of(&fix, &(fix.find)()))
+}
+
+/// What one installed copy of the client's file is.
+enum Installed {
+    Unreadable(String),
+    Is(ap64_connector::ClientState),
+}
+
+fn copies(fix: &ap64_connector::ClientFix, paths: &[PathBuf]) -> Vec<(String, Installed)> {
+    paths
+        .iter()
+        .map(|p| {
+            let state = match std::fs::read(p) {
+                Ok(bytes) => Installed::Is((fix.state)(&bytes)),
+                Err(e) => Installed::Unreadable(e.to_string()),
+            };
+            (p.display().to_string(), state)
+        })
+        .collect()
+}
+
+/// [`client_setup`] for the copies at `paths`. More than one Archipelago install can have the
+/// world, and AP64 cannot tell which one the player will open
+/// ([`ap64_core::installed::installed_apworlds`]), so it is `ready` only when every copy is,
+/// and `needed` when any copy needs the fix, which is then made to each copy that needs it.
+fn setup_of(fix: &ap64_connector::ClientFix, paths: &[PathBuf]) -> ClientSetup {
+    use ap64_connector::ClientState;
     let setup = |state: &str, message: String, path: String, technical: String| ClientSetup {
         state: state.into(),
         message,
         path,
         technical,
     };
-    let Some(path) = (fix.find)() else {
-        return Some(setup(
+    if paths.is_empty() {
+        return setup(
             "missing",
             format!(
                 "Install this game's world in Archipelago ({}) before playing",
@@ -248,46 +276,60 @@ pub fn client_setup(bundles: &[Bundle], game_id: &str) -> Option<ClientSetup> {
             "looked in custom_worlds and lib/worlds under %ProgramData%\\Archipelago and \
              %LOCALAPPDATA%\\Archipelago, and AP64_ARCHIPELAGO_DIR if set"
                 .into(),
-        ));
-    };
-    let shown = path.display().to_string();
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(e) => {
-            return Some(setup(
-                "unknown",
-                format!("{} could not be read", fix.file),
-                shown,
-                e.to_string(),
-            ))
-        }
-    };
-    Some(match (fix.state)(&bytes) {
-        ClientState::Ready => setup(
-            "ready",
-            "The AP client is ready for AP64".into(),
-            shown,
-            String::new(),
-        ),
-        ClientState::NeedsFix => setup(
+        );
+    }
+    let copies = copies(fix, paths);
+    // What is wrong with each copy the fix cannot be made to, for Developer details.
+    let odd: Vec<String> = copies
+        .iter()
+        .filter_map(|(path, c)| match c {
+            Installed::Unreadable(e) => Some(format!("{path} could not be read: {e}")),
+            Installed::Is(ClientState::Unrecognized(why)) => Some(format!("{path}: {why}")),
+            Installed::Is(_) => None,
+        })
+        .collect();
+    let needing: Vec<&str> = copies
+        .iter()
+        .filter(|(_, c)| matches!(c, Installed::Is(ClientState::NeedsFix)))
+        .map(|(path, _)| path.as_str())
+        .collect();
+    if !needing.is_empty() {
+        let what = if needing.len() == 1 {
+            format!("add it to {} and keep the original", fix.file)
+        } else {
+            format!(
+                "add it to each of the {} copies of {} installed and keep the originals",
+                needing.len(),
+                fix.file
+            )
+        };
+        return setup(
             "needed",
-            format!(
-                "{}. AP64 will add it to {} and keep the original",
-                fix.why, fix.file
-            ),
-            shown,
-            String::new(),
-        ),
-        ClientState::Unrecognized(why) => setup(
-            "unknown",
-            format!(
+            format!("{}. AP64 will {what}", fix.why),
+            needing.join("; "),
+            odd.join("; "),
+        );
+    }
+    let all: Vec<&str> = copies.iter().map(|(path, _)| path.as_str()).collect();
+    if let Some((path, c)) = copies
+        .iter()
+        .find(|(_, c)| !matches!(c, Installed::Is(ClientState::Ready)))
+    {
+        let message = match c {
+            Installed::Unreadable(_) => format!("{} could not be read", fix.file),
+            _ => format!(
                 "This version of {} is not one AP64 knows, so the AP client may not connect",
                 fix.file
             ),
-            shown,
-            why,
-        ),
-    })
+        };
+        return setup("unknown", message, path.clone(), odd.join("; "));
+    }
+    setup(
+        "ready",
+        "The AP client is ready for AP64".into(),
+        all.join("; "),
+        String::new(),
+    )
 }
 
 /// Make the chosen game's client fix, keeping the original in `backups`. Returns what to
@@ -298,32 +340,80 @@ pub fn fix_client(
     backups: &std::path::Path,
 ) -> Result<String, String> {
     let fix = client_fix(bundles, game_id).ok_or("this game's client needs no fix")?;
-    let path =
-        (fix.find)().ok_or_else(|| format!("{} is not installed in Archipelago", fix.file))?;
-    let original = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    let fixed = (fix.apply)(&original)?;
+    fix_copies(&fix, &(fix.find)(), backups)
+}
+
+/// [`fix_client`] for the copies at `paths`: each one that needs the fix gets it, with its
+/// original saved in `backups` first. Copies that are ready, or that the fix does not know,
+/// are left as they are.
+fn fix_copies(
+    fix: &ap64_connector::ClientFix,
+    paths: &[PathBuf],
+    backups: &std::path::Path,
+) -> Result<String, String> {
+    use ap64_connector::ClientState;
+    if paths.is_empty() {
+        return Err(format!("{} is not installed in Archipelago", fix.file));
+    }
+    let mut changes = Vec::new();
+    for path in paths {
+        let original =
+            std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+        if (fix.state)(&original) == ClientState::NeedsFix {
+            let fixed = (fix.apply)(&original)?;
+            changes.push((path, original, fixed));
+        }
+    }
+    if changes.is_empty() {
+        return Err(format!("no installed copy of {} needs the fix", fix.file));
+    }
     std::fs::create_dir_all(backups).map_err(|e| format!("making {}: {e}", backups.display()))?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let backup = backups.join(format!("{}.{stamp}.original", fix.file));
-    std::fs::write(&backup, &original).map_err(|e| format!("saving the original: {e}"))?;
-    // Written beside it and moved over it, so a failure part-way leaves the original in place.
-    let staged = path.with_extension("apworld.ap64-new");
-    std::fs::write(&staged, &fixed).map_err(|e| format!("writing {}: {e}", staged.display()))?;
-    if let Err(e) = std::fs::rename(&staged, &path) {
-        let _ = std::fs::remove_file(&staged);
-        return Err(format!(
-            "{} is in use; close the AP client and the Archipelago Launcher, then try again ({e})",
-            fix.file
-        ));
+    let mut saved = Vec::new();
+    for (i, (path, original, fixed)) in changes.iter().enumerate() {
+        // One name per copy: two installs' copies are fixed in the same second.
+        let n = if i == 0 {
+            String::new()
+        } else {
+            format!(".{}", i + 1)
+        };
+        let backup = backups.join(format!("{}.{stamp}{n}.original", fix.file));
+        std::fs::write(&backup, original).map_err(|e| format!("saving the original: {e}"))?;
+        // Written beside it and moved over it, so a failure part-way leaves the original in
+        // place.
+        let staged = path.with_extension("apworld.ap64-new");
+        std::fs::write(&staged, fixed).map_err(|e| format!("writing {}: {e}", staged.display()))?;
+        if let Err(e) = std::fs::rename(&staged, path) {
+            let _ = std::fs::remove_file(&staged);
+            let done = if saved.is_empty() {
+                String::new()
+            } else {
+                format!(" ({} other copies were fixed)", saved.len())
+            };
+            return Err(format!(
+                "{} is in use; close the AP client and the Archipelago Launcher, then try again{done} ({e})",
+                path.display()
+            ));
+        }
+        saved.push(backup.display().to_string());
     }
-    Ok(format!(
-        "Fixed. Restart the Archipelago Launcher before opening the AP client. The original is \
-         saved as {}",
-        backup.display()
-    ))
+    Ok(if saved.len() == 1 {
+        format!(
+            "Fixed. Restart the Archipelago Launcher before opening the AP client. The original \
+             is saved as {}",
+            saved[0]
+        )
+    } else {
+        format!(
+            "Fixed all {} copies. Restart the Archipelago Launcher before opening the AP client. \
+             The originals are saved as {}",
+            saved.len(),
+            saved.join(", ")
+        )
+    })
 }
 
 /// The file table in the cart's ROM at `table`, read a piece at a time up to its end.
@@ -1564,6 +1654,99 @@ mod tests {
         );
         assert!(path.exists() && sessions.last().unwrap().starts_with("session-20"));
         assert!(dir.join("notes.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A client fix over files that say what they are: `ready`, `needs` (which the fix turns
+    /// into `ready`), or anything else, which it does not know.
+    const TEXT_FIX: ap64_connector::ClientFix = ap64_connector::ClientFix {
+        file: "w.apworld",
+        why: "It cannot reach AP64",
+        find: Vec::new,
+        state: |b| match b {
+            b"ready" => ap64_connector::ClientState::Ready,
+            b"needs" => ap64_connector::ClientState::NeedsFix,
+            _ => ap64_connector::ClientState::Unrecognized("odd".into()),
+        },
+        apply: |b| match b {
+            b"needs" => Ok(b"ready".to_vec()),
+            _ => Err("not one this fixes".into()),
+        },
+    };
+
+    /// Two Archipelago installs in a temporary folder, each with a copy of the world.
+    fn two_installs(name: &str, a: &[u8], b: &[u8]) -> (PathBuf, [PathBuf; 2]) {
+        let dir = std::env::temp_dir().join(format!("ap64-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = [
+            dir.join("ProgramData").join("custom_worlds"),
+            dir.join("LocalAppData").join("lib").join("worlds"),
+        ]
+        .map(|d| {
+            std::fs::create_dir_all(&d).unwrap();
+            d.join("w.apworld")
+        });
+        std::fs::write(&paths[0], a).unwrap();
+        std::fs::write(&paths[1], b).unwrap();
+        (dir, paths)
+    }
+
+    /// Either install may be the one the player opens, so one copy that is ready is not enough.
+    #[test]
+    fn a_client_is_ready_only_when_every_installed_copy_is() {
+        let (dir, paths) = two_installs("client-setup", b"ready", b"needs");
+        let s = setup_of(&TEXT_FIX, &paths);
+        assert_eq!(s.state, "needed");
+        assert_eq!(s.path, paths[1].display().to_string());
+        assert!(s
+            .message
+            .ends_with("add it to w.apworld and keep the original"));
+
+        std::fs::write(&paths[1], b"ready").unwrap();
+        assert_eq!(setup_of(&TEXT_FIX, &paths).state, "ready");
+        std::fs::write(&paths[1], b"something else").unwrap();
+        let s = setup_of(&TEXT_FIX, &paths);
+        assert_eq!(
+            (s.state.as_str(), s.path),
+            ("unknown", paths[1].display().to_string())
+        );
+        assert_eq!(setup_of(&TEXT_FIX, &[]).state, "missing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_fix_is_made_to_every_copy_that_needs_it_each_backed_up() {
+        let (dir, paths) = two_installs("client-fix", b"needs", b"needs");
+        let s = setup_of(&TEXT_FIX, &paths);
+        assert!(
+            s.message.contains("each of the 2 copies of w.apworld"),
+            "{}",
+            s.message
+        );
+        let backups = dir.join("backups");
+        let told = fix_copies(&TEXT_FIX, &paths, &backups).unwrap();
+        assert!(told.starts_with("Fixed all 2 copies"), "{told}");
+        for p in &paths {
+            assert_eq!(std::fs::read(p).unwrap(), b"ready");
+        }
+        let mut saved: Vec<Vec<u8>> = std::fs::read_dir(&backups)
+            .unwrap()
+            .map(|e| std::fs::read(e.unwrap().path()).unwrap())
+            .collect();
+        saved.sort();
+        assert_eq!(saved, [b"needs".to_vec(), b"needs".to_vec()]);
+        assert_eq!(setup_of(&TEXT_FIX, &paths).state, "ready");
+        assert!(
+            fix_copies(&TEXT_FIX, &paths, &backups).is_err(),
+            "nothing left to fix"
+        );
+
+        // A copy that is ready, or that the fix does not know, is left as it is.
+        std::fs::write(&paths[0], b"needs").unwrap();
+        std::fs::write(&paths[1], b"something else").unwrap();
+        fix_copies(&TEXT_FIX, &paths, &backups).unwrap();
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), b"ready");
+        assert_eq!(std::fs::read(&paths[1]).unwrap(), b"something else");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

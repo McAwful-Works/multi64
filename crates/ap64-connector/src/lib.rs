@@ -154,8 +154,10 @@ pub struct ClientFix {
     pub file: &'static str,
     /// Why the client cannot reach AP64 as released, in a clause for the player.
     pub why: &'static str,
-    /// Where that file is, if it is installed.
-    pub find: fn() -> Option<std::path::PathBuf>,
+    /// Every installed copy of that file: none when it is not installed, and more than one
+    /// when more than one Archipelago install has it, any of which may be the one that runs
+    /// ([`ap64_core::installed::installed_apworlds`]).
+    pub find: fn() -> Vec<std::path::PathBuf>,
     pub state: fn(&[u8]) -> ClientState,
     /// The file's new contents; an error if it is not one this can fix.
     pub apply: fn(&[u8]) -> Result<Vec<u8>, String>,
@@ -170,7 +172,7 @@ pub const DK64: Native = Native {
     client_fix: Some(ClientFix {
         file: dk64::APWORLD,
         why: "Its copy of EmuLoader is missing a method it calls on every loop, so it cannot reach AP64",
-        find: dk64::installed_apworld,
+        find: dk64::installed_apworlds,
         state: dk64::client_state,
         apply: dk64::fix_client,
     }),
@@ -185,7 +187,7 @@ pub const BT: Native = Native {
     client_fix: Some(ClientFix {
         file: bt::APWORLD,
         why: "Its copy of EmuLoader stops it as soon as it attaches to anything but an emulator, so it cannot reach AP64",
-        find: bt::installed_apworld,
+        find: bt::installed_apworlds,
         state: bt::client_state,
         apply: bt::fix_client,
     }),
@@ -210,7 +212,7 @@ pub const SF64: Native = Native {
 
 pub const NATIVES: &[Native] = &[DK64, BT, SF64];
 
-pub use ap64_core::installed::installed_apworld;
+pub use ap64_core::installed::{installed_apworld, installed_apworlds};
 
 const LIBS: &[(&str, &str)] = &[
     ("json", include_str!("../connectors/lib/json.lua")),
