@@ -449,22 +449,38 @@ impl Multi64Transport {
         }
     }
 
+    /// One vectored write, sent and acknowledged.
     pub fn poke(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
         if writes.is_empty() {
             return Ok(());
         }
+        let rid = self.send_poke(writes)?;
+        self.await_poke(rid, writes.len())
+    }
+
+    /// Send a `POKEV` without waiting for it, and return its rid for [`Self::await_poke`].
+    ///
+    /// Apart from [`Self::poke`] because a write must not be sent twice. The agent keeps no
+    /// record of rids, so a request the host gave up on may still be served, and a second copy
+    /// would land on the frame after it: a mailbox the game emptied in between would be filled
+    /// again. Waiting longer for the first copy's reply is the only retry that cannot do that.
+    pub fn send_poke(&mut self, writes: &[(u32, &[u8])]) -> io::Result<u16> {
         if !self.writable {
             return Err(other("cart reports a read-only agent"));
         }
         let rid = self.rid();
         let app = m64p::encode_pokev(rid, writes).map_err(|e| other(e.to_string()))?;
         self.send_app(&app)?;
+        Ok(rid)
+    }
+
+    /// Wait one [`REPLY_TIMEOUT`] for the `POKE_ACK` to `rid`, a `POKEV` of `count` regions.
+    pub fn await_poke(&mut self, rid: u16, count: usize) -> io::Result<()> {
         match self.await_response(Some(rid))? {
             m64p::Response::PokeAck { applied, .. } => {
-                if applied as usize != writes.len() {
+                if applied as usize != count {
                     return Err(other(format!(
-                        "sent {} writes, cart applied {applied}",
-                        writes.len()
+                        "sent {count} writes, cart applied {applied}"
                     )));
                 }
                 Ok(())

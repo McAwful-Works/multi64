@@ -136,8 +136,8 @@ console resets, and the game stops calling the agent during loads. Each needed i
 
 | Event | What worked |
 |---|---|
-| Transport drops (daemon restart, setting change, USB hiccup) | Rebuild the transport and retry. `PEEKV` is a read and a repeated `POKEV` writes the same bytes, so retrying is safe. Give up only after minutes, loudly |
-| Game stops calling the agent for longer than the reply timeout (loads) | Retry on the **same** transport before declaring it dead, and discard a late reply by its `rid`. Count these separately as stalls; reconnecting here also knocked the client off |
+| Transport drops (daemon restart, setting change, USB hiccup) | Rebuild the transport and retry reads, which are safe to repeat. Do not resend a `POKEV` on the new transport: the console may have been reset in between, and the write was decided against the one before. Fail it and let the caller read again. Give up only after minutes, loudly |
+| Game stops calling the agent for longer than the reply timeout (loads) | Retry on the **same** transport before declaring it dead, and discard a late reply by its `rid`. Count these separately as stalls; reconnecting here also knocked the client off. A `POKEV` is waited on again rather than sent again: the agent keeps no record of `rid`s, so the first copy is still served when the game reaches its hook, and a second lands on the frame after. Writing the same bytes twice is not harmless, since a mailbox the game emptied between the two is filled again |
 | Console reset | The agent is back as soon as the game reaches its hook; the stand-in only has to keep retrying and resync its stream decoder |
 | Client abandons its socket without draining it | Put a deadline on every send. An unbounded write once blocked the only thread; the client still reported "connected", because the kernel completes a handshake nobody accepts |
 | Connector exits after one missed `accept()` | Supervise it and restart it, but only on a clean return — a raised error must still propagate |
