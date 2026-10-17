@@ -833,6 +833,9 @@ async function startPlay() {
   }
   if (setup?.state === "needed") {
     $("client-fix-text").textContent = sentence(setup.message);
+    // A copy the fix leaves as it is (a version AP64 does not recognize) is the player's to know.
+    $("client-fix-left").textContent = sentence(setup.left);
+    $("client-fix-left").hidden = !setup.left;
     $("client-fix-path").textContent = setup.path || "";
     openDialog("clientFix");
     return; // The dialog's buttons carry on from here.

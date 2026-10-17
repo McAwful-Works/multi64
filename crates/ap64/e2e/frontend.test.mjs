@@ -635,7 +635,7 @@ const setDev = async (p, on) => {
 // A game whose Archipelago client has to be changed before it can reach AP64 is settled at Start:
 // one dialog, and only for that game. Every other game just starts.
 {
-  const needed = { state: "needed", message: "Its copy of EmuLoader is missing a method. AP64 will add it to g2.apworld and keep the original", path: "C:\AP\custom_worlds\g2.apworld", technical: "" };
+  const needed = { state: "needed", message: "Its copy of EmuLoader is missing a method. AP64 will add it to g2.apworld and keep the original", path: "C:\AP\custom_worlds\g2.apworld", left: "", technical: "" };
   const p = await openScenario({
     clientSetup: { g2: needed },
     clientSetupAfter: { g2: { ...needed, state: "ready", message: "The AP client is ready for AP64" } },
@@ -653,6 +653,7 @@ const setDev = async (p, on) => {
   check("a client that needs the fix is asked about at Start", (await text(p, "client-fix-title")) === "The AP client needs a one-time fix");
   check("the dialog says what changes and that the original is kept", (await text(p, "client-fix-text")).includes("keep the original"));
   check("and nothing starts until it is answered", (await starts()).length === 1);
+  check("with no copy left alone, nothing says one is", !(await visible(p, "client-fix-left")));
   check("the file it changes is not in front of a player", !(await onScreen(p, "client-fix-path")));
   await setDev(p, true);
   check("but is behind developer details", (await text(p, "client-fix-path")).includes("g2.apworld"));
@@ -675,7 +676,7 @@ const setDev = async (p, on) => {
 }
 
 {
-  const p = await openScenario({ clientSetup: { g2: { state: "missing", message: "Install this game's world in Archipelago (g2.apworld) before playing", path: "", technical: "" } } });
+  const p = await openScenario({ clientSetup: { g2: { state: "missing", message: "Install this game's world in Archipelago (g2.apworld) before playing", path: "", left: "", technical: "" } } });
   await p.selectOption("#play-game-select", "g2");
   await p.click("#btn-play-start");
   await until(p, () => !document.getElementById("play-error").hidden);
@@ -686,7 +687,7 @@ const setDev = async (p, on) => {
 
 {
   const p = await openScenario({
-    clientSetup: { g2: { state: "needed", message: "It is missing a method", path: "", technical: "" } },
+    clientSetup: { g2: { state: "needed", message: "It is missing a method", path: "", left: "", technical: "" } },
     clientFix: { error: "g2.apworld is in use; close the AP client and the Archipelago Launcher, then try again" },
   });
   await p.selectOption("#play-game-select", "g2");
@@ -696,6 +697,32 @@ const setDev = async (p, on) => {
   await until(p, () => !document.getElementById("play-error").hidden);
   check("a fix that fails says why", (await text(p, "play-error")).includes("is in use"));
   check("and does not start", (await callsOf(p, "play_start")).length === 0);
+  await p.close();
+}
+
+// One copy needs the fix and another is a version AP64 does not recognize: the player is told,
+// in the dialog itself, that the other is left as it is and why. Its path stays in Developer details.
+{
+  const left = "One other copy of g2.apworld is a version AP64 does not recognize, so AP64 will leave it as it is. If the AP client runs that copy, it may not connect";
+  const p = await openScenario({
+    clientSetup: {
+      g2: {
+        state: "needed",
+        message: "It is missing a method. AP64 will add it to g2.apworld and keep the original",
+        path: "C:\\AP\\custom_worlds\\g2.apworld",
+        left,
+        technical: "C:\\Other\\custom_worlds\\g2.apworld: no EmuLoader",
+      },
+    },
+  });
+  await p.selectOption("#play-game-select", "g2");
+  await p.click("#btn-play-start");
+  await until(p, () => !document.getElementById("client-fix-dialog").hidden);
+  check("a copy the fix leaves alone is in front of the player", await onScreen(p, "client-fix-left"));
+  const said = await p.evaluate(() => document.getElementById("client-fix-left")?.textContent);
+  check("saying it is left as it is, and why", said === `${left}.`, said);
+  check("beside what the fix changes", (await text(p, "client-fix-text")).includes("keep the original"));
+  await p.click("#btn-client-fix-cancel");
   await p.close();
 }
 
@@ -736,7 +763,7 @@ const setDev = async (p, on) => {
 
 // A client fix comes first; the notes follow it, never over it.
 {
-  const needed = { state: "needed", message: "It is missing a method", path: "", technical: "" };
+  const needed = { state: "needed", message: "It is missing a method", path: "", left: "", technical: "" };
   const p = await openScenario({
     notes: { g2: ["Something to know."] },
     clientSetup: { g2: needed },

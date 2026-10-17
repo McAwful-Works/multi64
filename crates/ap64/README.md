@@ -277,7 +277,9 @@ worlds in its own `custom_worlds` and `lib\worlds`, so which copy the AP client 
 which install's Launcher is opened, and AP64 cannot tell that. So Start checks every copy it
 finds, and the client is ready only when every copy is. If any copy needs the fix, the dialog
 says how many, and the fix is made to each copy that needs it, each original kept; a copy AP64
-does not recognize is left as it is. If none needs it but one cannot be read, or is not a
+does not recognize is left as it is, and the dialog says so, and that the AP client may not
+connect if it runs that copy. Where a copy could not be read, the dialog says AP64 cannot tell
+whether it needs the fix. If none needs it but one cannot be read, or is not a
 version AP64 recognizes, Start says so (for an unrecognized version, that the AP client may not
 connect) and starts anyway. Then the game's notes: what
 to know about its randomizer on a console that AP64 cannot change, such as Bomberman 64's title screen
@@ -330,7 +332,8 @@ cargo run -p ap64-cli -- <seed.z64> --cart ed64    # for an EverDrive-64 X7 (exp
 ```
 
 `-o <out.z64>` writes somewhere else. Neither the window nor the command line writes over the
-seed itself, whatever case, short name or `..` the output path spells it with.
+seed itself, whatever case, short name or `..` the output path spells it with, and whether it
+reaches the seed through a symbolic link or a hard link.
 
 **The agent is built for one flash cart**, because it drives one: the SummerCart64, the
 EverDrive-64 X7 or the EverDrive-64 PRO. The Patch dialog asks which, as **Flash cart**. It
@@ -391,7 +394,10 @@ different one, AP64 says so. That goes in the Patch dialog, as a `[warn]` line f
 `ap64-patch`, and in the session log at Start. It is a note, not a refusal: most releases
 change nothing AP64 depends on. It just means the seed is one AP64 has not been tested with.
 The world's version is its `world_version`, or Archipelago's own for a world that ships
-with it. Paper Mario's world declares no version, so it gets no note.
+with it. Paper Mario's world declares no version, so it gets no note. Where the world is
+installed in more than one place (the folders Start looks in, above), every copy is compared,
+since AP64 cannot tell which one the AP client will run: the note appears when any copy is a
+different release, and names each copy that is, by where it is.
 
 Those checks are all of the ROM, but the agent runs from RAM, and a randomizer release that
 starts using more RAM can overwrite it with every check above still passing. So on the

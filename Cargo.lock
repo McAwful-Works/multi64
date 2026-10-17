@@ -145,6 +145,7 @@ dependencies = [
 name = "ap64-core"
 version = "0.1.0"
 dependencies = [
+ "same-file",
  "serde",
  "serde_json",
  "sha1 0.11.0",
