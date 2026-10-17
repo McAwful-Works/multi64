@@ -22,7 +22,7 @@ M64P shares the APPLICATION channel with `M64T` ([`test-l3-application-v0.md`](.
 
 `L3_PAYLOAD_LEN` is the APPLICATION payload length from the L3 header ([`l3-bridge-protocol-v1.md`](./l3-bridge-protocol-v1.md)). All multi-byte integers are **big-endian**.
 
-Every request carries a `rid` (`uint16`), echoed in its response. A host may therefore match a reply after an L3 resync; `rid` is opaque to the cart.
+Every request carries a `rid` (`uint16`), echoed in its response. A host may therefore match a reply after an L3 resync. `rid` is opaque to the cart, except that an agent with `HELLO_ACK` `flags` bit `3` compares a `POKEV`'s `rid` with that of the request it served just before (§4.4).
 
 ---
 
@@ -55,7 +55,9 @@ Every request carries a `rid` (`uint16`), echoed in its response. A host may the
 
 `flags` bit `1` set means the agent answers `PEEKROM`, and `HELLO_ACK` then carries one more field after `flags`: `rom_bytes:uint32`, the size of the ROM window `PEEKROM` may address (§4.2). An agent without it clears bit `1`, sends no `rom_bytes`, and answers `PEEKROM` with `ERR`/`E_UNSUPPORTED`. The field is appended, so every earlier field stays where a host that predates it reads it, and such a host can ignore both the bit and the extra four bytes.
 
-`flags` bit `2` set means the agent watches slots (§4.3), and `HELLO_ACK` carries `watch_slots:uint8` — how many it can watch at once — after `rom_bytes` if that is present, else straight after `flags`. **Appended fields appear in bit order, each present only if its bit is set**, so a host reads them in that order and an agent with neither sends neither. An agent with bit `2` clear answers `WATCH` with `ERR`/`E_UNSUPPORTED`. Other `flags` bits are reserved and sent as `0`.
+`flags` bit `2` set means the agent watches slots (§4.3), and `HELLO_ACK` carries `watch_slots:uint8` — how many it can watch at once — after `rom_bytes` if that is present, else straight after `flags`. **Appended fields appear in bit order, each present only if its bit is set**, so a host reads them in that order and an agent with neither sends neither. An agent with bit `2` clear answers `WATCH` with `ERR`/`E_UNSUPPORTED`.
+
+`flags` bit `3` set means the agent recognizes a `POKEV` sent again, and acknowledges it without applying it a second time (§4.4). It appends no field. An agent with bit `3` clear may apply a copy of a `POKEV` as a new write, so a host must never send it one twice. Bits `4`–`7` are reserved and sent as `0`. A host ignores any `flags` bit it does not know, as one that predates bit `3` does with it.
 
 ---
 
@@ -157,6 +159,54 @@ second, exactly as a host reading the slot every frame would see. An agent that 
 sample once per frame must leave bit `2` clear rather than sample less often, since a host
 cannot tell a slow sampler from a quiet game.
 
+### 4.4 Repeated writes (`flags` bit `3`)
+
+An agent serves requests in the order they arrive, from a per-frame hook (§4.1), so a request
+can wait out a scene load or a lost reply and still be served after the host stopped waiting
+for it. For a read that is harmless: the host sends it again and drops the late reply by `rid`.
+A `POKEV` is different. A host whose write went unanswered cannot tell a write the agent never
+received from one it applied and whose reply was lost, and a second copy of one it applied is
+a second write: a mailbox the game emptied between the two is filled again, and an item is
+delivered twice. An agent that sets bit `3` lets the host send the write again safely.
+
+**The agent holds at most one write**: the `rid` and `applied` count of the request it served
+last, if that request was a `POKEV` it applied (answered with `POKE_ACK`). Nothing is held at
+boot.
+
+- **A `POKEV` whose `rid` is the held write's** is not validated or applied. The agent answers
+  `POKE_ACK` with that `rid` and the held `applied`, exactly as it answered the first copy, and
+  goes on holding the write. However many copies arrive, the write is applied once.
+- **Any other M64P request ends the hold**: a `POKEV` under another `rid`, `PEEKV`, `PEEKROM`,
+  `WATCH`, `HELLO`, or a request it does not know. A `POKEV` under another `rid` that is applied
+  becomes the held write. A `POKEV` answered with `ERR` holds nothing, since nothing was
+  written; a copy of it is checked again, and refused again.
+- Anything that is not an M64P request leaves the hold as it is: an `M64T` message, or a frame
+  the agent drops before it reaches the M64P handler. The host rule below, "before any other
+  request", is the stricter of the two.
+- The body is not compared. The `rid` is the host's statement that this is the same write.
+
+A host relying on bit `3` must:
+
+- **Send the copy under the same `rid`, with a byte-identical body, and before any other
+  request.** Once it has sent anything else, the hold has ended and a copy would be applied
+  again: from then on the write is in the position of one sent to an agent without bit `3`,
+  and must not be sent again.
+- **Never give a new `POKEV` the `rid` of a request the agent may have served last**: that of the
+  request the host's latest reply answered, and of every request it has sent since. Requests are
+  served in order, so the agent's last is one of those. A host that numbers requests from a
+  counter meets this without trying, and since nothing earlier counts, a counter that wraps can
+  reuse a `rid` freely.
+- **Never send a copy after a `HELLO`.** `HELLO` ends the hold, so the copy would be applied
+  again; and a host sends `HELLO` when the console may have been reset, after which a write
+  decided against the console before is not one to make at all.
+
+Bit `3` assumes one host on the link, as `HELLO`'s reset of watched slots already does: a
+request from another host between a write and its copy ends the hold.
+
+A host whose agent leaves bit `3` clear must never send a `POKEV` twice. After a timeout it can
+only wait for the reply to the `rid` it sent; a write the agent never received then fails
+rather than being sent again.
+
 ---
 
 ## 5. Error codes
@@ -181,3 +231,4 @@ An agent that predates a request type answers it with `E_MALFORMED`, as any unkn
 | **1** | M64P v0: `HELLO`, `PEEKV`, `POKEV`. No change to the L3 byte contract — this is an APPLICATION payload, so **Protocol-Major/Minor are unaffected**. Per-request byte cap set to 7936 (§4) after hardware measurement showed latency is per-exchange, not per-byte. |
 | *unassigned* | `PEEKROM` / `PEEKROM_RESP` (§4.2), `HELLO_ACK` `flags` bit `1` and `rom_bytes`, `E_UNSUPPORTED`, `E_BUSY`. Additive: `proto` stays **0**, every earlier field keeps its offset, and an agent without `PEEKROM` still conforms. L3 **Protocol-Major/Minor are unaffected**. The Spec-Revision number is the maintainer's to assign. |
 | *unassigned* | `WATCH` / `WATCH_ACK` and the `PEEKV_RESP` trailer (§4.3), `HELLO_ACK` `flags` bit `2` and `watch_slots`. Additive: `proto` stays **0**, the trailer appears only for a host that asked for it, and an agent that does not watch still conforms. L3 **Protocol-Major/Minor are unaffected**. The Spec-Revision number is the maintainer's to assign. |
+| *unassigned* | Repeated writes (§4.4): `HELLO_ACK` `flags` bit `3`, the agent's held write, and the rules for a host that sends a `POKEV` again. Additive: `proto` stays **0**, no message or field is added, bit `3` appends nothing, and an agent with it clear still conforms; a host must then never send a `POKEV` twice, which §4.4 now says outright. L3 **Protocol-Major/Minor are unaffected**. The Spec-Revision number is the maintainer's to assign. |

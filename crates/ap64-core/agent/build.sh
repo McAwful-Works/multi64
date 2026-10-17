@@ -45,6 +45,9 @@ P=mips64-ultra-elf-
 # runs inside a game whose $gp means something else.
 CFLAGS="-O1 -fno-reorder-blocks -march=vr4300 -mtune=vr4300 -mabi=32 -mno-gpopt -G0 \
         -mno-abicalls -fno-pic -mdivide-breaks -mexplicit-relocs -ffreestanding -Wall -Wextra"
+# As every agent build does (n64/agent/Makefile): a POKEV the host sends again is acknowledged, not
+# written twice, and HELLO_ACK says so (memory-l3-application-v0.md 4.4).
+POKE_ONCE=-DM64P_POKE_ONCE
 
 # build_cart <cart> <driver> <define> <install dir>
 build_cart() {
@@ -68,7 +71,7 @@ build_cart() {
     tr -d '\r' < "$HERE/common/image_check.inc" > "$B/image_check.inc"
 
     for f in agent "$DRV" cart_rom pi_io mem_proto host $GAMEOBJ; do
-        ${P}gcc $CFLAGS $DEF -I"$B/src" -c "$B/src/$f.c" -o "$B/$f.o"
+        ${P}gcc $CFLAGS $DEF $POKE_ONCE -I"$B/src" -c "$B/src/$f.c" -o "$B/$f.o"
     done
 
     ${P}ld -T "$B/agent.ld" --defsym AGENT_VRAM=$VRAM -o "$B/agent.elf" \

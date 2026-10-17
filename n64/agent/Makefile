@@ -8,14 +8,15 @@
 #   make CART=ed64 PI_IO=dma      build/ed64-dma/m64p_agent.o: pi_io.c moves words by PI DMA, a
 #                                 diagnostic build that breaks the agent's PI rules (see pi_io.c)
 #   make host-test                the EverDrive builds' L3 reassembly, the SC64 driver's failure
-#                                 handling, the X7 driver's receive path and PEEKROM, compiled
-#                                 and run on the PC
+#                                 handling, the X7 driver's receive path, PEEKROM, WATCH and
+#                                 repeated writes, compiled and run on the PC
 #
 # For a game with no buildable source, link a flat image at a fixed address instead:
 # templates/link-flat.sh. See docs/integration/cart-agent.md.
 #
 # The protocol handler and the types header come from ../test-rom, so the agent and
-# the test ROM always build the same M64P code. A host whose toolchain has no
+# the test ROM always build the same M64P code, but for one switch the agent turns on
+# (POKE_ONCE below). A host whose toolchain has no
 # <stdint.h>/<stddef.h> replaces m64p_types.h: put its own copy first on the include
 # path with EXTRA_CPPFLAGS=-I<dir>.
 
@@ -52,6 +53,13 @@ else
   $(error CART must be sc64, ed64 or ed64pro)
 endif
 
+# Every agent build recognizes a POKEV the host sent again, acknowledging it without writing it a
+# second time, and says so in HELLO_ACK (memory-l3-application-v0.md 4.4). mem_proto.c leaves that
+# out unless asked: the test ROM and n64/bringup's ROM build the same file without it, and keep the
+# images their hardware records are for. Builds that compile these sources some other way pass the
+# same define (templates/link-flat.sh, crates/ap64-core/agent/build.sh).
+POKE_ONCE = -DM64P_POKE_ONCE
+
 # How pi_io.c moves a run of words: io (the default) by CPU load and store, dma by PI DMA through a
 # bounce buffer. dma programs the PI's DMA registers, which a game-resident agent must not do; it
 # exists so n64/bringup can show whether an EverDrive needs it. It changes pi_io_load_words and
@@ -70,7 +78,7 @@ endif
 # objects this must link beside.
 include $(dir $(lastword $(MAKEFILE_LIST)))flags.mk
 CFLAGS ?= $(AGENT_CFLAGS)
-CPPFLAGS = $(EXTRA_CPPFLAGS) $(CART_DEFINE) -I. -I$(PROTO)
+CPPFLAGS = $(EXTRA_CPPFLAGS) $(CART_DEFINE) $(POKE_ONCE) -I. -I$(PROTO)
 
 # cart_rom.o (PEEKROM) is the same for every cart, and reads through pi_io.o.
 OBJECTS = $(BUILD)/agent.o $(CART_OBJECTS) $(BUILD)/cart_rom.o $(BUILD)/pi_io.o $(BUILD)/mem_proto.o
@@ -132,6 +140,12 @@ HOST_TEST_SOURCES = tests/reassembly_test.c agent.c $(PROTO)/mem_proto.c
 # value written and overwritten between two of the host's reads still reaches it, in order, because
 # the agent looked every frame -- and the rules around that (spec 4.3). No console, no cart.
 #
+# tests/poke_once_test.c: the real mem_proto.c over a buffer standing in for RDRAM, built once with
+# M64P_POKE_ONCE as every agent is and once without it as the test ROM is. With it, it checks that a
+# write the host sent again under the same rid is acknowledged and not applied a second time, that a
+# new rid, or the same one after any other request, is a new write, and that HELLO says so; without
+# it, that HELLO says nothing and a copy is applied again (spec 4.4). No console, no cart.
+#
 # tests/ed64_test.c: the real ed64.c linked against fake pi_io_* functions in place of pi_io.c,
 # modelling the X7's USBCFG register and USB window, and built with ED64_HOST_TEST so that the test
 # supplies the driver's clock. It checks that a received message is delivered in order and whole,
@@ -154,6 +168,10 @@ host-test:
 	build/host/cart_rom
 	$(HOSTCC) $(HOST_CFLAGS) -I. -I$(PROTO) tests/watch_test.c $(PROTO)/mem_proto.c -o build/host/watch
 	build/host/watch
+	$(HOSTCC) $(HOST_CFLAGS) $(POKE_ONCE) -I. -I$(PROTO) tests/poke_once_test.c $(PROTO)/mem_proto.c -o build/host/poke_once
+	build/host/poke_once
+	$(HOSTCC) $(HOST_CFLAGS) -I. -I$(PROTO) tests/poke_once_test.c $(PROTO)/mem_proto.c -o build/host/poke_once-off
+	build/host/poke_once-off
 
 clean:
 	rm -rf build

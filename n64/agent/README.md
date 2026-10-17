@@ -22,7 +22,7 @@ those come from is the whole of an integration — see
 | `ed64pro.c`, `ed64pro.h` | EverDrive-64 PRO driver (`CART=ed64pro`): the cart FIFO. **Never run on a cart** |
 | `pi_io.c`, `pi_io.h` | PI access for the EverDrive drivers and `cart_rom.c`, under the same rules as `sc64.c` |
 | `cart_rom.c` | The cartridge ROM for M64P's `PEEKROM`, the same on every cart |
-| [`../test-rom/mem_proto.c`](../test-rom/mem_proto.c), `mem_proto.h`, `m64p_types.h` | The protocol handler and types header, **shared with the test ROM** — not copied here |
+| [`../test-rom/mem_proto.c`](../test-rom/mem_proto.c), `mem_proto.h`, `m64p_types.h` | The protocol handler and types header, **shared with the test ROM** — not copied here. Every agent build defines `M64P_POKE_ONCE`, which the test ROM does not: see [Repeated writes](#repeated-writes) |
 | `Makefile` | One relocatable object, `build/m64p_agent.o`, for a build you control |
 | `flags.mk` | The compiler flags, shared with [`../bringup`](../bringup/README.md), which builds these sources into its own ROM |
 | `templates/flat.ld`, `templates/segment_magic.c` | Link the agent as a flat image at a fixed address, with a load marker |
@@ -43,7 +43,7 @@ make PREFIX=mips64-ultra-elf-  # or a libultra toolchain
 make symbols                   # sizes, exports, and undefined symbols (must be none)
 make CART=ed64pro              # an EverDrive build instead: ed64 or ed64pro (experimental)
 make CART=ed64 PI_IO=dma       # pi_io.c moves words by PI DMA: a diagnostic build, see below
-make host-test                 # EverDrive L3 reassembly, SC64 driver failure handling, X7 driver receive and send, on the PC (CI runs this)
+make host-test                 # EverDrive L3 reassembly, SC64 driver failure handling, X7 driver receive and send, repeated writes, on the PC (CI runs this)
 ```
 
 For a ROM with no source to build against:
@@ -64,10 +64,23 @@ so it is for finding out whether a cart needs DMA, not for a game. [`../bringup`
 runs both forms side by side. The default builds are byte-identical with or without this option
 in the source.
 
+## Repeated writes
+
+Every build here, `make` and `templates/link-flat.sh` alike, compiles `mem_proto.c` with
+`M64P_POKE_ONCE`. The agent then remembers the request it served last, if that was a `POKEV` it
+applied, and answers a copy of it (same `rid`) with the same `POKE_ACK` and writes nothing; any
+other request ends that. `HELLO_ACK` sets `flags` bit `3` to say so, which is what lets a host
+send a write again after a timeout without risking it landing twice
+([spec §4.4](../../docs/spec/memory-l3-application-v0.md#44-repeated-writes-flags-bit-3),
+[cart-agent.md §2.2](../../docs/integration/cart-agent.md#22-a-write-sent-again)). It costs four
+bytes of RAM. The test ROM and [`../bringup`](../bringup/README.md) build the same file without
+it, so their images are unchanged and their `HELLO_ACK` leaves bit `3` clear. It has run only
+against `make host-test`, never on a console.
+
 ## What has run on hardware
 
-Every build below served M64P on a SummerCart64 inside a commercial game, with this source
-(comments aside) and the shared `mem_proto`:
+Every build below served M64P on a SummerCart64 inside a commercial game, with this source as it
+stood before [repeated writes](#repeated-writes) (comments aside) and the shared `mem_proto`:
 
 | Build | Toolchain | Where it ran |
 |---|---|---|
@@ -79,7 +92,7 @@ Every build below served M64P on a SummerCart64 inside a commercial game, with t
 that build has **not** been run on hardware. Treat the first run of any new toolchain as a
 test, and follow the [testing ladder](../../docs/integration/testing.md).
 
-Only the **SummerCart64** driver has had a game played through it, and it is the default. `CART=ed64` (EverDrive-64 X7) and `CART=ed64pro` (EverDrive-64 PRO) build the same agent around an EverDrive driver instead, and **both are experimental**. The X7 driver has worked on an X7 outside a game, in [`n64/bringup`](../bringup/README.md)'s ROM, where under PI load it cut a reply off part-way; `ed64_send` now retries a busy PI once a message has started, and with that retry the same X7 answered every request but one across three load levels. Inside a game it has answered once, on that X7 on 2026-10-12: in an Ocarina of Time seed left at its title screen, every `HELLO` and every read, a 4096-byte one included ([hardware record](../bringup/README.md#hardware-record)). Later that day the tester reported an Archipelago client connecting through it, by a screenshot with no log; no item sent or received and no sustained play has been shown. An earlier X7 build, tried in an Ocarina of Time seed on 2026-10-07, opened the serial port and was never answered, for a reason not established. Since those runs the X7 driver's receive path has been changed to keep its place in the stream when a busy PI or the clock stops a call, where it used to report the message lost and read the rest of it as headers, and every wait in it now ends by the console's clock: at most about 0.15 s for a receive, 0.3 s for a send and 0.49 s for everything one `agent_tick` does in the driver ([`ed64.h`](ed64.h)). That driver has run only on a PC, against `make host-test`'s fake cart; no cart has run it. The PRO build has never run on a cart. The default build compiles none of that code and is byte-identical to the one in the table above. Build for the cart the game will run on: the drivers do not detect each other. See [cart-agent.md §6](../../docs/integration/cart-agent.md#6-everdrive-builds-experimental).
+Only the **SummerCart64** driver has had a game played through it, and it is the default. `CART=ed64` (EverDrive-64 X7) and `CART=ed64pro` (EverDrive-64 PRO) build the same agent around an EverDrive driver instead, and **both are experimental**. The X7 driver has worked on an X7 outside a game, in [`n64/bringup`](../bringup/README.md)'s ROM, where under PI load it cut a reply off part-way; `ed64_send` now retries a busy PI once a message has started, and with that retry the same X7 answered every request but one across three load levels. Inside a game it has answered once, on that X7 on 2026-10-12: in an Ocarina of Time seed left at its title screen, every `HELLO` and every read, a 4096-byte one included ([hardware record](../bringup/README.md#hardware-record)). Later that day the tester reported an Archipelago client connecting through it, by a screenshot with no log; no item sent or received and no sustained play has been shown. An earlier X7 build, tried in an Ocarina of Time seed on 2026-10-07, opened the serial port and was never answered, for a reason not established. Since those runs the X7 driver's receive path has been changed to keep its place in the stream when a busy PI or the clock stops a call, where it used to report the message lost and read the rest of it as headers, and every wait in it now ends by the console's clock: at most about 0.15 s for a receive, 0.3 s for a send and 0.49 s for everything one `agent_tick` does in the driver ([`ed64.h`](ed64.h)). That driver has run only on a PC, against `make host-test`'s fake cart; no cart has run it. The PRO build has never run on a cart. The default build compiles none of that code; what it has gained since the table above is the handling of [repeated writes](#repeated-writes). Build for the cart the game will run on: the drivers do not detect each other. See [cart-agent.md §6](../../docs/integration/cart-agent.md#6-everdrive-builds-experimental).
 
 ## Copies elsewhere
 

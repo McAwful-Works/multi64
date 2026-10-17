@@ -60,6 +60,24 @@ It must run **every frame, whether or not a request arrived**. A host that sets 
 a per-frame sample and cannot tell a slow sampler from a quiet game, so a hook that cannot make the
 call that often must report no watch support rather than call it less.
 
+### 2.2 A write sent again
+
+The agent serves requests in order, so a `POKEV` whose reply the host gave up on, during a scene
+load say, is still applied when the game reaches the hook. A host cannot tell that from a write
+that never arrived, and a second copy of one that did is a second write: a mailbox the game
+emptied in between is filled again. So the agent remembers the request it served last, if that
+was a write it applied, and answers a copy of it, same `rid`, with the same `POKE_ACK` and writes
+nothing. Any other request ends that. `HELLO_ACK` sets `flags` bit `3` to say so
+([spec §4.4](../spec/memory-l3-application-v0.md#44-repeated-writes-flags-bit-3)). It costs four
+bytes of RAM.
+
+It is in `mem_proto.c` behind a build switch, `M64P_POKE_ONCE`, which every agent build in this
+repo defines (§4); the test ROM and [`n64/bringup`](../../n64/bringup/README.md)'s ROM build the
+same file without it and leave bit `3` clear. An agent built before the switch existed leaves it
+clear too, and a host never sends such an agent a write twice: after a timeout it can only wait
+for the first copy's reply, so a write that agent never received fails rather than lands. Only
+an agent built with the switch gets the benefit, which for AP64 means a seed patched again.
+
 ## 3. What it does to the machine
 
 An injected agent touches the PI bus while the game is using it. These rules are in
@@ -119,6 +137,11 @@ relocation model are its own, so it must not rely on either.
 decomp build, override `CFLAGS` with that build's flags. `-mgpopt` in particular has to agree
 with the objects around it, or the link produces relocations the other side cannot resolve.
 
+**Define `M64P_POKE_ONCE`** when compiling `mem_proto.c` (§2.2). The `Makefile` adds it apart from
+`CFLAGS`, so overriding those keeps it, and `templates/link-flat.sh` and AP64's build pass it too.
+A build of your own that leaves it out still works and says so in `HELLO_ACK`; its host just
+cannot send it a write again.
+
 **No `<stdint.h>`?** Every fixed-width type comes from
 [`m64p_types.h`](../../n64/test-rom/m64p_types.h), whose default includes `<stdint.h>` and
 `<stddef.h>`. A `-nostdinc` build (common in decompilations) supplies its own copy defining
@@ -141,7 +164,9 @@ claim has rotted and the ROM will call through garbage.
 `mem_proto.c` is shared between the test ROM and the agent so there is exactly one M64P
 implementation. A downstream project that vendors the agent should copy `n64/agent/*.c`, `*.h`
 and `n64/test-rom/mem_proto.*`, record the multi64 commit they came from, and re-copy rather
-than edit. A local fix to `mem_proto` is a fork of the protocol.
+than edit. A local fix to `mem_proto` is a fork of the protocol. The one difference between the
+two builds of it is the `M64P_POKE_ONCE` switch (§2.2), which the agent's builds define and the
+test ROM's does not.
 
 ## 6. EverDrive builds (experimental)
 

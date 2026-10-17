@@ -37,6 +37,9 @@ mkdir -p "$OUT"
 CFLAGS="-O1 -fno-reorder-blocks -march=vr4300 -mtune=vr4300 -mabi=32 -mno-gpopt -G0 \
         -mno-abicalls -fno-pic -mdivide-breaks -mexplicit-relocs -ffreestanding -Wall -Wextra"
 INC="-I$AGENT -I$PROTO"
+# As every agent build does (../Makefile): a POKEV the host sends again is acknowledged, not
+# written twice, and HELLO_ACK says so (memory-l3-application-v0.md 4.4).
+POKE_ONCE=-DM64P_POKE_ONCE
 
 ${P}gcc $CFLAGS $INC -c "$HERE/segment_magic.c" -o "$OUT/segment_magic.o"
 ${P}gcc $CFLAGS $DEFINE $INC -c "$AGENT/agent.c" -o "$OUT/agent.o"
@@ -45,7 +48,7 @@ for d in $DRIVERS; do
     ${P}gcc $CFLAGS $DEFINE $INC -c "$AGENT/$d.c" -o "$OUT/$d.o"
     DRIVER_OBJS+=("$OUT/$d.o")
 done
-${P}gcc $CFLAGS $INC -c "$PROTO/mem_proto.c" -o "$OUT/mem_proto.o"
+${P}gcc $CFLAGS $POKE_ONCE $INC -c "$PROTO/mem_proto.c" -o "$OUT/mem_proto.o"
 
 ${P}ld -T "$HERE/flat.ld" --defsym AGENT_VRAM=$VRAM -o "$OUT/agent.elf" \
     "$OUT/segment_magic.o" "$OUT/agent.o" "${DRIVER_OBJS[@]}" "$OUT/mem_proto.o"

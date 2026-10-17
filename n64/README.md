@@ -6,7 +6,7 @@ This folder builds **libdragon** ROMs for on-cart testing, and holds the **M64P 
 
 ## `agent/` — M64P agent for game ROMs
 
-The console side of an RDRAM peek/poke integration: libdragon- and libultra-free code a game calls once per frame. It shares `test-rom/mem_proto.c` with the test ROM's **MEM_AGENT** mode. See [`agent/README.md`](agent/README.md) and the [ROM integration guides](../docs/integration/README.md).
+The console side of an RDRAM peek/poke integration: libdragon- and libultra-free code a game calls once per frame. It shares `test-rom/mem_proto.c` with the test ROM's **MEM_AGENT** mode, which builds it without the agent's [repeated-write switch](agent/README.md#repeated-writes) and so leaves `HELLO_ACK` `flags` bit `3` clear. See [`agent/README.md`](agent/README.md) and the [ROM integration guides](../docs/integration/README.md).
 
 ## `bringup/` — cart bring-up ROM
 
