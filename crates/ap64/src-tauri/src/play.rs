@@ -217,6 +217,10 @@ pub struct ClientSetup {
     /// The installed copies the state is about, separated by `; `: for `needed`, each copy the
     /// fix changes.
     pub path: String,
+    /// For `needed`, the installed copies the fix will not change and why, in plain words for
+    /// the player: a version AP64 does not recognize, or one that could not be read. Empty when
+    /// there are none, and for every other state.
+    pub left: String,
     /// Why, for Developer details.
     pub technical: String,
 }
@@ -263,6 +267,7 @@ fn setup_of(fix: &ap64_connector::ClientFix, paths: &[PathBuf]) -> ClientSetup {
         state: state.into(),
         message,
         path,
+        left: String::new(),
         technical,
     };
     if paths.is_empty() {
@@ -303,12 +308,15 @@ fn setup_of(fix: &ap64_connector::ClientFix, paths: &[PathBuf]) -> ClientSetup {
                 fix.file
             )
         };
-        return setup(
-            "needed",
-            format!("{}. AP64 will {what}", fix.why),
-            needing.join("; "),
-            odd.join("; "),
-        );
+        return ClientSetup {
+            left: left_alone(fix, &copies),
+            ..setup(
+                "needed",
+                format!("{}. AP64 will {what}", fix.why),
+                needing.join("; "),
+                odd.join("; "),
+            )
+        };
     }
     let all: Vec<&str> = copies.iter().map(|(path, _)| path.as_str()).collect();
     if let Some((path, c)) = copies
@@ -330,6 +338,41 @@ fn setup_of(fix: &ap64_connector::ClientFix, paths: &[PathBuf]) -> ClientSetup {
         all.join("; "),
         String::new(),
     )
+}
+
+/// What the player is told, beside a fix, about the copies it will not change: one AP64 does not
+/// recognize is left as it is ([`fix_copies`]), and one that could not be read cannot be
+/// checked. Which copies, and the detail of why, are in Developer details (`technical`).
+fn left_alone(fix: &ap64_connector::ClientFix, copies: &[(String, Installed)]) -> String {
+    use ap64_connector::ClientState;
+    let count = |f: fn(&Installed) -> bool| copies.iter().filter(|(_, c)| f(c)).count();
+    let unknown = count(|c| matches!(c, Installed::Is(ClientState::Unrecognized(_))));
+    let unreadable = count(|c| matches!(c, Installed::Unreadable(_)));
+    let file = fix.file;
+    let mut told = Vec::new();
+    match unknown {
+        0 => {}
+        1 => told.push(format!(
+            "One other copy of {file} is a version AP64 does not recognize, so AP64 will leave \
+             it as it is. If the AP client runs that copy, it may not connect"
+        )),
+        n => told.push(format!(
+            "{n} other copies of {file} are versions AP64 does not recognize, so AP64 will \
+             leave them as they are. If the AP client runs one of them, it may not connect"
+        )),
+    }
+    match unreadable {
+        0 => {}
+        1 => told.push(format!(
+            "One other copy of {file} could not be read, so AP64 cannot tell whether it needs \
+             the fix"
+        )),
+        n => told.push(format!(
+            "{n} other copies of {file} could not be read, so AP64 cannot tell whether they \
+             need the fix"
+        )),
+    }
+    told.join(". ")
 }
 
 /// Make the chosen game's client fix, keeping the original in `backups`. Returns what to
@@ -1689,6 +1732,42 @@ mod tests {
         std::fs::write(&paths[0], a).unwrap();
         std::fs::write(&paths[1], b).unwrap();
         (dir, paths)
+    }
+
+    /// A copy the fix will not change, beside one it will, is told to the player in plain
+    /// words, not only in Developer details: it is left as it is, and why.
+    #[test]
+    fn a_copy_the_fix_leaves_alone_is_told_to_the_player() {
+        let (dir, paths) = two_installs("client-left", b"needs", b"something else");
+        let s = setup_of(&TEXT_FIX, &paths);
+        assert_eq!(s.state, "needed");
+        assert_eq!(s.path, paths[0].display().to_string());
+        assert_eq!(
+            s.left,
+            "One other copy of w.apworld is a version AP64 does not recognize, so AP64 will \
+             leave it as it is. If the AP client runs that copy, it may not connect"
+        );
+        assert!(s.technical.contains("odd"), "{}", s.technical);
+
+        // Two copies AP64 does not know, beside one it fixes.
+        let third = dir.join("Other").join("custom_worlds").join("w.apworld");
+        std::fs::create_dir_all(third.parent().unwrap()).unwrap();
+        std::fs::write(&third, b"another").unwrap();
+        let all = [paths[0].clone(), paths[1].clone(), third];
+        let s = setup_of(&TEXT_FIX, &all);
+        assert!(
+            s.left.starts_with(
+                "2 other copies of w.apworld are versions AP64 does not recognize, so AP64 will \
+                 leave them as they are"
+            ),
+            "{}",
+            s.left
+        );
+
+        // Nothing is left out when every other copy is ready.
+        std::fs::write(&paths[1], b"ready").unwrap();
+        assert_eq!(setup_of(&TEXT_FIX, &paths).left, "");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Either install may be the one the player opens, so one copy that is ready is not enough.

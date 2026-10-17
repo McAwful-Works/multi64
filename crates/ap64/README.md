@@ -277,7 +277,9 @@ worlds in its own `custom_worlds` and `lib\worlds`, so which copy the AP client 
 which install's Launcher is opened, and AP64 cannot tell that. So Start checks every copy it
 finds, and the client is ready only when every copy is. If any copy needs the fix, the dialog
 says how many, and the fix is made to each copy that needs it, each original kept; a copy AP64
-does not recognize is left as it is. If none needs it but one cannot be read, or is not a
+does not recognize is left as it is, and the dialog says so, and that the AP client may not
+connect if it runs that copy. Where a copy could not be read, the dialog says AP64 cannot tell
+whether it needs the fix. If none needs it but one cannot be read, or is not a
 version AP64 recognizes, Start says so (for an unrecognized version, that the AP client may not
 connect) and starts anyway. Then the game's notes: what
 to know about its randomizer on a console that AP64 cannot change, such as Bomberman 64's title screen
