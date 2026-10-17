@@ -13,6 +13,7 @@
 //! The cache is dropped whenever the link to the cart restarts, since that is when the
 //! console may have been reset or another game loaded.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::rc::Rc;
@@ -43,30 +44,65 @@ pub trait Backend {
     fn read_rom_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>>;
 
     /// Changes each time the link to the cart restarts. Anything derived from the ROM
-    /// (a hash, a header) must be read again when it does.
-    fn generation(&self) -> u32 {
-        0
-    }
+    /// (a hash, a header) must be read again when it does, and anything decided from what
+    /// was read before it changed must not be written after.
+    ///
+    /// None of these methods has a default. A wrapper that forgot one would compile and
+    /// quietly do nothing: the Play card's once forwarded six methods, the watch fell to
+    /// no-op defaults, and OoT's watch never reached the cart. Without defaults, every
+    /// implementer says what it does. A backend that never reconnects returns a constant.
+    fn generation(&self) -> u32;
 
     /// Watch a slot the game rewrites faster than the connector reads it ([`crate::watch`]).
     ///
     /// The region is then read alongside every batch of reads, and each change it catches
-    /// is queued for [`Backend::take_watched`]. A backend that does not implement this
-    /// serves live memory, which is what a connector falls back to anyway.
-    fn set_watch(&mut self, _watch: Watch) {}
+    /// is queued for [`Backend::take_watched`]. A backend that does not watch makes this do
+    /// nothing and serves live memory, which is what a connector falls back to anyway.
+    fn set_watch(&mut self, watch: Watch);
 
-    /// The oldest change to the watched slot the connector has not been shown.
-    fn take_watched(&mut self) -> Option<Vec<u8>> {
-        None
-    }
+    /// The oldest change to the watched slot the connector has not been shown, or `None`
+    /// for live memory.
+    fn take_watched(&mut self) -> Option<Vec<u8>>;
 
     /// Read the watched slot now, outside any batch. For time that would be spent idle.
-    fn sample_watch(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+    fn sample_watch(&mut self) -> io::Result<()>;
 
+    /// What the watch has seen, or `None` when no watch is set (or this backend never
+    /// watches).
+    fn watch_stats(&self) -> Option<WatchStats>;
+}
+
+/// A backend shared with its owner, who can still read it after a connector holds it.
+impl<B: Backend + ?Sized> Backend for Rc<RefCell<B>> {
+    fn rdram_size(&self) -> u32 {
+        self.borrow().rdram_size()
+    }
+    fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        self.borrow_mut().read_many(regions)
+    }
+    fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
+        self.borrow_mut().write_many(writes)
+    }
+    fn rom_window(&self) -> Option<u32> {
+        self.borrow().rom_window()
+    }
+    fn read_rom_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        self.borrow_mut().read_rom_many(regions)
+    }
+    fn generation(&self) -> u32 {
+        self.borrow().generation()
+    }
+    fn set_watch(&mut self, watch: Watch) {
+        self.borrow_mut().set_watch(watch)
+    }
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        self.borrow_mut().take_watched()
+    }
+    fn sample_watch(&mut self) -> io::Result<()> {
+        self.borrow_mut().sample_watch()
+    }
     fn watch_stats(&self) -> Option<WatchStats> {
-        None
+        self.borrow().watch_stats()
     }
 }
 
@@ -159,6 +195,11 @@ impl Backend for RamImage {
                 Ok(rom[addr as usize..addr as usize + len].to_vec())
             })
             .collect()
+    }
+
+    /// An image is never reconnected.
+    fn generation(&self) -> u32 {
+        0
     }
 
     fn set_watch(&mut self, watch: Watch) {
@@ -441,11 +482,14 @@ impl Multi64 {
 
     /// Run `op`, riding out a silent agent, then rebuilding the transport with backoff.
     ///
-    /// Both operations are idempotent -- `PEEKV` is a read, and a repeated `POKEV`
-    /// writes the same bytes -- so retrying a half-finished exchange is safe.
+    /// `op` is called again after each timeout, and with [`Retry::Resend`] once more on every
+    /// rebuilt transport, which suits a request that may safely be served twice: `PEEKV`,
+    /// `PEEKROM` and `WATCH` change nothing a second copy could change again. A `POKEV` is not
+    /// one of those, whatever its bytes (see [`Retry::Once`]).
     fn with_retry<T>(
         &mut self,
         what: &str,
+        retry: Retry,
         mut op: impl FnMut(&mut Multi64Transport) -> io::Result<T>,
     ) -> io::Result<T> {
         let health = self.health.clone();
@@ -464,8 +508,8 @@ impl Multi64 {
             Err(e) => e,
         };
 
-        // Silence first, on the same transport. A late reply to the request we gave up
-        // on is discarded by rid, so asking again is safe.
+        // Silence first, on the same transport. A late reply to a read we gave up on is
+        // discarded by rid, so asking again is safe; a write waits again for its own.
         for attempt in 1..=self.soft_retries {
             if last.kind() != io::ErrorKind::TimedOut {
                 break;
@@ -545,6 +589,19 @@ impl Multi64 {
                         secs(down.elapsed()),
                         self.stats.reconnects
                     ));
+                    if retry == Retry::Once {
+                        // The cart is back, but what was asked of it was decided against the
+                        // console before the restart, which may since have been reset.
+                        self.ailing = false;
+                        if let Some(h) = &health {
+                            h(true);
+                        }
+                        return Err(link_restarted_error(format!(
+                            "cart {what}: the link to the cart restarted before it was \
+                             acknowledged, so it was not sent again (it may or may not have \
+                             landed before the restart)"
+                        )));
+                    }
                     match op(&mut self.t) {
                         Ok(v) => {
                             self.ailing = false;
@@ -603,7 +660,9 @@ impl Multi64 {
             at,
             values,
         };
-        let watching = self.with_retry("watch", |t| t.watch(std::slice::from_ref(&slot)))?;
+        let watching = self.with_retry("watch", Retry::Resend, |t| {
+            t.watch(std::slice::from_ref(&slot))
+        })?;
         self.watch_on_cart = watching > 0;
         self.watch_armed_at = Some(self.generation);
         if self.watch_on_cart {
@@ -630,6 +689,21 @@ impl Multi64 {
         }
     }
 
+    /// One `POKEV`, sent once ([`Retry::Once`]): a timeout waits again for its own reply.
+    fn poke_once(&mut self, batch: &[(u32, &[u8])]) -> io::Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let mut sent: Option<u16> = None;
+        self.with_retry("write", Retry::Once, |t| {
+            let rid = match sent {
+                Some(rid) => rid,
+                None => *sent.insert(t.send_poke(batch)?),
+            };
+            t.await_poke(rid, batch.len())
+        })
+    }
+
     /// Fetch the ROM pages in `pages` that are not cached, as few requests as the limits
     /// allow.
     fn fill_rom_pages(&mut self, pages: &[u32]) -> io::Result<()> {
@@ -645,7 +719,7 @@ impl Multi64 {
             self.stats.regions += batch.len() as u64;
             let mut tries = 0;
             let got = loop {
-                match self.with_retry("ROM read", |t| t.peek_rom(&batch)) {
+                match self.with_retry("ROM read", Retry::Resend, |t| t.peek_rom(&batch)) {
                     Err(e)
                         if e.kind() == io::ErrorKind::WouldBlock && tries + 1 < ROM_BUSY_TRIES =>
                     {
@@ -741,7 +815,7 @@ impl Backend for Multi64 {
                 });
             }
             self.stats.regions += batch.len() as u64;
-            let mut done = self.with_retry("read", |t| t.peek(&batch))?;
+            let mut done = self.with_retry("read", Retry::Resend, |t| t.peek(&batch))?;
             if probe.is_some() {
                 let bytes = done.pop().unwrap_or_default();
                 if let Some(w) = self.watch.as_mut() {
@@ -786,7 +860,7 @@ impl Backend for Multi64 {
             len: len as u16,
         }];
         self.stats.regions += 1;
-        let done = self.with_retry("read", |t| t.peek(&region))?;
+        let done = self.with_retry("read", Retry::Resend, |t| t.peek(&region))?;
         if let (Some(w), Some(bytes)) = (self.watch.as_mut(), done.first()) {
             w.observe(bytes);
         }
@@ -827,7 +901,7 @@ impl Backend for Multi64 {
         for c in chunks {
             if batch.len() == m64p::MAX_REGIONS || bytes + c.1.len() > m64p::MAX_TOTAL_BYTES {
                 self.stats.regions += batch.len() as u64;
-                self.with_retry("write", |t| t.poke(&batch))?;
+                self.poke_once(&batch)?;
                 batch.clear();
                 bytes = 0;
             }
@@ -836,7 +910,7 @@ impl Backend for Multi64 {
         }
         if !batch.is_empty() {
             self.stats.regions += batch.len() as u64;
-            self.with_retry("write", |t| t.poke(&batch))?;
+            self.poke_once(&batch)?;
         }
         Ok(())
     }
@@ -903,6 +977,51 @@ fn split(regions: &[(u32, usize)], size: u32) -> io::Result<(Vec<m64p::Region>, 
         counts.push(chunks.len() - before);
     }
     Ok((chunks, counts))
+}
+
+/// What [`Multi64::with_retry`] may do with a request that went unanswered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Retry {
+    /// Send it again, on this link or a rebuilt one: a read, a ROM read, a watch.
+    Resend,
+    /// Never send it twice, which is every write.
+    ///
+    /// The agent serves requests in order, one per game frame, and keeps no record of rids.
+    /// A request the host gave up on is therefore still served if it reached the cart, and a
+    /// copy sent after it lands on the next frame. Writing the same bytes twice is not
+    /// harmless: a game that takes an item from a mailbox between the two frames finds it
+    /// filled again, and delivers the item twice. So a write that times out waits again for
+    /// its own reply, which is what a late agent sends, and once the link has been rebuilt it
+    /// is not sent at all: the console may have been reset in between, and the write was
+    /// decided against the one before. The caller is told with [`link_restarted`].
+    Once,
+}
+
+/// The error a write gets when the link restarted under it ([`Retry::Once`]).
+#[derive(Debug)]
+struct LinkRestarted(String);
+
+impl std::fmt::Display for LinkRestarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LinkRestarted {}
+
+/// Whether `e` is a write the link to the cart restarted under before it was acknowledged.
+///
+/// Not a failed cart: by the time this is returned the link is back up, on a new
+/// [`Backend::generation`]. What the caller decided from earlier reads belongs to the console
+/// as it was, so it should read again rather than write what it had.
+pub fn link_restarted(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<LinkRestarted>())
+}
+
+/// The error [`link_restarted`] recognizes, for any backend that, like [`Multi64`], will not
+/// carry a write across a restarted link.
+pub fn link_restarted_error(msg: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::ConnectionReset, LinkRestarted(msg.into()))
 }
 
 /// What a caller gets when it asked to be stopped rather than waited for.
@@ -1157,6 +1276,38 @@ mod tests {
             vec![vec![1, 2, 3], vec![4, 5]]
         );
         assert!(stitch(vec![vec![1]], &[2]).is_err());
+    }
+
+    /// A shared backend is the backend: every method reaches the one inside, the watch
+    /// included. The Play card's wrapper once forwarded six methods and let the watch fall
+    /// to no-op defaults, so OoT's `ap64.watch` never reached the cart and nothing was
+    /// ever queued.
+    #[test]
+    fn a_shared_backend_forwards_every_method_the_watch_included() {
+        let mut ram = vec![0u8; 0x100];
+        ram[0x10] = 0x11;
+        let inner = Rc::new(RefCell::new(RamImage::with_rom(ram, vec![0xAB; 0x20])));
+        let mut shared: Rc<RefCell<RamImage>> = inner.clone();
+        let cart: &mut dyn Backend = &mut shared;
+
+        assert_eq!(cart.rdram_size(), 0x100);
+        assert_eq!(cart.rom_window(), Some(0x20));
+        assert_eq!(cart.read_rom_many(&[(0, 2)]).unwrap(), vec![vec![0xAB; 2]]);
+        assert_eq!(cart.generation(), 0);
+        cart.write_many(&[(0x20, &[7])]).unwrap();
+        assert_eq!(cart.read_many(&[(0x20, 1)]).unwrap(), vec![vec![7]]);
+
+        cart.set_watch(Watch::new(0x40, 1, None));
+        assert!(
+            cart.watch_stats().is_some(),
+            "the watch reached the backend"
+        );
+        cart.sample_watch().unwrap(); // the baseline
+        inner.borrow_mut().ram[0x40] = 5;
+        cart.sample_watch().unwrap();
+        assert_eq!(cart.take_watched(), Some(vec![5]), "a change was queued");
+        assert_eq!(cart.take_watched(), None);
+        assert_eq!(cart.watch_stats().unwrap().replayed, 1);
     }
 
     #[test]

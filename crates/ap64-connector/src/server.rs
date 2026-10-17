@@ -14,7 +14,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::Connector;
+use crate::{Connector, Unanswered};
 
 const IDLE: Duration = Duration::from_millis(10);
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -195,6 +195,11 @@ impl Client {
 
 /// Serve `connector` until `stop` is set or the cart fails. Returns `Err` only for a
 /// failure that ends the session (no port to bind, or a fatal cart error).
+///
+/// A line the connector cannot answer for any other reason ([`Unanswered::Line`]) ends only
+/// that client's connection, with a reset it recovers from by connecting again: it is
+/// waiting on a reply that is not coming, and would otherwise wait out its own timeout first.
+/// The session, and the link to the cart, go on.
 pub fn serve(
     connector: &Connector,
     ports: &[u16],
@@ -259,7 +264,17 @@ fn serve_until(
                     break;
                 }
                 busy = true;
-                let reply = connector.handle(&line)?;
+                let reply = match connector.handle(&line) {
+                    Ok(reply) => reply,
+                    Err(Unanswered::Fatal(e)) => return Err(e),
+                    Err(Unanswered::Line(e)) => {
+                        *client = None;
+                        on_event(Event::ClientDisconnected(format!(
+                            "its request could not be answered ({e}); it will connect again"
+                        )));
+                        break;
+                    }
+                };
                 if let Err(why) = c.send(&reply) {
                     *client = None;
                     on_event(Event::ClientDisconnected(why));

@@ -1,5 +1,5 @@
 # Castlevania 64 (US 1.0). No decomp: everything is placed by address.
-# Blobs: tools/cv64/build.sh 0x80480000 0xC00000 0x800000 (see BUILD_REV).
+# Blobs: crates/ap64-core/agent/build.sh cv64 (see BUILD_REV).
 
 id = "cv64"
 name = "Castlevania 64"

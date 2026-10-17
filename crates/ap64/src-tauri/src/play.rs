@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -324,30 +324,6 @@ pub fn fix_client(
          saved as {}",
         backup.display()
     ))
-}
-
-/// A [`Multi64`] the session can still read counters from after the connector owns it.
-struct SharedCart(Rc<RefCell<Multi64>>);
-
-impl Backend for SharedCart {
-    fn rdram_size(&self) -> u32 {
-        self.0.borrow().rdram_size()
-    }
-    fn read_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
-        self.0.borrow_mut().read_many(r)
-    }
-    fn write_many(&mut self, w: &[(u32, &[u8])]) -> io::Result<()> {
-        self.0.borrow_mut().write_many(w)
-    }
-    fn rom_window(&self) -> Option<u32> {
-        self.0.borrow().rom_window()
-    }
-    fn read_rom_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
-        self.0.borrow_mut().read_rom_many(r)
-    }
-    fn generation(&self) -> u32 {
-        self.0.borrow().generation()
-    }
 }
 
 /// The file table in the cart's ROM at `table`, read a piece at a time up to its end.
@@ -827,6 +803,39 @@ const NATIVE_SILENCE: Duration = Duration::from_secs(10);
 /// Between the session log's summary lines.
 const SUMMARY_EVERY: Duration = Duration::from_secs(300);
 
+/// Run `session`, and then end it: log that it stopped and mark the status stopped, which is
+/// what hands Start back. Returns the final status, to be sent to the page.
+///
+/// The end runs whatever the session did, panicking included. A panic on the session thread
+/// used to skip it, and the page went on showing a running session with Start disabled until
+/// AP64 was restarted. Neither lock can be left unusable either: a panic while one was held
+/// poisons it, and `Play::status` takes it on every call from the page.
+fn run_to_end(status: &Mutex<Status>, log: &Log, session: impl FnOnce()) -> Status {
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(session)) {
+        let why = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "no message".into());
+        log(format!(
+            "the session failed inside AP64 ({why}); press Start to try again"
+        ));
+    }
+    log("stopped".into());
+    let mut s = status.lock().unwrap_or_else(PoisonError::into_inner);
+    s.running = false;
+    s.state = "stopped".into();
+    s.detail = String::new();
+    s.detail_dev = String::new();
+    s.bridge = IDLE.into();
+    s.console = IDLE.into();
+    s.client = IDLE.into();
+    let end = s.clone();
+    drop(s);
+    status.clear_poison();
+    end
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     app: AppHandle,
@@ -852,13 +861,13 @@ fn run(
             // Written as it happens, so a crash or a closed window loses nothing. A write that
             // fails stops the file there; the window keeps the whole log regardless.
             {
-                let mut f = file.lock().unwrap();
+                let mut f = file.lock().unwrap_or_else(PoisonError::into_inner);
                 if f.as_mut().is_some_and(|f| writeln!(f, "{line}").is_err()) {
                     *f = None;
                 }
             }
             {
-                let mut kept = kept_log.lock().unwrap();
+                let mut kept = kept_log.lock().unwrap_or_else(PoisonError::into_inner);
                 if kept.len() == LOG_LINES {
                     kept.pop_front();
                 }
@@ -868,6 +877,24 @@ fn run(
             let _ = app.emit("play://log", line);
         })
     };
+    let end = run_to_end(&status, &log, || {
+        session(&app, game, kind, &url, &stop, &status, &log, file_path)
+    });
+    let _ = app.emit("play://status", end);
+}
+
+/// A session, from waiting for the cart to Stop. [`run_to_end`] ends it.
+#[allow(clippy::too_many_arguments)]
+fn session(
+    app: &AppHandle,
+    game: Bundle,
+    kind: Kind,
+    url: &str,
+    stop: &Arc<AtomicBool>,
+    status: &Arc<Mutex<Status>>,
+    log: &Log,
+    file_path: Result<PathBuf, String>,
+) {
     let set = |f: &dyn Fn(&mut Status)| {
         let mut s = status.lock().unwrap();
         f(&mut s);
@@ -896,7 +923,7 @@ fn run(
 
     // A session needs Multi64, so start it rather than wait for someone to notice.
     if !multi64_app_running() {
-        start_multi64(&log);
+        start_multi64(log);
     }
 
     // Requests answered across the whole session, not just this link: a console that was
@@ -936,7 +963,7 @@ fn run(
             if stop.load(Ordering::Relaxed) {
                 break 'session;
             }
-            match Multi64::connect(&url, log.clone()) {
+            match Multi64::connect(url, log.clone()) {
                 Ok(c) => break c,
                 Err(e) => {
                     let msg = e.to_string();
@@ -945,7 +972,7 @@ fn run(
                     // of the three being absent looks the same from here. The daemon answers a
                     // plain HTTP GET whether or not a cart is attached, so ask it.
                     // One request serves both this and the cart the hint below needs.
-                    let status = ap64_cart::transport::daemon_status(&url);
+                    let status = ap64_cart::transport::daemon_status(url);
                     let daemon = status.as_ref().and_then(|s| s.serial_active);
                     // Only when the bridge is silent is the app's own state worth the look.
                     let app = daemon.is_none() && multi64_app_running();
@@ -1142,12 +1169,15 @@ fn run(
             }));
         }
 
+        // Shared, so the session can still read counters once the connector holds it. The
+        // shared cart is the cart: `Rc<RefCell<_>>` forwards every `Backend` method, the
+        // watch included.
         let cart = Rc::new(RefCell::new(cart));
         // A native connector has no script to load: AP64 answers its client itself.
         let connector = match kind {
             Kind::Native(_) => None,
             Kind::Script(script) => {
-                match Connector::new(&script, Box::new(SharedCart(cart.clone())), log.clone()) {
+                match Connector::new(&script, Box::new(cart.clone()), log.clone()) {
                     Ok(c) => Some(c),
                     Err(e) => {
                         log(format!("the connector script would not load: {e}"));
@@ -1311,17 +1341,15 @@ fn run(
         };
         let result = match (kind, &connector) {
             (Kind::Script(script), Some(connector)) => {
-                server::serve(connector, script.ports, &stop, &mut on_event)
+                server::serve(connector, script.ports, stop, &mut on_event)
             }
             // The cart stays on this thread, and each call borrows it only for its length, so
             // the handler's own borrows above never overlap one of these.
             (Kind::Native(native), _) => match &native.protocol {
                 Protocol::RetroArch(opts) => {
-                    retroarch::serve(&mut SharedCart(cart.clone()), opts, &stop, &mut on_event)
+                    retroarch::serve(&mut cart.clone(), opts, stop, &mut on_event)
                 }
-                Protocol::Relay(opts) => {
-                    relay::serve(&mut SharedCart(cart.clone()), opts, &stop, &mut on_event)
-                }
+                Protocol::Relay(opts) => relay::serve(&mut cart.clone(), opts, stop, &mut on_event),
             },
             (Kind::Script(_), None) => unreachable!("a script session loads its script first"),
         };
@@ -1346,22 +1374,60 @@ fn run(
             }
         }
     }
-
-    log("stopped".into());
-    set(&|s| {
-        s.running = false;
-        s.state = "stopped".into();
-        s.detail = String::new();
-        s.detail_dev = String::new();
-        s.bridge = IDLE.into();
-        s.console = IDLE.into();
-        s.client = IDLE.into();
-    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session that panics still ends: the status says stopped, so the page hands Start
+    /// back, and the log says what happened. It used to leave Start disabled until restart.
+    #[test]
+    fn a_session_that_panics_still_hands_start_back() {
+        let status = Mutex::new(Status {
+            running: true,
+            state: "playing".into(),
+            console: OK.into(),
+            ..Status::default()
+        });
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let log: Log = {
+            let lines = lines.clone();
+            Arc::new(move |l| lines.lock().unwrap().push(l))
+        };
+        let end = run_to_end(&status, &log, || {
+            // A poisoned status lock as well, the worst a panic can leave behind.
+            let _held = status.lock().unwrap();
+            let short: &[u8] = &[1, 2];
+            let _ = u32::from_be_bytes(short[..4].try_into().unwrap());
+        });
+        assert!(!end.running && end.state == "stopped", "{end:?}");
+        let now = status.lock().expect("the status lock is usable again");
+        assert!(!now.running && now.console == IDLE);
+        let lines = lines.lock().unwrap();
+        assert!(
+            lines[0].contains("the session failed inside AP64"),
+            "{lines:?}"
+        );
+        assert_eq!(lines.last().unwrap(), "stopped");
+    }
+
+    /// A session that ends normally ends the same way, with nothing said about a failure.
+    #[test]
+    fn a_session_that_returns_is_stopped_quietly() {
+        let status = Mutex::new(Status {
+            running: true,
+            ..Status::default()
+        });
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let log: Log = {
+            let lines = lines.clone();
+            Arc::new(move |l| lines.lock().unwrap().push(l))
+        };
+        let end = run_to_end(&status, &log, || {});
+        assert!(!end.running);
+        assert_eq!(*lines.lock().unwrap(), vec!["stopped".to_string()]);
+    }
 
     /// A profile whose connector names nothing is silently left off the Play card, so every
     /// built-in game is checked for one, and a script and a native connector never share an id.

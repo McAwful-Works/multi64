@@ -26,7 +26,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use ap64_cart::backend::Backend;
+use ap64_cart::backend::{link_restarted, Backend};
 
 use crate::server::Event;
 
@@ -106,6 +106,8 @@ struct Link {
     last_dial: Option<Instant>,
     /// Said once, not every three seconds.
     told_not_listening: bool,
+    /// The cart link generation the buffers were found on ([`Backend::generation`]).
+    generation: Option<u32>,
 }
 
 impl Link {
@@ -114,6 +116,22 @@ impl Link {
             on_event(Event::ClientDisconnected(why));
         }
         self.inbox.clear();
+    }
+
+    /// Whether the cart link has restarted since the buffers were found, as of `generation`.
+    /// If it has, the console may have been reset with the buffers where they were, which their
+    /// pointers cannot show: the client is let go, as for any reset, and they are found again.
+    fn restarted(&mut self, generation: u32, on_event: &mut dyn FnMut(Event)) -> bool {
+        let was = self.generation.replace(generation);
+        if was.is_none_or(|g| g == generation) {
+            return false;
+        }
+        self.buffers = None;
+        self.drop_client(
+            "the cart link restarted (the console may have been reset)".into(),
+            on_event,
+        );
+        true
     }
 }
 
@@ -151,6 +169,9 @@ fn pass(
     link: &mut Link,
     on_event: &mut dyn FnMut(Event),
 ) -> io::Result<bool> {
+    if link.restarted(cart.generation(), on_event) {
+        return Ok(false);
+    }
     let Some((input, output)) = link.buffers else {
         return find_buffers(cart, opts, link, on_event);
     };
@@ -159,6 +180,11 @@ fn pass(
         (physical(output), opts.max_packet),
         (physical(input), 4),
     ])?;
+    // Restarted under the read: what came back is another boot's, read against buffers found
+    // on this one.
+    if link.restarted(cart.generation(), on_event) {
+        return Ok(false);
+    }
     if (be32(&r[0][0..4]), be32(&r[0][4..8])) != (input, output) {
         // Reset, or another ROM: look for the buffers again.
         link.buffers = None;
@@ -227,12 +253,17 @@ fn pass(
     Ok(moved)
 }
 
+/// Put `writes` on the cart. A write the link restarted under is not an error here: the cart is
+/// back, and the next pass sees the restart and starts over ([`Link::restarted`]).
 fn write_all(cart: &mut dyn Backend, writes: &[(u32, Vec<u8>)]) -> io::Result<()> {
     if writes.is_empty() {
         return Ok(());
     }
     let refs: Vec<(u32, &[u8])> = writes.iter().map(|(a, b)| (*a, b.as_slice())).collect();
-    cart.write_many(&refs)
+    match cart.write_many(&refs) {
+        Err(e) if link_restarted(&e) => Ok(()),
+        other => other,
+    }
 }
 
 /// Send a whole packet. Blocking, with a timeout: a non-blocking socket ignores the timeout
@@ -331,6 +362,8 @@ mod tests {
         ram: RamImage,
         to_send: Vec<Vec<u8>>,
         received: Vec<Vec<u8>>,
+        /// What the cart link reports ([`Backend::generation`]); a test moves it.
+        generation: u32,
     }
 
     impl Rom {
@@ -343,6 +376,7 @@ mod tests {
                 ram: RamImage::new(ram),
                 to_send,
                 received: Vec::new(),
+                generation: 0,
             }
         }
 
@@ -380,6 +414,20 @@ mod tests {
         }
         fn read_rom_many(&mut self, _: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
             Err(io::ErrorKind::Unsupported.into())
+        }
+        fn generation(&self) -> u32 {
+            self.generation
+        }
+        // No watch: live memory, which is what a connector falls back to.
+        fn set_watch(&mut self, _: ap64_cart::watch::Watch) {}
+        fn take_watched(&mut self) -> Option<Vec<u8>> {
+            None
+        }
+        fn sample_watch(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+            None
         }
     }
 
@@ -521,6 +569,41 @@ mod tests {
             .any(|e| matches!(e, Event::ClientDisconnected(_))));
     }
 
+    /// A console reset leaves the buffers where they were, so their pointers cannot show it.
+    /// The cart link restarting can: the client is let go, as for any reset, and nothing it
+    /// sent the boot before reaches the one after.
+    #[test]
+    fn a_restarted_link_lets_the_client_go_with_the_buffers_unmoved() {
+        let client = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let opts = Options {
+            port: client.local_addr().unwrap().port(),
+            pointers: PTRS,
+            max_packet: MAX,
+        };
+        let mut rom = Rom::new(vec![packet(1, b"HELO")]);
+        let mut link = Link::default();
+        let mut events = Vec::new();
+        connect(&mut rom, &opts, &mut link, &mut events);
+        let (mut s, _) = client.accept().unwrap();
+        s.write_all(&packet(1, b"'LO!")).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        rom.generation = 1; // the link was rebuilt under a reset
+        pass(&mut rom, &opts, &mut link, &mut |e| events.push(e)).unwrap();
+        assert!(link.conn.is_none(), "the client is let go");
+        let i = (INPUT & 0x1FFF_FFFF) as usize;
+        assert_eq!(
+            &rom.ram.ram[i..i + 4],
+            &[0, 0, 0, 0],
+            "nothing written into the boot after"
+        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::ClientDisconnected(why) if why.contains("restarted"))));
+        // It starts over: the buffers are found again on the next pass.
+        pass(&mut rom, &opts, &mut link, &mut |e| events.push(e)).unwrap();
+        assert!(link.buffers.is_some());
+    }
+
     #[test]
     fn a_packet_larger_than_the_buffer_is_refused_not_written() {
         let client = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -576,6 +659,20 @@ mod tests {
         }
         fn read_rom_many(&mut self, _: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
             Err(io::ErrorKind::Unsupported.into())
+        }
+        fn generation(&self) -> u32 {
+            0
+        }
+        // No watch: live memory, which is what a connector falls back to.
+        fn set_watch(&mut self, _: ap64_cart::watch::Watch) {}
+        fn take_watched(&mut self) -> Option<Vec<u8>> {
+            None
+        }
+        fn sample_watch(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+            None
         }
     }
 

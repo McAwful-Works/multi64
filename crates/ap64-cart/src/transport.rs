@@ -85,6 +85,32 @@ fn other(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
+/// A reply holds a block for every region asked for, each exactly as long as asked.
+///
+/// The reply carries its own lengths, so a block can parse cleanly and still be short. Every
+/// caller slices what comes back by the length it asked for, and a short block taken as an
+/// answer panicked the thread that took it, which in AP64 is the whole session.
+fn check_regions(what: &str, asked: &[m64p::Region], got: &[Vec<u8>]) -> io::Result<()> {
+    if got.len() != asked.len() {
+        return Err(other(format!(
+            "asked for {} {what}regions, cart returned {}",
+            asked.len(),
+            got.len()
+        )));
+    }
+    for (r, block) in asked.iter().zip(got) {
+        if block.len() != r.len as usize {
+            return Err(other(format!(
+                "asked for {} bytes at {what}0x{:X}, cart returned {}",
+                r.len,
+                r.addr,
+                block.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Ask the daemon whether it is currently holding the cart's serial port.
 ///
 /// A raw loopback GET rather than an HTTP client dependency. Worth the few lines:
@@ -348,13 +374,7 @@ impl Multi64Transport {
                 dropped,
                 ..
             } => {
-                if got.len() != regions.len() {
-                    return Err(other(format!(
-                        "asked for {} regions, cart returned {}",
-                        regions.len(),
-                        got.len()
-                    )));
-                }
+                check_regions("", regions, &got)?;
                 // Only ever non-empty once this host has set a watch, and it rides the
                 // response it was already waiting for. See take_events.
                 self.events.extend(events);
@@ -418,13 +438,7 @@ impl Multi64Transport {
         self.send_app(&app)?;
         match self.await_response(Some(rid)) {
             Ok(m64p::Response::PeekRom { regions: got, .. }) => {
-                if got.len() != regions.len() {
-                    return Err(other(format!(
-                        "asked for {} ROM regions, cart returned {}",
-                        regions.len(),
-                        got.len()
-                    )));
-                }
+                check_regions("ROM ", regions, &got)?;
                 Ok(got)
             }
             Ok(other_msg) => Err(other(format!("expected PEEKROM_RESP, got {other_msg:?}"))),
@@ -435,22 +449,38 @@ impl Multi64Transport {
         }
     }
 
+    /// One vectored write, sent and acknowledged.
     pub fn poke(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
         if writes.is_empty() {
             return Ok(());
         }
+        let rid = self.send_poke(writes)?;
+        self.await_poke(rid, writes.len())
+    }
+
+    /// Send a `POKEV` without waiting for it, and return its rid for [`Self::await_poke`].
+    ///
+    /// Apart from [`Self::poke`] because a write must not be sent twice. The agent keeps no
+    /// record of rids, so a request the host gave up on may still be served, and a second copy
+    /// would land on the frame after it: a mailbox the game emptied in between would be filled
+    /// again. Waiting longer for the first copy's reply is the only retry that cannot do that.
+    pub fn send_poke(&mut self, writes: &[(u32, &[u8])]) -> io::Result<u16> {
         if !self.writable {
             return Err(other("cart reports a read-only agent"));
         }
         let rid = self.rid();
         let app = m64p::encode_pokev(rid, writes).map_err(|e| other(e.to_string()))?;
         self.send_app(&app)?;
+        Ok(rid)
+    }
+
+    /// Wait one [`REPLY_TIMEOUT`] for the `POKE_ACK` to `rid`, a `POKEV` of `count` regions.
+    pub fn await_poke(&mut self, rid: u16, count: usize) -> io::Result<()> {
         match self.await_response(Some(rid))? {
             m64p::Response::PokeAck { applied, .. } => {
-                if applied as usize != writes.len() {
+                if applied as usize != count {
                     return Err(other(format!(
-                        "sent {} writes, cart applied {applied}",
-                        writes.len()
+                        "sent {count} writes, cart applied {applied}"
                     )));
                 }
                 Ok(())
@@ -475,6 +505,24 @@ mod tests {
                 cart: Some("ed64".into()),
             }
         );
+    }
+
+    #[test]
+    fn a_reply_must_hold_every_region_at_the_length_asked() {
+        let asked = [
+            m64p::Region { addr: 0x10, len: 4 },
+            m64p::Region { addr: 0x20, len: 2 },
+        ];
+        assert!(check_regions("", &asked, &[vec![0; 4], vec![0; 2]]).is_ok());
+        let short = check_regions("", &asked, &[vec![0; 4], vec![0; 1]]).unwrap_err();
+        assert!(
+            short
+                .to_string()
+                .contains("2 bytes at 0x20, cart returned 1"),
+            "{short}"
+        );
+        assert!(check_regions("ROM ", &asked, &[vec![0; 4], vec![0; 3]]).is_err());
+        assert!(check_regions("", &asked, &[vec![0; 4]]).is_err());
     }
 
     #[test]

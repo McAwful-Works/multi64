@@ -342,8 +342,9 @@ register it in `ap64-core::builtin()`. Comment `game.env` with *why* each addres
 
 `build.sh` builds the agent once per flash cart: the SummerCart64's into `profiles/<game>/`,
 and the experimental EverDrive-64 X7's and PRO's into its `ed64/` and `ed64pro/`. They differ
-in size, and the X7's is the largest, about 30.4 KB of RAM to the SummerCart64's 25.9 KB, so
-measure room for that one. Where an `imm` check bounds the agent from below, write
+in size, and the X7's is the largest: for the plain agent, about 30.4 KB of RAM to the
+SummerCart64's 25.9 KB, so measure room for that one. A `game.c` linked in adds its own size to
+every build; GoldenEye's are 36.9 KB (SummerCart64), 41.4 KB (X7) and 36.5 KB (PRO). Where an `imm` check bounds the agent from below, write
 `min = "agent_end"` rather than one build's end, as DK64's heap top does: the X7's agent does
 not fit there, and the check is what refuses it.
 
@@ -419,8 +420,10 @@ overwritten. That leaves anything else to find, which is this routine:
    loaded and nothing overwrote it. If the randomizer's own RAM grew, §4's tools say where
    it now reaches.
 3. **The client.** For a native connector (DK64, Banjo-Tooie), press Start and read what the
-   client-fix check says: `ready`, `needed` or `unknown`. `unknown` means the fix's anchors
-   moved, and the release's client has to be read again (§1). For the forked OoT connector,
+   client-fix check says: `ready`, `needed`, `missing` or `unknown`. `missing` means the
+   world is not installed where AP64 looks for it, so Start refuses. `unknown` means the fix's
+   anchors moved (or the file could not be read), and the release's client has to be read
+   again (§1). For the forked OoT connector,
    diff upstream's Lua against what `connectors/oot/UPSTREAM` records.
 4. **One session on the console,** with checks going out and items coming in.
 5. **Update the profile:** the pins that moved, and `[measured]` to the new release. Say

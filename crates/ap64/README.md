@@ -267,7 +267,13 @@ and the session log says so once:
   instead whether the ROM is the one AP64 added the agent to.
 
 Before a session begins, Start may ask about two things, one at a time. First, a fix the game's
-Archipelago client needs (Donkey Kong 64 and Banjo-Tooie, above). Then the game's notes: what
+Archipelago client needs (Donkey Kong 64 and Banjo-Tooie, above). For those two games Start
+looks for the installed world (`dk64.apworld`, `banjo_tooie.apworld`) in `custom_worlds` and
+`lib\worlds` under `AP64_ARCHIPELAGO_DIR` if it is set, then `%ProgramData%\Archipelago` and
+`%LOCALAPPDATA%\Archipelago`. If the world is not installed in any of them, Start refuses and
+says to install it. If it is installed but cannot be read, or is not a version AP64 recognizes,
+Start says so (for an unrecognized version, that the AP client may not connect) and starts
+anyway. Then the game's notes: what
 to know about its randomizer on a console that AP64 cannot change, such as Bomberman 64's title screen
 freeze. They come from the game's profile (`notes`), show at every Start until **Don't show
 these again for this game** is ticked, and show again if they change.
@@ -411,11 +417,25 @@ cd crates/ap64/e2e && npm ci && npx playwright install --with-deps chromium && n
 ```
 
 Byte-identity against outputs that have run on a console. ROMs can't be committed, so
-this test reads paths from the environment:
+these tests read paths from the environment, and are ignored unless asked for:
 
 ```sh
 AP64_CV64_SEED=<seed.z64> AP64_CV64_EXPECTED=<spliced.z64> \
+AP64_DK64_SEED=<seed.z64> AP64_DK64_EXPECTED=<spliced.z64> \
   cargo test -p ap64-core --test local_roms -- --ignored
+```
+
+The Castlevania 64 pair checks the splice; the Donkey Kong 64 pair, a dk64.apworld v1.5.8
+seed and its splice, checks that one and how the patch follows the seed when its main code
+moves, its heap top changes, or its data grows into the agent's place. A test whose pair is
+not set fails asking for it, so with only one pair, name its tests (`cv64_` or `dk64_`) after
+`--test local_roms`. Second Attack's ROM adjuster is checked against the world's own the same way:
+`AP64_TSA_SEED` is an unadjusted seed and `AP64_TSA_ADJUSTED` the same seed after the world's
+`adjust.py`:
+
+```sh
+AP64_TSA_SEED=<seed.z64> AP64_TSA_ADJUSTED=<adjusted.z64> \
+  cargo test -p ap64-core --lib matches_the_worlds_adjuster -- --ignored
 ```
 
 ## Building the app

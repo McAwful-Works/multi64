@@ -27,7 +27,13 @@
 //! | `log(str)`, `message(str)` | a line for AP64's log; a message meant for the player |
 //!
 //! A cart failure (the backend has already retried and reconnected, and given up) is
-//! fatal: it ends the session, even if the script caught the error.
+//! fatal: it ends the session, even if the script caught the error. Any other error the
+//! script raises fails only the line it was handling ([`Unanswered`]).
+//!
+//! A link that restarted is not a failure, but nothing decided before it is written after it:
+//! the console may have been reset in between. A line during which the link restarted has its
+//! writes refused, and the script is loaded again before the next. The [`retroarch`] snapshot
+//! and the [`relay`] start over the same way.
 
 pub mod bt;
 pub mod dk64;
@@ -35,11 +41,11 @@ pub mod relay;
 pub mod retroarch;
 pub mod server;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-use ap64_cart::backend::Backend;
+use ap64_cart::backend::{link_restarted, Backend};
 use ap64_cart::watch;
 use ap64_cart::Log;
 use base64::Engine as _;
@@ -229,6 +235,10 @@ pub struct Connector {
     lua: RefCell<Lua>,
     loaded_at: RefCell<u32>,
     fatal: Rc<RefCell<Option<String>>>,
+    /// The link generation the line being handled began on. A write the script makes once
+    /// the link has restarted since is refused: it was decided from reads of the console as it
+    /// was, and the console may have been reset in between.
+    batch: Rc<Cell<u32>>,
 }
 
 impl Connector {
@@ -243,7 +253,8 @@ impl Connector {
         let generation = backend.generation();
         let backend: SharedBackend = Rc::new(RefCell::new(backend));
         let fatal = Rc::new(RefCell::new(None));
-        let lua = load(script, &backend, &log, &fatal)?;
+        let batch = Rc::new(Cell::new(generation));
+        let lua = load(script, &backend, &log, &fatal, &batch)?;
         Ok(Self {
             script: *script,
             backend,
@@ -251,6 +262,7 @@ impl Connector {
             lua: RefCell::new(lua),
             loaded_at: RefCell::new(generation),
             fatal,
+            batch,
         })
     }
 
@@ -279,26 +291,59 @@ impl Connector {
     }
 
     /// One line from the client in, the line to send back out (no newline).
-    pub fn handle(&self, message: &str) -> Result<String, String> {
+    ///
+    /// [`Unanswered::Line`] when only this line failed: a script error, a line that is not
+    /// what the script expects, a bad address, a write the link restarted under. The cart is
+    /// fine, and the next line is answered as usual. [`Unanswered::Fatal`] when the session is
+    /// over: the cart has failed, or the script cannot be run against it.
+    pub fn handle(&self, message: &str) -> Result<String, Unanswered> {
         let generation = self.backend.borrow().generation();
         if generation != *self.loaded_at.borrow() {
             (self.log)(format!(
                 "the cart link restarted: loading the {} connector again",
                 self.script.id
             ));
-            *self.lua.borrow_mut() = load(&self.script, &self.backend, &self.log, &self.fatal)?;
+            *self.lua.borrow_mut() = load(
+                &self.script,
+                &self.backend,
+                &self.log,
+                &self.fatal,
+                &self.batch,
+            )
+            .map_err(Unanswered::Fatal)?;
             *self.loaded_at.borrow_mut() = generation;
         }
+        self.batch.set(generation);
         let lua = self.lua.borrow();
         let handle: mlua::Function = lua
             .globals()
             .get("handle")
-            .map_err(|_| "the connector script defines no handle()".to_string())?;
+            .map_err(|_| Unanswered::Fatal("the connector script defines no handle()".into()))?;
         let result = handle.call::<String>(message);
         if let Some(e) = self.fatal.borrow_mut().take() {
-            return Err(e);
+            return Err(Unanswered::Fatal(e));
         }
-        result.map_err(|e| format!("connector: {e}"))
+        result.map_err(|e| Unanswered::Line(format!("connector: {e}")))
+    }
+}
+
+/// Why [`Connector::handle`] has no line to send back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unanswered {
+    /// The session is over: the cart failed (the backend retried, reconnected and gave up),
+    /// or the script cannot be loaded or run against it.
+    Fatal(String),
+    /// This line, and only this line, could not be answered. Not the cart's failure, so not
+    /// the session's: an Archipelago client that sends a malformed line, or a script that
+    /// raises on one, would otherwise cost a full reconnect to the cart.
+    Line(String),
+}
+
+impl std::fmt::Display for Unanswered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unanswered::Fatal(e) | Unanswered::Line(e) => f.write_str(e),
+        }
     }
 }
 
@@ -307,10 +352,18 @@ fn load(
     backend: &SharedBackend,
     log: &Log,
     fatal: &Rc<RefCell<Option<String>>>,
+    batch: &Rc<Cell<u32>>,
 ) -> Result<Lua, String> {
     let lua = Lua::new();
-    install(&lua, script, backend.clone(), log.clone(), fatal.clone())
-        .map_err(|e| e.to_string())?;
+    install(
+        &lua,
+        script,
+        backend.clone(),
+        log.clone(),
+        fatal.clone(),
+        batch.clone(),
+    )
+    .map_err(|e| e.to_string())?;
     let loaded = lua
         .load(script.source)
         .set_name(format!("connectors/{}", script.id))
@@ -328,17 +381,20 @@ fn install(
     backend: SharedBackend,
     log: Log,
     fatal: Rc<RefCell<Option<String>>>,
+    batch: Rc<Cell<u32>>,
 ) -> mlua::Result<()> {
     let ap64 = lua.create_table()?;
 
     // A cart failure is remembered as well as raised: scripts catch errors per request
     // and would otherwise answer a dead cart with an endless stream of ERRORs. A bad
-    // address is the request's fault, not the cart's, and only fails that request.
+    // address is the request's fault, not the cart's, and only fails that request. So
+    // does a write the link restarted under: the cart is back, and the next request is
+    // answered from the console as it now is.
     let cart_err = {
         let fatal = fatal.clone();
         move |e: std::io::Error| {
             let msg = e.to_string();
-            if e.kind() != std::io::ErrorKind::InvalidInput {
+            if e.kind() != std::io::ErrorKind::InvalidInput && !link_restarted(&e) {
                 fatal.borrow_mut().get_or_insert(msg.clone());
             }
             mlua::Error::RuntimeError(msg)
@@ -386,6 +442,15 @@ fn install(
                 }
                 let writes: Vec<(u32, &[u8])> =
                     owned.iter().map(|(a, d)| (*a, d.as_slice())).collect();
+                if backend.borrow().generation() != batch.get() {
+                    // The link restarted during this line, under a read: what the script
+                    // decided to write came from the console before it. Not fatal, since the
+                    // cart is back; the next line is loaded and answered afresh.
+                    return Err(mlua::Error::RuntimeError(
+                        "the cart link restarted during this request, so its writes were not                          sent: the console may have been reset since it was read"
+                            .into(),
+                    ));
+                }
                 backend
                     .borrow_mut()
                     .write_many(&writes)

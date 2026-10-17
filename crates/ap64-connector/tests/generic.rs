@@ -17,27 +17,6 @@ use ap64_connector::{Connector, GENERIC};
 use common::{on_a_free_port, port_was_taken};
 use sha1::{Digest, Sha1};
 
-/// A RAM image the test can still look at after handing it to the connector.
-struct Shared(Rc<RefCell<RamImage>>);
-
-impl Backend for Shared {
-    fn rdram_size(&self) -> u32 {
-        self.0.borrow().rdram_size()
-    }
-    fn read_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
-        self.0.borrow_mut().read_many(r)
-    }
-    fn write_many(&mut self, w: &[(u32, &[u8])]) -> io::Result<()> {
-        self.0.borrow_mut().write_many(w)
-    }
-    fn rom_window(&self) -> Option<u32> {
-        self.0.borrow().rom_window()
-    }
-    fn read_rom_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
-        self.0.borrow_mut().read_rom_many(r)
-    }
-}
-
 /// A cart that has gone for good: every read fails, as after the reconnect deadline.
 struct Dead;
 
@@ -56,6 +35,20 @@ impl Backend for Dead {
     }
     fn read_rom_many(&mut self, _: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
         Err(io::Error::other("cart ROM read: gave up after 300s"))
+    }
+    fn generation(&self) -> u32 {
+        0
+    }
+    // No watch: live memory, which is what a connector falls back to.
+    fn set_watch(&mut self, _: ap64_cart::watch::Watch) {}
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+    fn sample_watch(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+        None
     }
 }
 
@@ -132,7 +125,7 @@ fn serves_domains_guards_and_writes() {
             let m = messages.clone();
             Arc::new(move |s: String| m.lock().unwrap().push(s))
         };
-        let connector = Connector::new(&GENERIC, Box::new(Shared(ram.clone())), log).unwrap();
+        let connector = Connector::new(&GENERIC, Box::new(ram.clone()), log).unwrap();
 
         let done = Arc::new(AtomicBool::new(false));
         let lines = [
@@ -364,4 +357,184 @@ fn no_script_drops_a_client_for_being_slow() {
             script.client_timeout,
         );
     }
+}
+
+/// A cart whose link restarts under the next read, as `Multi64`'s does when a console is reset
+/// mid-request: the read is answered from the new boot, on a new generation.
+struct RestartsUnderRead {
+    ram: Rc<RefCell<RamImage>>,
+    generation: Rc<std::cell::Cell<u32>>,
+    armed: Rc<std::cell::Cell<bool>>,
+}
+
+impl Backend for RestartsUnderRead {
+    fn rdram_size(&self) -> u32 {
+        self.ram.borrow().rdram_size()
+    }
+    fn read_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        if self.armed.replace(false) {
+            self.generation.set(self.generation.get() + 1);
+        }
+        self.ram.borrow_mut().read_many(r)
+    }
+    fn write_many(&mut self, w: &[(u32, &[u8])]) -> io::Result<()> {
+        self.ram.borrow_mut().write_many(w)
+    }
+    fn rom_window(&self) -> Option<u32> {
+        self.ram.borrow().rom_window()
+    }
+    fn read_rom_many(&mut self, r: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        self.ram.borrow_mut().read_rom_many(r)
+    }
+    fn generation(&self) -> u32 {
+        self.generation.get()
+    }
+    // No watch: live memory, which is what a connector falls back to.
+    fn set_watch(&mut self, _: ap64_cart::watch::Watch) {}
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+    fn sample_watch(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+        None
+    }
+}
+
+/// A GUARD that passed against memory read across a restarted link must not let its WRITE
+/// through: the console may have been reset in between, and the write was decided from the
+/// boot before. The line fails rather than writing, and the next is answered afresh.
+#[test]
+fn a_batch_whose_link_restarted_does_not_write() {
+    let ram = Rc::new(RefCell::new(RamImage::with_rom(
+        vec![0u8; 0x80_0000],
+        rom(),
+    )));
+    let generation = Rc::new(std::cell::Cell::new(0));
+    let armed = Rc::new(std::cell::Cell::new(false));
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let log = {
+        let lines = lines.clone();
+        Arc::new(move |s: String| lines.lock().unwrap().push(s))
+    };
+    let backend = RestartsUnderRead {
+        ram: ram.clone(),
+        generation: generation.clone(),
+        armed: armed.clone(),
+    };
+    let connector = Connector::new(&GENERIC, Box::new(backend), log).unwrap();
+    let batch = r#"[{"type":"GUARD","address":8192,"expected_data":"AAAAAA==","domain":"RDRAM"},{"type":"WRITE","address":8192,"value":"AAUAAA==","domain":"RDRAM"}]"#;
+
+    armed.set(true);
+    assert!(
+        connector.handle(batch).is_err(),
+        "a line whose writes were dropped is not answered as done"
+    );
+    assert_eq!(
+        ram.borrow_mut().read_many(&[(0x2000, 4)]).unwrap()[0],
+        vec![0; 4],
+        "the write reached the console after the link restarted"
+    );
+
+    // The next line is loaded against the link as it is, and writes.
+    let reply = connector.handle(batch).unwrap();
+    assert!(reply.contains("WRITE_RESPONSE"), "{reply}");
+    assert_eq!(
+        ram.borrow_mut().read_many(&[(0x2000, 4)]).unwrap()[0],
+        vec![0, 5, 0, 0]
+    );
+    assert!(lines
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l.contains("loading the generic connector again")));
+}
+
+/// Send `line` on `s` and read one line back, or say why there was none.
+fn ask(s: &TcpStream, line: &str) -> Result<String, String> {
+    let mut w = s;
+    w.write_all(format!("{line}\n").as_bytes()).unwrap();
+    let mut reply = String::new();
+    match BufReader::new(s).read_line(&mut reply) {
+        Ok(0) => Err("closed".into()),
+        Ok(_) => Ok(reply.trim_end().to_string()),
+        Err(e) => Err(e.kind().to_string()),
+    }
+}
+
+/// Connect to `port`, giving up once `done` is set or after 5 s. By time, not by tries:
+/// Windows takes about 2 s to refuse a connection to a localhost port nobody listens on.
+fn dial(port: u16, done: &AtomicBool) -> Option<TcpStream> {
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    while std::time::Instant::now() < until {
+        if let Ok(s) = TcpStream::connect_timeout(&at, Duration::from_millis(500)) {
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            return Some(s);
+        }
+        if done.load(Ordering::SeqCst) {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    None
+}
+
+/// A line the script raises on is the client's problem, not the cart's: that client is let
+/// go, with a reset it recovers from, and the session goes on serving the one that comes
+/// back. It used to end the session as a cart failure, which in AP64 means reconnecting to
+/// the cart and losing the client anyway.
+#[test]
+fn a_line_the_script_cannot_answer_lets_the_client_go_and_the_session_goes_on() {
+    on_a_free_port(|port| {
+        let ram = Rc::new(RefCell::new(RamImage::with_rom(
+            vec![0u8; 0x80_0000],
+            rom(),
+        )));
+        let connector = Connector::new(&GENERIC, Box::new(ram), ap64_cart::quiet()).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let asking = {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                let Some(first) = dial(port, &done) else {
+                    done.store(true, Ordering::SeqCst);
+                    return None;
+                };
+                let bad = ask(&first, "this is not json");
+                let again = dial(port, &done).map(|s| (ask(&s, "VERSION"), s));
+                done.store(true, Ordering::SeqCst);
+                Some((bad, again))
+            })
+        };
+        let mut events = Vec::new();
+        let served = serve(&connector, &[port], &done, &mut |e| events.push(e));
+        if let Err(e) = &served {
+            if port_was_taken(e) {
+                done.store(true, Ordering::SeqCst);
+                let _ = asking.join();
+                return Err(e.clone());
+            }
+        }
+        let (bad, again) = asking.join().unwrap().expect("serve listened");
+        served.expect("the session goes on");
+        assert!(
+            bad.is_err(),
+            "no reply to a line nobody can answer: {bad:?}"
+        );
+        let (again, _held) = again.expect("the client could connect again");
+        assert_eq!(
+            again.as_deref(),
+            Ok("1"),
+            "the client that came back is served"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::ClientDisconnected(why)
+                if why.contains("could not be answered"))),
+            "{events:?}"
+        );
+        Ok(())
+    });
 }
