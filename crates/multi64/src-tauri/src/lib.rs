@@ -261,7 +261,11 @@ pub struct DaemonStatus {
     pub running: bool,
     /// Not running yet, but a start is under way ([`STARTING`]): the window offers no Start.
     pub starting: bool,
+    /// The daemon answered `GET /`: it is up, whether or not it holds the cart's port.
     pub healthy: bool,
+    /// It answered and holds the cart's serial port (`serialActive`). False while the link is
+    /// faulted or released to another program, which `GET /` does not tell apart.
+    pub cart_linked: bool,
     pub listen: String,
     pub message: String,
     /// While running, the cart the live process was started for and the port it holds; while
@@ -285,6 +289,9 @@ struct DaemonInner {
     /// The cart `child` was spawned for. Only meaningful while `serial` is set, for the same
     /// reason: a cart changed in Settings is what the next start uses, not what is running.
     cart: DaemonCart,
+    /// What `child` last said about the cart's port, from [`watch_link`]; `Unknown` when it is
+    /// spawned. Read by the tray, which cannot ask itself.
+    link: BridgeLink,
     logs: Vec<String>,
 }
 
@@ -898,13 +905,14 @@ fn auto_start(app: AppHandle) {
     }
 }
 
-fn daemon_health_url(listen: &str) -> String {
-    format!("http://{}/health", connect_addr(listen))
+/// The daemon's `GET /` (daemon API §1.1), which says whether it holds the cart's serial port.
+fn daemon_root_url(listen: &str) -> String {
+    format!("http://{}/", connect_addr(listen))
 }
 
 /// One agent for the process, not one per call.
 ///
-/// `check_health` runs on a 2s poll, and an `Agent` owns a connection pool whose whole purpose
+/// [`bridge_link`] runs on a 2s poll, and an `Agent` owns a connection pool whose whole purpose
 /// is reuse; rebuilding it each time threw that away and forced a fresh TCP connection every
 /// check. The timeout is identical on every call, so there is nothing per-call to vary.
 fn health_agent() -> &'static ureq::Agent {
@@ -917,13 +925,94 @@ fn health_agent() -> &'static ureq::Agent {
     })
 }
 
-fn check_health(listen: &str) -> bool {
-    let url = daemon_health_url(listen);
-    health_agent()
-        .get(&url)
-        .call()
-        .map(|r| r.status().as_u16() == 200)
-        .unwrap_or(false)
+/// What a running daemon says about the cart's serial port.
+///
+/// Health used to be `GET /health` answering, which only shows the process serves HTTP. A daemon
+/// whose link is faulted (cart unplugged, wrong port) or released (Xfer64 is using the cart) answers
+/// it just the same, so the window said OK while nothing reached the cart. `GET /` reports
+/// `serialActive`, which is false in both cases; it does not say which, so neither does this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum BridgeLink {
+    /// Not checked since the daemon was spawned.
+    #[default]
+    Unknown,
+    /// It answered and holds the port (`serialActive`), or was too busy using it to say
+    /// (`serialBusy`, which the daemon reports as held).
+    Holding,
+    /// It answered without the port: faulted, or released to another program.
+    NotHolding,
+    /// It did not answer.
+    NotResponding,
+}
+
+impl BridgeLink {
+    fn answered(self) -> bool {
+        matches!(self, BridgeLink::Holding | BridgeLink::NotHolding)
+    }
+}
+
+/// [`BridgeLink`] for a `GET /` body that answered `200`. A body without `serialActive` is taken
+/// at its word that the bridge is up, as a `/health` answer used to be.
+fn link_from_root(body: &str) -> BridgeLink {
+    let active = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|root| root.get("serialActive")?.as_bool());
+    match active {
+        Some(false) => BridgeLink::NotHolding,
+        Some(true) | None => BridgeLink::Holding,
+    }
+}
+
+/// Ask the daemon at `listen`. Blocks for up to a second.
+fn bridge_link(listen: &str) -> BridgeLink {
+    match health_agent().get(&daemon_root_url(listen)).call() {
+        Ok(mut r) if r.status().as_u16() == 200 => {
+            link_from_root(&r.body_mut().read_to_string().unwrap_or_default())
+        }
+        _ => BridgeLink::NotResponding,
+    }
+}
+
+/// Status → Note for a bridge that answers without the cart's port.
+const NO_CART_LINK: &str = "The bridge is running but does not hold the cart's serial port. \
+     Either the cart is not connected on that port, and the bridge keeps trying to open it, or \
+     another program such as Xfer64 has paused the bridge to use the cart, and resumes it when done.";
+
+/// How often a running daemon's link is checked for the tray, which cannot check it itself: its
+/// menu is rebuilt on events, and a check blocks.
+const LINK_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Record what `pid`'s daemon said about its link. False, changing nothing, when that daemon is no
+/// longer the one running or it said the same as last time.
+fn record_link(daemon: &Mutex<DaemonInner>, pid: u32, link: BridgeLink) -> bool {
+    let mut inner = daemon.lock();
+    if inner.child.as_ref().map(Child::id) != Some(pid) || inner.link == link {
+        return false;
+    }
+    inner.link = link;
+    true
+}
+
+/// Check the link of the daemon just spawned as `pid` every [`LINK_RECHECK`] for as long as it is
+/// the one running, and tell the tray and the window when the answer changes.
+fn watch_link(app: AppHandle, daemon: Arc<Mutex<DaemonInner>>, pid: u32, listen: String) {
+    thread::spawn(move || {
+        // Soon after spawn first, so a bridge that came up without its cart shows that quickly.
+        let mut wait = std::time::Duration::from_secs(1);
+        loop {
+            let until = std::time::Instant::now() + wait;
+            while std::time::Instant::now() < until && !shutting_down() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if shutting_down() || daemon.lock().child.as_ref().map(Child::id) != Some(pid) {
+                return;
+            }
+            if record_link(&daemon, pid, bridge_link(&listen)) {
+                let _ = app.emit("daemon-changed", ());
+            }
+            wait = LINK_RECHECK;
+        }
+    });
 }
 
 /// Whether the daemon is still running, clearing the handle if it has exited on its own.
@@ -940,6 +1029,7 @@ fn daemon_is_running(daemon: &Arc<Mutex<DaemonInner>>) -> bool {
         Ok(Some(status)) => {
             inner.child = None;
             inner.serial = None;
+            inner.link = BridgeLink::Unknown;
             // push_log would re-lock this same non-reentrant mutex, so append inline.
             if inner.logs.len() >= MAX_LOG_LINES {
                 let drain = inner.logs.len() - MAX_LOG_LINES + 1;
@@ -1231,6 +1321,7 @@ fn kill_daemon(daemon: &Arc<Mutex<DaemonInner>>) {
 fn kill_daemon_locked(daemon: &Arc<Mutex<DaemonInner>>) {
     let mut inner = daemon.lock();
     inner.serial = None;
+    inner.link = BridgeLink::Unknown;
     if let Some(mut c) = inner.child.take() {
         let _ = c.kill();
         let _ = c.wait();
@@ -1414,12 +1505,22 @@ fn start_daemon_locked(
     spawn_log_reader(Arc::clone(&d), stdout, "");
     spawn_log_reader(d, stderr, "[stderr] ");
 
-    let mut inner = daemon.lock();
-    inner.child = Some(child);
+    let pid = child.id();
+    {
+        let mut inner = daemon.lock();
+        inner.child = Some(child);
+        inner.serial = Some(serial);
+        inner.cart = cart;
+        inner.link = BridgeLink::Unknown;
+    }
     // Auto-start is done once anything has started the bridge, whoever stops it later.
     SPAWNED_ONCE.store(true, Ordering::SeqCst);
-    inner.serial = Some(serial);
-    inner.cart = cart;
+    watch_link(
+        app.clone(),
+        Arc::clone(daemon),
+        pid,
+        settings.listen.clone(),
+    );
     Ok(())
 }
 
@@ -1624,7 +1725,7 @@ fn set_autostart_windows_impl(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Blocking: `check_health` issues an HTTP request with a 1 s timeout, and the window polls
+/// Blocking: [`bridge_link`] issues an HTTP request with a 1 s timeout, and the window polls
 /// this every 2 s. `with_ports` adds [`DaemonStatus::port_options`], for the Settings hints.
 #[tauri::command]
 async fn get_daemon_status(
@@ -1687,7 +1788,13 @@ fn daemon_status(state: &AppState, with_ports: bool) -> DaemonStatus {
     } else {
         settings.cart.label().to_string()
     };
-    let healthy = running && check_health(&listen);
+    // Fresh rather than what `watch_link` last recorded, so Refresh status means it. Not recorded
+    // either: the watcher compares with its own last answer to know when to update the tray.
+    let link = if running {
+        bridge_link(&listen)
+    } else {
+        BridgeLink::Unknown
+    };
     let waiting = auto_start_waiting();
     let (mut message, port_options) =
         note_and_port_options(running, &settings, with_ports, waiting, || {
@@ -1697,10 +1804,14 @@ fn daemon_status(state: &AppState, with_ports: bool) -> DaemonStatus {
     if !running && listen_in_use_recently(&listen) {
         message = listen_in_use_message(&listen);
     }
+    if link == BridgeLink::NotHolding {
+        message = NO_CART_LINK.to_string();
+    }
     DaemonStatus {
         running,
         starting: !running && start_in_progress(),
-        healthy,
+        healthy: link.answered(),
+        cart_linked: link == BridgeLink::Holding,
         listen,
         message,
         cart,
@@ -1801,6 +1912,8 @@ struct TrayState<'a> {
     cart_note: Option<&'a str>,
     listen: &'a str,
     listen_in_use: bool,
+    /// What the running daemon last said about the cart's port ([`watch_link`]).
+    link: BridgeLink,
 }
 
 fn tray_labels(t: TrayState<'_>) -> TrayLabels {
@@ -1812,14 +1925,21 @@ fn tray_labels(t: TrayState<'_>) -> TrayLabels {
         cart_note,
         listen,
         listen_in_use,
+        link,
     } = t;
     let cart_note = cart_note.map(|c| format!(" · {c}")).unwrap_or_default();
     let status = if running {
-        match serial {
+        let running = match serial {
             Some(port) => format!("Bridge: running on {port}"),
             // No configured or auto-detected port, but a live process: report where it
             // listens rather than claiming a port we cannot name.
             None => format!("Bridge: running ({listen})"),
+        };
+        // Running is not reaching the cart: the link is faulted, or released to another program.
+        if link == BridgeLink::NotHolding {
+            format!("{running}, no cart link")
+        } else {
+            running
         }
     } else if starting {
         // Start is grayed out below: a second one would kill what this one spawns.
@@ -1874,20 +1994,21 @@ fn tray_serial(
 /// in exactly one place, so there is no way for a later edit to update the text of an item and
 /// forget its enabled state.
 ///
-/// Deliberately does **not** call `check_health`: that issues a blocking HTTP request, and this
-/// runs on every `daemon-changed` event. "Running" here means the child process is alive; the
-/// window shows the finer-grained health. While stopped it does check the listen address, through
+/// Deliberately does **not** call [`bridge_link`]: that issues a blocking HTTP request, and this
+/// runs on every `daemon-changed` event. "Running" here means the child process is alive, and
+/// whether it holds the cart is what [`watch_link`] last recorded, which emits `daemon-changed`
+/// when that changes; the window asks afresh. While stopped it does check the listen address, through
 /// [`listen_in_use_recently`]: under a millisecond while the address is taken, and usually a reused
 /// answer while it is free.
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let (running, listen, serial, can_start, cart_note) = match app.try_state::<AppState>() {
+    let (running, listen, serial, can_start, cart_note, link) = match app.try_state::<AppState>() {
         Some(state) => {
             let settings = state.settings.lock().clone();
             // `daemon_is_running` takes the daemon lock itself, so read the port after it returns.
             let running = daemon_is_running(&state.daemon);
-            let (spawned, spawned_cart) = {
+            let (spawned, spawned_cart, link) = {
                 let inner = state.daemon.lock();
-                (inner.serial.clone(), inner.cart)
+                (inner.serial.clone(), inner.cart, inner.link)
             };
             // A stopped daemon is described by what Start would do, which never probes a port.
             let plan = (!running).then(|| start_plan(&settings));
@@ -1898,9 +2019,17 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 tray_serial(running, spawned, || plan.as_ref().and_then(StartPlan::port)),
                 can_start,
                 tray_cart_note(running, spawned_cart, settings.cart),
+                link,
             )
         }
-        None => (false, DEFAULT_LISTEN.to_string(), None, false, None),
+        None => (
+            false,
+            DEFAULT_LISTEN.to_string(),
+            None,
+            false,
+            None,
+            BridgeLink::Unknown,
+        ),
     };
     // Without app state there are no settings, so nothing to check.
     let listen_in_use =
@@ -1914,6 +2043,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         cart_note,
         listen: &listen,
         listen_in_use,
+        link,
     });
     // Disabled: a status line, not an action.
     let status = MenuItem::with_id(app, "status", &labels.status, false, None::<&str>)?;
@@ -2531,19 +2661,140 @@ mod tests {
     /// refuses a connect to 0.0.0.0, so the bridge never showed as healthy.
     #[test]
     fn a_wildcard_listen_address_is_checked_on_loopback() {
+        assert_eq!(daemon_root_url("0.0.0.0:38765"), "http://127.0.0.1:38765/");
+        assert_eq!(daemon_root_url("[::]:38765"), "http://[::1]:38765/");
         assert_eq!(
-            daemon_health_url("0.0.0.0:38765"),
-            "http://127.0.0.1:38765/health"
-        );
-        assert_eq!(daemon_health_url("[::]:38765"), "http://[::1]:38765/health");
-        assert_eq!(
-            daemon_health_url("127.0.0.1:38765"),
-            "http://127.0.0.1:38765/health"
+            daemon_root_url("127.0.0.1:38765"),
+            "http://127.0.0.1:38765/"
         );
         assert_eq!(
-            daemon_health_url("localhost:38765"),
-            "http://localhost:38765/health"
+            daemon_root_url("localhost:38765"),
+            "http://localhost:38765/"
         );
+    }
+
+    /// A stand-in multi64d on an ephemeral loopback port that answers `/health` with ok and `GET /`
+    /// with `root`, for `requests` requests. Returns its address.
+    fn fake_daemon(root: &'static str, requests: usize) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        thread::spawn(move || {
+            for stream in listener.incoming().take(requests) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let body = if request.starts_with("GET /health ") {
+                    r#"{"status":"ok"}"#
+                } else {
+                    root
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        addr
+    }
+
+    /// A daemon whose link is faulted (cart unplugged, wrong port) or released to Xfer64 still
+    /// answers `/health`, so the window said OK while nothing reached the cart.
+    #[test]
+    fn a_bridge_without_the_cart_is_not_reported_as_holding_it() {
+        let faulted = fake_daemon(
+            r#"{"service":"multi64d","serial":"COM4","serialActive":false,"serialBusy":false,"cart":"sc64"}"#,
+            1,
+        );
+        let link = bridge_link(&faulted);
+        assert_eq!(link, BridgeLink::NotHolding);
+        assert!(
+            link.answered(),
+            "it is up, which is not the same as not responding"
+        );
+
+        let holding = fake_daemon(
+            r#"{"service":"multi64d","serial":"COM4","serialActive":true,"serialBusy":false,"cart":"sc64"}"#,
+            1,
+        );
+        assert_eq!(bridge_link(&holding), BridgeLink::Holding);
+    }
+
+    #[test]
+    fn the_link_is_read_from_serial_active() {
+        assert_eq!(
+            link_from_root(r#"{"serialActive":false}"#),
+            BridgeLink::NotHolding
+        );
+        assert_eq!(
+            link_from_root(r#"{"serialActive":true}"#),
+            BridgeLink::Holding
+        );
+        // Busy is reported as held (daemon API §1.1).
+        assert_eq!(
+            link_from_root(r#"{"serialActive":true,"serialBusy":true}"#),
+            BridgeLink::Holding
+        );
+        // A daemon that does not say is taken at its word that it is up.
+        assert_eq!(
+            link_from_root(r#"{"service":"multi64d"}"#),
+            BridgeLink::Holding
+        );
+        assert_eq!(link_from_root("not json"), BridgeLink::Holding);
+    }
+
+    /// Nothing listening is not responding, not "no cart".
+    #[test]
+    fn a_bridge_that_does_not_answer_is_not_responding() {
+        use socket2::{Domain, Protocol, Socket, Type};
+        // A port held without listening, so nothing else can answer on it either.
+        let held = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        held.bind(
+            &"127.0.0.1:0"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+                .into(),
+        )
+        .unwrap();
+        let addr = held.local_addr().unwrap().as_socket().unwrap().to_string();
+        let link = bridge_link(&addr);
+        assert_eq!(link, BridgeLink::NotResponding);
+        assert!(!link.answered());
+    }
+
+    /// The watcher records an answer only for the daemon it was started for, and reports only a
+    /// change, which is when the tray is rebuilt.
+    #[test]
+    fn a_link_answer_is_recorded_once_and_only_for_its_own_daemon() {
+        let daemon = Mutex::new(DaemonInner::default());
+        assert!(
+            !record_link(&daemon, 42, BridgeLink::NotHolding),
+            "no daemon is running"
+        );
+        let child = Command::new(if cfg!(windows) { "cmd" } else { "sh" })
+            .args(if cfg!(windows) {
+                ["/C", "exit"]
+            } else {
+                ["-c", "exit"]
+            })
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        daemon.lock().child = Some(child);
+        assert!(!record_link(&daemon, pid + 1, BridgeLink::NotHolding));
+        assert!(record_link(&daemon, pid, BridgeLink::NotHolding));
+        assert!(
+            !record_link(&daemon, pid, BridgeLink::NotHolding),
+            "unchanged"
+        );
+        assert!(record_link(&daemon, pid, BridgeLink::Holding));
+        assert_eq!(daemon.lock().link, BridgeLink::Holding);
+        let _ = daemon.lock().child.take().unwrap().wait();
     }
 
     /// The health check accepted `http://host:port`, but the same text reached `--listen`, where
@@ -3163,7 +3414,41 @@ mod tray_tests {
             cart_note,
             listen,
             listen_in_use,
+            link: BridgeLink::Unknown,
         })
+    }
+
+    /// A running bridge that does not hold the cart showed in the tray exactly like one that does.
+    #[test]
+    fn a_running_bridge_without_the_cart_says_so() {
+        let tray = |link| {
+            tray_labels(TrayState {
+                running: true,
+                starting: false,
+                serial: Some("COM4"),
+                can_start: true,
+                cart_note: Some("EverDrive-64 X7 (beta)"),
+                listen: LISTEN,
+                listen_in_use: false,
+                link,
+            })
+        };
+        assert_eq!(
+            tray(BridgeLink::NotHolding).status,
+            "Bridge: running on COM4, no cart link · EverDrive-64 X7 (beta)"
+        );
+        for link in [
+            BridgeLink::Holding,
+            BridgeLink::Unknown,
+            BridgeLink::NotResponding,
+        ] {
+            assert_eq!(
+                tray(link).status,
+                "Bridge: running on COM4 · EverDrive-64 X7 (beta)",
+                "{link:?}"
+            );
+        }
+        assert_eq!(tray(BridgeLink::NotHolding).toggle, "Stop bridge");
     }
 
     /// A Start clicked while one was probing queued behind it, then killed the daemon it spawned
@@ -3178,6 +3463,7 @@ mod tray_tests {
             cart_note: Some("Auto-detect"),
             listen: LISTEN,
             listen_in_use: false,
+            link: BridgeLink::Unknown,
         });
         assert_eq!(l.status, "Bridge: starting… · Auto-detect");
         assert_eq!(l.toggle, "Start bridge");

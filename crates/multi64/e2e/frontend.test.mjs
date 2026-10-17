@@ -55,6 +55,7 @@ async function serveFrontend() {
  * - `settings`: fields merged into the settings file
  * - `ports`: the port names the backend enumerates; `window.__TAURI_PORTS__` replaces it mid-run
  * - `running`: the bridge is running, started for `runningCart` (the backend's label)
+ * - `cartLinked: false`: it answers without holding the cart's serial port; `message` is the Note
  * - `starting`: the backend reports a start under way (from the tray, or auto-start)
  * - `holdStart`: `daemon_start` answers only when `window.__FINISH_START__()` is called
  */
@@ -89,8 +90,9 @@ function installTauriStub(scenario = {}) {
       running: sc.running === true,
       starting: sc.starting === true,
       healthy: sc.running === true,
+      cartLinked: sc.running === true && sc.cartLinked !== false,
       listen: settings.listen,
-      message: "",
+      message: sc.message ?? "",
       cart: sc.running ? sc.runningCart : cartLabels[settings.cart],
       ...(a.withPorts ? { portOptions: portOptions() } : {}),
     }),
@@ -157,6 +159,8 @@ const selectState = (p, id) => p.evaluate((i) => {
 const statusCard = (p) => p.evaluate(() => ({
   bridge: document.getElementById("status-running").textContent,
   cart: document.getElementById("status-cart").textContent,
+  health: document.getElementById("status-healthy").textContent,
+  note: document.getElementById("status-msg").textContent,
   start: document.getElementById("btn-start").disabled,
   stop: document.getElementById("btn-stop").disabled,
 }));
@@ -174,6 +178,18 @@ async function openSettings(p) {
   check("a running bridge's Status card names its cart and serial port",
     card.bridge === "Running" && card.cart === "SummerCart64 on COM3", JSON.stringify(card));
   check("and offers Stop but not Start", card.start && !card.stop, JSON.stringify(card));
+  check("and its Health is OK while it holds the cart", card.health === "OK", JSON.stringify(card));
+  await p.close();
+}
+{
+  // A daemon whose link is faulted or released answers just the same; it used to show OK.
+  const note = "The bridge is running but does not hold the cart's serial port.";
+  const p = await openScenario({
+    running: true, cartLinked: false, message: note, runningCart: "SummerCart64 on COM3", settings: { serialPort: "COM3", cart: "sc64" },
+  });
+  const card = await statusCard(p);
+  check("a running bridge without the cart shows No cart link, says why in Note, and still offers Stop",
+    card.bridge === "Running" && card.health === "No cart link" && card.note === note && !card.stop, JSON.stringify(card));
   await p.close();
 }
 {

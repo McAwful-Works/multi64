@@ -16,7 +16,10 @@ async function refreshStatus() {
     }
     const starting = !s.running && (s.starting === true || startClicked);
     setText("status-running", s.running ? "Running" : starting ? "Starting…" : "Stopped");
-    setText("status-healthy", s.healthy ? "OK" : s.running ? "Not responding yet" : "—");
+    // Answering is not reaching the cart: a bridge whose link is faulted or released to another
+    // program answers too, and Note says which it could be.
+    const health = s.healthy ? (s.cartLinked === false ? "No cart link" : "OK") : "Not responding yet";
+    setText("status-healthy", s.running ? health : "—");
     setText("status-cart", s.cart || "—");
     setText("status-listen", s.listen || "—");
     setText("status-msg", s.message || "—");
