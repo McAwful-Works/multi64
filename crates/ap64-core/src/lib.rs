@@ -219,14 +219,21 @@ pub fn default_output(input: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// Refuses an `output` that is the `seed` file itself, however the path is spelled: another
-/// case, a `..`, a short (8.3) name or a symbolic link all name the same file. Both are resolved
-/// through the file system, so an output that does not exist yet is never the seed.
+/// case, a `..`, a short (8.3) name, a symbolic link or a hard link all name the same file.
+/// Where both exist they are compared by file identity (the volume serial number and file
+/// index on Windows, the device and inode elsewhere), which a hard link shares though its path
+/// does not. Otherwise both are resolved through the file system, so an output that does not
+/// exist yet is never the seed.
 pub fn check_output(seed: &std::path::Path, output: &std::path::Path) -> Result<(), String> {
-    let same = match (std::fs::canonicalize(seed), std::fs::canonicalize(output)) {
-        (Ok(a), Ok(b)) => a == b,
-        // A seed that is gone can only be compared by name.
-        (Err(_), _) => seed == output,
-        (Ok(_), Err(_)) => false,
+    let same = match same_file::is_same_file(seed, output) {
+        Ok(same) => same,
+        // One of them could not be opened: most often the output, not written yet.
+        Err(_) => match (std::fs::canonicalize(seed), std::fs::canonicalize(output)) {
+            (Ok(a), Ok(b)) => a == b,
+            // A seed that is gone can only be compared by name.
+            (Err(_), _) => seed == output,
+            (Ok(_), Err(_)) => false,
+        },
     };
     if same {
         Err("the output would overwrite the seed; choose another name".into())
@@ -632,6 +639,31 @@ mod tests {
         }
         assert!(!refused(dir.join("other.z64")));
         assert!(!refused(dir.join("seed-agent.z64")), "not there yet");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hard link to the seed has a path of its own but is the same file, so writing to it
+    /// would overwrite the seed. A copy has the same bytes but is another file.
+    #[test]
+    fn an_output_that_is_a_hard_link_to_the_seed_is_refused() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ap64-link-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let seed = dir.join("seed.z64");
+        std::fs::write(&seed, b"seed").unwrap();
+        let link = dir.join("link.z64");
+        std::fs::hard_link(&seed, &link).unwrap();
+        std::fs::copy(&seed, dir.join("copy.z64")).unwrap();
+
+        assert!(
+            check_output(&seed, &link).is_err(),
+            "a hard link is the seed"
+        );
+        assert!(check_output(&link, &seed).is_err(), "either way round");
+        assert!(check_output(&seed, &dir.join("copy.z64")).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -41,3 +41,25 @@ fn an_output_that_is_the_seed_is_refused() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `-o` naming a hard link to the seed is refused too: it has a path of its own, but writing to
+/// it writes over the seed.
+#[test]
+fn an_output_that_is_a_hard_link_to_the_seed_is_refused() {
+    let dir = temp_dir("hard-link");
+    let seed = dir.join("seed.z64");
+    std::fs::write(&seed, b"the seed").unwrap();
+    let link = dir.join("link.z64");
+    std::fs::hard_link(&seed, &link).unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_ap64-patch"))
+        .arg(&seed)
+        .arg("-o")
+        .arg(&link)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(!run.status.success(), "{stderr}");
+    assert!(stderr.contains("would overwrite the seed"), "{stderr}");
+    assert_eq!(std::fs::read(&seed).unwrap(), b"the seed");
+    let _ = std::fs::remove_dir_all(&dir);
+}
