@@ -8,12 +8,20 @@
 
 use crate::rom::read_u32;
 
-fn yaz0(src: &[u8], at: usize) -> Result<Vec<u8>, String> {
+/// The Yaz0 file at `at`, decompressed. `max` is the most it may decompress to: the span its
+/// file table entry gives it, since more would overwrite the next file. A header claiming more
+/// is refused before anything is allocated for it, so a corrupt one cannot ask for 4 GiB.
+fn yaz0(src: &[u8], at: usize, max: usize) -> Result<Vec<u8>, String> {
     let err = || format!("Yaz0 data at 0x{at:X} is truncated or corrupt");
     if src.get(at..at + 4) != Some(b"Yaz0".as_slice()) {
         return Err(format!("no Yaz0 header at 0x{at:X}"));
     }
     let size = read_u32(src, at + 4).ok_or_else(err)? as usize;
+    if size > max {
+        return Err(format!(
+            "Yaz0 data at 0x{at:X} decompresses to {size} bytes, more than the {max} its file spans"
+        ));
+    }
     let mut out = Vec::with_capacity(size);
     let mut s = at + 16;
     let byte = |i: usize| src.get(i).copied().ok_or_else(err);
@@ -122,16 +130,10 @@ pub fn yaz0_dmadata(rom: &[u8], table: u32) -> Result<Vec<u8>, String> {
         } else {
             // A randomizer can leave a stub in place of a file the game never loads: fewer
             // bytes than the entry spans. The rest stays zero. More would overwrite the next
-            // file, and is refused.
-            let d = yaz0(rom, e.rom_start as usize)?;
-            if d.len() > len {
-                return Err(format!(
-                    "file at vrom 0x{:X} decompresses to {} bytes, more than its {len}",
-                    e.vrom_start,
-                    d.len()
-                ));
-            }
-            d
+            // file, and is refused (by `yaz0`, before it allocates). `len` is at most the
+            // image's end, which is at most 64 MiB.
+            yaz0(rom, e.rom_start as usize, len)
+                .map_err(|why| format!("file at vrom 0x{:X}: {why}", e.vrom_start))?
         };
         out[e.vrom_start as usize..e.vrom_start as usize + data.len()].copy_from_slice(&data);
     }
@@ -359,7 +361,7 @@ mod tests {
         assert_eq!(e[2], s[2], "file B's entry changed");
         let (rs, re_) = (s[2].rom_start as usize, s[2].rom_end as usize);
         assert_eq!(r.rom[rs..re_], seed[rs..re_]);
-        assert_eq!(yaz0(&r.rom, rs).unwrap(), b);
+        assert_eq!(yaz0(&r.rom, rs, b.len()).unwrap(), b);
         assert_eq!(e[3], s[3], "plain file C's entry changed");
         assert_eq!(
             r.kept, 2,
@@ -462,7 +464,7 @@ mod tests {
     #[test]
     fn yaz0_decodes_literals_and_long_copies() {
         let (y, plain) = sample();
-        assert_eq!(yaz0(&y, 0).unwrap(), plain);
+        assert_eq!(yaz0(&y, 0, plain.len()).unwrap(), plain);
     }
 
     #[test]
@@ -470,7 +472,43 @@ mod tests {
         let mut y = b"Yaz0\0\0\0\x04".to_vec();
         y.extend_from_slice(&[0; 8]);
         y.extend_from_slice(&[0x00, 0x10, 0x05]);
-        assert!(yaz0(&y, 0).is_err());
+        assert!(yaz0(&y, 0, 4).is_err());
+    }
+
+    /// A corrupt header claiming nearly 4 GiB, under an entry spanning 0x40 bytes: refused,
+    /// with nothing allocated for it.
+    #[test]
+    fn a_yaz0_header_claiming_more_than_its_file_spans_is_refused() {
+        let mut y = b"Yaz0".to_vec();
+        y.extend_from_slice(&0xFFFF_FFF0u32.to_be_bytes());
+        y.extend_from_slice(&[0; 8]);
+        y.extend_from_slice(&[0xFF; 9]);
+        let why = yaz0(&y, 0, 0x40).unwrap_err();
+        assert!(why.contains("more than the 64 its file spans"), "{why}");
+
+        let mut rom = vec![0u8; 0x0020_0000];
+        for (i, w) in [
+            [0x1000u32, 0x1030, 0x1000, 0],
+            [
+                0x0010_2000,
+                0x0010_2040,
+                0x0010_8000,
+                0x0010_8000 + y.len() as u32,
+            ],
+        ]
+        .iter()
+        .enumerate()
+        {
+            for (k, v) in w.iter().enumerate() {
+                crate::rom::write_u32(&mut rom, 0x1000 + i * 16 + 4 * k, *v);
+            }
+        }
+        rom[0x0010_8000..0x0010_8000 + y.len()].copy_from_slice(&y);
+        let why = yaz0_dmadata(&rom, 0x1000).unwrap_err();
+        assert!(
+            why.contains("file at vrom 0x102000") && why.contains("more than"),
+            "{why}"
+        );
     }
 
     #[test]
