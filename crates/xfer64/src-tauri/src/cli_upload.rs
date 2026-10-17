@@ -293,9 +293,10 @@ pub fn run_headless_import_upload(
                     }
                     continue;
                 }
-                // Re-check on the live session: the plan is built once, so later steps can target the
-                // same cart path as an earlier import (same basename from different PC paths) and
-                // would still carry `conflict_if_exists: false` from plan time.
+                // Re-check on the live session rather than trust `conflict_if_exists`, which is from
+                // plan time. Two sources sharing a cart path (one basename from different PC
+                // folders) no longer get this far: the plan refuses them
+                // (`copy_plan::refuse_shared_destinations`).
                 match session
                     .cart_path_entry_kind(cart_path)
                     .map_err(|e| e.to_string())?

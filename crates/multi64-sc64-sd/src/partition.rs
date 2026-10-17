@@ -1030,6 +1030,12 @@ pub(crate) fn fat_names_equal(a: &str, b: &str) -> bool {
             .eq(b.encode_utf16().map(fat_upcase_unit))
 }
 
+/// `name` folded as [`fat_names_equal`] folds it: two names are equal there exactly when their
+/// keys are equal here. For grouping many names, where comparing every pair would not scale.
+pub fn fat_name_key(name: &str) -> Vec<u16> {
+    name.encode_utf16().map(fat_upcase_unit).collect()
+}
+
 fn fat_upcase_unit(unit: u16) -> u16 {
     // Surrogate halves are not characters, and the up-case table leaves them unchanged.
     let Some(c) = char::from_u32(u32::from(unit)) else {
@@ -4211,6 +4217,24 @@ mod tests {
         assert!(!cart_entry_name_matches("ä.sav", "a.sav"));
         // One code unit never folds to two: the up-case table maps each unit to one unit.
         assert!(!cart_entry_name_matches("straße", "STRASSE"));
+    }
+
+    /// `fat_name_key` groups names exactly as `fat_names_equal` compares them.
+    #[test]
+    fn fat_name_keys_agree_with_name_equality() {
+        for (a, b) in [
+            ("ä.sav", "Ä.SAV"),
+            ("Ωμέγα.z64", "ΩΜΈΓΑ.Z64"),
+            ("game.z64", "GAME.Z64"),
+            ("ä.sav", "a.sav"),
+            ("straße", "STRASSE"),
+        ] {
+            assert_eq!(
+                super::fat_name_key(a) == super::fat_name_key(b),
+                super::fat_names_equal(a, b),
+                "{a} / {b}"
+            );
+        }
     }
 
     #[test]

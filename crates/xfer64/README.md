@@ -35,6 +35,10 @@ PRO the cart's own link truncates the file it replaces when it starts, so an int
 there reports what is left of the original. Renaming on This PC onto a name the folder already
 has is refused; a rename that only changes letter case goes through.
 
+Two files of one name from different folders, as a search can turn up, cannot be copied into one
+folder together, since each would land on the other: Xfer64 names both and copies nothing.
+Letter case does not tell names apart, on the card or on Windows.
+
 Closing the window while an operation runs does not cut it off: Xfer64 asks whether to keep
 waiting or to cancel the operation and close once it has stopped. Either way it exits only after
 the cart's SD card has been handed back and the Multi64 bridge resumed. A close during a quick cart

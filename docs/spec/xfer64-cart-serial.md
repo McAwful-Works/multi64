@@ -24,6 +24,8 @@ Two things `Drop` cannot cover, so callers must still get them right:
 
 Cart ↔ PC **multi-select** uses `cart_serial_export_copy_batch` / `cart_serial_import_copy_batch`: **one** SD session for the whole batch after overwrite prompts. Single-file copy is a batch of length 1; there are no per-file cart copy commands.
 
+Each step's overwrite prompt is decided against the destination as it was before the batch, so two steps that write one destination would let the second replace the first unasked: two files of one name from different folders, as an Explorer search can turn up. The plan builders in [`copy_plan.rs`](../../crates/xfer64/src-tauri/src/copy_plan.rs) therefore refuse such a plan before anything is copied, comparing destinations as the card and Windows do, ignoring letter case, and both batch commands refuse such a batch themselves rather than trust the plan they are sent (`refuse_shared_destinations`). Two folders of one name merge; a file inside both is refused as a file.
+
 An export writes each file through [`write_host_file`](../../crates/multi64-sc64-sd/src/host_file.rs): into a temporary file beside the destination, renamed over it only once flushed and synced, so a cancelled or failed **Replace** keeps the PC's original. Imports to an SC64 keep the cart's original the same way (#200); an EverDrive-64 PRO's link truncates the destination when it opens it, so there an interrupted Replace does lose the original.
 
 ### multi64d coordination

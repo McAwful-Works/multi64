@@ -1221,6 +1221,39 @@ pub struct ImportCopyBatchItem {
     pub is_dir: bool,
 }
 
+/// Refuses an export batch in which two cart entries would be copied to one PC path. A step's
+/// `overwrite` was decided against the PC as it was before the batch, so the second of two such
+/// steps would replace the first without asking. See [`copy_plan::refuse_shared_destinations`].
+fn refuse_shared_export_destinations(items: &[ExportCopyBatchItem]) -> Result<(), String> {
+    copy_plan::refuse_shared_destinations(
+        items
+            .iter()
+            .filter(|i| !i.cart_path.trim().is_empty())
+            .map(|i| copy_plan::Destination {
+                source: i.cart_path.trim(),
+                dest: i.dest_pc_path.trim(),
+                is_dir: i.is_dir,
+                on_cart: false,
+            }),
+    )
+}
+
+/// As [`refuse_shared_export_destinations`], for an import batch: two PC files that would both
+/// be copied to one cart path.
+fn refuse_shared_import_destinations(items: &[ImportCopyBatchItem]) -> Result<(), String> {
+    copy_plan::refuse_shared_destinations(
+        items
+            .iter()
+            .filter(|i| !i.cart_dest_path.trim().is_empty())
+            .map(|i| copy_plan::Destination {
+                source: i.src_pc_path.trim(),
+                dest: i.cart_dest_path.trim(),
+                is_dir: i.is_dir,
+                on_cart: true,
+            }),
+    )
+}
+
 /// Multi-file cart → PC copy in **one** SD session (open/close once).
 #[tauri::command]
 pub async fn cart_serial_export_copy_batch(
@@ -1235,6 +1268,7 @@ pub async fn cart_serial_export_copy_batch(
     if items.is_empty() {
         return Ok(());
     }
+    refuse_shared_export_destinations(&items)?;
     let cancel = ExplorerCancelState::clone(&cancel);
     let detached = st.detached()?;
     let snap = settings.snapshot();
@@ -1313,6 +1347,7 @@ pub async fn cart_serial_import_copy_batch(
     if items.is_empty() {
         return Ok(());
     }
+    refuse_shared_import_destinations(&items)?;
     let cancel = ExplorerCancelState::clone(&cancel);
     let detached = st.detached()?;
     let snap = settings.snapshot();
@@ -1381,6 +1416,70 @@ pub async fn cart_serial_import_copy_batch(
     // close failed. Keeping the cache would leave the pane showing a stale listing.
     st.invalidate_cart_list_cache();
     res
+}
+
+#[cfg(test)]
+mod shared_destination_tests {
+    use super::{
+        refuse_shared_export_destinations, refuse_shared_import_destinations, ExportCopyBatchItem,
+        ImportCopyBatchItem,
+    };
+
+    fn import(src: &str, cart: &str) -> ImportCopyBatchItem {
+        ImportCopyBatchItem {
+            src_pc_path: src.into(),
+            cart_dest_path: cart.into(),
+            overwrite: true,
+            progress_done_base: 0,
+            progress_message: String::new(),
+            bytes: 1,
+            is_dir: false,
+        }
+    }
+
+    fn export(cart: &str, dest: &str) -> ExportCopyBatchItem {
+        ExportCopyBatchItem {
+            cart_path: cart.into(),
+            dest_pc_path: dest.into(),
+            overwrite: true,
+            progress_done_base: 0,
+            progress_message: String::new(),
+            bytes: 1,
+            is_dir: false,
+        }
+    }
+
+    /// A batch whose steps would write one destination twice is refused before the cart is
+    /// opened, whatever `overwrite` the frontend sent: each step's was decided before the batch,
+    /// so the second would replace the first unasked.
+    ///
+    /// Fail-first, demonstrated: with both checks returning `Ok` for every batch, which is what
+    /// the batch commands did by not checking, the first `unwrap_err` panics.
+    #[test]
+    fn batches_that_write_one_destination_twice_are_refused() {
+        let err = refuse_shared_import_destinations(&[
+            import(r"C:\a\game.z64", "roms/game.z64"),
+            import(r"C:\b\game.z64", "roms/Game.z64"),
+        ])
+        .unwrap_err();
+        assert!(err.contains("roms/Game.z64 on the cart"), "{err}");
+        refuse_shared_import_destinations(&[
+            import(r"C:\a\game.z64", "roms/game.z64"),
+            import(r"C:\b\game.z64", "saves/game.z64"),
+        ])
+        .expect("two cart folders");
+
+        refuse_shared_export_destinations(&[
+            export("roms/game.z64", r"C:\out\game.z64"),
+            export("old/GAME.z64", r"C:\out\GAME.z64"),
+        ])
+        .expect_err("one PC file");
+        refuse_shared_export_destinations(&[
+            export("roms/game.z64", r"C:\out\game.z64"),
+            export("old/game.z64", r"C:\other\game.z64"),
+        ])
+        .expect("two PC folders");
+    }
 }
 
 #[cfg(test)]

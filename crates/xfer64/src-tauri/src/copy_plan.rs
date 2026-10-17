@@ -2,8 +2,9 @@
 //!
 //! Cart walks use [`CartSession`](multi64_sc64_sd::CartSession) so the same logic applies to SC64 and EverDrive sessions.
 
-use multi64_sc64_sd::{cart_path_parts, CartSession, SessionEntry};
+use multi64_sc64_sd::{cart_path_parts, fat_name_key, CartSession, SessionEntry};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -29,6 +30,96 @@ pub struct InteractiveCopyStep {
     /// `cart_serial_export_copy_batch` and `run_headless_import_upload` (CLI and Send-to
     /// picker); the last of those was missed when this field was added and broke folder uploads.
     pub is_dir: bool,
+}
+
+/// Where one step of a copy writes, for [`refuse_shared_destinations`].
+pub(crate) struct Destination<'a> {
+    /// What is copied there: a PC path, or a cart path for an export.
+    pub source: &'a str,
+    /// The destination path, as shown to the user.
+    pub dest: &'a str,
+    pub is_dir: bool,
+    pub on_cart: bool,
+}
+
+/// The destination folded as the file system there compares names: a FAT or exFAT card, or
+/// Windows, both ignore letter case. Separators and outer slashes are normalized first.
+fn destination_key(d: &Destination<'_>) -> Vec<u16> {
+    let path = if d.on_cart {
+        cart_parent_trimmed(d.dest)
+    } else {
+        d.dest
+            .trim()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_string()
+    };
+    fat_name_key(&path)
+}
+
+/// Refuses a copy in which two sources would land on one destination.
+///
+/// Every source keeps its own name where it is copied to, so two files called `game.z64` from
+/// different folders — as an Explorer search can turn up — map to the same path. Each step's
+/// conflict was checked against the destination as it stood when the plan was built, before
+/// either was copied, so neither asked first and the second silently replaced the first. A file
+/// and a folder sharing a destination are refused too; two folders merge, and whatever inside them
+/// shares a destination is caught as a file.
+///
+/// The plan builders run this, so the user is told before anything is copied, and so do the batch
+/// commands, which do not trust the plan they are sent.
+pub(crate) fn refuse_shared_destinations<'a>(
+    dests: impl IntoIterator<Item = Destination<'a>>,
+) -> Result<(), String> {
+    let mut files: HashMap<Vec<u16>, Destination<'a>> = HashMap::new();
+    let mut dirs: HashMap<Vec<u16>, Destination<'a>> = HashMap::new();
+    for d in dests {
+        let key = destination_key(&d);
+        let earlier = if d.is_dir {
+            files.get(&key)
+        } else {
+            files.get(&key).or_else(|| dirs.get(&key))
+        };
+        if let Some(earlier) = earlier {
+            let name = d
+                .dest
+                .trim_end_matches(['/', '\\'])
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(d.dest);
+            let place = if d.on_cart { " on the cart" } else { "" };
+            return Err(format!(
+                "Two of the items being copied are both called \"{name}\": {} and {} would both \
+                 be copied to {}{place}. Copy them one at a time, into different folders.",
+                earlier.source, d.source, d.dest
+            ));
+        }
+        if d.is_dir {
+            dirs.entry(key).or_insert(d);
+        } else {
+            files.insert(key, d);
+        }
+    }
+    Ok(())
+}
+
+/// [`refuse_shared_destinations`] over a plan's steps.
+fn refuse_shared_plan_destinations(plan: &[InteractiveCopyStep]) -> Result<(), String> {
+    refuse_shared_destinations(plan.iter().filter_map(|s| {
+        let on_cart = s.mode == "import";
+        let dest = if on_cart { &s.cart_path } else { &s.dest_pc };
+        let source = if s.mode == "export" {
+            &s.cart_path
+        } else {
+            &s.src_pc
+        };
+        Some(Destination {
+            source: source.as_deref()?,
+            dest: dest.as_deref()?,
+            is_dir: s.is_dir,
+            on_cart,
+        })
+    }))
 }
 
 fn cart_parent_trimmed(s: &str) -> String {
@@ -145,6 +236,7 @@ pub fn build_fs_copy_plan(
             append_fs_dir_steps(src, &target, &mut out)?;
         }
     }
+    refuse_shared_plan_destinations(&out)?;
     Ok(out)
 }
 
@@ -288,6 +380,7 @@ pub fn build_cart_export_plan(
             });
         }
     }
+    refuse_shared_plan_destinations(&out)?;
     Ok(out)
 }
 
@@ -414,6 +507,7 @@ pub fn build_pc_import_plan(
             }
         }
     }
+    refuse_shared_plan_destinations(&out)?;
     Ok(out)
 }
 
@@ -549,6 +643,78 @@ mod tests {
             .position(|s| s.is_dir && s.dest_pc.as_deref().is_some_and(|d| d.ends_with("hacks")));
         assert!(roms < hacks, "parent directory step must come first");
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Two files of one name from different folders, as an Explorer search turns up, cannot both
+    /// be copied into one folder: the plan is refused, naming both, before anything is copied.
+    /// Names that differ only in letter case are one name on Windows and on the card.
+    ///
+    /// Fail-first, demonstrated: without the check, the plan was two steps with no conflict, and
+    /// the second copy replaced the first without asking.
+    #[test]
+    fn fs_plan_refuses_two_sources_with_one_name() {
+        let tmp = std::env::temp_dir().join(format!("xfer64_plan_twins_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let (a, b, dst) = (tmp.join("a"), tmp.join("b"), tmp.join("dst"));
+        for d in [&a, &b, &dst] {
+            fs::create_dir_all(d).unwrap();
+        }
+        fs::write(a.join("game.z64"), b"first").unwrap();
+        fs::write(b.join("GAME.z64"), b"second").unwrap();
+
+        let err = build_fs_copy_plan(&[a.join("game.z64"), b.join("GAME.z64")], &dst).unwrap_err();
+        assert!(err.contains("both called \"GAME.z64\""), "{err}");
+        assert!(
+            err.contains(&*a.join("game.z64").to_string_lossy()),
+            "{err}"
+        );
+
+        // Folders of one name merge; it is files inside them that share a name that collide.
+        fs::create_dir_all(a.join("saves")).unwrap();
+        fs::create_dir_all(b.join("saves")).unwrap();
+        fs::write(a.join("saves").join("one.eep"), b"1").unwrap();
+        fs::write(b.join("saves").join("two.eep"), b"2").unwrap();
+        build_fs_copy_plan(&[a.join("saves"), b.join("saves")], &dst).expect("folders merge");
+        fs::write(b.join("saves").join("ONE.eep"), b"1 again").unwrap();
+        build_fs_copy_plan(&[a.join("saves"), b.join("saves")], &dst)
+            .expect_err("a file inside both folders collides");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    fn import_step(src: &str, cart: &str, is_dir: bool) -> InteractiveCopyStep {
+        InteractiveCopyStep {
+            mode: "import".into(),
+            src_pc: Some(src.into()),
+            dest_pc: None,
+            cart_path: Some(cart.into()),
+            bytes: 1,
+            conflict_if_exists: false,
+            is_dir,
+        }
+    }
+
+    /// Cart destinations collide as the card compares names: ignoring case and outer slashes. A
+    /// file and a folder at one path collide too; two folders do not.
+    #[test]
+    fn import_steps_sharing_a_cart_path_are_refused() {
+        let file = |s, c| import_step(s, c, false);
+        let dir = |s, c| import_step(s, c, true);
+        let err = refuse_shared_plan_destinations(&[
+            file(r"C:\a\game.z64", "roms/game.z64"),
+            file(r"C:\b\game.z64", "/roms/GAME.Z64"),
+        ])
+        .unwrap_err();
+        assert!(err.contains(r"C:\a\game.z64 and C:\b\game.z64"), "{err}");
+        assert!(err.contains("on the cart"), "{err}");
+        refuse_shared_plan_destinations(&[dir(r"C:\a\x", "x"), file(r"C:\b\x", "x")])
+            .expect_err("a file where a folder goes");
+        refuse_shared_plan_destinations(&[dir(r"C:\a\x", "x"), dir(r"C:\b\x", "x")])
+            .expect("two folders merge");
+        refuse_shared_plan_destinations(&[
+            file(r"C:\a\game.z64", "roms/game.z64"),
+            file(r"C:\a\game.z64", "saves/game.z64"),
+        ])
+        .expect("different folders on the cart");
     }
 
     /// `is_symlink` must not follow the link; that is what keeps a junction loop from
