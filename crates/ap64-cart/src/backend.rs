@@ -694,7 +694,7 @@ impl Multi64 {
     /// One `POKEV`, applied at most once ([`Retry::Once`]).
     ///
     /// A timeout is retried on the same link under the same rid. An agent that recognizes a
-    /// repeated write (`HELLO_ACK` bit 3, spec 4.4) is sent the write again: if the first copy
+    /// repeated write (`HELLO_ACK` bit 3, spec 4.4), over a SummerCart64, is sent the write again: if the first copy
     /// never reached it, this one is applied, and if it did, this one is acknowledged and
     /// nothing is written twice. Any other agent is only waited on again for the first copy's
     /// reply, since a copy would be a second write. Either way the write never reaches a
@@ -1008,7 +1008,8 @@ enum Retry {
     ///
     /// So on the same link, a write that times out is sent again only to an agent that
     /// acknowledges the copy without applying it (`HELLO_ACK` bit 3, spec 4.4), under the same
-    /// rid; every other agent, which is every ROM patched before agents could, is only waited on
+    /// rid, and only over a link that brings each request whole (a SummerCart64's: over an
+    /// EverDrive a copy could complete a request a lost piece cut short); every other agent, which is every ROM patched before agents could, is only waited on
     /// again for its own reply, which is what a late agent sends, and a write it never received
     /// fails. Once the link has been rebuilt the write is not sent at all, whatever the agent:
     /// the console may have been reset in between, and the write was decided against the one
