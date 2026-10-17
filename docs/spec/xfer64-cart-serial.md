@@ -16,16 +16,19 @@ Two things `Drop` cannot cover, so callers must still get them right:
 
 - **`std::process::exit` runs no destructors.** A tool must return an exit code up to `main` and let the session close first (`sc64-sd-e2e`'s `run`).
 - **A failure inside `Sc64SdSession::open` after `SD_CARD_OP` init** has no `Self` to drop; `open` deinits before propagating.
+- **Exiting the app kills a running copy thread without unwinding**, skipping both the release and the `multi64d` resume. [`close_guard.rs`](../../crates/xfer64/src-tauri/src/close_guard.rs) therefore holds a window close while any window reports work under way, and Xfer64 exits only once the last one reports idle, after the operation has ended and the bridge has been resumed.
 
 **Panic safety (Xfer64):** `SdSessionCloseGuard` in `cart_serial_sd.rs` still wraps the work closure, so a close **error** is logged and surfaced to the UI rather than swallowed by a drop.
 
 ### Multi-file copy
 
-Cart ↔ PC **multi-select** uses `cart_serial_export_copy_batch` / `cart_serial_import_copy_batch`: **one** SD session for the whole batch after overwrite prompts. Single-file copy is a batch of length 1. Per-file `cart_serial_*_copy_one` commands remain for compatibility.
+Cart ↔ PC **multi-select** uses `cart_serial_export_copy_batch` / `cart_serial_import_copy_batch`: **one** SD session for the whole batch after overwrite prompts. Single-file copy is a batch of length 1; there are no per-file cart copy commands.
+
+An export writes each file through [`write_host_file`](../../crates/multi64-sc64-sd/src/host_file.rs): into a temporary file beside the destination, renamed over it only once flushed and synced, so a cancelled or failed **Replace** keeps the PC's original. Imports to an SC64 keep the cart's original the same way (#200); an EverDrive-64 PRO's link truncates the destination when it opens it, so there an interrupted Replace does lose the original.
 
 ### multi64d coordination
 
-Only one process can hold the cart serial device. `multi64d` exposes `POST /v1/serial/release` and `POST /v1/serial/resume` ([daemon API §1](daemon-api-v1.md)). Xfer64 wraps cart work in `withCartDaemonYield`: prompt the user, **release** the daemon’s COM, run SD work, then **resume**. No extra release inside each `with_session`.
+Only one process can hold the cart serial device. `multi64d` exposes `POST /v1/serial/release` and `POST /v1/serial/resume` ([daemon API §1](daemon-api-v1.md)). Every cart read and write from a window goes through `withBridgePaused` ([`saved-cart-path.js`](../../crates/xfer64/src/saved-cart-path.js); the main window's `withCartDaemonYield` wraps it): when `multi64d` answers, **release** its COM, run the SD work, then **resume**. Only a copy (including a drag-out's staging), new folder or rename asks the user first (`withCartDaemonYield(fn, { confirm: true })`); listings, Properties, delete (which has its own confirmation) and the EverDrive SD base scan do not. Quick upload never asks: its listings go through `withBridgePaused` without a prompt, and its upload, like the headless `xfer64 upload`, pauses and resumes the bridge in the backend. No extra release inside each `with_session`.
 
 ### Listing vs copy
 
@@ -42,7 +45,8 @@ Only one process can hold the cart serial device. `multi64d` exposes `POST /v1/s
 | [`cart_serial_sd.rs`](../../crates/xfer64/src-tauri/src/cart_serial_sd.rs) | COM port, cart mode (`auto` / `sc64` / `ed64_beta` / `ed64_pro`), `CartSdRole` (`Sc64` / `Ed64Linear` / `Ed64NoLinear` / `Ed64Pro`), `with_session` → [`CartSession`](../../crates/multi64-sc64-sd/src/cart_session.rs), Tauri IPC (`cart_serial_*`). |
 | [`cart_probe.rs`](../../crates/xfer64/src-tauri/src/cart_probe.rs) | Auto-detect over [`multi64-cart-probe`](../../crates/cart-probe/README.md): an SC64 by its USB descriptors first (no writes, so it works while `multi64d` holds the port), then SC64 `IDENTIFIER_GET`, the EverDrive-64 PRO handshake at **921600**, and EverDrive `usb64` `cmd`/`t` at **115200** — except on an FTDI FT245R (`0403:6001`, the X7's USB bridge), where the `usb64` test goes first so the other probes' bytes are not already in its receive FIFO (#140). The `multi64d` yield check uses only a pinned port and never probes. Before any of that, Auto takes the port and cart a running `multi64d` reports (`GET /` `serial` and `cart`, [daemon API §1.1](./daemon-api-v1.md)) while that port is still plugged in. |
 | [`copy_plan.rs`](../../crates/xfer64/src-tauri/src/copy_plan.rs) | Interactive copy plans; takes `&CartSession` for cart-side walks. |
-| [`daemon.rs`](../../crates/xfer64/src-tauri/src/daemon.rs) | `resolve_com_port` / multi64d yield around cart work. |
+| [`daemon.rs`](../../crates/xfer64/src-tauri/src/daemon.rs) | multi64d probe, release and resume (`explorer_daemon_*`) around cart work, and the cart hint Auto asks for (`daemon_cart_hint`). The port itself is chosen by `resolve_port` in `cart_serial_sd.rs`. |
+| [`close_guard.rs`](../../crates/xfer64/src-tauri/src/close_guard.rs) | Holds a window close while any window reports work under way (`explorer_set_busy`), and exits once none does (`explorer_close_when_idle`). |
 | [`dev_log.rs`](../../crates/xfer64/src-tauri/src/dev_log.rs) | `xfer64-settings.json`: `cartDevice`, `ed64RomLinearBase`, `preferredCom`, … |
 
 ### Library layer (`crates/multi64-sc64-sd`)
@@ -52,6 +56,7 @@ Only one process can hold the cart serial device. `multi64d` exposes `POST /v1/s
 | [`link.rs`](../../crates/multi64-sc64-sd/src/link.rs) | [`SdCardTransport`](../../crates/multi64-sc64-sd/src/link.rs): sector read/write + flush. [`Sc64Link`](../../crates/multi64-sc64-sd/src/link.rs) (SC64) and, with `feature = "ed64"`, [`Ed64RomLinear`](../../crates/multi64-sc64-sd/src/ed64_linear.rs). |
 | [`partition.rs`](../../crates/multi64-sc64-sd/src/partition.rs) | Partition discovery, FAT/exFAT sessions (`Sc64SdSession`, `Ed64SdSession`). |
 | [`cart_session.rs`](../../crates/multi64-sc64-sd/src/cart_session.rs) | [`CartSession`](../../crates/multi64-sc64-sd/src/cart_session.rs): unified explorer API. |
+| [`host_file.rs`](../../crates/multi64-sc64-sd/src/host_file.rs) | `write_host_file`: every PC-side file an export writes goes to a temporary file first and replaces the destination only when complete. |
 | [`ed64_linear.rs`](../../crates/multi64-sc64-sd/src/ed64_linear.rs) | EverDrive: `RomRead` at `rom_linear_base + LBA×512` (optional feature). Reads cart ROM memory, not the SD card — see [`ed64-sd-usb-host.md`](./ed64-sd-usb-host.md#why-romread-is-not-sd-access). |
 | [`ed64pro.rs`](../../crates/multi64-sc64-sd/src/ed64pro.rs) | EverDrive-64 PRO (optional `ed64pro` feature): a file-level session over edlink Gen3 — no sector reads, no host FAT mount. Rename copies, then deletes the original, since the link has no rename command. It deletes only once the original and the copy are both listed under their own exact names, compared without case folding, with the original's size, so a copy the cart wrote over the original under another letter case never costs the original; a change of letter case alone is refused. Experimental; see [`ed64-pro-usb-host.md`](./ed64-pro-usb-host.md). |
 

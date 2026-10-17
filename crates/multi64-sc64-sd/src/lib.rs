@@ -20,7 +20,11 @@
 //!
 //! # Unified API
 //!
-//! [`CartSession`] dispatches to [`Sc64SdSession`] or [`Ed64SdSession`] so UIs and tools can share one code path.
+//! [`CartSession`] dispatches to [`Sc64SdSession`], `Ed64SdSession` (with **`ed64`**) or
+//! `Ed64ProSdSession` (with **`ed64pro`**) so UIs and tools can share one code path.
+//!
+//! Every file an export writes on the PC goes through [`write_host_file`]: a temporary file that
+//! replaces the destination only once complete, so a cancelled or failed Replace keeps the original.
 //!
 //! This crate does **not** use USB mass storage / a Windows drive letter.
 //!

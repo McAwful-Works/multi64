@@ -660,8 +660,10 @@ fn resolve_port(
 ///
 /// Auto mode resolves by probing ([`detect_best_auto_port`]), which leaves a fresh entry in
 /// `probe_cache` for the port it returns. Callers that need the cart kind can then read the cache
-/// instead of force-probing the same port a second time — the probe costs up to 5 s (SC64) plus
-/// 2 s (ED64) of blocking serial reads, so the duplicate doubled every detection.
+/// instead of force-probing the same port a second time — on a port that does not answer, the
+/// probe blocks on serial reads for about three seconds (1 s for SC64 `IDENTIFIER_GET`, about
+/// 0.2 s for the PRO handshake, 2 s for the X-series test; `multi64-cart-probe`), so the duplicate
+/// doubled every detection.
 fn resolve_port_probed(
     st: &ExplorerCartSerialState,
     settings: &ExplorerSettingsSnapshot,
@@ -832,8 +834,9 @@ pub struct UsbProbeStatus {
 /// Serial probe result for the UI (COM row hint). Manual modes skip the wire probe.
 ///
 /// `async` + `spawn_blocking` is deliberate: a plain sync `#[tauri::command]` runs on the main
-/// thread, and auto mode walks every serial port with up to 5 s (SC64 `IDENTIFIER_GET`) plus 2 s
-/// (ED64 test) of blocking reads per port. On the main thread that stalls the event loop, so the
+/// thread, and auto mode walks every serial port with about three seconds of blocking reads per
+/// port that does not answer (1 s SC64 `IDENTIFIER_GET`, about 0.2 s PRO handshake, 2 s X-series
+/// test). On the main thread that stalls the event loop, so the
 /// window stops repainting and ignores the close button until detection finishes.
 #[tauri::command]
 pub async fn cart_serial_probe_status(

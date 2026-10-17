@@ -5,7 +5,12 @@
 //! 2. otherwise the wire probes, in order: SummerCart64 `IDENTIFIER_GET`, the **EverDrive-64 PRO**'s
 //!    edlink handshake ([`docs/spec/ed64-pro-usb-host.md`](../../../docs/spec/ed64-pro-usb-host.md)
 //!    §4), then the X-series `usb64` `cmd` + `t` test
-//!    ([`docs/spec/l3-over-everdrive-x7.md`](../../../docs/spec/l3-over-everdrive-x7.md) §8).
+//!    ([`docs/spec/l3-over-everdrive-x7.md`](../../../docs/spec/l3-over-everdrive-x7.md) §8) —
+//!    except on an FTDI `0403:6001` port (the X7's FT245R), where the X-series test goes first
+//!    (`multi64_cart_probe::probe_order`).
+//!
+//! Before either, with Serial port on Auto too, a running `multi64d` is asked which cart and port
+//! it holds (`daemon::daemon_cart_hint`); these tiers run only when it names none.
 
 use multi64_cart_probe::DetectedCart;
 
