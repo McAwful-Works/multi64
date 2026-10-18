@@ -144,7 +144,7 @@ stops sending part-way is dropped after a stall rather than waited for.
 | Bytes before a header | `DEVICEERR_64D_BADDMA` | **Not an error.** The parser skips forward to the next `DMA@` and carries on, logging how many bytes it discarded at `debug` on target `multi64_ed64_l2`. With no `DMA@` anywhere in the buffer it keeps the last 3 bytes, in case a magic is split across two reads |
 | Trailer mismatch | `DEVICEERR_64D_BADCMP` | `io::ErrorKind::InvalidData`. Parse state is **not** reset: only the 4 `DMA@` magic bytes are dropped, so a resync cannot latch onto the same bad message again, and every byte after them stays buffered, to be parsed on the next `read_l3_bytes` call before the port is read again. L3 octets decoded before the error are handed out first, so a caller that drops the pipe on error does not lose them; the error then surfaces once, when the queue is empty |
 | Datatype other than `MULTI64_L3` | — | Not an error: the message is consumed whole and its payload **discarded**, with a `debug` log. Only `0x01` payloads reach the L3 codec |
-| Stalled transfer | 500 ms read/write timeouts | A read timeout is `Ok(0)`, not an error — the timeout is whatever `set_timeout` last applied (`multi64d` uses 50 ms for reads, 1 s for a write). Any other read error is returned unchanged, which faults `multi64d`'s link |
+| Stalled transfer | 500 ms read/write timeouts | A read timeout is `Ok(0)`, not an error — the timeout is whatever `set_timeout` last applied (`multi64d` uses 10 ms for reads, 1 s for a write). Any other read error is returned unchanged; `multi64d` faults its link for an I/O error, and logs a bad trailer (§4.4) and keeps the link ([daemon API](./daemon-api-v1.md) §1.3) |
 | Message stops part-way | — | **Not an error.** Once **500 ms** (`PARTIAL_MESSAGE_STALL`) has passed in reads with no byte arriving while the parser holds part of a message, it drops that part and resynchronizes on the next `DMA@`, logging the bytes held and the header's size at `warn` on target `multi64_ed64_l2`, or at `debug` when what it held fell short of a whole 8-byte header. Only time spent blocked in a read counts, so a reader held up elsewhere while bytes queued in the driver does not trip it. A read that blocked past the limit and then brought new bytes drops the held part before they go in. None of the dropped bytes reach L3, so to L3 the message is simply missing |
 | Resynchronization | Purge RX **and** TX | `clear_serial_buffers` clears the port in both directions, the wire buffer, the decoded L3 queue, and any error held back |
 
@@ -166,7 +166,7 @@ not the ones that waited for the PI and then succeeded.
 
 The trailer check reads the 4 bytes at `8 + size`, per the cart → host row of §4.2. It previously
 read them at `8 + align(size, 2)`, the host → cart layout, which put every odd-length message from
-a cart on the trailer-mismatch row above and faulted `multi64d`'s link (issue #134). That is fixed
+a cart on the trailer-mismatch row above and, as such errors then did, faulted `multi64d`'s link (issue #134). That is fixed
 from the references. The fixed decoder carried the 2026-09-18 X7 run, but no check there targeted an
 odd-length message from the cart (§4.5).
 

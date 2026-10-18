@@ -36,8 +36,32 @@
       Execute="immediate"
       Impersonate="yes"
       Return="ignore" />
+    <!--
+      Remove the sign-in entry on uninstall. Multi64 writes it itself (Settings, "Start Multi64
+      when I sign in"), under HKCU\...\Run as `Multi64`, so nothing in the MSI owns it and an
+      uninstall left a Run entry naming a program that was gone; Tauri's NSIS uninstaller already
+      deletes the same value. Task Manager's record of it (StartupApproved\Run) goes too.
+
+      Immediate and impersonated, so HKCU is the uninstalling user's. Only on a full removal: an
+      upgrade also removes the old product, and the entry must survive that. Return="ignore"
+      because reg.exe exits 1 when the value is not there, which is the usual case.
+    -->
+    <CustomAction Id="Multi64RemoveRunEntry"
+      Directory="SystemFolder"
+      ExeCommand='reg.exe delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Multi64 /f'
+      Execute="immediate"
+      Impersonate="yes"
+      Return="ignore" />
+    <CustomAction Id="Multi64RemoveStartupApproved"
+      Directory="SystemFolder"
+      ExeCommand='reg.exe delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" /v Multi64 /f'
+      Execute="immediate"
+      Impersonate="yes"
+      Return="ignore" />
     <InstallExecuteSequence>
       <Custom Action="Multi64StopDaemon" Before="InstallValidate" />
+      <Custom Action="Multi64RemoveRunEntry" After="InstallInitialize">REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="Multi64RemoveStartupApproved" After="Multi64RemoveRunEntry">REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
   </Fragment>
 </Wix>

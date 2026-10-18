@@ -29,6 +29,11 @@ What they check:
   still saves it.
 - **A Save whose restart fails:** Settings closes, and the reason `set_settings` gave shows under the
   Status card rather than only in the log; a Save with nothing to report shows nothing there.
+- **Settings → Baud:** a value that is not a whole number from 9600 up is refused with a message
+  and nothing is saved; a valid one saves.
+- **The log:** it is not rewritten when nothing was added, so a selection in it stays.
+- **A Start that fails** while the bridge starts anyway (from the tray) shows the status as it is,
+  not **Stopped**.
 - **No console errors** from any of the pages above.
 
 ```sh

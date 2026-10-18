@@ -698,7 +698,7 @@ mod tests {
     }
 
     /// #136: L3 bytes queued by the same serial read as a later bad trailer are handed out before
-    /// the error, so a caller that drops the pipe on error (multi64d) does not lose them.
+    /// the error, so a caller that drops the pipe on error does not lose them.
     #[test]
     fn queued_l3_bytes_are_returned_before_bad_trailer_error() {
         let mut chunk = from_cart(MULTI64_L3_TYPE, b"M64B-queued");

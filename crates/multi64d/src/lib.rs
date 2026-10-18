@@ -29,11 +29,18 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 /// Serial read timeout. Bounds how long the cart reader holds the link mutex per iteration.
-pub const SERIAL_READ_TIMEOUT: Duration = Duration::from_millis(50);
+///
+/// A read with bytes waiting returns at once; only a read with nothing to read waits this long,
+/// and it does so holding the link, so every WebSocket write that arrives meanwhile waits behind
+/// it. At 50 ms that was up to 50 ms, about 25 on average, added to every request a client makes
+/// of the cart, which AP64 makes about 11 times a second. 10 ms keeps the idle reader's cost to a
+/// syscall every 12 ms or so.
+pub const SERIAL_READ_TIMEOUT: Duration = Duration::from_millis(10);
 
 /// Serial timeout while writing a WebSocket message to the cart. The serial port has one timeout
 /// for both directions, so writes swap this in and restore [`SERIAL_READ_TIMEOUT`] afterwards;
-/// otherwise a device that took longer than 50 ms to accept a packet would get half of it.
+/// otherwise a device that took longer than the read timeout to accept a packet would get half of
+/// it.
 ///
 /// Governs SC64 and X7 writes only. `Ed64ProL2Pipe::set_timeout` sets its own read polling and
 /// never the port, so a PRO write keeps the 2 s operation timeout its link set at open; the fault
@@ -51,7 +58,7 @@ pub const RELEASE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 pub const RESUME_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Longest `GET /` waits for the link lock before reporting the link busy (`serialBusy`,
-/// `docs/spec/daemon-api-v1.md` §1.1). Outlasts a reader iteration (50 ms) and is well under the
+/// `docs/spec/daemon-api-v1.md` §1.1). Outlasts a reader iteration (10 ms) and is well under the
 /// 2 s Xfer64 gives this request.
 pub const ROOT_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -539,14 +546,14 @@ fn open_reached_device(err: &anyhow::Error) -> bool {
 /// Background task: read L3 chunks from the cart and broadcast them to WebSocket clients.
 ///
 /// Also owns fault recovery. A hard `io::Error` from the pipe (as opposed to a timeout, which
-/// `read_l3_bytes` reports as `Ok(0)`) moves the link to [`LinkState::Faulted`] and drops the dead
-/// handle, so `GET /` stops claiming `serialActive` and the port becomes reopenable. The loop then
+/// `read_l3_bytes` reports as `Ok(0)`, or a message the pipe lost, which keeps the link:
+/// [`lost_a_message`]) moves the link to [`LinkState::Faulted`] and drops the dead handle, so `GET /` stops claiming `serialActive` and the port becomes reopenable. The loop then
 /// retries `open` every [`REOPEN_RETRY_INTERVAL`] until the cart comes back, backing off for an
 /// EverDrive-64 PRO that keeps failing its handshake ([`reopen_retry_interval`]).
 /// `POST /v1/serial/resume` does not wait for that backoff.
 pub async fn cart_reader_loop(state: Arc<AppState>) {
     // Allocated once and passed back and forth with the blocking task. Declaring it inside the
-    // loop cost a 64 KiB allocation *and* a 64 KiB zero-fill every iteration -- about 20 times a
+    // loop cost a 64 KiB allocation *and* a 64 KiB zero-fill every iteration -- about 80 times a
     // second while idle, for the whole life of a daemon that starts at login -- to produce bytes
     // `read_l3_bytes` immediately overwrites.
     let mut buf = vec![0u8; READ_BUF_BYTES];
@@ -612,9 +619,37 @@ pub async fn cart_reader_loop(state: Arc<AppState>) {
     }
 }
 
+/// Whether a read error is a message the L2 pipe could not deliver, rather than a cart gone.
+///
+/// `Ed64L2Pipe` reports a bad `CMPH` trailer as `InvalidData`, having dropped only that message's
+/// magic and kept what follows buffered so the next read resyncs (l3-over-everdrive-x7.md §4.4).
+/// `Sc64L2Pipe` reports the SC64's `PKT G`, a write the N64 did not take in time, as
+/// `ConnectionReset`. Both pipes go on working, and faulting the link for either closed the port,
+/// which threw away the buffer the X7 pipe kept to resync on and dropped every WebSocket write
+/// until the reopen. Neither kind comes from the serial port itself.
+fn lost_a_message(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::InvalidData | io::ErrorKind::ConnectionReset
+    )
+}
+
+/// Log a message the pipe lost ([`lost_a_message`]): the first at `warn` and then at each power of
+/// two, so a cart sending garbage cannot fill the log.
+fn note_lost_message(e: &io::Error) {
+    static LOST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = LOST.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n.is_power_of_two() {
+        tracing::warn!(error = %e, lost = n, "cart message lost; the link is kept");
+    } else {
+        tracing::debug!(error = %e, lost = n, "cart message lost; the link is kept");
+    }
+}
+
 /// One pass over the link: reopen it if faulted (and `may_reopen`), otherwise read whatever is
-/// queued into `buf`. A read error faults the link before the lock is released, so no release or
-/// resume can land between the failure and the fault.
+/// queued into `buf`. A read error other than a lost message ([`lost_a_message`]) faults the link
+/// before the lock is released, so no release or resume can land between the failure and the
+/// fault.
 fn read_once(
     link: &Arc<Mutex<LinkState>>,
     cfg: &SerialConfig,
@@ -645,6 +680,10 @@ fn read_once(
             // Right-size before this enters the broadcast: a 256-slot channel holding
             // full-capacity 64 KiB buffers would pin 16 MiB.
             Ok(n) => Ok(ReadChunk::Data(buf[..n].to_vec())),
+            Err(e) if lost_a_message(&e) => {
+                note_lost_message(&e);
+                Ok(ReadChunk::Empty)
+            }
             Err(e) => {
                 // Dropping the dead pipe here frees the port for a reopen.
                 *g = LinkState::Faulted;
@@ -799,6 +838,9 @@ mod tests {
         pub write_needs: Duration,
         /// `read_l3_bytes` fails with a hard I/O error, as for an unplugged cart.
         pub read_fails: bool,
+        /// The next `read_l3_bytes` fails once with this kind, as an L2 pipe reports a message it
+        /// could not decode.
+        pub read_fails_once: Option<io::ErrorKind>,
     }
 
     pub struct FakePipe(pub Arc<StdMutex<FakeLog>>);
@@ -829,6 +871,9 @@ mod tests {
         }
 
         pub fn read_l3_bytes(&mut self, _out: &mut [u8]) -> io::Result<usize> {
+            if let Some(kind) = self.log().read_fails_once.take() {
+                return Err(io::Error::new(kind, "bad message"));
+            }
             if self.log().read_fails {
                 return Err(io::Error::new(io::ErrorKind::BrokenPipe, "device gone"));
             }
@@ -874,9 +919,29 @@ mod tests {
         assert_eq!(state_name(&link), "faulted");
     }
 
+    /// A message the pipe could not decode is not a cart gone: the X7 pipe drops a message with a
+    /// bad `CMPH` trailer and keeps what follows buffered to resync on, and the SC64's `PKT G`
+    /// says the N64 did not take a write in time. Both pipes go on working. Faulting the link for
+    /// them closed the port, which threw away that buffer and dropped every write for a second.
+    #[test]
+    fn a_message_the_pipe_could_not_decode_keeps_the_link() {
+        for kind in [io::ErrorKind::InvalidData, io::ErrorKind::ConnectionReset] {
+            let (link, _log) = fake_link(FakeLog {
+                read_fails_once: Some(kind),
+                ..FakeLog::default()
+            });
+            let mut buf = [0u8; 16];
+            assert!(
+                read_once(&link, &test_cfg(), &mut buf, true).is_ok(),
+                "{kind:?} was taken for a dead link"
+            );
+            assert_eq!(state_name(&link), "active", "{kind:?}");
+        }
+    }
+
     #[test]
     fn a_write_slower_than_the_read_timeout_is_not_cut_off() {
-        // #138: the 50 ms read timeout used to govern writes too, so a device that took longer
+        // #138: the read timeout (50 ms then) used to govern writes too, so a device that took longer
         // than that to accept a packet got half of it.
         let (link, log) = fake_link(FakeLog {
             write_needs: Duration::from_millis(200),

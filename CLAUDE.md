@@ -39,8 +39,10 @@ cd crates/multi64/e2e && npm ci && npx playwright install --with-deps chromium &
 They drive `crates/multi64/src/index.html` the same way and check the Status card, including a
 start in progress and a bridge without the cart, the Settings Cart and Serial port selects,
 including a saved port that is unplugged, the warning under Listen for an address other PCs can
-reach, the note a Save shows when the bridge it restarts fails to start, that the window fits the
-page, and that nothing logs a console error. See
+reach, the note a Save shows when the bridge it restarts fails to start, that Save refuses a Baud
+that is not a whole number from 9600 up, that the log is not rewritten when nothing was added, that
+a failed Start shows the status as it is, that the window fits the page, and that nothing logs a
+console error. See
 [`crates/multi64/e2e/README.md`](crates/multi64/e2e/README.md).
 
 AP64's frontend checks are a third job of the same kind, for its Patch and Play cards:
