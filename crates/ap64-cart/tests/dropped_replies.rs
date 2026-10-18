@@ -68,7 +68,7 @@ fn a_write_whose_reply_was_never_sent_is_sent_again_early_and_applied_once() {
         common::start(Arc::new(move |req| {
             let steps = writes.serve(req, 0x5A);
             if req.msg == m64p::MSG_POKEV && !dropped.swap(true, Ordering::SeqCst) {
-                // Applied, and the acknowledgement never sent.
+                // Applied, and the acknowledgment never sent.
                 Vec::new()
             } else {
                 steps
