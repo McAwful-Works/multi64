@@ -1479,11 +1479,12 @@ fn session(
                 let (h, m, st) = summarized;
                 log(format!(
                     "in the last {} min: {} requests answered, {} with an error for want of the \
-                     cart; {} stalls, {} reconnects; {client} {}",
+                     cart; {} stalls, {} sent again early, {} reconnects; {client} {}",
                     SUMMARY_EVERY.as_secs() / 60,
                     handled - h,
                     misses - m,
                     stats.stalls - st.stalls,
+                    stats.quick_resends - st.quick_resends,
                     stats.reconnects - st.reconnects,
                     if client_here.get() {
                         "connected"

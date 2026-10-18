@@ -231,8 +231,14 @@ What it says:
   client asking again after a pause, and the client reconnecting, with the last request AP64
   answered before it and how fast. When the client logs "timed out", that line shows whether
   the request reached AP64 at all.
-- **Every five minutes, a summary:** requests answered, errors, stalls, reconnects, and whether
-  the client is connected.
+- **Every five minutes, a summary:** requests answered, errors, stalls, requests sent again
+  early, reconnects, and whether the client is connected. Over a SummerCart64 the agent now and
+  then handles a request and its reply never reaches the PC (measured in Ocarina of Time at
+  0.1% to 2% of requests, depending on where the game is). When the agent has been answering
+  every frame and a reply has not come within about four round trips, about 0.2 s, AP64 sends the
+  request again under the same request id rather than wait out the whole 1.2 s; that is "sent
+  again early". A write goes again only to an agent that recognizes a copy, as below, and nothing
+  goes early over an EverDrive.
 
 ## Starting and stopping
 
