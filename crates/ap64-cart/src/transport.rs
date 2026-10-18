@@ -82,7 +82,49 @@ pub struct Multi64Transport {
     /// cannot be counted by anyone.
     dropped_seen: u16,
     dropped_new: u32,
+    /// Requests sent again early ([`QUICK_COPY_MIN`]).
+    quick_resends: u32,
+    /// Whether the link brings each request to the agent whole ([`link_keeps_requests_whole`]),
+    /// which an early copy needs as a write sent again does.
+    whole_requests: bool,
+    /// How long a round trip takes, smoothed over the requests answered on the first copy.
+    srtt: Option<Duration>,
+    rtt_samples: u32,
+    /// When the agent last answered anything.
+    last_answer: Option<Instant>,
+    /// The request waiting for its answer, kept so it can be sent again early.
+    outstanding: Option<Outstanding>,
 }
+
+/// A request sent and not yet answered.
+struct Outstanding {
+    rid: u16,
+    app: Vec<u8>,
+    sent: Instant,
+    /// Whether this request may go twice: a read, or a write to an agent that recognizes a copy.
+    may_copy: bool,
+    copied: bool,
+}
+
+/// The shortest wait before a request is sent again early, and the longest.
+///
+/// Measured on a SummerCart64 in Ocarina of Time (2026-10-18): the agent handled every request,
+/// and now and then its reply never reached the serial port, between 0.1% and 2% of requests
+/// depending on where the game was. Every round trip that was answered took one game frame, 47 ms
+/// at the median and 53 ms at the 99th percentile, so a reply that has not come in four of them,
+/// from an agent that was answering every frame, has almost certainly been dropped. Sent again
+/// then, the request costs about 0.2 s where waiting out [`REPLY_TIMEOUT`] cost 1.2, and three
+/// dropped in a row no longer add up to a reconnect.
+pub(crate) const QUICK_COPY_MIN: Duration = Duration::from_millis(150);
+const QUICK_COPY_MAX: Duration = Duration::from_millis(600);
+/// Round trips per early wait: room for a lag frame or two before a request goes twice.
+const QUICK_COPY_RTTS: u32 = 4;
+/// Round trips answered before one is trusted to say how long the next should take.
+const QUICK_COPY_SAMPLES: u32 = 8;
+/// The agent counts as answering every frame only if it answered this recently when the request
+/// went out. Shorter than [`REPLY_TIMEOUT`], so the retry after a timeout, at a scene load say, is
+/// never sent twice: one early copy per silence, not one per retry.
+const QUICK_COPY_LIVE: Duration = Duration::from_millis(1000);
 
 fn other(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
@@ -266,6 +308,12 @@ impl Multi64Transport {
             events: Vec::new(),
             dropped_seen: 0,
             dropped_new: 0,
+            quick_resends: 0,
+            whole_requests: false,
+            srtt: None,
+            rtt_samples: 0,
+            last_answer: None,
+            outstanding: None,
         };
 
         t.send_app(&m64p::encode_hello())?;
@@ -286,8 +334,9 @@ impl Multi64Transport {
                 t.rdram_bytes = rdram_bytes;
                 t.writable = flags & m64p::FLAG_WRITABLE != 0;
                 let cart = status.and_then(|s| s.cart);
+                t.whole_requests = link_keeps_requests_whole(cart.as_deref());
                 t.poke_once = flags & m64p::FLAG_POKE_ONCE != 0;
-                if t.poke_once && !link_keeps_requests_whole(cart.as_deref()) {
+                if t.poke_once && !t.whole_requests {
                     t.poke_once = false;
                     (t.log)(format!(
                         "the agent can take a write sent again, but over {} a copy could be \
@@ -305,6 +354,11 @@ impl Multi64Transport {
 
     pub fn requests(&self) -> u32 {
         self.requests
+    }
+
+    /// Requests sent again early ([`QUICK_COPY_MIN`]).
+    pub fn quick_resends(&self) -> u32 {
+        self.quick_resends
     }
 
     fn rid(&mut self) -> u16 {
@@ -331,6 +385,77 @@ impl Multi64Transport {
             .map_err(|e| other(format!("ws send: {e}")))
     }
 
+    /// Send request `rid` and keep it as the one waiting for its answer. With `may_copy` it may go
+    /// again early, under the same rid ([`QUICK_COPY_MIN`]): a read, which a copy cannot change,
+    /// or a write to an agent that recognizes one ([`Self::poke_once`]).
+    fn send_request(&mut self, rid: u16, app: Vec<u8>, may_copy: bool) -> io::Result<()> {
+        self.send_app(&app)?;
+        self.outstanding = Some(Outstanding {
+            rid,
+            app,
+            sent: Instant::now(),
+            may_copy,
+            copied: false,
+        });
+        Ok(())
+    }
+
+    /// When request `rid` goes again early, if it does.
+    ///
+    /// Only over a link that brings each request whole, as for a write sent again: over an
+    /// EverDrive a copy could be joined to a request a lost piece cut short. Only once enough
+    /// round trips have been answered to say how long one takes, and only when the agent had
+    /// answered within [`QUICK_COPY_LIVE`] of this request going out: an agent gone quiet for a
+    /// scene load gets one early copy, not one with every retry.
+    fn quick_copy_at(&self, rid: u16) -> Option<Instant> {
+        let o = self
+            .outstanding
+            .as_ref()
+            .filter(|o| o.rid == rid && o.may_copy && !o.copied)?;
+        if !self.whole_requests || self.rtt_samples < QUICK_COPY_SAMPLES {
+            return None;
+        }
+        let live = self
+            .last_answer
+            .is_some_and(|t| o.sent.saturating_duration_since(t) < QUICK_COPY_LIVE);
+        if !live {
+            return None;
+        }
+        let wait = (self.srtt? * QUICK_COPY_RTTS).clamp(QUICK_COPY_MIN, QUICK_COPY_MAX);
+        Some(o.sent + wait)
+    }
+
+    /// Send the request waiting for its answer again, byte for byte.
+    fn send_quick_copy(&mut self) -> io::Result<()> {
+        let Some(o) = self.outstanding.as_mut() else {
+            return Ok(());
+        };
+        o.copied = true;
+        let app = o.app.clone();
+        self.quick_resends += 1;
+        self.send_app(&app)
+    }
+
+    /// The agent answered `want`. A request answered on its first copy says how long a round
+    /// trip takes; one sent twice cannot say which copy was answered.
+    fn answered(&mut self, want: Want) {
+        let now = Instant::now();
+        self.last_answer = Some(now);
+        let Want::Rid(rid) = want else {
+            return;
+        };
+        if let Some(o) = self.outstanding.take_if(|o| o.rid == rid) {
+            if !o.copied {
+                let rtt = now.saturating_duration_since(o.sent);
+                self.srtt = Some(match self.srtt {
+                    None => rtt,
+                    Some(s) => (s * 7 + rtt) / 8,
+                });
+                self.rtt_samples = self.rtt_samples.saturating_add(1);
+            }
+        }
+    }
+
     /// Keep what a `PEEKV_RESP` brought back from the watch, whichever request it answers.
     ///
     /// The agent hands each event out once, on whichever response goes next, so a response
@@ -355,8 +480,15 @@ impl Multi64Transport {
     /// one-request-at-a-time, so a response to another rid answers a request we already gave up
     /// on, and keeping it would only desynchronize us further. What it carried from the watch is
     /// kept ([`Self::keep_watch_trailer`]).
+    ///
+    /// A request kept by [`Self::send_request`] may go again early, once ([`Self::quick_copy_at`]);
+    /// the answer to either copy is the answer, and the deadline stays the first copy's.
     fn await_response(&mut self, want: Want) -> io::Result<m64p::Response> {
         let deadline = Instant::now() + REPLY_TIMEOUT;
+        let mut quick_at = match want {
+            Want::Rid(rid) => self.quick_copy_at(rid),
+            Want::Hello => None,
+        };
 
         loop {
             // Drain anything already decoded before going back to the socket.
@@ -365,6 +497,7 @@ impl Multi64Transport {
                     Ok(mut resp) => {
                         self.keep_watch_trailer(&mut resp);
                         if want.matches(&resp) {
+                            self.answered(want);
                             return match resp {
                                 m64p::Response::Err { rid, code } => {
                                     Err(io::Error::other(m64p::Error::Refused { rid, code }))
@@ -397,6 +530,10 @@ impl Multi64Transport {
                 }
             }
 
+            if quick_at.is_some_and(|q| Instant::now() >= q) {
+                quick_at = None;
+                self.send_quick_copy()?;
+            }
             if Instant::now() >= deadline {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
@@ -413,7 +550,9 @@ impl Multi64Transport {
             // that came back a moment early (Windows rounds socket timeouts to its timer tick)
             // found the deadline not quite passed and waited the whole of it again, so one
             // attempt could take twice REPLY_TIMEOUT, and its retries outlast the client.
-            let left = deadline.saturating_duration_since(Instant::now());
+            // Or for what is left until the early copy is due.
+            let until = quick_at.map_or(deadline, |q| q.min(deadline));
+            let left = until.saturating_duration_since(Instant::now());
             if let MaybeTlsStream::Plain(s) = self.ws.get_ref() {
                 s.set_read_timeout(Some(left.max(Duration::from_millis(1))))
                     .map_err(|e| other(format!("set read timeout: {e}")))?;
@@ -458,7 +597,7 @@ impl Multi64Transport {
         }
         let rid = self.rid();
         let app = m64p::encode_peekv(rid, regions).map_err(|e| other(e.to_string()))?;
-        self.send_app(&app)?;
+        self.send_request(rid, app, true)?;
         match self.await_response(Want::Rid(rid))? {
             // What it brought back from the watch is already kept: see keep_watch_trailer.
             m64p::Response::PeekV { regions: got, .. } => {
@@ -477,7 +616,8 @@ impl Multi64Transport {
     pub fn watch(&mut self, slots: &[m64p::Slot]) -> io::Result<u8> {
         let rid = self.rid();
         let app = m64p::encode_watch(rid, slots).map_err(|e| other(e.to_string()))?;
-        self.send_app(&app)?;
+        // Never twice: the agent starts a new history on each WATCH, and a copy would clear it.
+        self.send_request(rid, app, false)?;
         match self.await_response(Want::Rid(rid))? {
             m64p::Response::WatchAck { watching, .. } => {
                 // The agent starts a new history on WATCH, counters included.
@@ -513,7 +653,7 @@ impl Multi64Transport {
         }
         let rid = self.rid();
         let app = m64p::encode_peekrom(rid, regions).map_err(|e| other(e.to_string()))?;
-        self.send_app(&app)?;
+        self.send_request(rid, app, true)?;
         match self.await_response(Want::Rid(rid)) {
             Ok(m64p::Response::PeekRom { regions: got, .. }) => {
                 check_regions("ROM ", regions, &got)?;
@@ -549,7 +689,8 @@ impl Multi64Transport {
         }
         let rid = self.rid();
         let app = m64p::encode_pokev(rid, writes).map_err(|e| other(e.to_string()))?;
-        self.send_app(&app)?;
+        let copy = self.poke_once;
+        self.send_request(rid, app, copy)?;
         Ok(rid)
     }
 

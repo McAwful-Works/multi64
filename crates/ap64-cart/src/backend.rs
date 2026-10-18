@@ -341,6 +341,10 @@ pub struct Stats {
     pub stalls: u32,
     /// Transports rebuilt.
     pub reconnects: u32,
+    /// Requests sent again early because an agent that had been answering every frame had not
+    /// answered within a few round trips: a reply it dropped, almost always (see the transport's
+    /// `QUICK_COPY_MIN`).
+    pub quick_resends: u32,
 }
 
 /// Asked whether to give up on a cart that is not answering.
@@ -364,6 +368,7 @@ pub struct Multi64 {
     url: String,
     log: Log,
     retired_requests: u64,
+    retired_quick_resends: u32,
     stats: Stats,
     /// Cart ROM pages read so far, by page number. Dropped on reconnect.
     rom_pages: HashMap<u32, Vec<u8>>,
@@ -404,6 +409,7 @@ impl Multi64 {
             url: url.to_string(),
             log,
             retired_requests: 0,
+            retired_quick_resends: 0,
             stats: Stats::default(),
             rom_pages: HashMap::new(),
             generation: 0,
@@ -461,6 +467,7 @@ impl Multi64 {
     pub fn stats(&self) -> Stats {
         Stats {
             requests: self.retired_requests + self.t.requests() as u64,
+            quick_resends: self.retired_quick_resends + self.t.quick_resends(),
             ..self.stats
         }
     }
@@ -574,6 +581,7 @@ impl Multi64 {
             match Multi64Transport::connect(&self.url, self.log.clone()) {
                 Ok(t) => {
                     self.retired_requests += self.t.requests() as u64;
+                    self.retired_quick_resends += self.t.quick_resends();
                     self.t = t;
                     self.stats.reconnects += 1;
                     // A new HELLO: the console may have been reset, or be running
@@ -742,7 +750,9 @@ impl Multi64 {
     /// again: if the first copy never reached it, this one is applied, and if it did, this one is
     /// acknowledged and nothing is written twice. Any other agent is only waited on again for the
     /// first copy's reply, since a copy would be a second write. Either way the write never
-    /// reaches a rebuilt link.
+    /// reaches a rebuilt link. The agent that recognizes a copy may also be sent one early, inside
+    /// the first wait, when its reply looks dropped rather than late (the transport's
+    /// `QUICK_COPY_MIN`).
     fn poke_once(&mut self, batch: &[(u32, &[u8])]) -> io::Result<()> {
         if batch.is_empty() {
             return Ok(());
