@@ -1,0 +1,107 @@
+# Pokemon Snap (US) with nielrenned's Pokemon Snap world. Blobs: agent/build.sh snap (see
+# BUILD_REV). Addresses from the world's own fork of the decomp (nielrenned/pokemonsnap), each
+# checked against the ROM here; main is ROM 0x1000 at 0x80000400, resident for the whole run.
+#
+# The world's game logic is all in the ROM, built from that decomp: a segment it appends at ROM
+# 0x1000000 and loads into the Expansion Pak at 0x80400000, from a bootstrap over the game's SP
+# anti-tamper checks. Its client only reads and writes RAM, through a Project64 script.
+#
+# The hook site and the stub are in main, and the world changes neither: every pinned region
+# below is byte for byte the retail game's. Both were chosen by measurement
+# (tools/count-calls.lua, 12,660 frames of play).
+
+id = "snap"
+name = "Pokemon Snap"
+release = "US"
+game_code = "NPFE"
+version = 0
+cic = "6103"
+randomizer = "nielrenned's Pokemon Snap world"
+connector = "pj64"        # the world's client talks to a Project64 script; AP64 stands in for it
+game_needs_expansion_pak = true   # the world's segment and state block live at 0x80400000
+
+# The client finds the game through Project64's settings file, which it reads and writes on
+# every start, and stops without one; it picks its port there on its first run. AP64 reads the
+# port from the same file (ap64-connector's pj64.rs), so Project64 has to be installed, though
+# it never runs. The client takes its slot name from the ROM, so it logs in once AP64 serves
+# the game.
+notes = [
+    "Pokemon Snap Client needs Project64 installed, only for its settings file: in Archipelago's host.yaml, set pokemon_snap_options, emulator_settings, path to your Project64.exe, and auto_start to false.",
+    "Open Pokemon Snap Client from the Archipelago Launcher. The first time, open it before pressing Start: it picks the port AP64 listens on.",
+    "The client logs in on its own, with the slot name it reads from the game.",
+]
+
+# The release this was measured against; a different one installed is noted, not refused.
+[measured]
+world = "pokemon_snap.apworld"
+version = "0.8.0"
+
+[agent]
+image = "agent.bin"
+rom = 0x1010000         # past the world's segment, appended at 0x1000000 (ends 0x1004360)
+vram = 0x80480000       # Expansion Pak, past the world's 5 pages; measured untouched in play
+min_ram = 0x800000
+
+[[require]]
+kind = "word"
+label = "Frame hook site"
+at = 0x77D8             # jal func_80006878 at 0x80006BD8, the first call in gtlMain's frame loop
+equals = 0x0C001A1E
+hint = "The randomizer changed the frame loop, so the hook has nowhere to go."
+
+# func_80003530, a 1356-byte leaf in sys/dma.c that nothing in the ROM refers to, and that
+# tools/count-calls.lua never saw run. The hash is what stops a later release using it.
+[[require]]
+kind = "sha1"
+label = "Space for the hook stub"
+at = 0x4130             # 0x80003530
+len = 0x54C
+sha1 = "b833e6c14c8b414d0ae346b552253576dc5a87ae"
+hint = "Something now occupies the space the hook stub goes in."
+
+[[require]]
+kind = "sha1"
+label = "Function the hook calls first"
+at = 0x7478             # func_80006878, 0x80006878
+len = 0x90
+sha1 = "afb9f7aa1875692731927226255f0d5482fbe784"
+hint = "The randomizer changed the call the hook passes each frame through to."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine"
+at = 0x3820             # dmaReadRom, 0x80002C20
+len = 0x3C
+sha1 = "adf7ef32633c3ad259bb311ff6a4431ea9e1a52a"
+hint = "The randomizer changed the routine the stub loads the agent with."
+
+[[require]]
+kind = "sha1"
+label = "ROM copy routine, the transfer itself"
+at = 0x3610             # dmaCopy, 0x80002A10, which dmaReadRom calls
+len = 0x154
+sha1 = "2a3a258b196d98c42b5c4519ca453c418ab2b814"
+hint = "The randomizer changed the routine the stub loads the agent with."
+
+[[write]]
+kind = "blob"
+label = "Hook stub"
+at = 0x4130
+file = "stub.bin"
+max_len = 0x54C
+
+# The stub's lui/addiu of AGENT_ROM (stub + 0x5C). It keeps agent.rom when the seed leaves
+# room there; when the seed's data reaches it, the agent goes past the data and this tells
+# the stub where.
+[[write]]
+kind = "imm"
+label = "Where the agent is, for the stub"
+hi = 0x418C
+lo = 0x4190
+value = "agent_rom"
+
+[[write]]
+kind = "jal"
+label = "Frame hook"
+at = 0x77D8
+target = 0x80003530

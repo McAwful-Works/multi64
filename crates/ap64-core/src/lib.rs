@@ -90,6 +90,7 @@ pub fn builtin() -> Result<Vec<Bundle>, String> {
         builtin!("bmtsa", ["agent.bin", "stub.bin"]),
         builtin!("sf64", ["agent.bin", "stub.bin"]),
         builtin!("goldeneye", ["agent.bin", "stub.bin"]),
+        builtin!("snap", ["agent.bin", "stub.bin"]),
     ];
     bundles.sort_by_key(|b| library_key(&b.profile.name));
     Ok(bundles)
@@ -376,7 +377,7 @@ mod tests {
         }
         assert_eq!(
             seen,
-            11 * Cart::ALL.len(),
+            12 * Cart::ALL.len(),
             "every profile whose stub copies the agent lets it move, for every cart"
         );
     }
@@ -437,7 +438,7 @@ mod tests {
                 .profile
                 .silence_may_be_the_pak()
         };
-        for id in ["oot", "bt", "dk64", "goldeneye"] {
+        for id in ["oot", "bt", "dk64", "goldeneye", "snap"] {
             assert!(!silent_pak(id), "{id} does not run without a Pak");
         }
         for id in ["cv64", "mk64", "bm64", "sf64"] {
@@ -540,6 +541,7 @@ mod tests {
                 "The Legend of Zelda: Ocarina of Time",
                 "Mario Kart 64",
                 "Paper Mario",
+                "Pokemon Snap",
                 "Star Fox 64",
             ]
         );

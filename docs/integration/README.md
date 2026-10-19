@@ -62,6 +62,9 @@ goes and **what calls it**, and that is almost all of the work.
    And a script that does no game logic, only moving packets between the tool and buffers
    in the game's RAM, can be replaced outright by a relay, which is how AP64 serves Star Fox
    64's client ([host-connector.md §11](host-connector.md#11-relaying-a-rom-that-speaks-for-itself)).
+   A script in another emulator that only reads and writes memory can be stood in for the same
+   way, which is how AP64 serves Pokémon Snap's client, written for Project64
+   ([host-connector.md §12](host-connector.md#12-standing-in-for-an-emulators-memory-bridge-script)).
    A tool with none of these cannot be served this way. Check this first; it decides whether
    the rest is worth doing.
 

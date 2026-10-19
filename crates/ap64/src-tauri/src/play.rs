@@ -718,6 +718,11 @@ impl Play {
             .ok_or("choose a game")?
             .clone();
         let kind = kind(&game.profile.connector).ok_or("unknown connector")?;
+        // A client whose port is set up on this PC (Pokémon Snap's, in Project64's settings)
+        // cannot be served until it is, and saying so now beats a session that cannot listen.
+        if let Kind::Script(script) = kind {
+            script.listen_on()?;
+        }
         // A new session starts a new log: what the last one did is not this one's history.
         let kept = self.log.clone();
         kept.lock().unwrap().clear();
@@ -1497,9 +1502,9 @@ fn session(
             }
         };
         let result = match (kind, &connector) {
-            (Kind::Script(script), Some(connector)) => {
-                server::serve(connector, script.ports, stop, &mut on_event)
-            }
+            (Kind::Script(script), Some(connector)) => script
+                .listen_on()
+                .and_then(|ports| server::serve(connector, &ports, stop, &mut on_event)),
             // The cart stays on this thread, and each call borrows it only for its length, so
             // the handler's own borrows above never overlap one of these.
             (Kind::Native(native), _) => match &native.protocol {

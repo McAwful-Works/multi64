@@ -17,7 +17,11 @@ use crate::profile::{Measured, Profile};
 pub const ARCHIPELAGO: &str = "Archipelago";
 
 /// Archipelago folders to look in: `AP64_ARCHIPELAGO_DIR` first, then the Windows
-/// installer's default and the per-user one.
+/// installer's default and the per-user one. Each may hold a world, and its own `host.yaml`.
+pub fn archipelago_dirs() -> Vec<PathBuf> {
+    roots()
+}
+
 fn roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
     if let Some(dir) = std::env::var_os("AP64_ARCHIPELAGO_DIR") {
