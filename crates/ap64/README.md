@@ -14,7 +14,10 @@ Play Archipelago N64 seeds on a real console, from Windows. AP64 does two jobs:
 2. **Play.** It runs a connector for that game against the cart, through
    [Multi64](../multi64/README.md)'s bridge, so Archipelago's own client can talk to the console
    as it would to an emulator. The ROM is read from the cart itself (M64P `PEEKROM`),
-   so there is no file to choose: pick the game, press Start, open the client. The window
+   so there is no file to choose: press Start and open the client. The game menu starts on
+   **Auto-detect**, which finds the game on the cart and follows the console to another
+   (see [Starting and stopping](#starting-and-stopping)); choosing a game instead serves only
+   that one. The window
    calls every game's client "the AP client"; the list below says which entry in the
    Archipelago Launcher that is, and the session log names it too.
 
@@ -263,6 +266,19 @@ game loaded, Multi64 restarted — none of those end a session. It goes back to 
 cart, says which link is down, and picks up where it left off when the console returns. Only
 **Stop** ends a session, because only you know whether you are done playing.
 
+**Auto-detect**, the game menu's first choice and the one it starts on, finds the game once the
+cart answers. It reads the cart's header and takes every game AP64 offers with that header. The
+header alone does not settle it: worlds rewrite it, and Banjo-Tooie's and Star Fox 64's both write
+`NEDE` version `0x30`. So of those it keeps the one whose hooks are in place, checked as Start
+checks a chosen game, and serves that game's AP client. The menu then names the game. Each time the
+link to the cart restarts, which is what a console reset or a ROM swapped looks like from here, it
+checks again. The same game carries on with its client still connected. Another game stops the old
+game's connector and starts the new one's, and the log says the console changed games; that game's
+AP client is the one to open. A ROM that passes the checks for two games would be refused, with a
+note to choose the game instead; none does today. A chosen game is checked for and nothing else,
+so a different game on the cart stops the connector, and is refused as the wrong ROM until the
+right one is loaded.
+
 A session needs the Multi64 app, which has its own installer. If it is not running, Start
 starts it, looking beside AP64's own folder and then in the installer's default places
 (`MULTI64_APP` names its `multi64.exe` if it is anywhere else). If it is not running and can't
@@ -288,9 +304,12 @@ and the session log says so once:
 - For a game that does not run without one (Ocarina of Time, Banjo-Tooie, Donkey Kong 64,
   GoldenEye 007, Pokémon Snap: `game_needs_expansion_pak` in its profile), a running game has the Pak, so the status asks
   instead whether the ROM is the one AP64 added the agent to.
+- With Auto-detect, which cannot know what is on a cart that does not answer, it asks for both:
+  a ROM AP64 added the agent to, and an Expansion Pak. On an EverDrive it says what it says for
+  any game there, and the log adds the Pak.
 
 For Pokémon Snap, Start first looks for the port its client will connect to (above), and
-refuses until it can find it, saying what is missing: the Project64 path in `host.yaml`, or a
+refuses until it can find it (with Auto-detect, the session holds its client instead, as below), saying what is missing: the Project64 path in `host.yaml`, or a
 client never opened. It reads the `host.yaml` of the first Archipelago folder that names a
 Project64 for the client, looking in `AP64_ARCHIPELAGO_DIR` if it is set, then
 `%ProgramData%\Archipelago` and `%LOCALAPPDATA%\Archipelago`, as for the worlds below; a
@@ -317,6 +336,18 @@ to know about its randomizer on a console that AP64 cannot change, such as Bombe
 freeze. They come from the game's profile (`notes`), show at every Start until **Don't show
 these again for this game** is ticked, and show again if they change.
 
+With Auto-detect, Start asks neither, since the game is not known until the cart answers. Both come
+when the session finds a game that has them, the fix first, each once a session for each game, and
+a dialog waits for any other window to close rather than opening over it. Until the fix is made the
+session holds that game's client: nothing is served, and the AP client row says **Needs a one-time
+fix**. **Fix** in the dialog makes it, and the session carries on at once; **Cancel** leaves it
+holding, and Stop then Start offers the fix again. A world that is not installed (**Not
+installed**), or Pokémon Snap's port not set up (**Not set up**), holds the client the same way,
+and is looked at again every 30 seconds, so the session carries on by itself once it is in place.
+A version of the world AP64 does not recognize is said under the menu, and the client is served.
+The notes have only **Got it**, since the session is already running. A session holding a client
+still watches the cart, and goes back to waiting for the console if it stops answering.
+
 Each time the link goes, a client that connects to AP64 (the games played through a connector
 script) has its connection reset rather than closed politely. That is deliberate: these clients
 read a line and hand it to `json.loads`, and a clean close gives them an empty string whose decode
@@ -330,7 +361,9 @@ A client AP64 calls (Star Fox 64's) is simply let go: its client takes the close
 the game going away and waits for another, and AP64 calls it again once the console is back and
 the game has something to say.
 
-Before anything else, Start checks that the ROM on the cart is one this version of AP64 patched.
+Before anything else, Start checks that the ROM on the cart is one this version of AP64 patched,
+and the session checks again each time the link to the cart restarts, for a chosen game as for
+Auto-detect.
 A new version can change the agent or the stub that loads it, so a ROM patched by another
 version is refused, with a note to add the agent to the seed again.
 

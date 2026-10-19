@@ -4,7 +4,11 @@
 //! There is no ROM file to choose. The connector reads the ROM from the cart (M64P
 //! `PEEKROM`), and before starting, the session reads the cart's header and hook sites (or,
 //! for a hook the profile finds per seed, the agent image) to check it is running the chosen
-//! game with its agent in place.
+//! game with its agent in place. With [`AUTO`] chosen there is no game to check against:
+//! the session takes every game whose header matches the cart's and keeps the one whose hooks
+//! are in place ([`identify`]), and serves that game's client. It asks again whenever the link
+//! to the cart restarts, since that is when another ROM can have been loaded, and a session
+//! whose game changed builds the new game's connector in place of the old one's.
 //!
 //! One session at a time, on its own thread (the connector's Lua state is not `Send`,
 //! so everything is built there). The page hears about it through two events:
@@ -34,6 +38,19 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// The Multi64 app's daemon, where it listens by default.
 pub const DEFAULT_URL: &str = "ws://127.0.0.1:38765/ws";
+
+/// The game the page sends to have the session find out for itself which game is on the cart.
+pub const AUTO: &str = "auto";
+
+/// What a ROM that a version of AP64 other than this one patched is told. Named, as is
+/// [`NO_AGENT`], because [`identify`] ranks them: of two games sharing a header, the failure
+/// worth telling is the one about the ROM that is there.
+const OTHER_VERSION: &str = "the ROM on the cart was patched by a different version of AP64; add \
+                             the agent to the seed again with this one and load that ROM";
+
+/// What a ROM without AP64's hook where its game has one is told.
+const NO_AGENT: &str =
+    "the ROM on the cart has no AP64 agent; add the agent to the seed and load that ROM";
 
 /// A failure worth showing, in two parts.
 ///
@@ -85,14 +102,16 @@ pub struct Status {
     /// as running as one mid-game, and reading that off the wording meant a reset console
     /// silently handed Start back to someone who had not asked to stop.
     pub running: bool,
-    /// idle | connecting | waiting-client | playing | stopped
+    /// idle | connecting | waiting-console | client-setup | waiting-client | playing | stopped
     pub state: String,
     pub detail: String,
     /// The part of `detail` only a developer needs; empty when there is none.
     pub detail_dev: String,
     /// The three things that have to be up, each as the session last saw it: `idle`, `waiting`,
-    /// `ok` or `failed`. The bridge alone can also be `nobridge`, `nocart` or `notinstalled`,
-    /// which say which part of Multi64 is missing (`LINK_TEXT` in `main.js` has the words).
+    /// `ok` or `failed`. The bridge can also be `nobridge`, `nocart` or `notinstalled`, which say
+    /// which part of Multi64 is missing, and the AP client `needsfix`, `notinstalled` or
+    /// `notsetup`, from an [`AUTO`] session holding a game's client (`LINK_TEXT` in `main.js` has
+    /// the words).
     ///
     /// A single status line can only say what is happening now, which leaves the question a
     /// player actually has -- which part is not working -- to be inferred from it. These are
@@ -106,10 +125,22 @@ pub struct Status {
     pub reconnects: u32,
     pub stalls: u32,
     pub handled: u64,
+    /// Whether the session finds the game itself ([`AUTO`]) rather than checking for one.
+    pub auto: bool,
+    /// The game the cart was found running, by profile id and by name; empty until it has been.
+    pub game: String,
+    pub game_name: String,
+    /// What is in the way of that game's Archipelago client, when something is: the fix it needs,
+    /// or a world that is not installed. Only an [`AUTO`] session says, since Start settles it
+    /// for a game that was chosen; the page offers the fix from this, as Start would have.
+    pub client_setup: Option<ClientSetup>,
 }
 
 pub struct Session {
     stop: Arc<AtomicBool>,
+    /// What the connector is serving until: set with `stop`, and on its own when the cart turns
+    /// out to be running another game, so that game's connector can take over.
+    serve_stop: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
 
@@ -128,6 +159,8 @@ pub struct Play {
     log: Arc<Mutex<VecDeque<String>>>,
     /// Where the current (or last) session's log is saved, if it could be.
     log_file: Mutex<Option<PathBuf>>,
+    /// Set when a client fix was made, so a session holding for one looks again at once.
+    recheck: Arc<AtomicBool>,
 }
 
 /// What plays a game: a connector script AP64 runs, or a client AP64 serves itself, by
@@ -203,12 +236,13 @@ pub fn games(bundles: &[Bundle]) -> Vec<Game> {
 }
 
 /// Whether the chosen game's Archipelago client is ready for AP64. The Play card asks when Start
-/// is pressed, and offers the fix before starting when one is needed.
+/// is pressed, and offers the fix before starting when one is needed; for an [`AUTO`] session it
+/// reads it from [`Status::client_setup`] instead.
 ///
 /// Only a game whose client needs changing before it can reach AP64 has one of these at all
 /// ([`ap64_connector::ClientFix`]); for every other game the answer is `None` and Start just
 /// starts.
-#[derive(Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientSetup {
     /// `ready`, `needed`, `missing` (the client is not installed) or `unknown`.
@@ -483,7 +517,7 @@ fn fix_copies(
 }
 
 /// The file table in the cart's ROM at `table`, read a piece at a time up to its end.
-fn cart_table(cart: &mut Multi64, table: u32) -> Result<Vec<DmaEntry>, String> {
+fn cart_table(cart: &mut dyn Backend, table: u32) -> Result<Vec<DmaEntry>, String> {
     const STEP: usize = 0x1000;
     // dma_entries gives up past 0x2000 entries; so does this.
     const MAX: usize = 0x2_0000;
@@ -509,7 +543,7 @@ fn cart_table(cart: &mut Multi64, table: u32) -> Result<Vec<DmaEntry>, String> {
 ///
 /// A hook placed relative to a find has no fixed offset to read, and locating it would mean
 /// reading the whole ROM back. The agent image is checked at its offset in its place.
-fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<OnCart, Issue> {
+fn verify_cart(bundle: &Bundle, cart: &mut dyn Backend) -> Result<OnCart, Issue> {
     let p = &bundle.profile;
     let mut found_hooks = false;
     let jals: Vec<(u32, u32)> = p
@@ -556,12 +590,7 @@ fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<OnCart, Issue> {
         ));
     }
     // One message for the player, whatever the reason: the reason is the developer's half.
-    let without = |why: String| {
-        Issue::new(
-            "the ROM on the cart has no AP64 agent; add the agent to the seed and load that ROM",
-            why,
-        )
-    };
+    let without = |why: String| Issue::new(NO_AGENT, why);
     let table = match &p.transform {
         None => None,
         Some(Transform::Yaz0Dmadata { table }) => {
@@ -629,8 +658,7 @@ fn verify_cart(bundle: &Bundle, cart: &mut Multi64) -> Result<OnCart, Issue> {
             // agent or stub differs from this one's. Its stub may even say the agent is
             // somewhere else, which is why the address can look strange.
             return Err(Issue::new(
-                "the ROM on the cart was patched by a different version of AP64; add the \
-                 agent to the seed again with this one and load that ROM",
+                OTHER_VERSION,
                 format!("the agent at ROM 0x{at:X} is not this build's"),
             ));
         }
@@ -648,6 +676,162 @@ struct OnCart {
     /// Where the agent is in the cart's ROM, read from the stub, for a profile whose agent can
     /// move. `None` for one whose agent the game's own loader puts in place.
     agent_rom: Option<u32>,
+}
+
+/// Which of `bundles` the cart is running with its agent: every game whose header matches the
+/// cart's is checked as [`verify_cart`] checks a chosen one, and the one that passes is it.
+///
+/// The header alone does not say. Worlds rewrite it, and two of them, Banjo-Tooie's and Star Fox
+/// 64's, both write `NEDE` version `0x30`, the advanced header flash cart menus read the save
+/// type from. Their hooks are in different places, so the check that a chosen game's hooks are
+/// in place is also what tells them apart, for a few more words read from the cart.
+fn identify<'a>(
+    bundles: &'a [Bundle],
+    cart: &mut dyn Backend,
+) -> Result<(&'a Bundle, OnCart), Issue> {
+    // The same region verify_cart reads, which the cart backend caches, so this costs nothing
+    // more over the wire.
+    let got = cart
+        .read_rom_many(&[(0u32, 0x1000usize)])
+        .map_err(|e| Issue::plain(e.to_string()))?;
+    let h = rom_fmt::header(&got[0])
+        .ok_or_else(|| Issue::plain("the cart's ROM header could not be read"))?;
+    let mut passed = Vec::new();
+    let mut failed = Vec::new();
+    for b in bundles
+        .iter()
+        .filter(|b| b.profile.game_code == h.game_code && b.profile.version == h.version)
+    {
+        match verify_cart(b, cart) {
+            Ok(on) => passed.push((b, on)),
+            Err(e) => failed.push(e),
+        }
+    }
+    let header = format!(
+        "cart header {} {} v{}",
+        if h.name.is_empty() {
+            "(no name)"
+        } else {
+            &h.name
+        },
+        h.game_code,
+        h.version
+    );
+    match (passed.len(), failed.len()) {
+        (1, _) => Ok(passed.pop().expect("one passed")),
+        (0, 0) => Err(Issue::new(
+            "the cart is running a game AP64 does not support; load a ROM AP64 added the agent to",
+            header,
+        )),
+        (0, _) => {
+            // Of two games sharing a header, the failure worth telling is the one about the ROM
+            // that is there: AP64's hook with another version's agent behind it says more than
+            // a hook missing, and that more than a read past the end of a ROM too short to be
+            // the other game.
+            let rank = |e: &Issue| match e.message.as_str() {
+                OTHER_VERSION => 2,
+                NO_AGENT => 1,
+                _ => 0,
+            };
+            let mut best = 0;
+            for (i, e) in failed.iter().enumerate() {
+                if rank(e) > rank(&failed[best]) {
+                    best = i;
+                }
+            }
+            Err(failed.swap_remove(best))
+        }
+        _ => Err(Issue::new(
+            "the ROM on the cart passes the checks for more than one game; choose the game \
+             instead of Auto-detect",
+            format!(
+                "{header} passes for {}",
+                passed
+                    .iter()
+                    .map(|(b, _)| b.profile.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}
+
+/// What a session plays: the game chosen, or whichever of them the cart is found running.
+enum Choice {
+    Game(Box<Bundle>),
+    Auto(Vec<Bundle>),
+}
+
+impl Choice {
+    /// The game on the cart, with its agent in place, or why not.
+    fn find(&self, cart: &mut dyn Backend) -> Result<(Bundle, OnCart), Issue> {
+        match self {
+            Choice::Game(g) => verify_cart(g, cart).map(|on| ((**g).clone(), on)),
+            Choice::Auto(all) => identify(all, cart).map(|(g, on)| (g.clone(), on)),
+        }
+    }
+
+    /// The game before the cart has said which it is: known only when it was chosen.
+    fn profile(&self) -> Option<&Profile> {
+        match self {
+            Choice::Game(g) => Some(&g.profile),
+            Choice::Auto(_) => None,
+        }
+    }
+}
+
+/// Why the client of a game an [`AUTO`] session found cannot be served yet. Start settles the
+/// same things for a game that was chosen, before the session begins.
+struct Hold {
+    /// The status line: what is missing and what to do.
+    detail: String,
+    /// The AP client row's state.
+    client: &'static str,
+    setup: Option<ClientSetup>,
+}
+
+/// Whether `profile`'s client can be served now: `Ok` with what the page is worth telling (a
+/// version of the world AP64 does not recognize, which may still connect), or the [`Hold`]
+/// that keeps it from being served.
+fn client_ready(profile: &Profile, kind: Kind) -> Result<Option<ClientSetup>, Box<Hold>> {
+    match kind {
+        Kind::Script(script) => script.listen_on().map(|_| None).map_err(|e| {
+            Box::new(Hold {
+                detail: e,
+                client: NOT_SET_UP,
+                setup: None,
+            })
+        }),
+        Kind::Native(Native {
+            client_fix: Some(fix),
+            ..
+        }) => {
+            let setup = setup_of(&fix, &(fix.find)());
+            match setup.state.as_str() {
+                "ready" => Ok(None),
+                "needed" => Err(Box::new(Hold {
+                    detail: format!(
+                        "the AP client for {} needs a one-time fix before it can reach AP64; \
+                         press Stop, then Start, to be offered it again",
+                        profile.name
+                    ),
+                    client: NEEDS_FIX,
+                    setup: Some(setup),
+                })),
+                "missing" => Err(Box::new(Hold {
+                    detail: format!(
+                        "{} is on the console, but its world is not installed in Archipelago \
+                         ({}); AP64 carries on once it is",
+                        profile.name, fix.file
+                    ),
+                    client: NOT_INSTALLED,
+                    setup: Some(setup),
+                })),
+                _ => Ok(Some(setup)),
+            }
+        }
+        Kind::Native(_) => Ok(None),
+    }
 }
 
 /// Session logs kept on disk, newest first; older ones are deleted when a session starts.
@@ -712,17 +896,31 @@ impl Play {
         if self.running() {
             return Err("already running; stop it first".into());
         }
-        let game = bundles
-            .iter()
-            .find(|b| b.profile.id == game_id)
-            .ok_or("choose a game")?
-            .clone();
-        let kind = kind(&game.profile.connector).ok_or("unknown connector")?;
-        // A client whose port is set up on this PC (Pokémon Snap's, in Project64's settings)
-        // cannot be served until it is, and saying so now beats a session that cannot listen.
-        if let Kind::Script(script) = kind {
-            script.listen_on()?;
-        }
+        let choice = if game_id == AUTO {
+            // Only the games the Play card offers: one without a connector could be found on the
+            // cart and then not be played.
+            Choice::Auto(
+                bundles
+                    .iter()
+                    .filter(|b| kind(&b.profile.connector).is_some())
+                    .cloned()
+                    .collect(),
+            )
+        } else {
+            let game = bundles
+                .iter()
+                .find(|b| b.profile.id == game_id)
+                .ok_or("choose a game")?
+                .clone();
+            let kind = kind(&game.profile.connector).ok_or("unknown connector")?;
+            // A client whose port is set up on this PC (Pokémon Snap's, in Project64's settings)
+            // cannot be served until it is, and saying so now beats a session that cannot listen.
+            // An AUTO session asks once it knows the game (client_ready).
+            if let Kind::Script(script) = kind {
+                script.listen_on()?;
+            }
+            Choice::Game(Box::new(game))
+        };
         // A new session starts a new log: what the last one did is not this one's history.
         let kept = self.log.clone();
         kept.lock().unwrap().clear();
@@ -740,30 +938,54 @@ impl Play {
         };
 
         let stop = Arc::new(AtomicBool::new(false));
+        let serve_stop = Arc::new(AtomicBool::new(false));
         let status = self.status.clone();
         *status.lock().unwrap() = Status {
             running: true,
             state: "connecting".into(),
-            detail: game.profile.name.clone(),
+            detail: match &choice {
+                Choice::Game(g) => g.profile.name.clone(),
+                Choice::Auto(_) => String::new(),
+            },
             detail_dev: url.clone(),
+            auto: matches!(choice, Choice::Auto(_)),
             ..Status::default()
         };
         let _ = app.emit("play://status", status.lock().unwrap().clone());
+        // A fix made before this session is not one it is waiting for.
+        self.recheck.store(false, Ordering::Relaxed);
 
         let thread = {
-            let stop = stop.clone();
+            let stops = Stops {
+                session: stop.clone(),
+                serve: serve_stop.clone(),
+                recheck: self.recheck.clone(),
+            };
             std::thread::Builder::new()
                 .name("connector".into())
-                .spawn(move || run(app, game, kind, url, stop, status, kept, file))
+                .spawn(move || run(app, choice, url, stops, status, kept, file))
                 .map_err(|e| e.to_string())?
         };
-        *self.session.lock().unwrap() = Some(Session { stop, thread });
+        *self.session.lock().unwrap() = Some(Session {
+            stop,
+            serve_stop,
+            thread,
+        });
         Ok(())
+    }
+
+    /// A client fix was just made: a session holding for it looks again now rather than at its
+    /// next look ([`CLIENT_RECHECK`]).
+    pub fn client_fixed(&self) {
+        self.recheck.store(true, Ordering::Relaxed);
     }
 
     pub fn stop(&self) {
         if let Some(s) = self.session.lock().unwrap().take() {
+            // The session's flag first: a session that sees the connector's flag set checks it
+            // to tell a Stop from a change of game.
             s.stop.store(true, Ordering::Relaxed);
+            s.serve_stop.store(true, Ordering::Relaxed);
             // The loop checks the flag every few milliseconds; a cart mid-reconnect
             // can take a couple of seconds. Don't block the UI on it.
             std::thread::spawn(move || {
@@ -784,8 +1006,14 @@ const NO_CART: &str = "nocart";
 /// The Multi64 app is running, but nothing answers on its bridge.
 const NO_BRIDGE: &str = "nobridge";
 /// Nothing answers, the Multi64 app is not running, and it is not where it gets installed:
-/// waiting will not fix this one, so it is not "waiting".
+/// waiting will not fix this one, so it is not "waiting". Also the AP client's, for a game an
+/// [`AUTO`] session found whose world is not installed in Archipelago.
 const NOT_INSTALLED: &str = "notinstalled";
+/// The AP client of a game an [`AUTO`] session found needs AP64's fix before it can connect.
+const NEEDS_FIX: &str = "needsfix";
+/// The AP client of a game an [`AUTO`] session found has a port that is not set up on this PC
+/// (Pokémon Snap's, in Project64's settings).
+const NOT_SET_UP: &str = "notsetup";
 
 /// The Multi64 app's process, which is what a player installed and started.
 const MULTI64_PROCESS: &str = if cfg!(windows) {
@@ -886,14 +1114,19 @@ enum Silence {
     Pak,
     /// Neither: the game itself needs the Pak, so a game that runs has one.
     Other,
+    /// No game was chosen ([`AUTO`]), so either may be why.
+    Unknown,
 }
 
 impl Silence {
-    /// `cart` is the one the daemon was started for, when it says.
-    fn of(profile: &Profile, cart: Option<Cart>) -> Self {
-        let pak = profile.silence_may_be_the_pak();
+    /// `profile` is the chosen game's, and `None` for an [`AUTO`] session, which cannot know what
+    /// is on a cart that does not answer. `cart` is the one the daemon was started for, when it
+    /// says.
+    fn of(profile: Option<&Profile>, cart: Option<Cart>) -> Self {
+        let pak = profile.is_none_or(|p| p.silence_may_be_the_pak());
         match cart {
             Some(cart) if !cart.tested() => Silence::Untested { cart, pak },
+            _ if profile.is_none() => Silence::Unknown,
             _ if pak => Silence::Pak,
             _ => Silence::Other,
         }
@@ -911,6 +1144,9 @@ impl Silence {
                 .into(),
             Silence::Other => "the ROM is not answering. If it is running, check it is the one \
                                AP64 added the agent to"
+                .into(),
+            Silence::Unknown => "the ROM is not answering. If it is running, check it is one AP64 \
+                                 added the agent to, and that the console has an Expansion Pak"
                 .into(),
         }
     }
@@ -936,6 +1172,11 @@ impl Silence {
             Silence::Other => format!(
                 "the cart is connected but the ROM has not answered for {after} s; this game \
                  does not run without an Expansion Pak, so a missing one is not why"
+            ),
+            Silence::Unknown => format!(
+                "the cart is connected but the ROM has not answered for {after} s; a ROM \
+                 without AP64's agent is silent like this, and so is one whose stub found no \
+                 Expansion Pak"
             ),
         }
     }
@@ -964,6 +1205,24 @@ const NATIVE_SILENCE: Duration = Duration::from_secs(10);
 /// Between the session log's summary lines.
 const SUMMARY_EVERY: Duration = Duration::from_secs(300);
 
+/// How often a session holding a game's client ([`Hold`]) looks again, short of being told a fix
+/// was made ([`Play::client_fixed`]): a world installed meanwhile, or Project64 set up.
+const CLIENT_RECHECK: Duration = Duration::from_secs(30);
+
+/// Probes a held session's cart may miss in a row before it is taken to have gone, and the
+/// session goes back to waiting for it. One miss is a scene load as often as anything.
+const HOLD_MISSES: u32 = 3;
+
+/// The flags a session is stopped by, and nudged by.
+struct Stops {
+    /// Stop pressed.
+    session: Arc<AtomicBool>,
+    /// What the connector serves until (`Session::serve_stop`).
+    serve: Arc<AtomicBool>,
+    /// A client fix was made ([`Play::client_fixed`]).
+    recheck: Arc<AtomicBool>,
+}
+
 /// Run `session`, and then end it: log that it stopped and mark the status stopped, which is
 /// what hands Start back. Returns the final status, to be sent to the page.
 ///
@@ -991,19 +1250,20 @@ fn run_to_end(status: &Mutex<Status>, log: &Log, session: impl FnOnce()) -> Stat
     s.bridge = IDLE.into();
     s.console = IDLE.into();
     s.client = IDLE.into();
+    s.game = String::new();
+    s.game_name = String::new();
+    s.client_setup = None;
     let end = s.clone();
     drop(s);
     status.clear_poison();
     end
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run(
     app: AppHandle,
-    game: Bundle,
-    kind: Kind,
+    choice: Choice,
     url: String,
-    stop: Arc<AtomicBool>,
+    stops: Stops,
     status: Arc<Mutex<Status>>,
     kept_log: Arc<Mutex<VecDeque<String>>>,
     file: Result<(PathBuf, File), String>,
@@ -1039,23 +1299,23 @@ fn run(
         })
     };
     let end = run_to_end(&status, &log, || {
-        session(&app, game, kind, &url, &stop, &status, &log, file_path)
+        session(&app, choice, &url, &stops, &status, &log, file_path)
     });
     let _ = app.emit("play://status", end);
 }
 
 /// A session, from waiting for the cart to Stop. [`run_to_end`] ends it.
-#[allow(clippy::too_many_arguments)]
 fn session(
     app: &AppHandle,
-    game: Bundle,
-    kind: Kind,
+    choice: Choice,
     url: &str,
-    stop: &Arc<AtomicBool>,
+    stops: &Stops,
     status: &Arc<Mutex<Status>>,
     log: &Log,
     file_path: Result<PathBuf, String>,
 ) {
+    let stop = &stops.session;
+    let auto = matches!(choice, Choice::Auto(_));
     let set = |f: &dyn Fn(&mut Status)| {
         let mut s = status.lock().unwrap();
         f(&mut s);
@@ -1071,11 +1331,13 @@ fn session(
     // What anyone reading this log later needs first: which build, which game, which bridge,
     // and where the log is kept.
     log(format!(
-        "AP64 {} ({}), {} ({} profile), through Multi64 at {url}",
+        "AP64 {} ({}), {}, through Multi64 at {url}",
         env!("CARGO_PKG_VERSION"),
         env!("AP64_COMMIT"),
-        game.profile.name,
-        game.profile.id
+        match &choice {
+            Choice::Game(g) => format!("{} ({} profile)", g.profile.name, g.profile.id),
+            Choice::Auto(all) => format!("auto-detecting the game among {} profiles", all.len()),
+        }
     ));
     log(match &file_path {
         Ok(path) => format!("this log is also saved to {}", path.display()),
@@ -1110,11 +1372,19 @@ fn session(
     };
 
     let mut first_try = true;
-    // Release notes are said once a session, not at every reconnect.
-    let mut noted = false;
+    // Release notes are said once a session for each game, not at every reconnect.
+    let mut noted = std::collections::HashSet::new();
+    // The game the last link was found running, so a change of game is worth its own line.
+    let mut last_game: Option<String> = None;
     'session: while !stop.load(Ordering::Relaxed) {
         if !std::mem::take(&mut first_try) {
             pause();
+        }
+        // Cleared for this link and Stop looked at after, so a Stop landing in between still
+        // reaches the connector: Play::stop sets the session's flag before this one.
+        stops.serve.store(false, Ordering::Relaxed);
+        if stop.load(Ordering::Relaxed) {
+            break;
         }
         // Wait for the cart: the console may not be on yet, or the daemon not started.
         // Since when the cart has been there and the ROM silent, for the hint at why.
@@ -1154,7 +1424,7 @@ fn session(
                     };
                     let hint = (silent.elapsed() >= HINT_AFTER).then(|| {
                         let cart = status.as_ref().and_then(|s| s.cart.as_deref());
-                        Silence::of(&game.profile, cart.and_then(Cart::parse))
+                        Silence::of(choice.profile(), cart.and_then(Cart::parse))
                     });
                     if let Some(hint) = hint {
                         if !std::mem::replace(&mut hint_logged, true) {
@@ -1219,40 +1489,8 @@ fn session(
         ));
 
         let mut cart = cart;
-        match verify_cart(&game, &mut cart) {
-            Ok(on) => {
-                log(format!(
-                    "the cart is running {} ({}) with the agent",
-                    game.profile.name,
-                    if on.name.is_empty() {
-                        "no internal name"
-                    } else {
-                        &on.name
-                    }
-                ));
-                let agent = &game.profile.agent;
-                log(match on.agent_rom {
-                    Some(at) if at != agent.rom => format!(
-                        "the agent is at ROM 0x{at:X}, past the seed's data (its usual place is \
-                         0x{:X}), and runs at 0x{:08X}",
-                        agent.rom, agent.vram
-                    ),
-                    Some(at) => format!(
-                        "the agent is at ROM 0x{at:X} and runs at 0x{:08X}",
-                        agent.vram
-                    ),
-                    None => format!(
-                        "the agent runs at 0x{:08X}, put there by the game's own loader",
-                        agent.vram
-                    ),
-                });
-                if !std::mem::replace(&mut noted, true) {
-                    for note in ap64_core::installed::release_notes(&game.profile, on.name.trim()) {
-                        log(format!("note: {note}"));
-                    }
-                }
-                set(&|s| s.console = OK.into());
-            }
+        let (game, on) = match choice.find(&mut cart) {
+            Ok(found) => found,
             Err(e) => {
                 log(e.to_string());
                 set(&|s| {
@@ -1260,8 +1498,124 @@ fn session(
                     s.detail = e.message.clone();
                     s.detail_dev = e.technical.clone();
                     s.console = FAILED.into();
+                    s.game = String::new();
+                    s.game_name = String::new();
+                    s.client_setup = None;
                 });
                 continue 'session;
+            }
+        };
+        let kind = kind(&game.profile.connector)
+            .expect("a session only plays games with a connector (Play::start)");
+        if let Some(was) = last_game.replace(game.profile.name.clone()) {
+            if was != game.profile.name {
+                log(format!("the console changed games, from {was}"));
+            }
+        }
+        log(format!(
+            "the cart is running {} ({}) with the agent",
+            game.profile.name,
+            if on.name.is_empty() {
+                "no internal name"
+            } else {
+                &on.name
+            }
+        ));
+        let agent = &game.profile.agent;
+        log(match on.agent_rom {
+            Some(at) if at != agent.rom => format!(
+                "the agent is at ROM 0x{at:X}, past the seed's data (its usual place is \
+                 0x{:X}), and runs at 0x{:08X}",
+                agent.rom, agent.vram
+            ),
+            Some(at) => format!(
+                "the agent is at ROM 0x{at:X} and runs at 0x{:08X}",
+                agent.vram
+            ),
+            None => format!(
+                "the agent runs at 0x{:08X}, put there by the game's own loader",
+                agent.vram
+            ),
+        });
+        if noted.insert(game.profile.id.clone()) {
+            for note in ap64_core::installed::release_notes(&game.profile, on.name.trim()) {
+                log(format!("note: {note}"));
+            }
+        }
+        set(&|s| {
+            s.console = OK.into();
+            s.game = game.profile.id.clone();
+            s.game_name = game.profile.name.clone();
+        });
+
+        // A game that was chosen had its client settled at Start. One that was found has it
+        // settled here, and its client is not served until it is: what Start would have refused
+        // to begin, this waits out, looking again when told a fix was made, every
+        // CLIENT_RECHECK, and going back to waiting for the console if the cart goes quiet,
+        // since another ROM may be loaded in the meantime.
+        if auto {
+            let mut held: Option<String> = None;
+            let mut misses = 0;
+            loop {
+                stops.recheck.store(false, Ordering::Relaxed);
+                let hold = match client_ready(&game.profile, kind) {
+                    Ok(setup) => {
+                        if let Some(setup) = &setup {
+                            log(format!("{}: {}", kind.client(), setup.message));
+                        }
+                        if held.is_some() {
+                            log(format!("{} is ready", kind.client()));
+                        }
+                        set(&|s| s.client_setup = setup.clone());
+                        break;
+                    }
+                    Err(hold) => hold,
+                };
+                if held.as_deref() != Some(&hold.detail) {
+                    log(format!(
+                        "not serving {} yet: {}",
+                        kind.client(),
+                        hold.detail
+                    ));
+                    held = Some(hold.detail.clone());
+                }
+                set(&|s| {
+                    s.state = "client-setup".into();
+                    s.detail = hold.detail.clone();
+                    s.detail_dev = hold
+                        .setup
+                        .as_ref()
+                        .map(|c| c.technical.clone())
+                        .unwrap_or_default();
+                    s.client = hold.client.into();
+                    s.client_setup = hold.setup.clone();
+                });
+                let until = Instant::now() + CLIENT_RECHECK;
+                let mut probed = Instant::now();
+                while Instant::now() < until && !stops.recheck.load(Ordering::Relaxed) {
+                    if stop.load(Ordering::Relaxed) {
+                        break 'session;
+                    }
+                    if probed.elapsed() >= CART_QUIET {
+                        probed = Instant::now();
+                        misses = if cart.alive() { 0 } else { misses + 1 };
+                        if misses >= HOLD_MISSES {
+                            log("the cart stopped answering while the AP client was held".into());
+                            set(&|s| {
+                                s.state = "waiting-console".into();
+                                s.detail =
+                                    "the ROM stopped answering; load it again on the console"
+                                        .into();
+                                s.detail_dev = String::new();
+                                s.console = FAILED.into();
+                                s.client = IDLE.into();
+                                s.client_setup = None;
+                            });
+                            continue 'session;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
         }
 
@@ -1389,7 +1743,29 @@ fn session(
         let mut misses = 0u64;
         let mut last_summary = Instant::now();
         let mut summarized = (handled, 0u64, Stats::default());
+        // The link the game above was found on. The backend rebuilds a link that stops answering
+        // by itself, and each rebuild is a new HELLO, from a console that may since have been
+        // reset into another ROM; the connector would go on serving it as the old game. So a new
+        // link is asked again what it is running, and the connector stops if that changed,
+        // for the loop to find the game afresh. The same game carries on with its client still
+        // connected.
+        let mut checked = cart.borrow().generation();
+        let mut changed: Option<String> = None;
         let mut on_event = |e| {
+            let generation = cart.borrow().generation();
+            if generation != checked && changed.is_none() {
+                let again = choice.find(&mut *cart.borrow_mut());
+                match again {
+                    Ok((now, _)) if now.profile.id == game.profile.id => checked = generation,
+                    Ok((now, _)) => {
+                        changed = Some(format!("the console is now running {}", now.profile.name))
+                    }
+                    Err(e) => changed = Some(e.to_string()),
+                }
+                if changed.is_some() {
+                    stops.serve.store(true, Ordering::Relaxed);
+                }
+            }
             match e {
                 Event::Listening(port) => {
                     log(format!(
@@ -1504,14 +1880,16 @@ fn session(
         let result = match (kind, &connector) {
             (Kind::Script(script), Some(connector)) => script
                 .listen_on()
-                .and_then(|ports| server::serve(connector, &ports, stop, &mut on_event)),
+                .and_then(|ports| server::serve(connector, &ports, &stops.serve, &mut on_event)),
             // The cart stays on this thread, and each call borrows it only for its length, so
             // the handler's own borrows above never overlap one of these.
             (Kind::Native(native), _) => match &native.protocol {
                 Protocol::RetroArch(opts) => {
-                    retroarch::serve(&mut cart.clone(), opts, stop, &mut on_event)
+                    retroarch::serve(&mut cart.clone(), opts, &stops.serve, &mut on_event)
                 }
-                Protocol::Relay(opts) => relay::serve(&mut cart.clone(), opts, stop, &mut on_event),
+                Protocol::Relay(opts) => {
+                    relay::serve(&mut cart.clone(), opts, &stops.serve, &mut on_event)
+                }
             },
             (Kind::Script(_), None) => unreachable!("a script session loads its script first"),
         };
@@ -1519,8 +1897,20 @@ fn session(
         cart.borrow_mut().flush_stalls(true);
         push_stats(cart.borrow().stats(), handled);
         match result {
-            // `serve` only returns cleanly when the stop flag it was given is set.
-            Ok(()) => break 'session,
+            // `serve` only returns cleanly when the stop flag it was given is set: by Stop, or
+            // because the console turned out to be running something else.
+            Ok(()) if stop.load(Ordering::Relaxed) => break 'session,
+            Ok(()) => {
+                let why = changed.unwrap_or_else(|| "the console changed".into());
+                log(format!("{why}; checking the cart again"));
+                set(&|s| {
+                    s.state = "waiting-console".into();
+                    s.detail = "the ROM on the console changed; checking it".into();
+                    s.detail_dev = why.clone();
+                    s.console = WAITING.into();
+                    s.client = IDLE.into();
+                });
+            }
             Err(e) => {
                 log(format!("the link gave way: {e}; still trying"));
                 set(&|s| {
@@ -1614,6 +2004,7 @@ mod tests {
         let profile = |id: &str| &bundles.iter().find(|b| b.profile.id == id).unwrap().profile;
         let (oot, cv64) = (profile("oot"), profile("cv64"));
 
+        let (oot, cv64) = (Some(oot), Some(cv64));
         for cart in [Cart::Ed64, Cart::Ed64pro] {
             let on = Silence::of(oot, Some(cart));
             assert_eq!(on, Silence::Untested { cart, pak: false });
@@ -1637,6 +2028,167 @@ mod tests {
             assert_eq!(Silence::of(oot, cart), Silence::Other);
             assert!(!Silence::Other.detail().contains("Pak"));
         }
+
+        // With no game chosen, either may be why, and an EverDrive may be missing the Pak too.
+        assert_eq!(Silence::of(None, Some(Cart::Sc64)), Silence::Unknown);
+        let detail = Silence::Unknown.detail();
+        assert!(detail.contains("Expansion Pak") && detail.contains("added the agent"));
+        assert_eq!(
+            Silence::of(None, Some(Cart::Ed64)),
+            Silence::Untested {
+                cart: Cart::Ed64,
+                pak: true
+            }
+        );
+    }
+
+    /// A cart ROM as AP64 leaves it for `profile`, as far as the session's checks look: the
+    /// header, and each hook. `None` for a profile whose hooks are found per seed or which stores
+    /// its files away from where the game sees them, which only a real seed can stand in for.
+    fn cart_rom(profile: &Profile) -> Option<Vec<u8>> {
+        if profile.transform.is_some() {
+            return None;
+        }
+        let mut hooks = Vec::new();
+        for w in &profile.write {
+            match w {
+                Write::Jal {
+                    at: Addr::Rom(at),
+                    target,
+                    ..
+                } => hooks.push((*at as usize, 0x0C00_0000 | ((target >> 2) & 0x03FF_FFFF))),
+                Write::Jal { .. } => return None,
+                _ => {}
+            }
+        }
+        // A stub that is told where the agent is (`lui` + `addiu`) is read for the log; it is
+        // told the agent's usual place.
+        if let Some((Addr::Rom(hi), Some(Addr::Rom(lo)))) = profile.agent_rom_imm() {
+            let rom = profile.agent.rom;
+            let low = rom & 0xFFFF;
+            let high = (rom >> 16) + u32::from(low >= 0x8000);
+            hooks.push((*hi as usize, (0x0F << 26) | high));
+            hooks.push((*lo as usize, (0x09 << 26) | low));
+        }
+        let len = hooks
+            .iter()
+            .map(|(at, _)| at + 4)
+            .max()
+            .unwrap_or(0)
+            .max(0x1000);
+        let mut rom = vec![0u8; len];
+        rom[0x20..0x24].copy_from_slice(b"TEST");
+        rom[0x3B..0x3F].copy_from_slice(profile.game_code.as_bytes());
+        rom[0x3F] = profile.version;
+        for (at, word) in hooks {
+            rom[at..at + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        Some(rom)
+    }
+
+    fn cart_with(rom: Vec<u8>) -> ap64_cart::backend::RamImage {
+        ap64_cart::backend::RamImage::with_rom(vec![0; 0x1000], rom)
+    }
+
+    /// Banjo-Tooie's world and Star Fox 64's both rewrite the header to `NEDE` version `0x30`, so
+    /// the header cannot say which is on the cart. Their hooks can.
+    #[test]
+    fn auto_detect_tells_two_games_with_one_header_apart() {
+        let bundles = ap64_core::builtin().unwrap();
+        let profile = |id: &str| &bundles.iter().find(|b| b.profile.id == id).unwrap().profile;
+        let (bt, sf64) = (profile("bt"), profile("sf64"));
+        assert_eq!(
+            (&bt.game_code, bt.version),
+            (&sf64.game_code, sf64.version),
+            "the premise: one header for both"
+        );
+        for p in [bt, sf64] {
+            let mut cart = cart_with(cart_rom(p).expect("both hook at fixed offsets"));
+            let found = identify(&bundles, &mut cart).map(|(b, _)| b.profile.id.as_str());
+            assert_eq!(found.ok(), Some(p.id.as_str()));
+        }
+    }
+
+    /// Every game whose hooks sit at fixed offsets is found as itself, and as no other: a profile
+    /// added later with another's header and hook would make Auto-detect refuse both.
+    #[test]
+    fn auto_detect_finds_every_game_it_can_stand_in_for() {
+        let bundles = ap64_core::builtin().unwrap();
+        let mut tried = 0;
+        for b in &bundles {
+            let Some(rom) = cart_rom(&b.profile) else {
+                continue;
+            };
+            tried += 1;
+            match identify(&bundles, &mut cart_with(rom)) {
+                Ok((found, _)) => assert_eq!(found.profile.id, b.profile.id),
+                Err(e) => panic!("{}: {e}", b.profile.id),
+            }
+        }
+        assert!(tried >= 8, "only {tried} games could be stood in for");
+    }
+
+    /// A ROM that is no game AP64 knows, and one that is but has no hook, are each told for what
+    /// they are.
+    #[test]
+    fn auto_detect_says_why_it_found_nothing() {
+        let bundles = ap64_core::builtin().unwrap();
+        let mut rom = vec![0u8; 0x1000];
+        rom[0x3B..0x3F].copy_from_slice(b"NXXE");
+        let e = identify(&bundles, &mut cart_with(rom)).err().unwrap();
+        assert!(e.message.contains("does not support"), "{e}");
+        assert!(e.technical.contains("NXXE"), "{e}");
+
+        // Star Fox 64's header with neither game's hook: both are tried, and the ROM has no agent.
+        let sf64 = &bundles
+            .iter()
+            .find(|b| b.profile.id == "sf64")
+            .unwrap()
+            .profile;
+        let mut rom = cart_rom(sf64).unwrap();
+        rom[0x4EDC..0x4EE0].fill(0);
+        let e = identify(&bundles, &mut cart_with(rom)).err().unwrap();
+        assert!(e.message.contains("has no AP64 agent"), "{e}");
+    }
+
+    /// A chosen game is checked for and nothing else: the other game with its header fails.
+    #[test]
+    fn a_chosen_game_is_not_auto_detected() {
+        let bundles = ap64_core::builtin().unwrap();
+        let bundle = |id: &str| bundles.iter().find(|b| b.profile.id == id).unwrap().clone();
+        let rom = cart_rom(&bundle("sf64").profile).unwrap();
+        assert!(Choice::Game(Box::new(bundle("sf64")))
+            .find(&mut cart_with(rom.clone()))
+            .is_ok());
+        assert!(Choice::Game(Box::new(bundle("bt")))
+            .find(&mut cart_with(rom))
+            .is_err());
+    }
+
+    /// A game an Auto-detect session found whose world is not installed is held, not served,
+    /// and the AP client row says why.
+    #[test]
+    fn a_found_game_whose_client_is_missing_is_held() {
+        let bundles = ap64_core::builtin().unwrap();
+        let dk64 = &bundles
+            .iter()
+            .find(|b| b.profile.id == "dk64")
+            .unwrap()
+            .profile;
+        let native = Native {
+            client_fix: Some(TEXT_FIX),
+            ..ap64_connector::DK64
+        };
+        let hold = client_ready(dk64, Kind::Native(native)).err().unwrap();
+        assert_eq!(hold.client, NOT_INSTALLED);
+        assert!(hold.detail.contains("Donkey Kong 64") && hold.detail.contains("w.apworld"));
+        assert_eq!(hold.setup.unwrap().state, "missing");
+        // A client with nothing to fix is served at once.
+        let plain = Native {
+            client_fix: None,
+            ..ap64_connector::DK64
+        };
+        assert!(matches!(client_ready(dk64, Kind::Native(plain)), Ok(None)));
     }
 
     /// `MULTI64_PROCESS` is compared against what sysinfo reports, which is the executable's

@@ -384,7 +384,7 @@ header, as MK64's does. AP64 then notes a seed from another release (§8). If th
 to record, say why in a comment, as Paper Mario's profile does.
 
 Put what a player must know about the randomizer on a console in `notes`: AP64 shows them at
-Start, after any client fix. Bomberman 64's are the kind: its world's title screen cutscene freezes on a console
+Start, after any client fix, or when Auto-detect finds the game. Bomberman 64's are the kind: its world's title screen cutscene freezes on a console
 with or without the agent, and its companion Lua (item messages, enemy shuffle) cannot follow
 it there. Before writing one about a fault, boot the world's own ROM, with no agent in it, to
 be sure it is the world's.
@@ -412,6 +412,14 @@ script to do this; it has been written twice by mistake. Add `--withheld` for a 
 held in `ap64_core::withheld()` while its integration is unfinished; without it the patcher
 only knows the games the app offers.
 
+For a game whose `jal` hooks sit at fixed ROM offsets, `cargo test -p ap64-app` then checks that
+the Play card's **Auto-detect** finds it on a cart as itself and as no other game
+(`auto_detect_finds_every_game_it_can_stand_in_for`; a hook found per seed, or a profile with a
+`transform`, needs a real seed and is skipped there).
+Auto-detect matches the header first, and worlds rewrite headers (Banjo-Tooie's and Star Fox 64's
+are both `NEDE` version `0x30`), so a game that shares one is told apart by its `jal` hook. Two
+games sharing both a header and a hook offset would make Auto-detect refuse both.
+
 Then `agent-probe.lua` in BizHawk on the patched ROM: it reads `layout.env`, so it needs
 `GAME` set at its top. `magic=0x4D363450` and `text=intact` with ticks climbing once per
 frame means the agent is loaded, unclobbered and running on the game's thread.
@@ -436,7 +444,8 @@ overwritten. That leaves anything else to find, which is this routine:
    it now reaches.
 3. **The client.** For a native connector (DK64, Banjo-Tooie), press Start and read what the
    client-fix check says: `ready`, `needed`, `missing` or `unknown`. `missing` means the
-   world is not installed where AP64 looks for it, so Start refuses. `unknown` means the fix's
+   world is not installed where AP64 looks for it, so Start refuses (an Auto-detect session
+   holds the client until it is). `unknown` means the fix's
    anchors moved (or the file could not be read), and the release's client has to be read
    again (§1). For the forked OoT connector,
    diff upstream's Lua against what `connectors/oot/UPSTREAM` records.
