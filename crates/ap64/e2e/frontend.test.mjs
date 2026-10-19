@@ -289,10 +289,11 @@ const setDev = async (p, on) => {
   check("patching leaves the cards where they were", (await cardHeights(p)).join() === idle.join(), `${idle} then ${await cardHeights(p)}`);
   check("the card says the ROM is ready", (await text(p, "seed-line")).includes("ready for the console"));
   check("Show in folder is offered on the card", !(await p.evaluate(() => document.getElementById("btn-reveal").disabled)));
-  check("a loaded seed picks its game for Play", (await p.inputValue("#play-game-select")) === "g1");
-  check("and the game menu shows it", (await text(p, "play-game-text")) === "Game One");
+  // Auto-detect finds the seed's game on the cart anyway, and also follows a change of game.
+  check("a loaded seed leaves Auto-detect chosen", (await p.inputValue("#play-game-select")) === "auto");
+  check("and the game menu says so", (await text(p, "play-game-text")) === "Auto-detect");
   check("Play calls the client the AP client", (await p.textContent("#play-facts")).includes("AP client") && (await text(p, "link-client")) === "Not connected", await text(p, "link-client"));
-  check("Start is enabled once a game is chosen", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
+  check("Start is enabled with Auto-detect", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
   check("Play asks for no ROM file", (await p.locator("#play-rom, #btn-play-rom").count()) === 0);
   await p.close();
 }
@@ -301,13 +302,13 @@ const setDev = async (p, on) => {
   const p = await openScenario({});
   check("the daemon URL defaults to the Multi64 app's", (await p.inputValue("#play-url")) === "ws://127.0.0.1:38765/ws");
   const options = await p.evaluate(() => [...document.getElementById("play-game-select").options].map((o) => o.value));
-  check("the game list offers every game", options.join() === ",g1,g2", options.join());
-  check("Start is disabled until a game is chosen", await p.evaluate(() => document.getElementById("btn-play-start").disabled));
+  check("the game list offers Auto-detect, then every game", options.join() === "auto,g1,g2", options.join());
+  check("Start is ready on Auto-detect, where the menu starts", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
   const before = await cardHeights(p);
   await p.selectOption("#play-game-select", "g2");
   check("choosing a game does not name its client", (await text(p, "link-client")) === "Not connected", await text(p, "link-client"));
   check("choosing a game does not move the card", (await cardHeights(p)).join() === before.join(), `${before} then ${await cardHeights(p)}`);
-  check("and enables Start", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
+  check("and leaves Start enabled", !(await p.evaluate(() => document.getElementById("btn-play-start").disabled)));
   check("the Console row says only what the console is doing", (await text(p, "link-console")) === "Not running", await text(p, "link-console"));
   await p.close();
 }
@@ -526,16 +527,19 @@ const setDev = async (p, on) => {
 
 {
   const p = await openScenario({ load: loadOk, moreGames: 10 });
-  check("the game menu starts on the choice to make", (await text(p, "play-game-text")) === "Choose a game…");
+  check("the game menu starts on Auto-detect", (await text(p, "play-game-text")) === "Auto-detect");
   await p.click("#play-game-button");
   check("clicking the game menu opens its list", await visible(p, "play-game-list"));
   const rows = await p.locator("#play-game-list li").count();
-  check("the list has every game and no placeholder", rows === 12, String(rows));
+  check("the list has Auto-detect and every game", rows === 13, String(rows));
+  const first = await p.evaluate(() => document.querySelector("#play-game-list li")?.textContent);
+  check("Auto-detect first", first === "Auto-detect", first);
   const box = await p.evaluate(() => {
     const l = document.getElementById("play-game-list");
     return { client: l.clientHeight, scroll: l.scrollHeight, row: l.querySelector("li").getBoundingClientRect().height };
   });
   check("the list shows six games and scrolls to the rest", box.scroll > box.client && Math.round(box.client / box.row) === 6, JSON.stringify(box));
+  await p.keyboard.press("ArrowDown");
   await p.keyboard.press("ArrowDown");
   await p.keyboard.press("Enter");
   check("Enter chooses the game under the highlight", (await p.inputValue("#play-game-select")) === "g2");
@@ -783,6 +787,127 @@ const setDev = async (p, on) => {
   await p.click("#btn-notes-go");
   await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_start"));
   check("then the game starts", (await callsOf(p, "play_start"))[0]?.args?.game === "g2");
+  await p.close();
+}
+
+// A game chosen by hand follows a seed dropped for another; only Auto-detect is left alone.
+{
+  const p = await openScenario({ load: loadOk });
+  await p.selectOption("#play-game-select", "g2");
+  await drop(p, ["C:\\seeds\\seed.z64"]);
+  await until(p, () => document.getElementById("play-game-select").value === "g1");
+  check("a seed dropped with a game chosen picks the seed's game", (await p.inputValue("#play-game-select")) === "g1");
+  await p.close();
+}
+
+// Auto-detect: Start asks nothing, since which game it is is not known until the cart answers.
+// What Start would have shown for a chosen game is shown when the session finds the game.
+{
+  const needed = { state: "needed", message: "It is missing a method. AP64 will add it to g2.apworld and keep the original", path: "C:\\AP\\custom_worlds\\g2.apworld", left: "", technical: "" };
+  const p = await openScenario({
+    clientSetup: { g2: needed },
+    notes: { g1: ["The demo freezes."], g2: ["Items arrive without a message."] },
+    clientFix: "Fixed. Restart the Archipelago Launcher before opening the AP client",
+  });
+  const emit = (payload) => p.evaluate((pl) => window.__TAURI_LISTENERS__["play://status"]({ payload: pl }), payload);
+  const base = { running: true, auto: true, port: null, requests: 0, reconnects: 0, stalls: 0, handled: 0, bridge: "ok", console: "ok" };
+  await p.click("#btn-play-start");
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_start"));
+  check("Auto-detect starts with the game left to the session", (await callsOf(p, "play_start"))[0]?.args?.game === "auto");
+  check("asking nothing about a client first", (await callsOf(p, "play_client_setup")).length === 0);
+  check("nor showing any game's notes", !(await visible(p, "notes-dialog")));
+  await emit({ ...base, state: "connecting", detail: "", bridge: "waiting", console: "waiting", client: "waiting" });
+  check("the menu says Auto-detect until a game is found", (await text(p, "play-game-text")) === "Auto-detect");
+
+  // The session found Game Two, whose client needs the fix, and holds it until it has it.
+  const held = {
+    ...base,
+    game: "g2",
+    gameName: "Game Two: The Subtitle",
+    state: "client-setup",
+    detail: "the AP client for Game Two: The Subtitle needs a one-time fix before it can reach AP64; press Stop, then Start, to be offered it again",
+    client: "needsfix",
+    clientSetup: needed,
+  };
+  await emit(held);
+  await until(p, () => !document.getElementById("client-fix-dialog").hidden);
+  check("the menu names the game found", (await text(p, "play-game-text")) === "Auto-detect: Game Two: The Subtitle", await text(p, "play-game-text"));
+  check("a found game whose client needs the fix is asked about", await visible(p, "client-fix-dialog"));
+  check("naming the game", (await text(p, "client-fix-title")) === "The AP client for Game Two: The Subtitle needs a one-time fix", await text(p, "client-fix-title"));
+  check("with nothing to start, since the session runs", (await text(p, "btn-client-fix-go")) === "Fix");
+  check("and its notes wait for the fix, not over it", !(await visible(p, "notes-dialog")));
+  check("the AP client row says what it needs", (await text(p, "link-client")) === "Needs a one-time fix", await text(p, "link-client"));
+  check("as a fault, not a wait", await p.evaluate(() => {
+    const el = document.getElementById("link-client");
+    const now = getComputedStyle(el).color;
+    el.dataset.state = "failed";
+    const failed = getComputedStyle(el).color;
+    el.dataset.state = "needsfix";
+    return now === failed;
+  }));
+  check("and the status line is the session's own sentence", (await text(p, "play-status")).startsWith("The AP client for Game Two"), await text(p, "play-status"));
+  await setDev(p, true);
+  await setDev(p, false);
+  check("a status shown again does not ask again", (await p.evaluate(() => document.querySelectorAll(".dialog:not([hidden])").length)) === 1);
+  await p.click("#btn-client-fix-go");
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_client_fix"));
+  check("Fix fixes the found game's client", (await callsOf(p, "play_client_fix"))[0]?.args?.game === "g2");
+  await until(p, () => !document.getElementById("notes-dialog").hidden);
+  check("and starts nothing more", (await callsOf(p, "play_start")).length === 1);
+  check("then the found game's notes", (await text(p, "notes-title")) === "Before you play Game Two: The Subtitle", await text(p, "notes-title"));
+  check("only to read, with nothing to cancel", (await text(p, "btn-notes-go")) === "Got it" && !(await onScreen(p, "btn-notes-cancel")));
+  await p.click("#btn-notes-go");
+  check("Got it closes them", !(await visible(p, "notes-dialog")));
+  check("and starts nothing more either", (await callsOf(p, "play_start")).length === 1);
+
+  // The fix made, the session serves the client; the same game found again asks nothing.
+  await emit({ ...held, state: "waiting-client", detail: "open the AP client from the Archipelago Launcher", client: "waiting", clientSetup: null });
+  check("the AP client row then says what is left to do", (await text(p, "link-client")) === "Restart the Archipelago Launcher, then open the AP client", await text(p, "link-client"));
+  await emit(held);
+  await p.waitForTimeout(100);
+  check("a game found again in the same session is not asked about again", !(await visible(p, "client-fix-dialog")) && !(await visible(p, "notes-dialog")));
+
+  // The console changes to Game One, with notes and nothing to fix, while another window is up.
+  await p.click("#btn-games");
+  await emit({ ...base, game: "g1", gameName: "Game One", state: "waiting-client", detail: "open the AP client from the Archipelago Launcher", client: "waiting" });
+  await p.waitForTimeout(100);
+  check("the menu follows the console to another game", (await text(p, "play-game-text")) === "Auto-detect: Game One", await text(p, "play-game-text"));
+  check("its notes wait for the window that is open", (await visible(p, "games-dialog")) && !(await visible(p, "notes-dialog")));
+  await p.click("#btn-games-close");
+  await until(p, () => !document.getElementById("notes-dialog").hidden);
+  check("and show once it closes", (await text(p, "notes-title")) === "Before you play Game One");
+  await p.check("#notes-hide");
+  await p.click("#btn-notes-go");
+  check("put away for that game", (await p.evaluate(() => localStorage.getItem("ap64.notesSeen.g1"))) === "The demo freezes.");
+
+  await emit({ running: false, state: "stopped", detail: "", port: null, requests: 0, reconnects: 0, stalls: 0, handled: 0, bridge: "idle", console: "idle", client: "idle" });
+  check("stopping puts the menu back to Auto-detect", (await text(p, "play-game-text")) === "Auto-detect", await text(p, "play-game-text"));
+  // A new session offers again what the last one found.
+  await p.click("#btn-play-start");
+  await until(p, () => window.__TAURI_CALLS__.filter((c) => c.cmd === "play_start").length === 2);
+  await emit(held);
+  await until(p, () => !document.getElementById("client-fix-dialog").hidden);
+  check("the next session asks about the fix again", await visible(p, "client-fix-dialog"));
+  await p.click("#btn-client-fix-cancel");
+  check("Cancel closes it without a fix", !(await visible(p, "client-fix-dialog")) && (await callsOf(p, "play_client_fix")).length === 1);
+  await p.close();
+}
+
+// A found game whose world is a version AP64 does not recognize is served, and the player is told.
+{
+  const p = await openScenario({});
+  await p.click("#btn-play-start");
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_start"));
+  await p.evaluate(() => window.__TAURI_LISTENERS__["play://status"]({ payload: {
+    running: true, auto: true, game: "g2", gameName: "Game Two: The Subtitle", state: "waiting-client", detail: "open the AP client from the Archipelago Launcher",
+    bridge: "ok", console: "ok", client: "waiting", port: 55355, requests: 0, reconnects: 0, stalls: 0, handled: 0,
+    clientSetup: { state: "unknown", message: "This version of g2.apworld is not one AP64 knows, so the AP client may not connect", path: "", left: "", technical: "" },
+  } }));
+  await until(p, () => !document.getElementById("play-error").hidden);
+  check("an unrecognized version of a found game's world is said", (await text(p, "play-error")).includes("may not connect"), await text(p, "play-error"));
+  check("without a dialog", !(await visible(p, "client-fix-dialog")));
+  await setDev(p, true);
+  check("and the connector row names the found game's", (await text(p, "play-connector")) === "Game Two connector", await text(p, "play-connector"));
   await p.close();
 }
 

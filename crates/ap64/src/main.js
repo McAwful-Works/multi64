@@ -124,6 +124,8 @@ function closeDialog() {
   dialogReturnFocus = null;
   if (back && !back.disabled) back.focus();
   fitWindow();
+  // Something Auto-detect found may have been waiting for this one to close.
+  showOffer();
 }
 
 /** Tab and Shift+Tab stay inside the open dialog, so nothing behind it can take focus. */
@@ -343,8 +345,9 @@ async function loadSeed(path) {
     // Straight into the dialog: dropping a seed is the ask, and everything it needs is there.
     // It is already open when the seed was adjusted first.
     if (report && openDialogName !== "patch") openDialog("patch");
-    // The game this seed is for is the one Play will most likely want.
-    if (ready && !playRunning) selectPlayGame(r.chosen);
+    // The game this seed is for is the one Play will most likely want. Auto-detect finds it on
+    // the cart anyway, and stays chosen: it is the choice that also follows a change of game.
+    if (ready && !playRunning && $("play-game-select").value !== AUTO) selectPlayGame(r.chosen);
   } catch (e) {
     if (token !== loadToken) return;
     setError($("load-error"), String(e));
@@ -435,6 +438,11 @@ function setupDrops() {
 const URL_KEY = "ap64.daemonUrl";
 const DEV_KEY = "ap64.devDetails";
 const LOG_LINES = 500;
+/**
+ * The game menu's first choice, and the one it starts on: the session finds which game is on the
+ * cart, and follows the console to another one (`play::AUTO`).
+ */
+const AUTO = "auto";
 let playRunning = false;
 /** The game profiles AP64 was built with, as the Supported games window lists them. */
 let profiles = [];
@@ -469,6 +477,10 @@ const LINK_TEXT = {
     waiting: "Waiting for it to connect",
     ok: "Connected",
     failed: "Not connected",
+    // Only from Auto-detect, which settles a found game's client where Start settles a chosen one's.
+    needsfix: "Needs a one-time fix",
+    notinstalled: "Not installed",
+    notsetup: "Not set up",
   },
 };
 
@@ -483,6 +495,8 @@ const STATE_TEXT = {
   // A session that was running and lost the cart: the ROM went away, not the session.
   "waiting-console": "Waiting for the console",
   "waiting-client": "Ready to play",
+  // Auto-detect found a game whose client is not ready: the detail is the whole line.
+  "client-setup": "Waiting for the AP client",
   playing: "Playing",
   stopped: "Stopped",
 };
@@ -527,7 +541,10 @@ function setDev(on) {
 // The log itself lives in its own window (log.html), and the lines are kept by the backend, so
 // this page neither stores nor shows them.
 
+/** The game chosen in the menu; none for Auto-detect, which is not a game. */
 const selectedGame = () => games.find((g) => g.id === $("play-game-select").value) || null;
+/** The game the session found on the cart, while one runs. */
+const foundGame = () => (lastStatus.running && games.find((g) => g.id === lastStatus.game)) || null;
 
 /** For the one message that still has to name them inline, with no window to open. */
 const supportedNames = () => profiles.map((p) => p.name).join(", ");
@@ -603,7 +620,7 @@ const gameMenu = {
     });
   },
 
-  /** One row per game, from the select's options; the "Choose a game…" placeholder is the button's. */
+  /** One row per option of the select: Auto-detect first, then every game. */
   build() {
     const rows = [...this.select.options]
       .filter((o) => o.value)
@@ -623,7 +640,9 @@ const gameMenu = {
     // renderPlay can run before initPlay has set the menu up; build() syncs it then.
     if (!this.select) return;
     const chosen = this.select.selectedOptions[0];
-    $("play-game-text").textContent = chosen ? chosen.textContent : "";
+    // Auto-detect names what it found, for as long as the session it found it in runs.
+    const found = this.select.value === AUTO && lastStatus.running ? lastStatus.gameName : "";
+    $("play-game-text").textContent = chosen ? chosen.textContent + (found ? `: ${found}` : "") : "";
     this.button.disabled = this.select.disabled;
     for (const li of this.items()) {
       li.setAttribute("aria-selected", String(li.dataset.value === this.select.value));
@@ -731,11 +750,11 @@ const gameMenu = {
 };
 
 function renderPlay() {
-  const game = selectedGame();
+  const game = selectedGame() || foundGame();
   $("play-connector").textContent = game ? game.connector : "—";
   // A pending client hint is dropped by choosing another game, which changes what they say.
   renderLinks(lastStatus);
-  $("btn-play-start").disabled = playRunning || playStarting || !game;
+  $("btn-play-start").disabled = playRunning || playStarting || !$("play-game-select").value;
   $("btn-play-stop").disabled = !playRunning;
   $("play-game-select").disabled = playRunning;
   $("play-url").disabled = playRunning;
@@ -776,10 +795,11 @@ function renderStatus(s) {
   // detail says what happened; detailDev says which address or value it was read from, which
   // is an answer to a question only someone working on AP64 asks.
   const dev = devDetails && s.detailDev ? ` (${s.detailDev})` : "";
-  // When the detail is already a whole sentence about the console, it is the whole line:
-  // "Waiting for the console — waiting for the ROM on the console" says one thing twice.
+  // When the detail is already a whole sentence about the console, or about what the AP client
+  // needs, it is the whole line: "Waiting for the console — waiting for the ROM on the console"
+  // says one thing twice.
   el.textContent =
-    state === "waiting-console" && s.detail
+    (state === "waiting-console" || state === "client-setup") && s.detail
       ? s.detail.charAt(0).toUpperCase() + s.detail.slice(1) + dev
       : STATE_TEXT[state] + (s.detail ? ` — ${s.detail}${dev}` : "");
   $("play-counters").textContent =
@@ -788,6 +808,7 @@ function renderStatus(s) {
         `${s.stalls} stalls · ${s.reconnects} reconnects`
       : "—";
   renderPlay();
+  offerForFound(s);
 }
 
 function selectPlayGame(id) {
@@ -822,6 +843,9 @@ function setStarting(on) {
 async function beginSession() {
   const url = $("play-url").value.trim();
   saveUrl(url);
+  // A new session offers again what the last one found.
+  offered.clear();
+  offers = [];
   setStarting(true);
   try {
     // The backend says a session is running before it answers this, so Start stays held
@@ -838,10 +862,14 @@ async function beginSession() {
  * Start. For a game whose Archipelago client has to be changed before it can reach AP64
  * (`play_client_setup`), that is settled first: a client needing the fix gets one dialog, and one
  * that is not installed stops here and says so. Every other game answers null and just starts.
+ *
+ * Auto-detect starts straight away: which game it is, and so whether there is anything to settle,
+ * is known only once the cart has answered. The session says then (`offerForFound`).
  */
 async function startPlay() {
   if (playStarting) return;
   setError($("play-error"), "");
+  if ($("play-game-select").value === AUTO) return beginSession();
   const game = selectedGame();
   if (!game) return;
   let setup = null;
@@ -860,23 +888,40 @@ async function startPlay() {
     return;
   }
   if (setup?.state === "needed") {
-    $("client-fix-text").textContent = sentence(setup.message);
-    // A copy the fix leaves as it is (a version AP64 does not recognize) is the player's to know.
-    $("client-fix-left").textContent = sentence(setup.left);
-    $("client-fix-left").hidden = !setup.left;
-    $("client-fix-path").textContent = setup.path || "";
-    openDialog("clientFix");
+    openClientFix(game, setup, false);
     return; // The dialog's buttons carry on from here.
   }
   // A version AP64 does not recognize may still connect: say so, and start anyway.
   if (setup?.state === "unknown") setError($("play-error"), sentence(setup.message));
-  await startAfterNotes();
+  await startAfterNotes(game);
+}
+
+/**
+ * The game the client fix dialog is for, and whether a session is already running it: a game
+ * Auto-detect found, whose session is holding its client until the fix is made. Then the dialog
+ * only fixes; for a game chosen at Start it fixes and starts.
+ */
+let fixing = null;
+
+function openClientFix(game, setup, during) {
+  fixing = { game, during };
+  $("client-fix-title").textContent = during
+    ? `The AP client for ${game.name} needs a one-time fix`
+    : "The AP client needs a one-time fix";
+  $("client-fix-text").textContent = sentence(setup.message);
+  // A copy the fix leaves as it is (a version AP64 does not recognize) is the player's to know.
+  $("client-fix-left").textContent = sentence(setup.left);
+  $("client-fix-left").hidden = !setup.left;
+  $("client-fix-path").textContent = setup.path || "";
+  $("btn-client-fix-go").textContent = during ? "Fix" : "Fix and start";
+  openDialog("clientFix");
 }
 
 /*
  * A game's notes: what to know about its randomizer on a console, which AP64 cannot change.
- * Shown at Start, after the client fix and never over it, until put away for that game. What
- * was put away is the notes' text, so a game whose notes change shows them again.
+ * Shown at Start, after the client fix and never over it, or when Auto-detect finds the game,
+ * until put away for that game. What was put away is the notes' text, so a game whose notes
+ * change shows them again.
  */
 const NOTES_KEY = "ap64.notesSeen.";
 
@@ -888,53 +933,101 @@ function notesSeen(game) {
   }
 }
 
-async function startAfterNotes() {
-  const game = selectedGame();
+/** The game the notes are up for, and whether its session is already running (as for `fixing`). */
+let noting = null;
+
+function openNotes(game, during) {
+  noting = { game, during };
+  $("notes-title").textContent = `Before you play ${game.name}`;
+  $("notes-list").replaceChildren(
+    ...game.notes.map((note) => {
+      const li = document.createElement("li");
+      li.textContent = note;
+      return li;
+    }),
+  );
+  $("notes-hide").checked = false;
+  // Nothing to cancel once the session is running: they are only read.
+  $("btn-notes-go").textContent = during ? "Got it" : "Start";
+  $("btn-notes-cancel").hidden = during;
+  openDialog("notes");
+}
+
+async function startAfterNotes(game) {
   if (game?.notes?.length && !notesSeen(game)) {
-    $("notes-title").textContent = `Before you play ${game.name}`;
-    $("notes-list").replaceChildren(
-      ...game.notes.map((note) => {
-        const li = document.createElement("li");
-        li.textContent = note;
-        return li;
-      }),
-    );
-    $("notes-hide").checked = false;
-    openDialog("notes");
+    openNotes(game, false);
     return; // The dialog's buttons carry on from here.
   }
   await beginSession();
 }
 
 async function startFromNotes() {
-  const game = selectedGame();
-  if (game && $("notes-hide").checked) {
+  const n = noting;
+  if (n && $("notes-hide").checked) {
     try {
-      localStorage.setItem(NOTES_KEY + game.id, game.notes.join("\n"));
+      localStorage.setItem(NOTES_KEY + n.game.id, n.game.notes.join("\n"));
     } catch {
       // Not remembered: they show again next time, which is the safe way to fail.
     }
   }
   closeDialog();
-  await beginSession();
+  if (n && !n.during) await beginSession();
 }
 
 async function fixAndStart() {
-  const game = selectedGame();
-  if (!game) return closeDialog();
+  const f = fixing;
+  if (!f) return closeDialog();
   $("btn-client-fix-go").disabled = true;
   try {
-    await invoke("play_client_fix", { game: game.id });
+    // A session holding this game's client is told by the backend, and serves it.
+    await invoke("play_client_fix", { game: f.game.id });
     closeDialog();
     clientHint = "Restart the Archipelago Launcher, then open the AP client";
     renderLinks(lastStatus);
-    await startAfterNotes();
+    if (!f.during) await startAfterNotes(f.game);
   } catch (e) {
     closeDialog();
     setError($("play-error"), String(e));
   } finally {
     $("btn-client-fix-go").disabled = false;
   }
+}
+
+/*
+ * What Auto-detect found that a player should see: the fix its client needs, a version of its
+ * world AP64 does not recognize, its notes. Start shows the same for a game that was chosen. Each
+ * is offered once a session for each game, so a cart reconnecting does not ask again, and a
+ * dialog waits for any other to close rather than taking its place.
+ */
+const offered = new Set();
+let offers = [];
+
+function offerForFound(s) {
+  if (!s.running) {
+    offers = [];
+    return;
+  }
+  if (!s.auto || !s.game) return;
+  const game = games.find((g) => g.id === s.game);
+  if (!game) return;
+  const once = (what, then) => {
+    const key = `${what}:${game.id}`;
+    if (offered.has(key)) return;
+    offered.add(key);
+    then();
+  };
+  const setup = s.clientSetup;
+  if (setup?.state === "needed") once("fix", () => offers.push(() => openClientFix(game, setup, true)));
+  if (setup?.state === "unknown") once("unknown", () => setError($("play-error"), sentence(setup.message)));
+  if (game.notes?.length && !notesSeen(game)) once("notes", () => offers.push(() => openNotes(game, true)));
+  showOffer();
+}
+
+/** The next offer, once no dialog is up. Later, so a dialog closed to open another counts as up. */
+function showOffer() {
+  setTimeout(() => {
+    if (!openDialogName && offers.length) offers.shift()();
+  });
 }
 
 async function initPlay() {

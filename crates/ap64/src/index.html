@@ -76,14 +76,14 @@
            the tab order; the button and list below drive it (main.js, gameMenu). It sits outside
            the .field, whose `.field select` rule would size it back to full width. -->
       <select id="play-game-select" class="offscreen" tabindex="-1" aria-hidden="true">
-        <option value="">Choose a game…</option>
+        <option value="auto">Auto-detect</option>
       </select>
       <div class="field">
         <span id="play-game-label">Game</span>
         <div class="menu">
           <button type="button" id="play-game-button" class="input menu-button" aria-haspopup="listbox"
                   aria-expanded="false" aria-controls="play-game-list" aria-labelledby="play-game-label play-game-button">
-            <span id="play-game-text" class="menu-text">Choose a game…</span>
+            <span id="play-game-text" class="menu-text">Auto-detect</span>
             <svg class="menu-chevron" viewBox="0 0 24 24" aria-hidden="true">
               <path d="m6 9 6 6 6-6" />
             </svg>
@@ -252,6 +252,13 @@
             <li>Open the AP client from the Archipelago Launcher and connect it to your room.</li>
           </ol>
           <p class="hint">
+            With <strong>Auto-detect</strong>, AP64 finds which game is on the console and serves
+            that game's AP client, and follows the console when you load another. If the game's
+            AP client needs a fix first, or the game has notes, AP64 shows them when it finds the
+            game, as Start does for a game you choose. Choosing a game yourself makes AP64 serve
+            only that one.
+          </p>
+          <p class="hint">
             The three rows say which part is up: <strong>Multi64</strong> is the bridge to the cart,
             <strong>Console</strong> is the ROM answering, and <strong>AP client</strong> is
             the game's Archipelago client connected to AP64.
@@ -268,7 +275,8 @@
     </div>
 
     <!-- Start opens this when the chosen game's Archipelago client has to be changed before it can
-         reach AP64 (play_client_setup). Every other game never sees it. -->
+         reach AP64 (play_client_setup), and so does an Auto-detect session that finds that game.
+         Every other game never sees it. -->
     <div class="dialog-backdrop" id="client-fix-backdrop" hidden></div>
     <div class="dialog" id="client-fix-dialog" role="dialog" aria-modal="true" aria-labelledby="client-fix-title" hidden>
       <div class="dialog-panel">
@@ -289,7 +297,8 @@
     </div>
 
     <!-- Start opens this for a game whose profile carries notes: things about its randomizer on a
-         console that AP64 cannot change. It comes after the client fix, never over it. -->
+         console that AP64 cannot change, and so does an Auto-detect session that finds that game.
+         It comes after the client fix, never over it. -->
     <div class="dialog-backdrop" id="notes-backdrop" hidden></div>
     <div class="dialog" id="notes-dialog" role="dialog" aria-modal="true" aria-labelledby="notes-title" hidden>
       <div class="dialog-panel">

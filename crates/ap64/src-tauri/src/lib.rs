@@ -319,6 +319,8 @@ fn play_games(state: State<'_, AppState>) -> Vec<play::Game> {
     play::games(&state.bundles)
 }
 
+/// Start a session for `game`, a profile id, or [`play::AUTO`] for whichever game the cart is
+/// found running.
 #[tauri::command]
 fn play_start(
     game: String,
@@ -351,7 +353,7 @@ fn play_client_setup(game: String, state: State<'_, AppState>) -> Option<play::C
 }
 
 /// Make the fix [`play_client_setup`] reported as needed, keeping the original among AP64's own
-/// files.
+/// files. An Auto-detect session holding that game's client looks again straight away.
 #[tauri::command]
 fn play_client_fix(
     game: String,
@@ -360,7 +362,9 @@ fn play_client_fix(
 ) -> Result<String, String> {
     use tauri::Manager as _;
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    play::fix_client(&state.bundles, &game, &dir.join("backups"))
+    let told = play::fix_client(&state.bundles, &game, &dir.join("backups"))?;
+    state.play.client_fixed();
+    Ok(told)
 }
 
 #[tauri::command]

@@ -241,12 +241,16 @@ body[data-dev="on"] .dev-only {
 }
 
 .link[data-state="failed"],
-.link[data-state="notinstalled"] {
+.link[data-state="notinstalled"],
+.link[data-state="needsfix"],
+.link[data-state="notsetup"] {
   color: var(--danger-text);
 }
 
 .link[data-state="failed"]::before,
-.link[data-state="notinstalled"]::before {
+.link[data-state="notinstalled"]::before,
+.link[data-state="needsfix"]::before,
+.link[data-state="notsetup"]::before {
   background: var(--danger-text);
 }
 
@@ -412,6 +416,7 @@ body {
 
 #play-status[data-state="waiting-client"],
 #play-status[data-state="waiting-console"],
+#play-status[data-state="client-setup"],
 #play-status[data-state="connecting"] {
   color: var(--warning-text);
 }
