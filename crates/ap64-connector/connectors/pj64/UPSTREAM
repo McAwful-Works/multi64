@@ -1,0 +1,11 @@
+connector.lua is AP64's own, not a fork: it answers the line protocol of the Project64
+script Pokémon Snap's world loads into Project64's debugger, data/ap_psnap_pj64_adapter_30.js
+in nielrenned/PokemonSnap_Archipelago, as shipped in pokemon_snap.apworld v0.8.0 (taken
+2026-10-18). The client side it was checked against is that apworld's pj64_connector.py and
+client.py.
+
+upstream sha256
+d534938cd1bf12671ee1272904c12a3303596bbc5f7c69509d14f17852a67e73  ap_psnap_pj64_adapter_30.js
+
+The world is MIT licensed (Copyright (c) 2025 ArsonAssassin); none of its code is copied here.
+What a cart changes is described in connector.lua's first comment block.

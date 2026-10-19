@@ -1,12 +1,13 @@
 //! Run an Archipelago connector against a cart.
 //!
-//! The scripts in `connectors/` are Archipelago's own connectors with the emulator
-//! taken out: they keep the protocol their Archipelago client speaks and call
-//! [`ap64`](#the-ap64-table) for memory. AP64 owns the TCP socket the client connects
-//! to ([`server`]) and hands each line to the script.
+//! The scripts in `connectors/` keep the protocol their Archipelago client speaks and call
+//! [`ap64`](#the-ap64-table) for memory. Most are Archipelago's own connectors with the
+//! emulator taken out; `pj64` is AP64's own, written against the Project64 script it stands
+//! in for. AP64 owns the TCP socket the client connects to ([`server`]) and hands each line to
+//! the script.
 //!
-//! A client with no connector script to fork is answered by AP64 directly instead: a
-//! [`Native`] connector. One that reads emulator memory itself gets RetroArch's Network
+//! A client with no connector script to fork or stand in for is answered by AP64 directly
+//! instead: a [`Native`] connector. One that reads emulator memory itself gets RetroArch's Network
 //! Commands answered from the cart ([`retroarch`]): Donkey Kong 64 ([`dk64`]) and Banjo-Tooie
 //! ([`bt`]). One whose script only relays packets between the client and buffers in the
 //! game's RAM, the ROM doing all of the game's work, gets that relay ([`relay`]): Star Fox 64.

@@ -20,6 +20,17 @@ randomizer = "nielrenned's Pokemon Snap world"
 connector = "pj64"        # the world's client talks to a Project64 script; AP64 stands in for it
 game_needs_expansion_pak = true   # the world's segment and state block live at 0x80400000
 
+# The client finds the game through Project64's settings file, which it reads and writes on
+# every start, and stops without one; it picks its port there on its first run. AP64 reads the
+# port from the same file (ap64-connector's pj64.rs), so Project64 has to be installed, though
+# it never runs. The client takes its slot name from the ROM, so it logs in once AP64 serves
+# the game.
+notes = [
+    "Pokemon Snap Client needs Project64 installed, only for its settings file: in Archipelago's host.yaml, set pokemon_snap_options, emulator_settings, path to your Project64.exe, and auto_start to false.",
+    "Open Pokemon Snap Client from the Archipelago Launcher. The first time, open it before pressing Start: it picks the port AP64 listens on.",
+    "The client logs in on its own, with the slot name it reads from the game.",
+]
+
 # The release this was measured against; a different one installed is noted, not refused.
 [measured]
 world = "pokemon_snap.apworld"

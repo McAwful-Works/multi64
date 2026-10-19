@@ -5,9 +5,9 @@ description: Add a new game to AP64 - checking its Archipelago world is one the 
 
 # Adding a game to AP64
 
-Twelve games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
+Thirteen games are in: Castlevania 64, Paper Mario, Ocarina of Time, Kirby 64, Banjo-Tooie,
 Mario Kart 64, Donkey Kong 64, all three Bombermans (64, The Second Attack and Hero), Star
-Fox 64 and GoldenEye 007, with Legacy of Darkness written and held back in
+Fox 64, GoldenEye 007 and Pokémon Snap, with Legacy of Darkness written and held back in
 `ap64_core::withheld()`.
 Each took a day or two, and most of that was spent on things this file now answers.
 
@@ -37,8 +37,9 @@ print([l for l in z.read('GAME/client.py').decode('utf8','replace').split(chr(10
 BizHawk Client runs the world's own logic, and AP64 needs no connector work. Paper Mario,
 CV64, CVLoD, Kirby 64, Mario Kart 64 and all three Bombermans look like this.
 
-No such import, or a world that ships its own client (Ocarina of Time's OoT Client), means a
-**forked** connector. Say so and stop; that is a separate piece of work, not a profile.
+No such import, or a world that ships its own client (Ocarina of Time's OoT Client), usually
+means a **forked** connector. Say so and stop; that is a separate piece of work, not a profile.
+The paragraphs below are the exceptions: clients AP64 reaches without forking anything.
 
 A client with no Lua at all -- one that reads emulator memory itself -- may still be reachable.
 Donkey Kong 64's and Banjo-Tooie's clients do that through EmuLoader, which falls back to
@@ -65,6 +66,18 @@ path the client already had (#319). Find out which emulator protocols the client
 speak before calling it out of reach, and run the real client against a stand-in on that
 protocol early. That is how the missing `read_bytestring` in DK64's copy of EmuLoader turned
 up, which no reading of the code had caught.
+
+A client that talks to a script in an emulator other than BizHawk is reachable the same way when
+that script only reads and writes memory. Pokémon Snap's client loads a JavaScript bridge into
+Project64, and AP64 answers its line protocol as a connector script (`connectors/pj64`,
+[host-connector.md §12](../../../docs/integration/host-connector.md#12-standing-in-for-an-emulators-memory-bridge-script)).
+Look for where the client keeps its port: Snap's is in Project64's settings file, so the player
+needs Project64 installed even though it never runs.
+
+A world can also be easy to miss. Pokémon Snap's real world is nielrenned's
+PokemonSnap_Archipelago, listed in the Archipelago index; a search for the game's name on GitHub
+turned up only a Manual world, which never touches the game and has nothing for AP64 to do. Search
+the index and the web before concluding a game has no integration.
 
 Diddy Kong Racing was dropped at exactly this step, after it was assumed from the game
 rather than checked in the apworld.

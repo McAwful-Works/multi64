@@ -254,3 +254,27 @@ What matters here:
   requests (the pointers, the buffers, the clear, the write) lost every handshake; one read of
   everything and at most one write, with the client's reply to a packet riding in the write that
   clears it, connects in about 130 ms.
+
+## 12. Standing in for an emulator's memory-bridge script
+
+Some clients talk to a small script of their own inside an emulator other than BizHawk, which
+does no game logic and only reads and writes memory for them. Pokémon Snap's world loads one
+into Project64's debugger: one request per line, `<id>:<command>`, answered `<id>:<payload>`,
+for `read`, `write`, `dict` and `romInfo`. Where the world's ROM does all of the game's work,
+that script is the whole of what a stand-in replaces, and AP64 answers it as a connector script
+([`connectors/pj64`](../../crates/ap64-connector/connectors/pj64/connector.lua)), each request
+one read or one write to the cart.
+
+What matters here:
+
+- **Find the port where the client finds it.** Pokémon Snap's client picks its port at random on
+  its first run and keeps it in Project64's own settings file, and reads it back from there each
+  time ([`pj64.rs`](../../crates/ap64-connector/src/pj64.rs)). The stand-in reads the same file
+  and listens there; it never writes it, since the client rewrites it on every start.
+- **Parse what the client sends, not what the script's own code suggests.** The client builds
+  addresses with Python's `hex()`, `0x` and all, which JavaScript's `parseInt(s, 16)` accepts
+  and Lua's `tonumber(s, 16)` does not. Test against the client's exact lines.
+- **Answer errors the way the script does.** The client raises a payload that begins `Invalid`
+  or `Unknown` as a script error, and checks each reply's id against its request's, so a reply
+  is never taken for another one's. It waits 5 seconds for each; a cart answers in tens of
+  milliseconds.

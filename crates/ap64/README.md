@@ -21,7 +21,8 @@ Play Archipelago N64 seeds on a real console, from Windows. AP64 does two jobs:
 Supported today, each patched and played on a SummerCart64 with checks sent and items
 received (the first three on 2026-09-18, Kirby 64 on 2026-09-21, Banjo-Tooie and Mario Kart 64
 on 2026-09-22, Donkey Kong 64 on 2026-09-23, Bomberman 64 on 2026-09-26, Bomberman Hero,
-Bomberman 64: The Second Attack and Star Fox 64 on 2026-09-27, GoldenEye 007 on 2026-10-16):
+Bomberman 64: The Second Attack and Star Fox 64 on 2026-09-27, GoldenEye 007 on 2026-10-16,
+Pokémon Snap on 2026-10-18):
 
 - **Castlevania 64 (US 1.0)**, through Archipelago's BizHawk Client.
 - **Paper Mario (US 1.0)** with the Paper Mario Randomizer, through BizHawk Client.
@@ -172,6 +173,21 @@ Bomberman 64: The Second Attack and Star Fox 64 on 2026-09-27, GoldenEye 007 on 
   progressive weapons in every starting loadout and the debrief returning to the mission map.
   The world's client can stop polling while it still shows connected; the notes at Start
   say to reopen it.
+- **Pokémon Snap (US)**, nielrenned's Pokémon Snap world, through its Pokemon Snap Client. The
+  world does all of the game's work in the ROM, built from a fork of the decomp: a segment it
+  appends to the ROM and loads into the Expansion Pak at boot, which the game needs for it. Its
+  client reaches the game through a JavaScript memory bridge it loads into Project64, which
+  answers reads and writes over a line protocol on localhost, and AP64 answers that protocol in
+  its place. The client connects to a port it picks on its first run and keeps in Project64's
+  own settings file, so **Project64 has to be installed**, though it never runs: set
+  `pokemon_snap_options` → `emulator_settings` → `path` in Archipelago's `host.yaml` to its
+  `Project64.exe`, and `auto_start` to `false`, then open the client once before the first
+  Start. AP64 reads the port from that file and never writes it. The client logs in by itself,
+  with the slot name it reads from the ROM. The agent's hook is the first call in the game's
+  frame loop and its stub is a dead function in the game's DMA code, both untouched by the world.
+  Played for 19 checks across Volcano and Beach, among them pictures with the technique and
+  multiple bonuses and both of Volcano's signs, with Beach and the Apples received and
+  working and Oak's unlock dialogs playing.
 
 Written, but **not offered in the app**, because the game cannot be played through yet.
 Kept in the tree and checked by the same tests as the rest (`ap64_core::withheld`), so
@@ -270,8 +286,16 @@ and the session log says so once:
 - On the SummerCart64, for a game that runs without an Expansion Pak, it names the Pak as the
   likely cause.
 - For a game that does not run without one (Ocarina of Time, Banjo-Tooie, Donkey Kong 64,
-  GoldenEye 007: `game_needs_expansion_pak` in its profile), a running game has the Pak, so the status asks
+  GoldenEye 007, Pokémon Snap: `game_needs_expansion_pak` in its profile), a running game has the Pak, so the status asks
   instead whether the ROM is the one AP64 added the agent to.
+
+For Pokémon Snap, Start first looks for the port its client will connect to (above), and
+refuses until it can find it, saying what is missing: the Project64 path in `host.yaml`, or a
+client never opened. It reads the `host.yaml` of the first Archipelago folder that names a
+Project64 for the client, looking in `AP64_ARCHIPELAGO_DIR` if it is set, then
+`%ProgramData%\Archipelago` and `%LOCALAPPDATA%\Archipelago`, as for the worlds below; a
+relative path is taken from that folder. The port is `psnap_ap_port` under `[Debugger]` in
+`Config\Project64.cfg` beside the `Project64.exe` named there.
 
 Before a session begins, Start may ask about two things, one at a time. First, a fix the game's
 Archipelago client needs (Donkey Kong 64 and Banjo-Tooie, above). For those two games Start
@@ -433,8 +457,8 @@ agent and the specs name no game; everything that does lives in these crates.
 | `crates/ap64-core/tools/<game>/` | BizHawk probe scripts for checking a patched ROM before it goes on a cart |
 | [`crates/ap64-cli`](../ap64-cli) | `ap64-patch`, a thin command line over the core |
 | [`crates/ap64-cart`](../ap64-cart) | M64P over multi64d: RDRAM reads and writes, cart ROM reads (cached), retry and reconnect |
-| [`crates/ap64-connector`](../ap64-connector) | Embedded Lua running a connector script, the `ap64` API it calls, the TCP side the client connects to; and the native connectors AP64 runs itself (RetroArch Network Commands over UDP, for Donkey Kong 64 and Banjo-Tooie; a TCP relay to a ROM that speaks for itself, for Star Fox 64) |
-| `crates/ap64-connector/connectors/<id>/` | Forked Archipelago connector scripts (MIT, with `UPSTREAM` provenance) |
+| [`crates/ap64-connector`](../ap64-connector) | Embedded Lua running a connector script, the `ap64` API it calls, the TCP side the client connects to; and the native connectors AP64 runs itself (RetroArch Network Commands over UDP, for Donkey Kong 64 and Banjo-Tooie; a TCP relay to a ROM that speaks for itself, for Star Fox 64); and a stand-in for a Project64 memory-bridge script, for Pokémon Snap |
+| `crates/ap64-connector/connectors/<id>/` | Forked Archipelago connector scripts (MIT), and `pj64`, written against the script it stands in for; each with `UPSTREAM` provenance |
 
 A profile's blobs are this repository's own cart agent ([`n64/agent`](../../n64/agent/README.md),
 with the M64P handler from `n64/test-rom`), built flat at the profile's addresses with the
