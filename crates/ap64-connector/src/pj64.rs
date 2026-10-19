@@ -277,14 +277,18 @@ zillion_options:
 
     #[test]
     fn the_settings_file_is_beside_the_executable() {
-        let dir = Path::new(r"C:\ProgramData\Archipelago");
+        // Paths absolute on whatever runs the test: a Windows drive path is relative on Linux.
+        let base = std::env::temp_dir().join("ap64-pj64-test-missing");
+        let dir = base.join("Archipelago");
+        let exe = base.join("PJ64").join("Project64.exe");
         assert_eq!(
-            config_path(dir, r"E:\PJ64\Project64.exe"),
-            Path::new(r"E:\PJ64\Config\Project64.cfg")
+            config_path(&dir, exe.to_str().unwrap()),
+            base.join("PJ64").join("Config").join("Project64.cfg")
         );
         // A relative path the client resolves against the Archipelago folder.
+        let rel = Path::new("pj64").join("Project64.exe");
         assert_eq!(
-            config_path(dir, r"pj64\Project64.exe"),
+            config_path(&dir, rel.to_str().unwrap()),
             dir.join("pj64").join("Config").join("Project64.cfg")
         );
     }
