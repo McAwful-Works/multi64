@@ -104,8 +104,13 @@ pub fn builtin() -> Result<Vec<Bundle>, String> {
 ///   but a seed freezes, in attract mode at a fixed point and again during play. The same
 ///   seed with no agent in it freezes at the same point in an emulator and the retail ROM
 ///   does not, so the fault is in Archipelago's CVLoD world (seen on v2.0.2), not here.
+/// - `snap` — Pokémon Snap, in progress (#415). The profile places the agent, but the
+///   world's client talks to a Project64 script, and nothing stands in for that yet.
 pub fn withheld() -> Result<Vec<Bundle>, String> {
-    Ok(vec![builtin!("cvlod", ["agent.bin", "stub.bin"])])
+    Ok(vec![
+        builtin!("cvlod", ["agent.bin", "stub.bin"]),
+        builtin!("snap", ["agent.bin", "stub.bin"]),
+    ])
 }
 
 /// A ROM file as loaded: normalized to big-endian, with what could be learned from it.
@@ -376,7 +381,7 @@ mod tests {
         }
         assert_eq!(
             seen,
-            11 * Cart::ALL.len(),
+            12 * Cart::ALL.len(),
             "every profile whose stub copies the agent lets it move, for every cart"
         );
     }
