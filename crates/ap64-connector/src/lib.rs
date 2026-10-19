@@ -11,6 +11,10 @@
 //! ([`bt`]). One whose script only relays packets between the client and buffers in the
 //! game's RAM, the ROM doing all of the game's work, gets that relay ([`relay`]): Star Fox 64.
 //!
+//! A client that talks to a Project64 memory-bridge script is a script connector too: AP64
+//! answers that script's line protocol in its place ([`PJ64`]), on the port the client keeps in
+//! Project64's settings ([`pj64`]): Pokémon Snap.
+//!
 //! # The `ap64` table
 //!
 //! | Function | |
@@ -37,6 +41,7 @@
 
 pub mod bt;
 pub mod dk64;
+pub mod pj64;
 pub mod relay;
 pub mod retroarch;
 pub mod server;
@@ -52,6 +57,9 @@ use base64::Engine as _;
 use mlua::{Lua, Table};
 use sha1::{Digest, Sha1};
 
+/// Finds the ports a client will connect to on this PC, or says what the player must do first.
+pub type FindPorts = fn() -> Result<Vec<u16>, String>;
+
 /// A connector script shipped with AP64.
 #[derive(Debug, Clone, Copy)]
 pub struct Script {
@@ -63,6 +71,9 @@ pub struct Script {
     pub source: &'static str,
     /// Where the client looks for it: the first free one is bound.
     pub ports: &'static [u16],
+    /// Where the client looks for it when that is not fixed but set up on the player's PC, in
+    /// place of `ports`; an error says what the player has to do first ([`Script::listen_on`]).
+    pub find_ports: Option<FindPorts>,
     /// Lua modules it may `require`, beside `json` and `bit`: (name, source).
     pub modules: &'static [(&'static str, &'static str)],
     /// How long the client may stay silent after a reply before it is dropped, as the
@@ -77,6 +88,7 @@ pub const GENERIC: Script = Script {
     client: "BizHawk Client",
     source: include_str!("../connectors/generic/connector.lua"),
     ports: &[43055, 43056, 43057, 43058, 43059, 43060],
+    find_ports: None,
     modules: &[],
     // Was Some(5s), on the reasoning that "BizHawk Client pings well inside it". True of a
     // client attached to an emulator, where a read returns in microseconds. False over a
@@ -103,6 +115,7 @@ pub const OOT: Script = Script {
     client: "OoT Client",
     source: include_str!("../connectors/oot/connector.lua"),
     ports: &[28921],
+    find_ports: None,
     modules: &[("cartmem", include_str!("../connectors/oot/cartmem.lua"))],
     // Upstream's script never drops OoT Client, so neither do we. It would survive it
     // now -- every connection this server lets go of is reset rather than closed, which
@@ -111,7 +124,33 @@ pub const OOT: Script = Script {
     client_timeout: None,
 };
 
-pub const SCRIPTS: &[Script] = &[GENERIC, OOT];
+/// For a client that talks to a Project64 memory-bridge script: Pokémon Snap's, whose world's
+/// ROM does all of the game's work and whose script only reads and writes RAM. Its client
+/// connects to a port it picked and keeps in Project64's settings file ([`pj64`]).
+pub const PJ64: Script = Script {
+    id: "pj64",
+    name: "Project64 memory bridge (Pokémon Snap)",
+    client: "Pokemon Snap Client",
+    source: include_str!("../connectors/pj64/connector.lua"),
+    ports: &[],
+    find_ports: Some(pj64::snap_ports),
+    modules: &[],
+    // Upstream's script never drops its client: Project64's server keeps a connection until
+    // the client closes it.
+    client_timeout: None,
+};
+
+pub const SCRIPTS: &[Script] = &[GENERIC, OOT, PJ64];
+
+impl Script {
+    /// The ports to listen on: `ports`, or what `find_ports` finds on this PC.
+    pub fn listen_on(&self) -> Result<Vec<u16>, String> {
+        match self.find_ports {
+            Some(find) => find(),
+            None => Ok(self.ports.to_vec()),
+        }
+    }
+}
 
 /// A connector that is not a script: AP64 answers the client itself, from the cart.
 #[derive(Debug, Clone, Copy)]
