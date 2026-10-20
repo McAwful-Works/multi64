@@ -188,9 +188,12 @@ Pokémon Snap on 2026-10-18):
   Start. AP64 reads the port from that file and never writes it. The client logs in by itself,
   with the slot name it reads from the ROM. The agent's hook is the first call in the game's
   frame loop and its stub is a dead function in the game's DMA code, both untouched by the world.
+  The stub copies the agent with the game's ROM routine, which clears only the data cache, and
+  then invalidates the instruction cache over it, as the game's own loader does for its code.
   Played for 19 checks across Volcano and Beach, among them pictures with the technique and
   multiple bonuses and both of Volcano's signs, with Beach and the Apples received and
-  working and Oak's unlock dialogs playing.
+  working and Oak's unlock dialogs playing. That play was before the stub invalidated the
+  instruction cache; the stub that does has not yet been played on a console.
 
 Written, but **not offered in the app**, because the game cannot be played through yet.
 Kept in the tree and checked by the same tests as the rest (`ap64_core::withheld`), so

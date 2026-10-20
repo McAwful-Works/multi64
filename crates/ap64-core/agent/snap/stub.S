@@ -11,6 +11,11 @@
  * Snap's ROM copy, dmaReadRom(rom, dst, size), takes a plain ROM offset, as the world's own
  * bootstrap calls it to load its segment into the Expansion Pak.
  *
+ * I-CACHE: dmaReadRom's transfer (dmaCopy) invalidates the data cache only. The game's own
+ * overlay loader (0x80002B64) calls osInvalICache itself for the code it loads, so this does the
+ * same after the copy. Skipping it would copy the agent and then run whatever stale lines the
+ * I-cache held for those addresses, which emulators do not model and a console does.
+ *
  * Symbols from the build (see build.sh): AGENT_VRAM, AGENT_ROM, AGENT_LOAD_SIZE,
  * agent_BSS_START, agent_BSS_END, AGENT_MAGIC_ADDR, agent_tick, and AGENT_MIN_RAM.
  *
@@ -62,6 +67,14 @@ agent_hook_stub:
         lui     $a2, %hi(AGENT_LOAD_SIZE)
         addiu   $a2, $a2, %lo(AGENT_LOAD_SIZE)
         CALL    0x80002C20              /* dmaReadRom */
+        nop
+
+        /* osInvalICache(AGENT_VRAM, AGENT_LOAD_SIZE): the copy does D-cache only. */
+        lui     $a0, %hi(AGENT_VRAM)
+        addiu   $a0, $a0, %lo(AGENT_VRAM)
+        lui     $a1, %hi(AGENT_LOAD_SIZE)
+        addiu   $a1, $a1, %lo(AGENT_LOAD_SIZE)
+        CALL    0x80037730              /* osInvalICache */
         nop
 
         lui     $t1, 0x4D36

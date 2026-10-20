@@ -83,6 +83,14 @@ len = 0x154
 sha1 = "2a3a258b196d98c42b5c4519ca453c418ab2b814"
 hint = "The randomizer changed the routine the stub loads the agent with."
 
+[[require]]
+kind = "sha1"
+label = "I-cache invalidate"
+at = 0x38330            # osInvalICache, 0x80037730
+len = 0x80
+sha1 = "7a08747cbcfbb94a18ecc13357d1762825f73f8b"
+hint = "dmaCopy invalidates the data cache only, so the stub must invalidate I-cache itself or run stale lines. Emulators do not model this; a console does."
+
 [[write]]
 kind = "blob"
 label = "Hook stub"
