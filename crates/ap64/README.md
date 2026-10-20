@@ -270,9 +270,13 @@ cart, says which link is down, and picks up where it left off when the console r
 cart answers. It reads the cart's header and takes every game AP64 offers with that header. The
 header alone does not settle it: worlds rewrite it, and Banjo-Tooie's and Star Fox 64's both write
 `NEDE` version `0x30`. So of those it keeps the one whose hooks are in place, checked as Start
-checks a chosen game, and serves that game's AP client. The menu then names the game. Each time the
-link to the cart restarts, which is what a console reset or a ROM swapped looks like from here, it
-checks again. The same game carries on with its client still connected. Another game stops the old
+checks a chosen game, and serves that game's AP client. The menu then names the game. It checks
+again each time the link to the cart restarts, and each time the cart answers after a silence with
+another ROM header than before: a console reset into another ROM need not restart the link, since
+the request it interrupted is answered by the new ROM. That request is failed, and the check comes
+before anything more is read from the cart or written to it, so nothing more the old game's client
+asked for reaches the new game; a write already on its way when the console was reset may still
+have. The same game carries on with its client still connected. Another game stops the old
 game's connector and starts the new one's, and the log says the console changed games; that game's
 AP client is the one to open. A ROM that passes the checks for two games would be refused, with a
 note to choose the game instead; none does today. A chosen game is checked for and nothing else,
@@ -338,9 +342,10 @@ these again for this game** is ticked, and show again if they change.
 
 With Auto-detect, Start asks neither, since the game is not known until the cart answers. Both come
 when the session finds a game that has them, the fix first, each once a session for each game, and
-a dialog waits for any other window to close rather than opening over it. Until the fix is made the
-session holds that game's client: nothing is served, and the AP client row says **Needs a one-time
-fix**. **Fix** in the dialog makes it, and the session carries on at once; **Cancel** leaves it
+a dialog waits for any other window to close rather than opening over it; one still waiting when
+the console stops running its game is dropped, and comes back with the game. Until the fix is
+made the session holds that game's client: nothing is served, and the AP client row says **Needs a
+one-time fix**. **Fix** in the dialog makes it, and the session carries on at once; **Cancel** leaves it
 holding, and Stop then Start offers the fix again. A world that is not installed (**Not
 installed**), or Pokémon Snap's port not set up (**Not set up**), holds the client the same way,
 and is looked at again every 30 seconds, so the session carries on by itself once it is in place.
@@ -362,8 +367,8 @@ the game going away and waits for another, and AP64 calls it again once the cons
 the game has something to say.
 
 Before anything else, Start checks that the ROM on the cart is one this version of AP64 patched,
-and the session checks again each time the link to the cart restarts, for a chosen game as for
-Auto-detect.
+and the session checks again each time the link to the cart restarts or the cart is found holding
+another ROM, for a chosen game as for Auto-detect.
 A new version can change the agent or the stub that loads it, so a ROM patched by another
 version is refused, with a note to add the agent to the seed again.
 

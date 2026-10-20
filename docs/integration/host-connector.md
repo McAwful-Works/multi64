@@ -39,7 +39,9 @@ and a stand-in can answer those. §10 covers what changes.
 
 And a script that does no game logic at all, only moving packets between the client and buffers
 in the game's RAM, needs no stand-in: the stand-in's job is the script's, done from the cart. §11
-covers that.
+covers that. A client that talks to a memory-bridge script of its own in another emulator, such as
+Project64, can be served the same way as a BizHawk one, by standing in for that script; §12 covers
+that.
 
 ## 2. Be the emulator, not correct
 
@@ -114,6 +116,13 @@ serves is the one the console is running, and the player has no file to choose.
   part once and serve it from memory after that.
 - **Drop the cache when the link restarts.** A silent agent and a new `HELLO` may mean a reset or
   another game; read the header again and start over.
+- **And when the cart comes back from a silence.** A reset need not restart the link: the request
+  it interrupted is retried on the same one, and the new ROM's agent answers it. So once a request
+  has gone unanswered, read the header again after the next answer. The header carries the image's
+  checksum, so another game or another seed reads differently; treat that as a link that restarted,
+  with a new `HELLO`, since the new image's agent may not be the one the last `HELLO` described, and
+  find out what the console is running before answering anything else from it. Ask before sending a
+  write again after a silence too: the new ROM's agent has never seen it, and would apply it.
 - **Batch it.** Gather the ROM regions a batch names, missing from the cache, into one `PEEKROM`,
   as §4 does for RDRAM.
 - **Report a hash that is stable.** Hashing the whole image would mean reading all of it over the
@@ -151,7 +160,7 @@ console resets, and the game stops calling the agent during loads. Each needed i
 | A reply arrives too late for its request | Discard it by its `rid`, but keep its watch trailer first ([spec §4.3](../spec/memory-l3-application-v0.md#43-watched-slots-watch)): the agent hands each event out once, on whichever response goes next, and one thrown away with its response is lost. The same goes for a response rejected for holding the wrong regions |
 | Late replies reach a transport just rebuilt | multi64d gives every WebSocket client the whole stream from the cart, so the new transport hears the old one's late replies before its own `HELLO_ACK`. Wait for the `HELLO_ACK` itself |
 | The reply timeout | Make it a deadline on the whole wait, each socket read waiting only for what is left of it. A read given the whole timeout each time can come back a moment early (Windows rounds socket timeouts to its timer tick), find the deadline not quite passed, and wait the whole timeout again, so one attempt took twice as long and the retries outlasted the client's own deadline |
-| Console reset | The agent is back as soon as the game reaches its hook; the stand-in only has to keep retrying and resync its stream decoder |
+| Console reset | The agent is back as soon as the game reaches its hook; the stand-in has to keep retrying and resync its stream decoder. The ROM may not be the one it was, though, and nothing on the link says so: read the header again once it answers (§5) |
 | Client abandons its socket without draining it | Put a deadline on every send. An unbounded write once blocked the only thread; the client still reported "connected", because the kernel completes a handshake nobody accepts |
 | Connector exits after one missed `accept()` | Supervise it and restart it, but only on a clean return — a raised error must still propagate |
 | Many abandoned connections queued during an outage | Accept the newest and discard the rest |

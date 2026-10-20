@@ -87,7 +87,7 @@ goes and **what calls it**, and that is almost all of the work.
 
 ## What has been proven
 
-On a SummerCart64, the same agent source has served twelve commercial games through randomizer
+On a SummerCart64, the same agent source has served thirteen commercial games through randomizer
 clients, with location checks reaching a server and items arriving in game. They went in four
 ways:
 

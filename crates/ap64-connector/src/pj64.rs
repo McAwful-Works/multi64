@@ -44,11 +44,14 @@ pub fn snap_ports() -> Result<Vec<u16>, String> {
                     cfg.display()
                 )
             }),
+            // Named, since it is the first of several Archipelago folders that was gone by, and
+            // a player with more than one may be fixing another's.
             Err(e) => Err(format!(
                 "Pokémon Snap Client keeps its port in {}, which could not be read ({e}): set \
-                 pokemon_snap_options.emulator_settings.path in host.yaml to your \
-                 Project64.exe, and open the client once",
-                cfg.display()
+                 pokemon_snap_options.emulator_settings.path in {} to your Project64.exe, and \
+                 open the client once",
+                cfg.display(),
+                yaml.display()
             )),
         };
     }
@@ -145,9 +148,34 @@ fn scalar(v: &str) -> Option<String> {
         while let Some(c) = chars.next() {
             match c {
                 '"' => break,
+                // YAML's escapes. Archipelago saves `host.yaml` ASCII-only, so a path with any
+                // other letter in it comes back as `\xNN`, `\uNNNN` or `\UNNNNNNNN`.
                 '\\' => match chars.next()? {
                     'n' => out.push('\n'),
-                    't' => out.push('\t'),
+                    't' | '\t' => out.push('\t'),
+                    'r' => out.push('\r'),
+                    '0' => out.push('\0'),
+                    'a' => out.push('\x07'),
+                    'b' => out.push('\x08'),
+                    'v' => out.push('\x0B'),
+                    'f' => out.push('\x0C'),
+                    'e' => out.push('\x1B'),
+                    'N' => out.push('\u{85}'),
+                    '_' => out.push('\u{A0}'),
+                    'L' => out.push('\u{2028}'),
+                    'P' => out.push('\u{2029}'),
+                    x @ ('x' | 'u' | 'U') => {
+                        let digits = match x {
+                            'x' => 2,
+                            'u' => 4,
+                            _ => 8,
+                        };
+                        let hex: String = chars.by_ref().take(digits).collect();
+                        if hex.len() != digits {
+                            return None;
+                        }
+                        out.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                    }
                     other => out.push(other),
                 },
                 c => out.push(c),
@@ -257,6 +285,42 @@ zillion_options:
             yaml_value(yaml, &["pokemon_snap_options", "emulator_settings", "path"]).as_deref(),
             Some(r"C:\it's\Project64.exe")
         );
+    }
+
+    /// Archipelago writes `host.yaml` double-quoted and ASCII-only, so a path with a letter
+    /// outside ASCII in it is saved escaped, the way `_persistent_storage.yaml` holds
+    /// `Pok\xE9mon`.
+    #[test]
+    fn a_path_saved_with_escapes_reads_as_the_path() {
+        for (saved, path) in [
+            (
+                r#""E:\\Users\\J\xF6rg\\Project64 3.0\\Project64.exe""#,
+                "E:\\Users\\Jörg\\Project64 3.0\\Project64.exe",
+            ),
+            (
+                r#""E:\\Spi\u00E9le\\Project64.exe""#,
+                "E:\\Spiéle\\Project64.exe",
+            ),
+            (
+                r#""E:\\\U0001F3AE\\Project64.exe""#,
+                "E:\\🎮\\Project64.exe",
+            ),
+            (
+                r#""E:\\a\tb\\\"q\"\\Project64.exe""#,
+                "E:\\a\tb\\\"q\"\\Project64.exe",
+            ),
+        ] {
+            let yaml = format!("pokemon_snap_options:\n  emulator_settings:\n    path: {saved}\n");
+            assert_eq!(
+                yaml_value(
+                    &yaml,
+                    &["pokemon_snap_options", "emulator_settings", "path"]
+                )
+                .as_deref(),
+                Some(path),
+                "{saved}"
+            );
+        }
     }
 
     #[test]
