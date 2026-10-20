@@ -49,6 +49,16 @@ at = 0x77D8             # jal func_80006878 at 0x80006BD8, the first call in gtl
 equals = 0x0C001A1E
 hint = "The randomizer changed the frame loop, so the hook has nowhere to go."
 
+# The same call in gtlMain's other copy of the loop, which a scene runs instead of the first
+# when its setup says so. It never ran in the 12,660 frames measured, which did not cover every
+# scene; hooked too, so a scene that runs it does not leave the agent silent.
+[[require]]
+kind = "word"
+label = "Frame hook site, the loop's other copy"
+at = 0x7660             # jal func_80006878 at 0x80006A60
+equals = 0x0C001A1E
+hint = "The randomizer changed the frame loop, so the hook has nowhere to go."
+
 # func_80003530, a 1356-byte leaf in sys/dma.c that nothing in the ROM refers to, and that
 # tools/count-calls.lua never saw run. The hash is what stops a later release using it.
 [[require]]
@@ -112,4 +122,10 @@ value = "agent_rom"
 kind = "jal"
 label = "Frame hook"
 at = 0x77D8
+target = 0x80003530
+
+[[write]]
+kind = "jal"
+label = "Frame hook, the loop's other copy"
+at = 0x7660
 target = 0x80003530

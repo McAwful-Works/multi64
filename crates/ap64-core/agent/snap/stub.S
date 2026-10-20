@@ -1,12 +1,16 @@
 /*
  * Per-frame hook stub for Pokemon Snap (US), written over func_80003530, an unreferenced leaf
- * function in the main segment's sys/dma.c, and reached by retargeting one existing jal.
+ * function in the main segment's sys/dma.c, and reached by retargeting the two calls below.
  *
- * Hook site: `jal func_80006878` at 0x80006BD8, the first call in each pass of gtlMain's frame
- * loop. gtlMain has two copies of the loop, chosen per scene by a flag; this one ran 12,438 times
- * in 12,660 frames of play, exactly as often as func_80006878 itself, and the other copy's call
- * (0x80006A60) never ran, so it is left alone. func_80006878 only waits out a pending reset
- * handshake, so running the agent just after it puts it between two frames' updates.
+ * Hook sites: `jal func_80006878` at 0x80006BD8 and at 0x80006A60, the first call in each pass
+ * of gtlMain's frame loop. gtlMain has two copies of the loop, chosen per scene by a flag, and
+ * the call is the same in both, so both go through here: whichever loop a scene runs, the agent
+ * runs once a pass, and a scene never runs both. The first ran 12,438 times in 12,660 frames of
+ * play, exactly as often as func_80006878 itself; the second never ran in those frames, but the
+ * scenes they did not cover (the album, the gallery, the credits) may use it, and a scene that
+ * did would otherwise leave the agent silent until the next. func_80006878 only waits out a
+ * pending reset handshake, so running the agent just after it puts it between two frames'
+ * updates.
  *
  * Snap's ROM copy, dmaReadRom(rom, dst, size), takes a plain ROM offset, as the world's own
  * bootstrap calls it to load its segment into the Expansion Pak.
