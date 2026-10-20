@@ -1,4 +1,4 @@
-n64/agent from 79f416a
+n64/agent from 0fd3ab0
 built by crates/ap64-core/agent/build.sh snap, cart ed64 (mips64-ultra-elf-gcc (GCC) 15.2.0)
 agent.bin sha1 8b84bd91aa1bb3aedf394c5d42b2c413d1812896
-stub.bin  sha1 8cf9d30c26cc3f62d2ce98f7942d5a8feabaab5b
+stub.bin  sha1 67510662732f576bb908158aa35f50aceb2cea8f

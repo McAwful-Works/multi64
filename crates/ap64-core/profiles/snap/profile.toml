@@ -49,6 +49,16 @@ at = 0x77D8             # jal func_80006878 at 0x80006BD8, the first call in gtl
 equals = 0x0C001A1E
 hint = "The randomizer changed the frame loop, so the hook has nowhere to go."
 
+# The same call in gtlMain's other copy of the loop, which a scene runs instead of the first
+# when its setup says so. It never ran in the 12,660 frames measured, which did not cover every
+# scene; hooked too, so a scene that runs it does not leave the agent silent.
+[[require]]
+kind = "word"
+label = "Frame hook site, the loop's other copy"
+at = 0x7660             # jal func_80006878 at 0x80006A60
+equals = 0x0C001A1E
+hint = "The randomizer changed the frame loop, so the hook has nowhere to go."
+
 # func_80003530, a 1356-byte leaf in sys/dma.c that nothing in the ROM refers to, and that
 # tools/count-calls.lua never saw run. The hash is what stops a later release using it.
 [[require]]
@@ -83,6 +93,14 @@ len = 0x154
 sha1 = "2a3a258b196d98c42b5c4519ca453c418ab2b814"
 hint = "The randomizer changed the routine the stub loads the agent with."
 
+[[require]]
+kind = "sha1"
+label = "I-cache invalidate"
+at = 0x38330            # osInvalICache, 0x80037730
+len = 0x80
+sha1 = "7a08747cbcfbb94a18ecc13357d1762825f73f8b"
+hint = "dmaCopy invalidates the data cache only, so the stub must invalidate I-cache itself or run stale lines. Emulators do not model this; a console does."
+
 [[write]]
 kind = "blob"
 label = "Hook stub"
@@ -104,4 +122,10 @@ value = "agent_rom"
 kind = "jal"
 label = "Frame hook"
 at = 0x77D8
+target = 0x80003530
+
+[[write]]
+kind = "jal"
+label = "Frame hook, the loop's other copy"
+at = 0x7660
 target = 0x80003530

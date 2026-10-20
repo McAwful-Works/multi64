@@ -160,7 +160,10 @@ out under it.
   exception handler ([cart-agent.md §1](cart-agent.md#1-the-contract)).
 - An existing `jal` whose target you can call first from your own code. Retargeting one
   instruction to your code keeps the instruction count, so nothing in the game moves.
-- **Unique**: the only call to that target, so the retarget changes exactly one path.
+- **Unique**: the only call to that target, so the retarget changes exactly one path. One
+  exception: a game with more than one copy of its frame loop, a scene running one copy or
+  another but never two in a frame, has the same call in each, and each is retargeted, so the
+  agent runs whichever copy a scene uses. Pokémon Snap's `gtlMain` is one.
 - **Untouched by the patch**, now and — because patches change — checked again by the splicer
   every time.
 
