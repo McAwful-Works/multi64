@@ -17,10 +17,20 @@ use std::path::{Path, PathBuf};
 const PORT_KEY: &str = "psnap_ap_port";
 
 /// The port Pokémon Snap's client will connect to, from the first Archipelago folder whose
-/// `host.yaml` names a Project64 for it.
+/// `host.yaml` names a Project64 with the port in its settings file.
 pub fn snap_ports() -> Result<Vec<u16>, String> {
+    ports_in(&ap64_core::installed::archipelago_dirs())
+}
+
+/// [`snap_ports`], looking in `dirs` in order.
+///
+/// A folder that cannot say is passed over for the next, rather than ending the search: a
+/// player with two Archipelago installs may have a `host.yaml` left in one that names a
+/// Project64 since removed, and run the other. Only when none can say is the player told, with
+/// what each one lacked, named by its `host.yaml`, since they may be fixing the wrong one.
+fn ports_in(dirs: &[PathBuf]) -> Result<Vec<u16>, String> {
     let mut tried = Vec::new();
-    for dir in ap64_core::installed::archipelago_dirs() {
+    for dir in dirs {
         let yaml = dir.join("host.yaml");
         let Ok(text) = std::fs::read_to_string(&yaml) else {
             continue;
@@ -35,25 +45,22 @@ pub fn snap_ports() -> Result<Vec<u16>, String> {
             ));
             continue;
         };
-        let cfg = config_path(&dir, &exe);
-        return match std::fs::read(&cfg) {
-            Ok(bytes) => port_in_config(&bytes).map(|p| vec![p]).ok_or_else(|| {
-                format!(
-                    "{} has no {PORT_KEY} yet: open Pokémon Snap Client once, so it picks the \
-                     port it will connect to, then press Start again",
+        let cfg = config_path(dir, &exe);
+        match std::fs::read(&cfg) {
+            Ok(bytes) => match port_in_config(&bytes) {
+                Some(port) => return Ok(vec![port]),
+                None => tried.push(format!(
+                    "{} has no {PORT_KEY} yet (open Pokémon Snap Client once, so it picks the \
+                     port it will connect to)",
                     cfg.display()
-                )
-            }),
-            // Named, since it is the first of several Archipelago folders that was gone by, and
-            // a player with more than one may be fixing another's.
-            Err(e) => Err(format!(
-                "Pokémon Snap Client keeps its port in {}, which could not be read ({e}): set \
-                 pokemon_snap_options.emulator_settings.path in {} to your Project64.exe, and \
-                 open the client once",
-                cfg.display(),
-                yaml.display()
+                )),
+            },
+            Err(e) => tried.push(format!(
+                "{} names a Project64 whose {} could not be read ({e})",
+                yaml.display(),
+                cfg.display()
             )),
-        };
+        }
     }
     if tried.is_empty() {
         tried.push("no host.yaml found in any Archipelago folder".into());
@@ -61,7 +68,7 @@ pub fn snap_ports() -> Result<Vec<u16>, String> {
     Err(format!(
         "Pokémon Snap Client needs Project64's settings file to find AP64, and {}: set \
          pokemon_snap_options.emulator_settings.path in host.yaml to your Project64.exe, \
-         and open the client once",
+         open the client once, then press Start again",
         tried.join("; ")
     ))
 }
@@ -336,6 +343,71 @@ zillion_options:
         assert_eq!(
             port_in_config(b"[Debugger]\npsnap_ap_port : 40001\n"),
             Some(40001)
+        );
+    }
+
+    /// Two Archipelago folders, each with a `host.yaml` naming a Project64 (`None` for none),
+    /// and the second's Project64 with the port in its settings. Removed when dropped.
+    struct Installs(PathBuf);
+
+    impl Drop for Installs {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn installs(name: &str, first: Option<&str>) -> (Installs, Vec<PathBuf>) {
+        let base = std::env::temp_dir().join(format!("ap64-pj64-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (a, b) = (base.join("ProgramData"), base.join("LocalAppData"));
+        let pj64 = base.join("PJ64");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::create_dir_all(pj64.join("Config")).unwrap();
+        std::fs::write(
+            pj64.join("Config").join("Project64.cfg"),
+            "[Debugger]\npsnap_ap_port=43817\n",
+        )
+        .unwrap();
+        let yaml =
+            |exe: &str| format!("pokemon_snap_options:\n  emulator_settings:\n    path: '{exe}'\n");
+        if let Some(exe) = first {
+            std::fs::write(a.join("host.yaml"), yaml(exe)).unwrap();
+        }
+        let exe = pj64.join("Project64.exe");
+        std::fs::write(b.join("host.yaml"), yaml(exe.to_str().unwrap())).unwrap();
+        (Installs(base), vec![a, b])
+    }
+
+    /// A `host.yaml` left in one install naming a Project64 since removed does not hide the one
+    /// the player runs.
+    #[test]
+    fn an_install_that_cannot_say_is_passed_over_for_the_next() {
+        let gone = std::env::temp_dir()
+            .join("ap64-pj64-gone")
+            .join("Project64.exe");
+        let (_tmp, dirs) = installs("passed-over", Some(gone.to_str().unwrap()));
+        assert_eq!(ports_in(&dirs), Ok(vec![43817]));
+    }
+
+    /// When none can say, each is named, with what it lacked.
+    #[test]
+    fn when_no_install_can_say_each_is_named() {
+        let gone = std::env::temp_dir()
+            .join("ap64-pj64-gone")
+            .join("Project64.exe");
+        let (_tmp, dirs) = installs("none", Some(gone.to_str().unwrap()));
+        std::fs::write(dirs[1].join("host.yaml"), "general_options:\n  x: 1\n").unwrap();
+        let e = ports_in(&dirs).unwrap_err();
+        for d in &dirs {
+            assert!(
+                e.contains(&d.join("host.yaml").display().to_string()),
+                "{e}"
+            );
+        }
+        assert!(
+            e.contains("could not be read") && e.contains("sets no Project64"),
+            "{e}"
         );
     }
 

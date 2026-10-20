@@ -124,3 +124,68 @@ fn a_bad_request_is_answered_as_upstream_answers_it() {
     // Outside RDRAM fails only that line: the client is reset and connects again.
     assert!(c.handle("18:read u32 0x80800000 4").is_err());
 }
+
+/// A `bytestring` is one character per byte both ways, as upstream's `String.fromCharCode` and
+/// `charCodeAt` make it, and the client's UTF-8 carries it: a byte past 0x7F is the character
+/// with that code, not a byte that is not UTF-8.
+#[test]
+fn a_bytestring_is_one_character_per_byte() {
+    let (c, ram) = connector();
+    // FF FE 01 2C at 0x8040004C.
+    assert_eq!(
+        c.handle("1:read bytestring 0x8040004c 4").unwrap(),
+        "1:\u{FF}\u{FE}\u{1},"
+    );
+    // One byte a character, each its code's low byte; a character past U+FFFF is two UTF-16
+    // units, so two bytes, as charCodeAt sees it.
+    assert_eq!(
+        c.handle("2:write bytestring 0x80400200 aé🎮").unwrap(),
+        "2:Write successful"
+    );
+    assert_eq!(
+        &ram.borrow().ram[0x40_0200..0x40_0205],
+        &[0x61, 0xE9, 0x3C, 0xAE, 0]
+    );
+}
+
+/// Requests Pokémon Snap Client 0.8.0 never makes are still answered as upstream's script
+/// answers them, so a client that starts making them is not reset for it.
+#[test]
+fn an_odd_request_is_answered_as_upstream_answers_it() {
+    let (c, ram) = connector();
+    // A JSON object where a write wants a list.
+    assert_eq!(
+        c.handle(r#"1:write u32 0x80400000 {"a": 1}"#).unwrap(),
+        "1:Value must be a valid JSON Array"
+    );
+    // A dict entry's size: 0 is upstream's `|| 1`, one value; a negative one reads none; one
+    // that is not whole steps as upstream's loop does, 2.5 bytes of u8 being three.
+    let dict = c
+        .handle(r#"2:dict {"one": {"adr": 2151677952, "size": 0}, "none": {"adr": 2151677952, "size": -1}, "three": {"adr": 2151677952, "size": 2.5}}"#)
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(dict.strip_prefix("2:").unwrap()).unwrap();
+    assert_eq!(json["one"], serde_json::json!([79]));
+    assert_eq!(json["none"], serde_json::json!([]));
+    assert_eq!(json["three"], serde_json::json!([79, 75, 65]));
+    // An address that is not whole is a bad request, not a reset.
+    assert_eq!(
+        c.handle(r#"3:dict {"x": {"adr": 2151677952.5}}"#).unwrap(),
+        "3:Invalid Dict JSON Format"
+    );
+    // parseInt takes the leading digits and leaves the rest.
+    assert_eq!(
+        c.handle("4:read u8 0x80400000zz 2abc").unwrap(),
+        "4:[79,75]"
+    );
+    // Values are converted as JavaScript stores a number in a byte: truncated toward zero,
+    // wrapped, and null, a numeric string or a boolean taken as the number it is.
+    assert_eq!(
+        c.handle(r#"5:write u8 0x80400300 [1.9, -1.5, 256, null, "7", true]"#)
+            .unwrap(),
+        "5:Write successful"
+    );
+    assert_eq!(
+        &ram.borrow().ram[0x40_0300..0x40_0306],
+        &[1, 0xFF, 0, 0, 7, 1]
+    );
+}

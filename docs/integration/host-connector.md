@@ -287,3 +287,9 @@ What matters here:
   or `Unknown` as a script error, and checks each reply's id against its request's, so a reply
   is never taken for another one's. It waits 5 seconds for each; a cart answers in tens of
   milliseconds.
+- **Mind how the script's text becomes bytes.** A JavaScript string is UTF-16, and the socket
+  carries it as UTF-8: a script that builds a reply from memory with `String.fromCharCode`
+  sends a byte past `0x7F` as the character with that code, two bytes on the wire, and the
+  client decodes it back. Sending the raw byte instead is not UTF-8, and a stand-in whose
+  replies must be text, as a Lua script's are here, cannot send it at all. The same goes the
+  other way, for text written to memory, a byte from each UTF-16 unit.
