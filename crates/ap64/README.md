@@ -314,11 +314,14 @@ and the session log says so once:
 
 For Pokémon Snap, Start first looks for the port its client will connect to (above), and
 refuses until it can find it (with Auto-detect, the session holds its client instead, as below), saying what is missing: the Project64 path in `host.yaml`, or a
-client never opened. It reads the `host.yaml` of the first Archipelago folder that names a
-Project64 for the client, looking in `AP64_ARCHIPELAGO_DIR` if it is set, then
-`%ProgramData%\Archipelago` and `%LOCALAPPDATA%\Archipelago`, as for the worlds below; a
-relative path is taken from that folder. The port is `psnap_ap_port` under `[Debugger]` in
-`Config\Project64.cfg` beside the `Project64.exe` named there.
+client never opened. It looks in `AP64_ARCHIPELAGO_DIR` if it is set, then
+`%ProgramData%\Archipelago` and `%LOCALAPPDATA%\Archipelago`, as for the worlds below, and
+takes the port from the first whose `host.yaml` names a Project64 with one; a relative path is
+taken from that folder. The port is `psnap_ap_port` under `[Debugger]` in
+`Config\Project64.cfg` beside the `Project64.exe` named there. A folder that cannot say, its
+`host.yaml` naming no Project64 or one whose settings are missing or hold no port, is passed
+over for the next, and only if none can say does Start refuse, naming each `host.yaml` and
+what it lacked.
 
 Before a session begins, Start may ask about two things, one at a time. First, a fix the game's
 Archipelago client needs (Donkey Kong 64 and Banjo-Tooie, above). For those two games Start
