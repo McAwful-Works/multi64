@@ -11,7 +11,12 @@
 //! The ROM is read from the cart itself (M64P `PEEKROM`) and cached: it cannot change
 //! while the console runs, and clients read it far more often than it could be fetched.
 //! The cache is dropped whenever the link to the cart restarts, since that is when the
-//! console may have been reset or another game loaded.
+//! console may have been reset or another game loaded. A reset does not always restart the
+//! link -- the request it interrupts is retried on the same one, and the new ROM's agent
+//! answers it -- so a cart that answers again after missing a request has its ROM header read
+//! again, and a different one is taken as a new link: greeted with a new `HELLO`, its cache
+//! dropped, and [`Backend::generation`] moved. A write is not sent again after a silence until
+//! the header says the ROM is the one it was decided against.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -43,7 +48,8 @@ pub trait Backend {
     /// Cartridge ROM, one block per region, in order.
     fn read_rom_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>>;
 
-    /// Changes each time the link to the cart restarts. Anything derived from the ROM
+    /// Changes each time the link to the cart restarts, or the cart is found holding another ROM
+    /// after a silence that did not restart it. Anything derived from the ROM
     /// (a hash, a header) must be read again when it does, and anything decided from what
     /// was read before it changed must not be written after.
     ///
@@ -251,6 +257,24 @@ fn soft_retries_for(budget: Duration) -> u32 {
 
 /// Cached ROM is kept in pages of this size, fetched several to a request.
 const ROM_PAGE: u32 = 1024;
+/// The cartridge header: name, game code, version and the image's checksum.
+const ROM_HEADER: usize = 0x40;
+
+/// Whether the cart still holds the ROM whose header is `known`, asked of it now.
+///
+/// `false` for another header, and for an agent that refuses `PEEKROM`, which the one that served
+/// `known` did not. A silence, or a bus the game holds (`E_BUSY`), is an error: not known yet.
+fn same_rom(t: &mut Multi64Transport, known: &[u8]) -> io::Result<bool> {
+    let header = [m64p::Region {
+        addr: 0,
+        len: ROM_HEADER as u16,
+    }];
+    match t.peek_rom(&header) {
+        Ok(got) => Ok(got.first().is_some_and(|h| h == known)),
+        Err(e) if transport::refused(&e).is_some() => Ok(false),
+        Err(e) => Err(e),
+    }
+}
 /// How long to give a game holding the PI bus before asking again, when the agent answered
 /// `E_BUSY`: a frame or so.
 const BUSY_WAIT: Duration = Duration::from_millis(20);
@@ -393,6 +417,9 @@ pub struct Multi64 {
     ailing: bool,
     /// Idle probes ([`Multi64::alive`]) missed in a row since the cart last answered.
     quiet_probes: u32,
+    /// The cart missed a request or a probe since its ROM was last known to be the same one, so
+    /// the next answer is followed by a look at the ROM header ([`Multi64::recheck_rom`]).
+    missed: bool,
     /// Stalls being counted rather than logged ([`STALL_RUN`]).
     stall_log: StallLog,
     /// The link generation the watch was last set up for, so a cart that restarted is
@@ -422,6 +449,7 @@ impl Multi64 {
             soft_retries: SOFT_RETRIES,
             ailing: false,
             quiet_probes: 0,
+            missed: false,
             stall_log: StallLog::default(),
         })
     }
@@ -535,13 +563,23 @@ impl Multi64 {
                 self.answering();
                 return Err(e);
             }
+            if link_restarted(&e) {
+                // `op` found another ROM on the cart (a write about to be sent again): the
+                // cart is answering, and the link is renewed for the new one.
+                self.rom_changed();
+                self.answering();
+                return Err(e);
+            }
             match e.kind() {
                 // The game held the PI bus past the agent's bound (`E_BUSY`): it is streaming
                 // from ROM. Give it a frame or two.
                 io::ErrorKind::WouldBlock if Instant::now() < busy_until => {
                     wait_unless(BUSY_WAIT, &|| self.give_up());
                 }
-                io::ErrorKind::TimedOut if timeouts < self.soft_retries => timeouts += 1,
+                io::ErrorKind::TimedOut if timeouts < self.soft_retries => {
+                    timeouts += 1;
+                    self.missed = true;
+                }
                 _ => break e,
             }
             // Each retry can cost a whole reply timeout, and they run before the reconnect
@@ -588,6 +626,7 @@ impl Multi64 {
                     // another image. Nothing read from the old one can be trusted.
                     self.rom_pages.clear();
                     self.generation += 1;
+                    self.missed = false;
                     // Connecting is a blocking connect and a HELLO, neither of which can be
                     // interrupted; check again on the way out rather than going on to serve
                     // a request nobody is waiting for any more.
@@ -632,12 +671,75 @@ impl Multi64 {
     /// The cart answered: say so if it was last said not to be.
     fn answering(&mut self) {
         self.quiet_probes = 0;
+        if self.missed {
+            self.recheck_rom();
+        }
         if self.ailing {
             self.ailing = false;
             if let Some(h) = &self.health {
                 h(true);
             }
         }
+    }
+
+    /// Whether the cart, answering again after a silence, still holds the ROM it was read from.
+    ///
+    /// A console reset into another ROM looks, from here, like a scene load: requests go
+    /// unanswered for a while and are then answered on the same link. Its first frame is the new
+    /// ROM's, though, and what was cached from the old one -- and what a caller decided from it --
+    /// is not the cart's any more. The header carries the image's checksum, so another game or
+    /// another seed of the same one reads differently, and when it does the cart is treated as a
+    /// link that restarted. One small read, after a silence only.
+    fn recheck_rom(&mut self) {
+        let Some(known) = self.known_header() else {
+            // Nothing read from the ROM yet, so nothing to compare or to throw away.
+            self.missed = false;
+            return;
+        };
+        match same_rom(&mut self.t, &known) {
+            Ok(true) => self.missed = false,
+            Ok(false) => self.rom_changed(),
+            // Not answering after all, or the bus busy: asked again after the next answer.
+            Err(_) => {}
+        }
+    }
+
+    /// The header of the ROM the cache was read from, once it has been.
+    fn known_header(&self) -> Option<Vec<u8>> {
+        self.rom_pages.get(&0).map(|p| p[..ROM_HEADER].to_vec())
+    }
+
+    /// Another ROM on the cart: carry on as on a link that restarted.
+    ///
+    /// On a new one, too. The agent in the new image may not be the one the last `HELLO`
+    /// described -- whether it recognizes a write sent again, whether it watches, whether it
+    /// writes at all -- and a copy of a write sent to an agent that does not recognize one is
+    /// applied twice. Should the new `HELLO` fail, no copy of a write is sent on the old link.
+    fn rom_changed(&mut self) {
+        (self.log)(
+            "the cart answered again with another ROM in it: the console was reset into \
+             another game or seed"
+                .into(),
+        );
+        match Multi64Transport::connect(&self.url, self.log.clone()) {
+            Ok(t) => {
+                self.retired_requests += self.t.requests() as u64;
+                self.retired_quick_resends += self.t.quick_resends();
+                self.t = t;
+                self.stats.reconnects += 1;
+            }
+            Err(e) => {
+                (self.log)(format!(
+                    "could not greet the new ROM's agent ({e}); carrying on with the old link"
+                ));
+                self.t.poke_once = false;
+            }
+        }
+        self.missed = false;
+        self.rom_pages.clear();
+        self.generation += 1;
+        // Another image, so another agent: it is watching nothing.
+        self.watch_on_cart = false;
     }
 
     /// The cart has stopped answering: say so if it was last said to be.
@@ -657,7 +759,8 @@ impl Multi64 {
     /// One small read, sent once: no soft retries, no reconnect, no waiting out a deadline. A
     /// caller asking "is the ROM still there" wants an answer in one round trip, and the retry
     /// machinery exists for requests that must not be lost -- this one may be lost freely, and
-    /// asked again in a moment.
+    /// asked again in a moment. A probe answered after misses also reads the ROM header again
+    /// ([`Multi64::recheck_rom`]), as any request answered after a silence does.
     ///
     /// Reported through the [`Health`] callback, as a request is: a session with nothing to ask
     /// sends only these, and would otherwise go on reporting whatever was true when its last
@@ -672,6 +775,7 @@ impl Multi64 {
             self.answering();
         } else {
             self.quiet_probes += 1;
+            self.missed = true;
             if self.quiet_probes > self.soft_retries {
                 self.not_answering();
             }
@@ -758,11 +862,24 @@ impl Multi64 {
             return Ok(());
         }
         let mut sent: Option<u16> = None;
+        let known = self.known_header();
         self.with_retry("write", Retry::Once, |t| {
             let rid = match sent {
                 // Nothing else goes out between the copies, which is what the agent needs: it
-                // holds only the request it served last.
+                // holds only the request it served last. A copy goes after a silence, though,
+                // which a console reset into another ROM looks the same as, and that ROM's agent
+                // would apply it; so the header is asked for first, when there is one to compare.
+                // A different one ends the write here, as a link that restarted under it.
                 Some(rid) if t.poke_once => {
+                    if let Some(known) = &known {
+                        if !same_rom(t, known)? {
+                            return Err(link_restarted_error(
+                                "cart write: the cart answered with another ROM in it, so the \
+                                 write was not sent again (it may or may not have landed before \
+                                 the console was reset)",
+                            ));
+                        }
+                    }
                     t.resend_poke(rid, batch)?;
                     rid
                 }
@@ -827,7 +944,15 @@ impl Backend for Multi64 {
         }
         pages.sort_unstable();
         pages.dedup();
+        let generation = self.generation;
         self.fill_rom_pages(&pages)?;
+        if self.generation != generation {
+            // The link restarted or the cart turned out to hold another ROM part-way through:
+            // the cache was dropped, and some of what was asked for came from the old image.
+            return Err(link_restarted_error(
+                "cart ROM read: the cart's ROM changed while it was being read",
+            ));
+        }
         regions
             .iter()
             .map(|&(addr, len)| {

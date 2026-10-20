@@ -1,9 +1,10 @@
 //! The TCP side: where Archipelago's client finds the connector.
 //!
-//! The client scans a port range on localhost and speaks newline-delimited text. This
-//! binds the first free port in the range (IPv4, and IPv6 where it can, since
-//! "localhost" may resolve to either), accepts one client at a time, and hands each
-//! line to the [`Connector`].
+//! The client looks for it on localhost and speaks newline-delimited text. Most clients
+//! scan a port range, and this binds the first free port in it; Pokémon Snap's goes to the
+//! one port it keeps in Project64's settings ([`crate::pj64`]), which is then the whole
+//! range. Either way it binds IPv4, and IPv6 where it can, since "localhost" may resolve to
+//! either, accepts one client at a time, and hands each line to the [`Connector`].
 //!
 //! A newer connection replaces the current one. A client that restarts is often
 //! seen connecting again before its old socket is noticed closed, and the old one

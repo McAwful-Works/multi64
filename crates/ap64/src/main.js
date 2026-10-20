@@ -997,7 +997,8 @@ async function fixAndStart() {
  * What Auto-detect found that a player should see: the fix its client needs, a version of its
  * world AP64 does not recognize, its notes. Start shows the same for a game that was chosen. Each
  * is offered once a session for each game, so a cart reconnecting does not ask again, and a
- * dialog waits for any other to close rather than taking its place.
+ * dialog waits for any other to close rather than taking its place. One still waiting when the
+ * console stops running its game is dropped, and offered again if the game comes back.
  */
 const offered = new Set();
 let offers = [];
@@ -1007,6 +1008,8 @@ function offerForFound(s) {
     offers = [];
     return;
   }
+  for (const o of offers) if (o.game !== s.game) offered.delete(o.key);
+  offers = offers.filter((o) => o.game === s.game);
   if (!s.auto || !s.game) return;
   const game = games.find((g) => g.id === s.game);
   if (!game) return;
@@ -1014,19 +1017,20 @@ function offerForFound(s) {
     const key = `${what}:${game.id}`;
     if (offered.has(key)) return;
     offered.add(key);
-    then();
+    then(key);
   };
+  const offer = (open) => (key) => offers.push({ game: game.id, key, open });
   const setup = s.clientSetup;
-  if (setup?.state === "needed") once("fix", () => offers.push(() => openClientFix(game, setup, true)));
+  if (setup?.state === "needed") once("fix", offer(() => openClientFix(game, setup, true)));
   if (setup?.state === "unknown") once("unknown", () => setError($("play-error"), sentence(setup.message)));
-  if (game.notes?.length && !notesSeen(game)) once("notes", () => offers.push(() => openNotes(game, true)));
+  if (game.notes?.length && !notesSeen(game)) once("notes", offer(() => openNotes(game, true)));
   showOffer();
 }
 
 /** The next offer, once no dialog is up. Later, so a dialog closed to open another counts as up. */
 function showOffer() {
   setTimeout(() => {
-    if (!openDialogName && offers.length) offers.shift()();
+    if (!openDialogName && offers.length) offers.shift().open();
   });
 }
 

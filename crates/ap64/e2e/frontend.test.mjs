@@ -893,6 +893,31 @@ const setDev = async (p, on) => {
   await p.close();
 }
 
+// What Auto-detect found waits for an open window. If the console moves on to another game in the
+// meantime, it is not shown for a game no longer there, and it is shown if that game comes back.
+{
+  const needed = { state: "needed", message: "It is missing a method. AP64 will add it to g2.apworld and keep the original", path: "C:\\AP\\custom_worlds\\g2.apworld", left: "", technical: "" };
+  const p = await openScenario({ clientSetup: { g2: needed } });
+  const emit = (payload) => p.evaluate((pl) => window.__TAURI_LISTENERS__["play://status"]({ payload: pl }), payload);
+  const base = { running: true, auto: true, port: null, requests: 0, reconnects: 0, stalls: 0, handled: 0, bridge: "ok", console: "ok" };
+  const held = { ...base, game: "g2", gameName: "Game Two: The Subtitle", state: "client-setup", detail: "held", client: "needsfix", clientSetup: needed };
+  await p.click("#btn-play-start");
+  await until(p, () => window.__TAURI_CALLS__.some((c) => c.cmd === "play_start"));
+  await p.click("#btn-games");
+  await emit(held);
+  await p.waitForTimeout(100);
+  check("an offer waits for the window that is open", (await visible(p, "games-dialog")) && !(await visible(p, "client-fix-dialog")));
+  await emit({ ...base, game: "", gameName: "", state: "waiting-console", detail: "the ROM on the console changed; checking it", console: "waiting", client: "idle" });
+  await emit({ ...base, game: "g1", gameName: "Game One", state: "waiting-client", detail: "open the AP client from the Archipelago Launcher", client: "waiting" });
+  await p.click("#btn-games-close");
+  await p.waitForTimeout(100);
+  check("an offer for a game the console has left is not shown", !(await visible(p, "client-fix-dialog")));
+  await emit(held);
+  await until(p, () => !document.getElementById("client-fix-dialog").hidden);
+  check("and is shown if that game comes back", (await text(p, "client-fix-title")) === "The AP client for Game Two: The Subtitle needs a one-time fix", await text(p, "client-fix-title"));
+  await p.close();
+}
+
 // A found game whose world is a version AP64 does not recognize is served, and the player is told.
 {
   const p = await openScenario({});

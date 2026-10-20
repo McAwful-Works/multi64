@@ -7,8 +7,10 @@
 //! game with its agent in place. With [`AUTO`] chosen there is no game to check against:
 //! the session takes every game whose header matches the cart's and keeps the one whose hooks
 //! are in place ([`identify`]), and serves that game's client. It asks again whenever the link
-//! to the cart restarts, since that is when another ROM can have been loaded, and a session
-//! whose game changed builds the new game's connector in place of the old one's.
+//! to the cart restarts or the cart is found holding another ROM after a silence, since that is
+//! when another ROM can have been loaded, failing the request that found it and checking
+//! before the connector reads or writes anything more ([`Checked`]), and a session whose game changed builds the new game's connector in place of
+//! the old one's.
 //!
 //! One session at a time, on its own thread (the connector's Lua state is not `Send`,
 //! so everything is built there). The page hears about it through two events:
@@ -26,7 +28,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use ap64_cart::backend::{Backend, Multi64, Stats};
+use ap64_cart::backend::{link_restarted_error, Backend, Multi64, Stats};
 use ap64_cart::Log;
 use ap64_connector::server::{self, Event};
 use ap64_connector::{relay, retroarch, Connector, Native, Protocol, Script, NATIVES, SCRIPTS};
@@ -780,6 +782,161 @@ impl Choice {
     }
 }
 
+/// What a session asks of a cart whose link changed ([`Backend::generation`]): `Ok` while it is
+/// still running the game being served, or what it is running instead.
+type SameGame = Box<dyn Fn(&mut dyn Backend) -> Result<(), String>>;
+
+/// How many times in a row a link may restart while it is being checked before the check gives
+/// up on it.
+const CHECK_TRIES: u32 = 3;
+
+/// The cart as a session's connector is given it: asked again what it is running whenever its
+/// link changes, before anything more is read from it or written to it.
+///
+/// The question used to be asked from the session's event handler, which runs after a request
+/// has been answered, so the first request on a new link was answered from the new ROM as though
+/// it were the old game's. Here it is asked inside the request that finds the change, and that
+/// request fails, as one the link restarted under does. A change of game is final: every request
+/// after it fails the same way, until the session stops serving and finds the game afresh.
+struct Checked<B> {
+    inner: Rc<CheckedInner<B>>,
+}
+
+struct CheckedInner<B> {
+    cart: Rc<RefCell<B>>,
+    same_game: SameGame,
+    /// What the connector serves until: set once the game is found changed, so it stops and the
+    /// session finds the game afresh.
+    serve: Arc<AtomicBool>,
+    /// The link generation last found running the game.
+    checked: Cell<u32>,
+    /// What the cart turned out to be running instead, once it has.
+    changed: RefCell<Option<String>>,
+}
+
+impl<B> Clone for Checked<B> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<B: Backend> Checked<B> {
+    /// `found_on` is the link generation the game was found on, so a change since then, while
+    /// the connector was being built, is checked as any other.
+    fn new(
+        cart: Rc<RefCell<B>>,
+        found_on: u32,
+        same_game: SameGame,
+        serve: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            inner: Rc::new(CheckedInner {
+                cart,
+                same_game,
+                serve,
+                checked: Cell::new(found_on),
+                changed: RefCell::new(None),
+            }),
+        }
+    }
+
+    /// What the cart is running instead of the game, once a check has found it.
+    fn changed(&self) -> Option<String> {
+        self.inner.changed.borrow().clone()
+    }
+
+    /// Whether the cart is still running the game, asking it again if its link changed since it
+    /// last said so. A link that restarts during the check is checked again.
+    fn check(&self) -> io::Result<()> {
+        let i = &self.inner;
+        let mut tries = 0;
+        loop {
+            if let Some(why) = i.changed.borrow().as_ref() {
+                return Err(link_restarted_error(why.clone()));
+            }
+            let at = i.cart.borrow().generation();
+            if at == i.checked.get() {
+                return Ok(());
+            }
+            let why = if tries == CHECK_TRIES {
+                "the link to the cart kept restarting while it was checked".to_string()
+            } else {
+                tries += 1;
+                let same = (i.same_game)(&mut *i.cart.borrow_mut());
+                match same {
+                    // The same game, unless the link restarted again under the check.
+                    Ok(()) if i.cart.borrow().generation() == at => {
+                        i.checked.set(at);
+                        continue;
+                    }
+                    Ok(()) => continue,
+                    Err(why) => why,
+                }
+            };
+            *i.changed.borrow_mut() = Some(why);
+            i.serve.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// `op` on the cart, between two checks: one so nothing more reaches a cart found running
+    /// another game, and one so nothing read from one is handed back as the game's. A write that
+    /// was on its way when the console was reset may have landed before the second finds it.
+    ///
+    /// An `op` that failed is not checked after: what failed it is the error worth telling, and
+    /// asking a cart that has just failed what it is running would only wait on it again. The
+    /// next request's check asks.
+    fn checked<T>(&self, op: impl FnOnce(&mut B) -> io::Result<T>) -> io::Result<T> {
+        self.check()?;
+        let done = op(&mut self.inner.cart.borrow_mut())?;
+        self.check()?;
+        Ok(done)
+    }
+}
+
+impl<B: Backend> Backend for Checked<B> {
+    fn rdram_size(&self) -> u32 {
+        self.inner.cart.borrow().rdram_size()
+    }
+    fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        self.checked(|c| c.read_many(regions))
+    }
+    fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
+        self.checked(|c| c.write_many(writes))
+    }
+    fn rom_window(&self) -> Option<u32> {
+        self.inner.cart.borrow().rom_window()
+    }
+    fn read_rom_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+        self.checked(|c| c.read_rom_many(regions))
+    }
+    fn generation(&self) -> u32 {
+        self.inner.cart.borrow().generation()
+    }
+    fn set_watch(&mut self, watch: ap64_cart::watch::Watch) {
+        self.inner.cart.borrow_mut().set_watch(watch)
+    }
+    fn take_watched(&mut self) -> Option<Vec<u8>> {
+        self.inner.cart.borrow_mut().take_watched()
+    }
+    fn sample_watch(&mut self) -> io::Result<()> {
+        self.checked(|c| c.sample_watch())
+    }
+    fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+        self.inner.cart.borrow().watch_stats()
+    }
+}
+
+/// The question a [`Checked`] cart asks, for a session serving `game`.
+fn same_game(choice: Rc<Choice>, game: String) -> SameGame {
+    Box::new(move |cart| match choice.find(cart) {
+        Ok((now, _)) if now.profile.id == game => Ok(()),
+        Ok((now, _)) => Err(format!("the console is now running {}", now.profile.name)),
+        Err(e) => Err(e.to_string()),
+    })
+}
+
 /// Why the client of a game an [`AUTO`] session found cannot be served yet. Start settles the
 /// same things for a game that was chosen, before the session begins.
 struct Hold {
@@ -1316,6 +1473,8 @@ fn session(
 ) {
     let stop = &stops.session;
     let auto = matches!(choice, Choice::Auto(_));
+    // Shared with the cart's check for a change of game, which outlives a borrow (see Checked).
+    let choice = Rc::new(choice);
     let set = |f: &dyn Fn(&mut Status)| {
         let mut s = status.lock().unwrap();
         f(&mut s);
@@ -1334,7 +1493,7 @@ fn session(
         "AP64 {} ({}), {}, through Multi64 at {url}",
         env!("CARGO_PKG_VERSION"),
         env!("AP64_COMMIT"),
-        match &choice {
+        match &*choice {
             Choice::Game(g) => format!("{} ({} profile)", g.profile.name, g.profile.id),
             Choice::Auto(all) => format!("auto-detecting the game among {} profiles", all.len()),
         }
@@ -1489,7 +1648,31 @@ fn session(
         ));
 
         let mut cart = cart;
-        let (game, on) = match choice.find(&mut cart) {
+        // Before anything is asked of the cart, so that Stop is felt, and a console that goes
+        // away is given up on within CART_GRACE rather than the backend's own minutes, while the
+        // game is being found too: finding it reads the header and every candidate's hooks.
+        {
+            let stop = stop.clone();
+            cart.set_cancelled(Rc::new(move || stop.load(Ordering::Relaxed)));
+        }
+        cart.set_reconnect_deadline(CART_GRACE);
+        // The link the game is found on. A link that restarts while the game is being found may
+        // have done so under a reset into another ROM, leaving the answer half one image's and
+        // half the other's, so it is found again.
+        let mut found_on = cart.generation();
+        let found = loop {
+            let found = choice.find(&mut cart);
+            let now = cart.generation();
+            if now == found_on || stop.load(Ordering::Relaxed) {
+                break found;
+            }
+            log(
+                "the link to the cart restarted while the game was being found; looking again"
+                    .into(),
+            );
+            found_on = now;
+        };
+        let (game, on) = match found {
             Ok(found) => found,
             Err(e) => {
                 log(e.to_string());
@@ -1599,6 +1782,23 @@ fn session(
                     if probed.elapsed() >= CART_QUIET {
                         probed = Instant::now();
                         misses = if cart.alive() { 0 } else { misses + 1 };
+                        // Answering again with another ROM in it: what was found is not there.
+                        if cart.generation() != found_on {
+                            log("the ROM on the cart changed while its AP client was held; \
+                                 checking it again"
+                                .into());
+                            set(&|s| {
+                                s.state = "waiting-console".into();
+                                s.detail = "the ROM on the console changed; checking it".into();
+                                s.detail_dev = String::new();
+                                s.console = WAITING.into();
+                                s.client = IDLE.into();
+                                s.game = String::new();
+                                s.game_name = String::new();
+                                s.client_setup = None;
+                            });
+                            continue 'session;
+                        }
                         if misses >= HOLD_MISSES {
                             log("the cart stopped answering while the AP client was held".into());
                             set(&|s| {
@@ -1609,6 +1809,8 @@ fn session(
                                 s.detail_dev = String::new();
                                 s.console = FAILED.into();
                                 s.client = IDLE.into();
+                                s.game = String::new();
+                                s.game_name = String::new();
                                 s.client_setup = None;
                             });
                             continue 'session;
@@ -1629,16 +1831,11 @@ fn session(
 
         // What the backend says about the cart, while it says it.
         //
-        // A request that fails is retried and then reconnected for as long as the backend's own
-        // deadline, and nothing comes back to this loop in the meantime -- so without this, a
+        // A request that fails is retried and then reconnected for as long as the deadline set
+        // above, and nothing comes back to this loop in the meantime -- so without this, a
         // console that was reset went on being reported as running until that deadline expired.
         // The client notices immediately, because its own reads are what fail; this is how AP64
         // learns it at the same time.
-        {
-            let stop = stop.clone();
-            cart.set_cancelled(Rc::new(move || stop.load(Ordering::Relaxed)));
-        }
-        cart.set_reconnect_deadline(CART_GRACE);
         // A client AP64 answers itself never waits on the cart, so a long scene load can be
         // waited out rather than costing a reconnect. DK64's loads silence the agent for up to
         // 3 s, against the 3.6 s the default allows.
@@ -1688,11 +1885,22 @@ fn session(
         // shared cart is the cart: `Rc<RefCell<_>>` forwards every `Backend` method, the
         // watch included.
         let cart = Rc::new(RefCell::new(cart));
+        // What the connector is given: the same cart, asked again what it is running whenever
+        // its link changes. The backend rebuilds a link that stops answering by itself, and
+        // takes a ROM found changed after a silence as a new link too; either may be a console
+        // reset into another game, which the connector would otherwise go on serving as this
+        // one. The same game carries on with its client still connected.
+        let checked = Checked::new(
+            cart.clone(),
+            found_on,
+            same_game(choice.clone(), game.profile.id.clone()),
+            stops.serve.clone(),
+        );
         // A native connector has no script to load: AP64 answers its client itself.
         let connector = match kind {
             Kind::Native(_) => None,
             Kind::Script(script) => {
-                match Connector::new(&script, Box::new(cart.clone()), log.clone()) {
+                match Connector::new(&script, Box::new(checked.clone()), log.clone()) {
                     Ok(c) => Some(c),
                     Err(e) => {
                         log(format!("the connector script would not load: {e}"));
@@ -1703,6 +1911,9 @@ fn session(
                                     .into();
                             s.detail_dev = e.clone();
                             s.console = FAILED.into();
+                            s.game = String::new();
+                            s.game_name = String::new();
+                            s.client_setup = None;
                         });
                         continue 'session;
                     }
@@ -1743,29 +1954,7 @@ fn session(
         let mut misses = 0u64;
         let mut last_summary = Instant::now();
         let mut summarized = (handled, 0u64, Stats::default());
-        // The link the game above was found on. The backend rebuilds a link that stops answering
-        // by itself, and each rebuild is a new HELLO, from a console that may since have been
-        // reset into another ROM; the connector would go on serving it as the old game. So a new
-        // link is asked again what it is running, and the connector stops if that changed,
-        // for the loop to find the game afresh. The same game carries on with its client still
-        // connected.
-        let mut checked = cart.borrow().generation();
-        let mut changed: Option<String> = None;
         let mut on_event = |e| {
-            let generation = cart.borrow().generation();
-            if generation != checked && changed.is_none() {
-                let again = choice.find(&mut *cart.borrow_mut());
-                match again {
-                    Ok((now, _)) if now.profile.id == game.profile.id => checked = generation,
-                    Ok((now, _)) => {
-                        changed = Some(format!("the console is now running {}", now.profile.name))
-                    }
-                    Err(e) => changed = Some(e.to_string()),
-                }
-                if changed.is_some() {
-                    stops.serve.store(true, Ordering::Relaxed);
-                }
-            }
             match e {
                 Event::Listening(port) => {
                     log(format!(
@@ -1820,6 +2009,10 @@ fn session(
                     // same health callback, so the wording lives in one place.
                     if last_answer.elapsed() >= CART_QUIET {
                         let _ = cart.borrow_mut().alive();
+                        // A probe that finds another ROM is how a session with no client hears
+                        // of one, so it is asked about now rather than when a client next asks
+                        // something. A change stops the connector.
+                        let _ = checked.check();
                     }
                 }
                 Event::Handled => {
@@ -1885,10 +2078,10 @@ fn session(
             // the handler's own borrows above never overlap one of these.
             (Kind::Native(native), _) => match &native.protocol {
                 Protocol::RetroArch(opts) => {
-                    retroarch::serve(&mut cart.clone(), opts, &stops.serve, &mut on_event)
+                    retroarch::serve(&mut checked.clone(), opts, &stops.serve, &mut on_event)
                 }
                 Protocol::Relay(opts) => {
-                    relay::serve(&mut cart.clone(), opts, &stops.serve, &mut on_event)
+                    relay::serve(&mut checked.clone(), opts, &stops.serve, &mut on_event)
                 }
             },
             (Kind::Script(_), None) => unreachable!("a script session loads its script first"),
@@ -1896,11 +2089,13 @@ fn session(
         // Whatever stalls were being counted belong before what happens next.
         cart.borrow_mut().flush_stalls(true);
         push_stats(cart.borrow().stats(), handled);
-        match result {
+        // A game found changed is the reason worth telling, however the serving ended: a
+        // connector may have reported it as its cart failing.
+        match (result, checked.changed()) {
             // `serve` only returns cleanly when the stop flag it was given is set: by Stop, or
             // because the console turned out to be running something else.
-            Ok(()) if stop.load(Ordering::Relaxed) => break 'session,
-            Ok(()) => {
+            (Ok(()), _) if stop.load(Ordering::Relaxed) => break 'session,
+            (Ok(()), changed) | (Err(_), changed @ Some(_)) => {
                 let why = changed.unwrap_or_else(|| "the console changed".into());
                 log(format!("{why}; checking the cart again"));
                 set(&|s| {
@@ -1909,9 +2104,12 @@ fn session(
                     s.detail_dev = why.clone();
                     s.console = WAITING.into();
                     s.client = IDLE.into();
+                    s.game = String::new();
+                    s.game_name = String::new();
+                    s.client_setup = None;
                 });
             }
-            Err(e) => {
+            (Err(e), None) => {
                 log(format!("the link gave way: {e}; still trying"));
                 set(&|s| {
                     s.state = "waiting-console".into();
@@ -1922,6 +2120,9 @@ fn session(
                     s.detail_dev = e.clone();
                     s.console = FAILED.into();
                     s.client = IDLE.into();
+                    s.game = String::new();
+                    s.game_name = String::new();
+                    s.client_setup = None;
                 });
             }
         }
@@ -2149,6 +2350,172 @@ mod tests {
         rom[0x4EDC..0x4EE0].fill(0);
         let e = identify(&bundles, &mut cart_with(rom)).err().unwrap();
         assert!(e.message.contains("has no AP64 agent"), "{e}");
+    }
+
+    /// A cart whose ROM can be changed under it, as a console reset does, with the link
+    /// generation moved or not, as the backend does when it notices.
+    struct Swappable {
+        image: ap64_cart::backend::RamImage,
+        generation: u32,
+        /// The link restarts under every ROM read, as one that keeps failing would.
+        restart_on_rom_read: bool,
+        /// Every RAM read fails, with the link restarting under it, as a cart that has gone does.
+        fail_reads: bool,
+    }
+
+    impl Swappable {
+        fn new(rom: Vec<u8>) -> Self {
+            Self {
+                image: cart_with(rom),
+                generation: 0,
+                restart_on_rom_read: false,
+                fail_reads: false,
+            }
+        }
+    }
+
+    impl Backend for Swappable {
+        fn rdram_size(&self) -> u32 {
+            self.image.rdram_size()
+        }
+        fn read_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+            if self.fail_reads {
+                self.generation += 1;
+                return Err(io::Error::other("the cart has gone"));
+            }
+            self.image.read_many(regions)
+        }
+        fn write_many(&mut self, writes: &[(u32, &[u8])]) -> io::Result<()> {
+            self.image.write_many(writes)
+        }
+        fn rom_window(&self) -> Option<u32> {
+            self.image.rom_window()
+        }
+        fn read_rom_many(&mut self, regions: &[(u32, usize)]) -> io::Result<Vec<Vec<u8>>> {
+            if self.restart_on_rom_read {
+                self.generation += 1;
+            }
+            self.image.read_rom_many(regions)
+        }
+        fn generation(&self) -> u32 {
+            self.generation
+        }
+        fn set_watch(&mut self, watch: ap64_cart::watch::Watch) {
+            self.image.set_watch(watch)
+        }
+        fn take_watched(&mut self) -> Option<Vec<u8>> {
+            self.image.take_watched()
+        }
+        fn sample_watch(&mut self) -> io::Result<()> {
+            self.image.sample_watch()
+        }
+        fn watch_stats(&self) -> Option<ap64_cart::watch::WatchStats> {
+            self.image.watch_stats()
+        }
+    }
+
+    /// The cart as an Auto-detect session serving `id` gives it to its connector, on a cart
+    /// running `on` whose link restarted `generation` times since `id` was found.
+    fn checked_cart(
+        id: &str,
+        on: &str,
+        generation: u32,
+    ) -> (
+        Checked<Swappable>,
+        Rc<RefCell<Swappable>>,
+        Arc<AtomicBool>,
+        Vec<Bundle>,
+    ) {
+        let bundles = ap64_core::builtin().unwrap();
+        let rom = cart_rom(&bundles.iter().find(|b| b.profile.id == on).unwrap().profile);
+        let mut cart = Swappable::new(rom.unwrap());
+        cart.generation = generation;
+        let cart = Rc::new(RefCell::new(cart));
+        let serve = Arc::new(AtomicBool::new(false));
+        let choice = Rc::new(Choice::Auto(bundles.clone()));
+        let checked = Checked::new(cart.clone(), 0, same_game(choice, id.into()), serve.clone());
+        (checked, cart, serve, bundles)
+    }
+
+    /// The console reset into another game: the request that finds it fails, as one the link
+    /// restarted under does, nothing more is written, and the connector is told to stop.
+    #[test]
+    fn a_cart_found_running_another_game_is_not_served_as_the_old_one() {
+        let (mut checked, cart, serve, bundles) = checked_cart("cv64", "cv64", 0);
+        assert!(checked.read_many(&[(0x100, 4)]).is_ok());
+        let mk64 = &bundles
+            .iter()
+            .find(|b| b.profile.id == "mk64")
+            .unwrap()
+            .profile;
+        {
+            let mut c = cart.borrow_mut();
+            c.image.rom = cart_rom(mk64);
+            c.generation += 1;
+        }
+        let e = checked.read_many(&[(0x100, 4)]).unwrap_err();
+        assert!(ap64_cart::backend::link_restarted(&e), "{e}");
+        assert!(e.to_string().contains(&mk64.name), "{e}");
+        assert!(
+            serve.load(Ordering::Relaxed),
+            "the connector was not told to stop"
+        );
+        assert!(checked.changed().is_some());
+        // And it stays refused: nothing reaches the other game's RAM.
+        assert!(checked.write_many(&[(0x100, &[1, 2, 3, 4])]).is_err());
+        assert_eq!(cart.borrow().image.ram[0x100..0x104], [0, 0, 0, 0]);
+    }
+
+    /// A link that restarted on the same game carries on, and is not asked again until it
+    /// restarts again.
+    #[test]
+    fn a_link_that_restarted_on_the_same_game_carries_on() {
+        let (mut checked, cart, serve, _) = checked_cart("cv64", "cv64", 0);
+        cart.borrow_mut().generation += 1;
+        assert!(checked.read_many(&[(0x100, 4)]).is_ok());
+        assert!(checked.write_many(&[(0x100, &[1, 2, 3, 4])]).is_ok());
+        assert_eq!(cart.borrow().image.ram[0x100..0x104], [1, 2, 3, 4]);
+        assert!(!serve.load(Ordering::Relaxed));
+        assert!(checked.changed().is_none());
+    }
+
+    /// The generation the game was found on is what is checked against, so a link that
+    /// restarted between finding the game and building its connector is asked about too.
+    #[test]
+    fn a_link_restarted_since_the_game_was_found_is_checked() {
+        let (checked, _, serve, _) = checked_cart("cv64", "mk64", 1);
+        assert!(checked.check().is_err());
+        assert!(serve.load(Ordering::Relaxed));
+    }
+
+    /// A link that restarts under every check is given up on, and the connector is told to stop
+    /// as it is for another game: refused requests alone would only drop the client, which
+    /// connects again to be refused again.
+    #[test]
+    fn a_link_that_keeps_restarting_under_the_check_stops_the_connector() {
+        let (checked, cart, serve, _) = checked_cart("cv64", "cv64", 1);
+        cart.borrow_mut().restart_on_rom_read = true;
+        let e = checked.check().unwrap_err();
+        assert!(e.to_string().contains("kept restarting"), "{e}");
+        assert!(serve.load(Ordering::Relaxed));
+    }
+
+    /// A request that fails is reported as what failed it, and the cart is not asked about its
+    /// game on the way out, though its link restarted: asking a cart that has just failed would
+    /// only wait on it again, and its answer would be told in place of the failure.
+    #[test]
+    fn a_failed_request_is_not_checked_after() {
+        let (mut checked, cart, serve, bundles) = checked_cart("cv64", "cv64", 0);
+        {
+            let mk64 = &bundles.iter().find(|b| b.profile.id == "mk64").unwrap();
+            let mut c = cart.borrow_mut();
+            c.image.rom = cart_rom(&mk64.profile);
+            c.fail_reads = true;
+        }
+        let e = checked.read_many(&[(0x100, 4)]).unwrap_err();
+        assert_eq!(e.to_string(), "the cart has gone");
+        assert!(checked.changed().is_none());
+        assert!(!serve.load(Ordering::Relaxed));
     }
 
     /// A chosen game is checked for and nothing else: the other game with its header fails.
