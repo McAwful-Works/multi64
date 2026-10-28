@@ -23,7 +23,7 @@ serialport = "4"
 multi64-cart-probe = { path = "../../cart-probe" }
 dirs = "7"
 auto-launch = "0.6"
-parking_lot = "0.12"
+parking_lot = "0.13"
 ureq = { version = "3", default-features = false }
 anyhow = "1"
 
